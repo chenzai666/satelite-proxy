@@ -1,5 +1,7 @@
 # Satelite
 
+A lightweight proxy and VPN client designed for macOS.
+
 <p align="center">
   <img src="assets/index.png" alt="Satelite" width="720" />
 </p>
