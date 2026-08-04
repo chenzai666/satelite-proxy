@@ -58,6 +58,8 @@ export function RulesPage({ embedded = false }: Props) {
   const [target, setTarget] = useState<RuleTarget>("proxy");
   const [pinNodeId, setPinNodeId] = useState<string>("");
   const [nodeQuery, setNodeQuery] = useState("");
+  const [smartInclude, setSmartInclude] = useState("");
+  const [smartExclude, setSmartExclude] = useState("");
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -152,7 +154,9 @@ export function RulesPage({ embedded = false }: Props) {
         r.payload.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q) ||
         r.target.toLowerCase().includes(q) ||
-        (r.node_name ?? "").toLowerCase().includes(q),
+        (r.node_name ?? "").toLowerCase().includes(q) ||
+        (r.smart_include ?? []).some((k) => k.toLowerCase().includes(q)) ||
+        (r.smart_exclude ?? []).some((k) => k.toLowerCase().includes(q)),
     );
   }, [rules, filter]);
 
@@ -173,6 +177,29 @@ export function RulesPage({ embedded = false }: Props) {
     );
   }, [nodes, nodeQuery]);
 
+  function parseKeywords(raw: string): string[] {
+    return raw
+      .split(/[,，、]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  const smartMatchCount = useMemo(() => {
+    if (target !== "smart") return 0;
+    const include = parseKeywords(smartInclude);
+    const exclude = parseKeywords(smartExclude);
+    return nodes.filter((n) => {
+      const name = n.name.toLowerCase();
+      for (const k of include) {
+        if (!name.includes(k.toLowerCase())) return false;
+      }
+      for (const k of exclude) {
+        if (name.includes(k.toLowerCase())) return false;
+      }
+      return true;
+    }).length;
+  }, [target, smartInclude, smartExclude, nodes]);
+
   const viewSet = sets.find((s) => s.id === viewSetId);
 
   const targetOpts: { value: RuleTarget; label: string }[] = useMemo(
@@ -181,11 +208,24 @@ export function RulesPage({ embedded = false }: Props) {
       { value: "direct", label: t("rules.targetDirect") },
       { value: "block", label: t("rules.targetBlock") },
       { value: "node", label: t("rules.targetNode") },
+      { value: "smart", label: t("rules.targetSmart") },
     ],
     [t],
   );
 
   function targetLabel(r: Rule): { text: string; stale: boolean; cls: string } {
+    if (r.target === "smart") {
+      const parts: string[] = [t("rules.smartLabel")];
+      const inc = (r.smart_include ?? []).filter(Boolean);
+      const exc = (r.smart_exclude ?? []).filter(Boolean);
+      if (inc.length) {
+        parts.push(t("rules.smartLabelInc", { k: inc.join("/") }));
+      }
+      if (exc.length) {
+        parts.push(t("rules.smartLabelExc", { k: exc.join("/") }));
+      }
+      return { text: parts.join(" · "), stale: false, cls: "target-smart" };
+    }
     if (r.target !== "node") {
       return { text: r.target, stale: false, cls: `target-${r.target}` };
     }
@@ -218,6 +258,8 @@ export function RulesPage({ embedded = false }: Props) {
     setTarget("proxy");
     setPinNodeId("");
     setNodeQuery("");
+    setSmartInclude("");
+    setSmartExclude("");
     setEnabled(true);
     setEditOpen(true);
     void ensureNodesLoaded();
@@ -230,6 +272,8 @@ export function RulesPage({ embedded = false }: Props) {
     setTarget(r.target);
     setPinNodeId(r.node_id ?? "");
     setNodeQuery("");
+    setSmartInclude((r.smart_include ?? []).join(", "));
+    setSmartExclude((r.smart_exclude ?? []).join(", "));
     setEnabled(r.enabled);
     setEditOpen(true);
     void ensureNodesLoaded();
@@ -254,6 +298,8 @@ export function RulesPage({ embedded = false }: Props) {
         ord: editRule?.ord ?? null,
         enabled,
         nodeId: target === "node" ? pinNodeId : null,
+        smartInclude: target === "smart" ? parseKeywords(smartInclude) : null,
+        smartExclude: target === "smart" ? parseKeywords(smartExclude) : null,
       });
       setEditOpen(false);
       await reloadRules(viewSetId);
@@ -652,9 +698,12 @@ export function RulesPage({ embedded = false }: Props) {
                             aria-label={t("rules.menuAria")}
                             aria-haspopup="menu"
                             aria-expanded={menuRuleId === r.id}
-                            onClick={() =>
-                              setMenuRuleId((id) => (id === r.id ? null : r.id))
-                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuRuleId((id) =>
+                                id === r.id ? null : r.id,
+                              );
+                            }}
                           >
                             ⋮
                           </button>
@@ -784,6 +833,39 @@ export function RulesPage({ embedded = false }: Props) {
                   )}
                 </div>
               )}
+              {target === "smart" && (
+                <div className="field rule-smart-filters">
+                  <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
+                    {t("rules.smartHint")}
+                  </p>
+                  <label className="field" style={{ marginBottom: 8 }}>
+                    <span>{t("rules.smartInclude")}</span>
+                    <input
+                      value={smartInclude}
+                      onChange={(e) => setSmartInclude(e.target.value)}
+                      placeholder={t("rules.smartIncludePh")}
+                    />
+                  </label>
+                  <label className="field" style={{ marginBottom: 8 }}>
+                    <span>{t("rules.smartExclude")}</span>
+                    <input
+                      value={smartExclude}
+                      onChange={(e) => setSmartExclude(e.target.value)}
+                      placeholder={t("rules.smartExcludePh")}
+                    />
+                  </label>
+                  <p
+                    className="muted"
+                    style={{
+                      margin: 0,
+                      fontSize: 12,
+                      color: smartMatchCount === 0 ? "var(--danger, #e55)" : undefined,
+                    }}
+                  >
+                    {t("rules.smartMatchCount", { n: smartMatchCount })}
+                  </p>
+                </div>
+              )}
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>{t("rules.enabled")}</span>
                 <button
@@ -804,7 +886,8 @@ export function RulesPage({ embedded = false }: Props) {
                   disabled={
                     busy ||
                     !payload.trim() ||
-                    (target === "node" && !pinNodeId.trim())
+                    (target === "node" && !pinNodeId.trim()) ||
+                    (target === "smart" && nodes.length === 0)
                   }
                 >
                   {busy ? "保存中…" : "保存"}

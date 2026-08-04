@@ -269,7 +269,7 @@ export interface RuleSet {
   rules: Rule[];
 }
 
-export type RuleTarget = "direct" | "proxy" | "block" | "node";
+export type RuleTarget = "direct" | "proxy" | "block" | "node" | "smart";
 
 export interface Rule {
   id: string;
@@ -282,6 +282,10 @@ export interface Rule {
   node_id?: string | null;
   /** Snapshot name at save time (stale UI when id missing). */
   node_name?: string | null;
+  /** Smart mode: node name must contain each keyword. */
+  smart_include?: string[];
+  /** Smart mode: node name must not contain any keyword. */
+  smart_exclude?: string[];
 }
 
 /** Live connection or historical request row */

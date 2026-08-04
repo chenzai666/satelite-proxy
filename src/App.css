@@ -849,8 +849,9 @@ tr.row-active {
   font-size: 0.85rem;
 }
 
+/* Latency: green <200ms · yellow <300ms · red ≥300ms */
 .lat-good {
-  color: var(--primary);
+  color: var(--success);
   font-family: var(--mono);
 }
 
@@ -871,7 +872,7 @@ tr.row-active {
 }
 
 .lat-timeout {
-  color: var(--muted);
+  color: var(--danger);
   font-weight: 600;
   font-size: 0.8rem;
   font-family: var(--mono);
@@ -977,35 +978,25 @@ button.node-card:disabled,
   font-size: 0.76rem; /* ~80% of previous 0.95rem */
   line-height: 1;
   white-space: nowrap;
-  color: var(--primary);
 }
 
 .node-card-latency .lat,
 .node-card-latency .lat-good,
 .node-card-latency .lat-ok,
-.node-card-latency .lat-slow {
-  color: var(--primary);
+.node-card-latency .lat-slow,
+.node-card-latency .lat-timeout,
+.node-card-latency .lat-none {
   font-size: inherit;
   font-weight: 600;
 }
 
-.node-card-latency .lat-timeout,
-.node-card-latency .lat-none {
-  color: var(--muted);
-  font-size: inherit;
-}
-
-/* List mode: latency numbers always green (same as cards) */
 .node-list-latency .lat,
 .node-list-latency .lat-good,
 .node-list-latency .lat-ok,
-.node-list-latency .lat-slow {
-  color: var(--primary);
-}
-
+.node-list-latency .lat-slow,
 .node-list-latency .lat-timeout,
 .node-list-latency .lat-none {
-  color: var(--muted);
+  font-weight: 600;
 }
 
 .node-card-name {
@@ -1367,6 +1358,17 @@ button.switch.small.on .switch-thumb {
   vertical-align: bottom;
 }
 
+.pill.target-smart {
+  background: var(--primary-muted);
+  color: var(--primary);
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
 .pill.target-stale {
   background: var(--danger-bg);
   color: var(--danger);
@@ -1584,9 +1586,10 @@ tr.rule-row:hover {
   background: var(--surface-2);
 }
 
-/* Fixed layout so 匹配 truncates and ⋮ always stays visible */
-.rules-table-wrap {
-  overflow-x: hidden;
+/* Fixed layout so 匹配 truncates and ⋮ always stays visible.
+   Must not clip the ⋮ dropdown (especially with only 1 row). */
+.rules-table-wrap.table-wrap {
+  overflow: visible;
 }
 
 .rules-table {
@@ -1682,8 +1685,10 @@ tr.rule-row:hover {
 .rule-menu-pop {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
-  z-index: 30;
+  /* Open upward: last/single row often has no room below inside the card. */
+  bottom: calc(100% + 4px);
+  top: auto;
+  z-index: 50;
   min-width: 7.5rem;
   padding: 0.25rem;
   background: var(--surface);
@@ -2867,6 +2872,21 @@ button.check.on {
   letter-spacing: 0.04em;
   color: var(--muted);
   min-width: 4.2rem;
+}
+
+.dash-inline-label.dash-smart-probing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  color: var(--primary);
+}
+
+.dash-smart-spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
+  flex-shrink: 0;
 }
 
 .dash-inline-seg {
