@@ -1,6 +1,7 @@
 # Satelite
 
-A lightweight proxy and VPN client designed for macOS.
+A lightweight and modern sing-box GUI client for macOS, built with Tauri, React and Rust. Supports Clash subscriptions, TUN, DNS, routing rules and system proxy.
+
 
 <p align="center">
   <img src="assets/index.png" alt="Satelite" width="720" />
