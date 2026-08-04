@@ -1,5 +1,9 @@
 # Satelite
 
+<p align="center">
+  <img src="assets/index.png" alt="Satelite" width="720" />
+</p>
+
 轻量级 **sing-box** 桌面代理客户端，基于 **Tauri 2 + React + Rust**。
 
 面向 macOS（优先 arm64）日常使用：订阅导入、节点切换、规则分流、DNS、系统代理 / TUN，以及托盘常驻。
