@@ -16,9 +16,7 @@ Powered by sing-box. Built with Tauri, React and Rust.
 面向 macOS（优先 arm64）日常使用：订阅导入、节点切换、规则分流、DNS、系统代理 / TUN，以及托盘常驻。
 
 
-## 低价直连  〢  [良心云](https://xn--9kqz23b19z.com/#/register?code=SUpAMRXL)  〢  [一分机场](https://xn--4gqx1hgtfdmt.com/#/register?code=qiRqViZ8)  〢  [赔钱机场](https://xn--cp3a08l.com/register?code=lzWSCUqr&cover=sfw)
 
-**简评** : 量大管饱，1000G流量不限时，最具性价比
 
 ## Highlights
 
@@ -45,3 +43,15 @@ Powered by sing-box. Built with Tauri, React and Rust.
 ## License
 
 Licensed under the [Apache License 2.0](./LICENSE).
+
+
+## Sponsors
+
+<details>
+<summary>Service providers supporting this project</summary>
+
+### 低价直连  〢  [良心云](https://xn--9kqz23b19z.com/#/register?code=SUpAMRXL)  〢  [一分机场](https://xn--4gqx1hgtfdmt.com/#/register?code=qiRqViZ8)  〢  [赔钱机场](https://xn--cp3a08l.com/register?code=lzWSCUqr&cover=sfw)
+
+**简评** : 量大管饱，1000G流量不限时，最具性价比
+
+</details>
