@@ -4,8 +4,8 @@
   --radius-sm: 10px;
   --radius-xs: 5px;
   --radius-pill: 999px;
-  --mono: "SF Mono", "JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, "Segoe UI", sans-serif;
+  --mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "SF Mono", ui-monospace, Consolas, Menlo, monospace;
+  --font: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
   font-family: var(--font);
   line-height: 1.45;
   font-weight: 400;
@@ -328,7 +328,7 @@ button {
 .page-header h1 {
   margin: 0;
   font-size: 1.15rem;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   text-transform: none;
   font-family: var(--font);
@@ -1871,7 +1871,7 @@ button.mix-on {
   background: var(--primary-muted);
   color: var(--primary);
   border: 1px solid rgba(88,166,255,0.4);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .sub-card-meta {
@@ -2235,7 +2235,7 @@ code {
 .dns-panel-head h2 {
   margin: 0;
   font-size: 0.88rem;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.01em;
 }
 
@@ -2409,7 +2409,7 @@ code {
 
 .dns-list-title .pill {
   font-size: 0.65rem;
-  font-weight: 650;
+  font-weight: 600;
   padding: 0.12rem 0.42rem;
   text-transform: none;
   letter-spacing: 0;
@@ -2454,7 +2454,7 @@ code {
 }
 
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.78rem;
   word-break: break-all;
 }
@@ -2491,7 +2491,7 @@ button.check.on {
 
 .dns-add-title {
   font-size: 0.75rem;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--muted);
   margin-bottom: 0.5rem;
   letter-spacing: 0.02em;
@@ -2559,7 +2559,7 @@ button.check.on {
   resize: vertical;
   min-height: 5.5rem;
   line-height: 1.45;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--mono);
   font-size: 0.8rem;
 }
 
@@ -3001,7 +3001,7 @@ button.check.on {
 
 .instrument-traffic {
   font-size: 1.05rem;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.35;
   font-family: var(--mono);
@@ -3286,7 +3286,7 @@ button.check.on {
 
 .instrument-value.sm {
   font-size: 1.05rem;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: -0.01em;
   white-space: nowrap;
 }

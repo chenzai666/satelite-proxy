@@ -1,0 +1,29 @@
+# Bundled system DNS whitelist.
+# Bare lines  -> domain_suffix + SYSTEM
+# CSV lines   -> MATCHER,payload,ACTION  (e.g. DOMAIN-SUFFIX,example.com,SYSTEM)
+# Routes these domains to the local/system resolver instead of remote DoH.
+
+# Local / internal
+local
+lan
+internal
+corp
+localhost
+*.local
+*.lan
+
+# Common OS / update / telemetry that should stay on system DNS
+msftconnecttest.com
+msftncsi.com
+dns.msftncsi.com
+www.msftconnecttest.com
+ipv6.msftconnecttest.com
+
+# Apple platform
+apple.com
+icloud.com
+push.apple.com
+*.push.apple.com
+
+# Didi (PRD reference domain)
+xiaojukeji.com

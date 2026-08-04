@@ -9,6 +9,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// Windows process creation flag: do not allocate a console window for the child.
+/// sing-box.exe is a console subsystem program, so without this a black cmd window
+/// flashes on screen every time we spawn it.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreState {
@@ -107,9 +116,11 @@ impl CoreManager {
     }
 
     pub fn check_config(binary: &Path, config: &Path) -> AppResult<()> {
-        let out = Command::new(binary)
-            .args(["check", "-c"])
-            .arg(config)
+        let mut cmd = Command::new(binary);
+        cmd.args(["check", "-c"]).arg(config);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -265,9 +276,11 @@ impl CoreManager {
             .try_clone()
             .map_err(|e| AppError::Core(format!("clone log: {e}")))?;
 
-        let child = Command::new(binary)
-            .args(["run", "-c"])
-            .arg(config)
+        let mut cmd = Command::new(binary);
+        cmd.args(["run", "-c"]).arg(config);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let child = cmd
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .spawn()

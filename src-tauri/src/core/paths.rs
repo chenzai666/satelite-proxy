@@ -2,6 +2,12 @@ use crate::error::{AppError, AppResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CorePlatform {
     /// e.g. darwin-arm64, windows-amd64
@@ -251,8 +257,11 @@ pub fn read_version_of_binary(bin: &Path) -> AppResult<String> {
     if !bin.exists() {
         return Err(AppError::Core("sing-box binary not found".into()));
     }
-    let out = Command::new(bin)
-        .arg("version")
+    let mut cmd = Command::new(bin);
+    cmd.arg("version");
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let out = cmd
         .output()
         .map_err(|e| AppError::Core(format!("run version failed: {e}")))?;
     if !out.status.success() {
