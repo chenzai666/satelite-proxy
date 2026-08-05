@@ -554,6 +554,16 @@ export function DashboardPage({
               role="group"
               aria-label={t("dashboard.routing")}
             >
+              {/* Sliding indicator: width = 1/3 of the track, translateX follows active index. */}
+              <span
+                className="seg-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${
+                    outboundMode === "rule" ? 0 : outboundMode === "global" ? 100 : 200
+                  }%)`,
+                }}
+              />
               {(
                 [
                   ["rule", t("dashboard.modeRule")],

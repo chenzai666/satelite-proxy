@@ -27,19 +27,23 @@ function ProShell() {
     <div className="app-shell">
       <TopNav active={nav} onChange={setNav} />
       <main className="main">
-        {nav === "dashboard" && (
-          <DashboardPage
-            onGoProfiles={() => setNav("config")}
-            onGoNodes={() => setNav("nodes")}
-            onGoTraffic={() => setNav("traffic")}
-            onGoSettings={() => setNav("settings")}
-          />
-        )}
-        {nav === "config" && <ConfigPage />}
-        {nav === "nodes" && <NodesPage />}
-        {nav === "traffic" && <TrafficPage />}
-        {nav === "logs" && <LogsPage />}
-        {nav === "settings" && <SettingsPage />}
+        {/* key={nav} forces a remount on page switch → triggers the CSS
+            page-enter fade/slide animation below. */}
+        <div className="page-enter" key={nav}>
+          {nav === "dashboard" && (
+            <DashboardPage
+              onGoProfiles={() => setNav("config")}
+              onGoNodes={() => setNav("nodes")}
+              onGoTraffic={() => setNav("traffic")}
+              onGoSettings={() => setNav("settings")}
+            />
+          )}
+          {nav === "config" && <ConfigPage />}
+          {nav === "nodes" && <NodesPage />}
+          {nav === "traffic" && <TrafficPage />}
+          {nav === "logs" && <LogsPage />}
+          {nav === "settings" && <SettingsPage />}
+        </div>
       </main>
     </div>
   );
