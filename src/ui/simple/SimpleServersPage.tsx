@@ -39,6 +39,35 @@ function readSubsCollapsed(): boolean {
   }
 }
 
+/** Latency colors: green <200 · yellow <300 · red ≥300 (same as Nodes / Connect). */
+function latencyClass(ms?: number | null) {
+  if (ms == null || ms < 0) return "lat-none";
+  if (ms < 200) return "lat-good";
+  if (ms < 300) return "lat-ok";
+  return "lat-slow";
+}
+
+function LatencyLabel({
+  ms,
+  testedAt,
+  testing,
+}: {
+  ms?: number | null;
+  testedAt?: number | null;
+  testing?: boolean;
+}) {
+  if (testing) {
+    return <span className="lat lat-spinner" aria-label="测速中" />;
+  }
+  if (ms != null && ms >= 0) {
+    return <span className={`lat mono ${latencyClass(ms)}`}>{ms}ms</span>;
+  }
+  if (testedAt != null) {
+    return <span className="lat lat-timeout mono">timeout</span>;
+  }
+  return <span className="lat lat-none mono">—</span>;
+}
+
 export function SimpleServersPage() {
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -406,17 +435,11 @@ export function SimpleServersPage() {
                       <span className="pill target-proxy">
                         {n.protocol.toUpperCase()}
                       </span>
-                      <span className="mono lat">
-                        {testingIds.has(n.id) ? (
-                          <span className="lat-spinner" aria-label="测速中" />
-                        ) : n.latency_ms != null && n.latency_ms >= 0 ? (
-                          `${n.latency_ms}ms`
-                        ) : n.latency_at != null ? (
-                          <span className="lat-timeout">timeout</span>
-                        ) : (
-                          "—"
-                        )}
-                      </span>
+                      <LatencyLabel
+                        ms={n.latency_ms}
+                        testedAt={n.latency_at}
+                        testing={testingIds.has(n.id)}
+                      />
                     </div>
                     <div className="simple-node-item-name">{n.name}</div>
                   </button>

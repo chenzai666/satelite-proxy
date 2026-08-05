@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { applyWindowSizeForUiMode } from "./windowLayout";
+import { applyWindowSizeForUiMode, persistUiModePref } from "./windowLayout";
 
 export type UiMode = "pro" | "simple";
 
@@ -25,6 +25,8 @@ function readStored(): UiMode {
 
 interface UiModeContextValue {
   mode: UiMode;
+  /** True after first window-size sync — avoid painting wrong shell. */
+  layoutReady: boolean;
   setMode: (mode: UiMode) => void;
   toggleMode: () => void;
 }
@@ -33,21 +35,36 @@ const UiModeContext = createContext<UiModeContextValue | null>(null);
 
 export function UiModeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<UiMode>(() => readStored());
+  const [layoutReady, setLayoutReady] = useState(false);
+
+  // On mount: persist + size before showing shell (prevents pro flash on wake).
+  useEffect(() => {
+    let cancelled = false;
+    const initial = readStored();
+    setModeState(initial);
+    void (async () => {
+      await persistUiModePref(initial);
+      await applyWindowSizeForUiMode(initial);
+      if (!cancelled) setLayoutReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const setMode = useCallback((next: UiMode) => {
-    setModeState(next);
     try {
       localStorage.setItem(STORAGE_KEY, next);
+      document.documentElement.dataset.uiMode = next;
     } catch {
       /* ignore */
     }
-    void applyWindowSizeForUiMode(next);
-  }, []);
-
-  // Apply size on first paint (e.g. last session was simple).
-  useEffect(() => {
-    void applyWindowSizeForUiMode(mode);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only once on mount for stored mode
+    // Resize first, then swap shell — avoids full-width simple / narrow pro frames.
+    void (async () => {
+      await persistUiModePref(next);
+      await applyWindowSizeForUiMode(next);
+      setModeState(next);
+    })();
   }, []);
 
   const toggleMode = useCallback(() => {
@@ -55,8 +72,8 @@ export function UiModeProvider({ children }: { children: ReactNode }) {
   }, [mode, setMode]);
 
   const value = useMemo(
-    () => ({ mode, setMode, toggleMode }),
-    [mode, setMode, toggleMode],
+    () => ({ mode, layoutReady, setMode, toggleMode }),
+    [mode, layoutReady, setMode, toggleMode],
   );
 
   return (

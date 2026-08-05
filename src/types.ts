@@ -242,6 +242,8 @@ export interface ProxyStatus {
   connections: number;
   /** Smart auto node switch (passive + on-demand probe). */
   smart_switch?: boolean;
+  /** Unix seconds when core last started (uptime = now - this). */
+  core_started_at?: number | null;
 }
 
 export type RuleType =

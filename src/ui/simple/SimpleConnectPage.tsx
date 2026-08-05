@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   getProxyStatus,
   getSettings,
   listAllNodes,
   startProxy,
   stopProxy,
+  testNodesLatency,
 } from "../../api";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import type { ProxyNode, ProxyStatus } from "../../types";
@@ -22,17 +23,41 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/** Format elapsed ms as H:MM:SS or M:SS. */
-function fmtUptime(ms: number) {
-  if (ms < 0 || !Number.isFinite(ms)) return "—";
-  const sec = Math.floor(ms / 1000);
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
+/** Format elapsed seconds as H:MM:SS or M:SS. */
+function fmtUptime(sec: number) {
+  if (sec < 0 || !Number.isFinite(sec)) return "—";
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
   const mm = String(m).padStart(2, "0");
-  const ss = String(s).padStart(2, "0");
+  const ss = String(r).padStart(2, "0");
   if (h > 0) return `${h}:${mm}:${ss}`;
   return `${m}:${ss}`;
+}
+
+/** Latency colors: green <200 · yellow <300 · red ≥300 (same as Nodes page). */
+function latencyClass(ms?: number | null) {
+  if (ms == null || ms < 0) return "lat-none";
+  if (ms < 200) return "lat-good";
+  if (ms < 300) return "lat-ok";
+  return "lat-slow";
+}
+
+function LatencyLabel({
+  ms,
+  testedAt,
+}: {
+  ms?: number | null;
+  testedAt?: number | null;
+}) {
+  if (ms != null && ms >= 0) {
+    return <span className={`lat mono ${latencyClass(ms)}`}>{ms} ms</span>;
+  }
+  if (testedAt != null) {
+    return <span className="lat lat-timeout mono">timeout</span>;
+  }
+  return <span className="lat lat-none mono">未测</span>;
 }
 
 interface Props {
@@ -43,11 +68,10 @@ export function SimpleConnectPage({ onGoServers }: Props) {
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [node, setNode] = useState<ProxyNode | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Client-side clock when we first observed core running this session. */
-  const [runningSince, setRunningSince] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  const wasRunningRef = useRef(false);
+  /** Tick so uptime label updates without waiting for status poll. */
+  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
 
   const reload = useCallback(async () => {
     try {
@@ -59,16 +83,37 @@ export function SimpleConnectPage({ onGoServers }: Props) {
       setProxy(status);
       const id = settings?.current_node_id;
       setNode(id ? nodes.find((n) => n.id === id) ?? null : nodes[0] ?? null);
-
-      const isRun = !!status?.running;
-      if (isRun && !wasRunningRef.current) {
-        setRunningSince(Date.now());
-      } else if (!isRun) {
-        setRunningSince(null);
-      }
-      wasRunningRef.current = isRun;
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
+    }
+  }, []);
+
+  /** Probe current node once; updates local node latency. */
+  const probeCurrent = useCallback(async (nodeId: string) => {
+    setTesting(true);
+    setNode((prev) =>
+      prev && prev.id === nodeId
+        ? { ...prev, latency_ms: undefined, latency_at: undefined }
+        : prev,
+    );
+    try {
+      const batch = await testNodesLatency([nodeId], 3000);
+      const r = batch.results.find((x) => x.id === nodeId);
+      if (r) {
+        setNode((prev) =>
+          prev && prev.id === nodeId
+            ? {
+                ...prev,
+                latency_ms: r.latency_ms ?? null,
+                latency_at: r.tested_at,
+              }
+            : prev,
+        );
+      }
+    } catch {
+      // Keep prior / cleared state; user can re-start or open servers to retest.
+    } finally {
+      setTesting(false);
     }
   }, []);
 
@@ -78,7 +123,7 @@ export function SimpleConnectPage({ onGoServers }: Props) {
 
   useVisibleInterval(() => {
     void reload();
-    setNow(Date.now());
+    setNowSec(Math.floor(Date.now() / 1000));
   }, 1000);
 
   const running = proxy?.running ?? false;
@@ -99,15 +144,15 @@ export function SimpleConnectPage({ onGoServers }: Props) {
     try {
       if (running) {
         setProxy(await stopProxy());
-        setRunningSince(null);
-        wasRunningRef.current = false;
+        await reload();
       } else {
         const enableSys = proxy?.system_proxy ?? true;
         setProxy(await startProxy(enableSys));
-        setRunningSince(Date.now());
-        wasRunningRef.current = true;
+        await reload();
+        // After start, auto-probe current node once.
+        const id = node?.id;
+        if (id) void probeCurrent(id);
       }
-      await reload();
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -127,8 +172,12 @@ export function SimpleConnectPage({ onGoServers }: Props) {
   const down = proxy?.download_speed ?? 0;
   const total = (proxy?.upload_total ?? 0) + (proxy?.download_total ?? 0);
   const port = proxy?.mixed_port ?? 2080;
+  // Backend-owned start time — survives UI destroy / dock reopen.
+  const startedAt = proxy?.core_started_at ?? null;
   const uptimeLabel =
-    running && runningSince != null ? fmtUptime(now - runningSince) : "—";
+    running && startedAt != null && startedAt > 0
+      ? fmtUptime(nowSec - startedAt)
+      : "—";
 
   return (
     <div className="simple-page simple-connect">
@@ -171,15 +220,20 @@ export function SimpleConnectPage({ onGoServers }: Props) {
           <span className="pill target-proxy">
             {node?.protocol?.toUpperCase() ?? "—"}
           </span>
-          {node?.latency_ms != null && node.latency_ms >= 0 ? (
-            <span className="lat lat-good mono">{node.latency_ms}ms</span>
-          ) : (
-            <span className="muted mono">—</span>
-          )}
         </div>
         <div className="simple-node-name">
           {node?.name ?? "未选择节点 · 点此管理"}
         </div>
+        {running && node && (
+          <div className="simple-node-latency-row">
+            <span className="muted">节点延迟</span>
+            {testing ? (
+              <span className="lat lat-none mono">测速中…</span>
+            ) : (
+              <LatencyLabel ms={node.latency_ms} testedAt={node.latency_at} />
+            )}
+          </div>
+        )}
         <div className="simple-card-hint muted">点击切换节点 / 订阅</div>
       </button>
 

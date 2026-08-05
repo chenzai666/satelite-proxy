@@ -41,6 +41,9 @@ pub struct ProxyStatus {
     /// Smart auto node switch enabled.
     #[serde(default)]
     pub smart_switch: bool,
+    /// Unix seconds when the core last entered running state (for uptime UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_started_at: Option<i64>,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -68,6 +71,8 @@ pub struct Runtime {
     last_sample_at: Option<Instant>,
     /// Monotonic journal sequence (opens).
     journal_seq: u64,
+    /// Wall-clock start of current core session (unix secs).
+    core_started_at: Option<i64>,
 }
 
 impl Runtime {
@@ -87,6 +92,7 @@ impl Runtime {
             request_order: VecDeque::new(),
             last_sample_at: None,
             journal_seq: 0,
+            core_started_at: None,
         }
     }
 
@@ -103,6 +109,13 @@ impl Runtime {
 
     pub fn status(&mut self, store: &AppStore) -> ProxyStatus {
         self.core.poll();
+        // Core may have exited outside stop_proxy — keep uptime field consistent.
+        if !self.core.is_running() {
+            self.core_started_at = None;
+        } else if self.core_started_at.is_none() {
+            // Recover if we missed setting it (e.g. process still up after soft restart path).
+            self.core_started_at = Some(now_unix_secs());
+        }
         self.refresh_traffic_if_stale();
         ProxyStatus {
             running: self.core.is_running(),
@@ -140,6 +153,7 @@ impl Runtime {
                 .map(|(_, t)| t.connections)
                 .unwrap_or(0),
             smart_switch: store.settings.smart_switch,
+            core_started_at: self.core_started_at,
         }
     }
 
@@ -410,6 +424,7 @@ impl Runtime {
             ));
         }
         self.api = Some(api);
+        self.core_started_at = Some(now_unix_secs());
 
         // System proxy is independent — optional on start; prefer UI switch after running.
         if enable_system_proxy {
@@ -449,6 +464,7 @@ impl Runtime {
         // System proxy is independent — do not turn it off when stopping core.
         self.core.stop()?;
         self.api = None;
+        self.core_started_at = None;
         self.live_connections.clear();
         // keep request_history across stop so user can review
         Ok(self.status(store))
@@ -505,6 +521,13 @@ fn now_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn now_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
 

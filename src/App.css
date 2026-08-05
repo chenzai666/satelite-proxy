@@ -3769,6 +3769,11 @@ button.active-soft {
   color: var(--accent, #5eb89a);
 }
 
+/* Boot: blank until window size synced (prevents pro→simple flash). */
+.ui-boot-shell {
+  background: var(--bg);
+}
+
 /* —— UI mode ⋯ menu (简洁 / 完整) —— */
 .ui-mode-menu {
   position: relative;
@@ -4148,6 +4153,25 @@ button.simple-node-item:hover:not(:disabled) {
 .simple-node-name {
   font-weight: 600;
   font-size: 0.95rem;
+}
+
+.simple-node-latency-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.15rem;
+  font-size: 0.82rem;
+}
+
+.simple-node-latency-row .lat {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.simple-node-card .simple-node-top .lat {
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .simple-card-hint {

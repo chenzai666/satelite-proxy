@@ -39,7 +39,11 @@ function ProShell() {
 }
 
 function AppShell() {
-  const { mode } = useUiMode();
+  const { mode, layoutReady } = useUiMode();
+  // Hold a blank shell until window size matches mode — no pro→simple flash on wake.
+  if (!layoutReady) {
+    return <div className="app-shell ui-boot-shell" aria-busy="true" />;
+  }
   return mode === "simple" ? <SimpleShell /> : <ProShell />;
 }
 

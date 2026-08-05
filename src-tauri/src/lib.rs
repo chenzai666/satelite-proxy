@@ -182,6 +182,7 @@ pub fn run() {
             commands::list_app_logs,
             commands::clear_app_logs,
             parse_subscription_text,
+            set_ui_mode_pref,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -209,6 +210,18 @@ pub fn run() {
                         }
                     }
                 }
+                // macOS Dock / “reopen”: user clicked the app icon while no visible window
+                // (UI destroyed or hidden to tray). Tray already calls show_main; Dock did not.
+                tauri::RunEvent::Reopen {
+                    has_visible_windows, ..
+                } => {
+                    if !has_visible_windows {
+                        window_ctrl::show_main(app_handle);
+                    } else {
+                        // Still focus main if it exists but is not key window.
+                        window_ctrl::show_main(app_handle);
+                    }
+                }
                 _ => {}
             }
         });
@@ -217,4 +230,15 @@ pub fn run() {
 #[tauri::command]
 fn parse_subscription_text(content: String) -> Result<domain::ParseResult, String> {
     parse_subscription(&content).map_err(|e| e.to_string())
+}
+
+/// Persist UI shell preference (pro | simple) for correct window size on recreate.
+#[tauri::command]
+fn set_ui_mode_pref(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    window_ctrl::write_ui_mode(&dir, &mode);
+    Ok(())
 }
