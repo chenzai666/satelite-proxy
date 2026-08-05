@@ -1,4 +1,4 @@
-//! Parse proxy share URIs: ss://, vmess://, vless://, trojan://, hysteria2://, tuic://
+//! Parse proxy share URIs: ss://, vmess://, vless://, trojan://, hysteria2://, tuic://, anytls://, snell://
 
 use crate::domain::{
     ParseResult, Protocol, ProtocolConfig, ProxyNode, SkippedProxy, SubscriptionFormat, TlsConfig,
@@ -59,6 +59,8 @@ pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
         "hysteria2" | "hy2" => parse_hysteria2_uri(line),
         "tuic" => parse_tuic_uri(line),
         "socks" | "socks5" => parse_socks_uri(line),
+        "anytls" => parse_anytls_uri(line),
+        "snell" => parse_snell_uri(line),
         _ => Err(format!("unsupported uri scheme: {scheme}")),
     }
 }
@@ -457,6 +459,144 @@ fn parse_trojan_uri(line: &str) -> Result<ProxyNode, String> {
     })
 }
 
+/// snell://psk@host:port?version=4&obfs=http&obfs-host=bing.com#name
+fn parse_snell_uri(line: &str) -> Result<ProxyNode, String> {
+    let url = Url::parse(line).map_err(|e| format!("snell url: {e}"))?;
+    let psk = percent_decode(url.username());
+    if psk.is_empty() {
+        return Err("snell: missing psk".into());
+    }
+    let server = url
+        .host_str()
+        .ok_or_else(|| "snell: missing host".to_string())?
+        .to_string();
+    let port = url
+        .port()
+        .ok_or_else(|| "snell: missing port".to_string())?;
+    let name = fragment_name(&url).unwrap_or_else(|| format!("snell-{server}-{port}"));
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+    let version = query
+        .get("version")
+        .and_then(|v| v.parse::<u8>().ok())
+        .unwrap_or(4);
+
+    let userkey = query
+        .get("userkey")
+        .or_else(|| query.get("user-key"))
+        .cloned()
+        .filter(|s| !s.is_empty());
+
+    let reuse = query.get("reuse").map(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let obfs_mode = query
+        .get("obfs")
+        .or_else(|| query.get("obfs-mode"))
+        .or_else(|| query.get("obfs_mode"))
+        .cloned();
+    let obfs_host = query
+        .get("obfs-host")
+        .or_else(|| query.get("obfs_host"))
+        .or_else(|| query.get("host"))
+        .cloned();
+
+    let mode = query.get("mode").cloned().filter(|m| {
+        matches!(
+            m.to_ascii_lowercase().as_str(),
+            "default" | "unshaped" | "unsafe-raw" | "unsafe_raw"
+        )
+    });
+
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Snell,
+        server,
+        port,
+        tls: None,
+        transport: None,
+        udp: None,
+        config: ProtocolConfig::Snell {
+            psk,
+            version,
+            userkey,
+            reuse,
+            obfs_mode,
+            obfs_host,
+            mode,
+        },
+        source: Some("snell".into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+/// anytls://password@host:port?insecure=1&sni=example.com#name
+fn parse_anytls_uri(line: &str) -> Result<ProxyNode, String> {
+    let url = Url::parse(line).map_err(|e| format!("anytls url: {e}"))?;
+    let password = percent_decode(url.username());
+    if password.is_empty() {
+        return Err("anytls: missing password".into());
+    }
+    let server = url
+        .host_str()
+        .ok_or_else(|| "anytls: missing host".to_string())?
+        .to_string();
+    let port = url
+        .port()
+        .ok_or_else(|| "anytls: missing port".to_string())?;
+    let name = fragment_name(&url).unwrap_or_else(|| format!("anytls-{server}-{port}"));
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+    let insecure = query
+        .get("insecure")
+        .or_else(|| query.get("allowInsecure"))
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let tls = Some(TlsConfig {
+        enabled: true,
+        server_name: query
+            .get("sni")
+            .cloned()
+            .or_else(|| query.get("peer").cloned())
+            .or_else(|| query.get("servername").cloned()),
+        insecure,
+        alpn: query.get("alpn").map(|s| {
+            s.split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        }),
+        utls_fingerprint: query
+            .get("fp")
+            .cloned()
+            .and_then(|s| normalize_utls_fp(&s)),
+        reality_public_key: None,
+        reality_short_id: None,
+    });
+
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::AnyTls,
+        server,
+        port,
+        tls,
+        transport: None,
+        udp: None,
+        config: ProtocolConfig::AnyTls { password },
+        source: Some("anytls".into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
 fn parse_hysteria2_uri(line: &str) -> Result<ProxyNode, String> {
     // normalize hy2:// -> hysteria2:// for Url parser
     let normalized = if line.to_ascii_lowercase().starts_with("hy2://") {
@@ -744,5 +884,53 @@ mod tests {
         let node = parse_uri_line(uri).unwrap();
         assert_eq!(node.protocol, Protocol::Hysteria2);
         assert_eq!(node.name, "HY2");
+    }
+
+    #[test]
+    fn parse_anytls() {
+        let uri = "anytls://E98E62DE-B54D-04BA-4ADE-913F610F8EE6@sdfaxxfw.s4b4.com:40001?insecure=1&sni=ac9b90d0.sdsarsdg.xin#CN|香港|负载均衡";
+        let node = parse_uri_line(uri).unwrap();
+        assert_eq!(node.protocol, Protocol::AnyTls);
+        assert_eq!(node.server, "sdfaxxfw.s4b4.com");
+        assert_eq!(node.port, 40001);
+        assert_eq!(node.name, "CN|香港|负载均衡");
+        let tls = node.tls.as_ref().unwrap();
+        assert!(tls.enabled);
+        assert_eq!(tls.insecure, Some(true));
+        assert_eq!(
+            tls.server_name.as_deref(),
+            Some("ac9b90d0.sdsarsdg.xin")
+        );
+        match node.config {
+            ProtocolConfig::AnyTls { password } => {
+                assert_eq!(password, "E98E62DE-B54D-04BA-4ADE-913F610F8EE6");
+            }
+            _ => panic!("expected AnyTls config"),
+        }
+    }
+
+    #[test]
+    fn parse_snell() {
+        let uri = "snell://mypsk@sn.example.com:44046?version=4&obfs=http&obfs-host=bing.com#SN-HK";
+        let node = parse_uri_line(uri).unwrap();
+        assert_eq!(node.protocol, Protocol::Snell);
+        assert_eq!(node.server, "sn.example.com");
+        assert_eq!(node.port, 44046);
+        assert_eq!(node.name, "SN-HK");
+        match node.config {
+            ProtocolConfig::Snell {
+                psk,
+                version,
+                obfs_mode,
+                obfs_host,
+                ..
+            } => {
+                assert_eq!(psk, "mypsk");
+                assert_eq!(version, 4);
+                assert_eq!(obfs_mode.as_deref(), Some("http"));
+                assert_eq!(obfs_host.as_deref(), Some("bing.com"));
+            }
+            _ => panic!("expected Snell config"),
+        }
     }
 }

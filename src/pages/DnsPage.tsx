@@ -1,4 +1,9 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { getDnsSettings, testDnsLookup, updateDnsSettings } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
@@ -96,6 +101,8 @@ export function DnsPage({ embedded = false }: Props) {
   const [newServerName, setNewServerName] = useState("");
   const [newServerAddr, setNewServerAddr] = useState("");
   const [newServerRole, setNewServerRole] = useState<DnsServerRole>("custom");
+  /** null = add mode; id = editing that server in the form below. */
+  const [editServerId, setEditServerId] = useState<string | null>(null);
 
   const [newRulePayload, setNewRulePayload] = useState("");
   const [newRuleMatcher, setNewRuleMatcher] =
@@ -103,6 +110,10 @@ export function DnsPage({ embedded = false }: Props) {
   const [newRuleAction, setNewRuleAction] = useState<
     "system" | "domestic" | "remote"
   >("system");
+  const [editRuleId, setEditRuleId] = useState<string | null>(null);
+
+  /** ⋮ menu open for server or rule id (prefixed to avoid clash). */
+  const [menuId, setMenuId] = useState<string | null>(null);
 
   const [bypassText, setBypassText] = useState("");
 
@@ -120,6 +131,24 @@ export function DnsPage({ embedded = false }: Props) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!menuId) return;
+    function onDocPointerDown(e: PointerEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("[data-dns-menu]")) return;
+      setMenuId(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuId(null);
+    }
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointerDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuId]);
 
   async function save(next: DnsSettings) {
     setBusy(true);
@@ -174,15 +203,50 @@ export function DnsPage({ embedded = false }: Props) {
       setError("系统 DNS 不可删除");
       return;
     }
+    if (editServerId === id) resetServerForm();
     void save({ ...dns, servers: dns.servers.filter((s) => s.id !== id) });
   }
 
-  function addServer() {
+  function resetServerForm() {
+    setEditServerId(null);
+    setNewServerName("");
+    setNewServerAddr("");
+    setNewServerRole("custom");
+  }
+
+  function openEditServer(s: DnsServer) {
+    setMenuId(null);
+    setEditServerId(s.id);
+    setNewServerName(s.name);
+    setNewServerAddr(s.address);
+    setNewServerRole(s.role);
+  }
+
+  function saveServerForm() {
     if (!dns) return;
     const name = newServerName.trim() || "Custom";
     const address = newServerAddr.trim();
     if (!address) {
       setError("请填写 DNS 地址");
+      return;
+    }
+    if (editServerId) {
+      const prev = dns.servers.find((s) => s.id === editServerId);
+      if (!prev) {
+        resetServerForm();
+        return;
+      }
+      // System DNS: allow rename/address but keep role local.
+      const role = prev.role === "local" ? "local" : newServerRole;
+      void save({
+        ...dns,
+        servers: dns.servers.map((s) =>
+          s.id === editServerId
+            ? { ...s, name, address, role }
+            : s,
+        ),
+      });
+      resetServerForm();
       return;
     }
     const s: DnsServer = {
@@ -193,8 +257,7 @@ export function DnsPage({ embedded = false }: Props) {
       enabled: true,
     };
     void save({ ...dns, servers: [...dns.servers, s] });
-    setNewServerName("");
-    setNewServerAddr("");
+    resetServerForm();
   }
 
   function toggleRule(id: string) {
@@ -209,10 +272,29 @@ export function DnsPage({ embedded = false }: Props) {
 
   function removeRule(id: string) {
     if (!dns) return;
+    if (editRuleId === id) resetRuleForm();
     void save({ ...dns, rules: dns.rules.filter((r) => r.id !== id) });
   }
 
-  function addRule() {
+  function resetRuleForm() {
+    setEditRuleId(null);
+    setNewRulePayload("");
+    setNewRuleMatcher("domain_suffix");
+    setNewRuleAction("system");
+  }
+
+  function openEditRule(r: DnsRule) {
+    setMenuId(null);
+    setEditRuleId(r.id);
+    setNewRulePayload(r.payload);
+    setNewRuleMatcher(r.matcher);
+    const k = r.action.kind;
+    setNewRuleAction(
+      k === "domestic" || k === "remote" || k === "system" ? k : "system",
+    );
+  }
+
+  function saveRuleForm() {
     if (!dns) return;
     const payload = newRulePayload
       .trim()
@@ -228,6 +310,18 @@ export function DnsPage({ embedded = false }: Props) {
         : newRuleAction === "remote"
           ? { kind: "remote" }
           : { kind: "system" };
+    if (editRuleId) {
+      void save({
+        ...dns,
+        rules: dns.rules.map((r) =>
+          r.id === editRuleId
+            ? { ...r, matcher: newRuleMatcher, payload, action }
+            : r,
+        ),
+      });
+      resetRuleForm();
+      return;
+    }
     const r: DnsRule = {
       id: newId("rule"),
       enabled: true,
@@ -236,7 +330,7 @@ export function DnsPage({ embedded = false }: Props) {
       action,
     };
     void save({ ...dns, rules: [...dns.rules, r] });
-    setNewRulePayload("");
+    resetRuleForm();
   }
 
   function saveFakeIp() {
@@ -425,45 +519,85 @@ export function DnsPage({ embedded = false }: Props) {
 
           <div className="dns-panel-body dns-panel-body--flush">
             <ul className="dns-list">
-              {dns.servers.map((s) => (
-                <li
-                  key={s.id}
-                  className={`dns-list-item${s.enabled ? "" : " off"}`}
-                >
-                  <button
-                    type="button"
-                    role="checkbox"
-                    aria-checked={s.enabled}
-                    className={`check ${s.enabled ? "on" : ""}`}
-                    disabled={busy}
-                    onClick={() => toggleServer(s.id)}
-                    title="启用/禁用"
-                  />
-                  <div className="dns-list-body">
-                    <div className="dns-list-title">
-                      <span className="dns-list-name">{s.name}</span>
-                      <span className={`pill role-${s.role}`}>
-                        {roleLabel(s.role)}
-                      </span>
+              {dns.servers.map((s) => {
+                const mid = `srv:${s.id}`;
+                return (
+                  <li
+                    key={s.id}
+                    className={`dns-list-item${s.enabled ? "" : " off"}${editServerId === s.id ? " editing" : ""}`}
+                  >
+                    <div className="dns-list-body">
+                      <div className="dns-list-title">
+                        <span className="dns-list-name">{s.name}</span>
+                        <span className={`pill role-${s.role}`}>
+                          {roleLabel(s.role)}
+                        </span>
+                      </div>
+                      <div className="dns-list-addr mono">{s.address}</div>
                     </div>
-                    <div className="dns-list-addr mono">{s.address}</div>
-                  </div>
-                  {s.role !== "local" && (
-                    <button
-                      type="button"
-                      className="ghost danger small"
-                      disabled={busy}
-                      onClick={() => removeServer(s.id)}
-                    >
-                      删除
-                    </button>
-                  )}
-                </li>
-              ))}
+                    <div className="dns-list-actions">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={s.enabled}
+                        className={`switch small ${s.enabled ? "on" : ""}`}
+                        disabled={busy}
+                        title="启用/禁用"
+                        onClick={() => toggleServer(s.id)}
+                      >
+                        <span className="switch-thumb" />
+                      </button>
+                      <div className="rule-menu" data-dns-menu>
+                        <button
+                          type="button"
+                          className="rule-menu-trigger"
+                          aria-label="更多操作"
+                          aria-haspopup="menu"
+                          aria-expanded={menuId === mid}
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuId((id) => (id === mid ? null : mid));
+                          }}
+                        >
+                          ⋮
+                        </button>
+                        {menuId === mid && (
+                          <div className="rule-menu-pop" role="menu">
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="rule-menu-item"
+                              onClick={() => openEditServer(s)}
+                            >
+                              编辑
+                            </button>
+                            {s.role !== "local" && (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="rule-menu-item danger"
+                                onClick={() => {
+                                  setMenuId(null);
+                                  removeServer(s.id);
+                                }}
+                              >
+                                删除
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
 
             <div className="dns-add">
-              <div className="dns-add-title">添加服务器</div>
+              <div className="dns-add-title">
+                {editServerId ? "编辑服务器" : "添加服务器"}
+              </div>
               <div className="dns-add-grid">
                 <input
                   placeholder="名称（可选）"
@@ -480,6 +614,11 @@ export function DnsPage({ embedded = false }: Props) {
                   value={newServerRole}
                   onChange={(v) => setNewServerRole(v as DnsServerRole)}
                   aria-label="服务器角色"
+                  disabled={
+                    !!editServerId &&
+                    dns.servers.find((x) => x.id === editServerId)?.role ===
+                      "local"
+                  }
                   options={[
                     { value: "domestic", label: "国内" },
                     { value: "remote", label: "远程" },
@@ -487,14 +626,26 @@ export function DnsPage({ embedded = false }: Props) {
                     { value: "local", label: "系统" },
                   ]}
                 />
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={addServer}
-                >
-                  添加
-                </button>
+                <div className="dns-add-actions">
+                  {editServerId && (
+                    <button
+                      type="button"
+                      className="ghost small"
+                      disabled={busy}
+                      onClick={resetServerForm}
+                    >
+                      取消
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={saveServerForm}
+                  >
+                    {editServerId ? "保存" : "添加"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -512,45 +663,86 @@ export function DnsPage({ embedded = false }: Props) {
               <div className="dns-empty">暂无规则</div>
             ) : (
               <ul className="dns-list">
-                {dns.rules.map((r) => (
-                  <li
-                    key={r.id}
-                    className={`dns-list-item${r.enabled ? "" : " off"}`}
-                  >
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={r.enabled}
-                      className={`check ${r.enabled ? "on" : ""}`}
-                      disabled={busy}
-                      onClick={() => toggleRule(r.id)}
-                    />
-                    <div className="dns-list-body">
-                      <div className="dns-list-title">
-                        <span className="pill matcher-pill">
-                          {matcherLabel(r.matcher)}
-                        </span>
-                        <span className="dns-list-name">{r.payload}</span>
-                      </div>
-                      <div className="dns-list-addr muted">
-                        → {actionLabel(r.action)}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="ghost danger small"
-                      disabled={busy}
-                      onClick={() => removeRule(r.id)}
+                {dns.rules.map((r) => {
+                  const mid = `rule:${r.id}`;
+                  return (
+                    <li
+                      key={r.id}
+                      className={`dns-list-item${r.enabled ? "" : " off"}${editRuleId === r.id ? " editing" : ""}`}
                     >
-                      删除
-                    </button>
-                  </li>
-                ))}
+                      <div className="dns-list-body">
+                        <div className="dns-list-title">
+                          <span className="pill matcher-pill">
+                            {matcherLabel(r.matcher)}
+                          </span>
+                          <span className="dns-list-name">{r.payload}</span>
+                        </div>
+                        <div className="dns-list-addr muted">
+                          → {actionLabel(r.action)}
+                        </div>
+                      </div>
+                      <div className="dns-list-actions">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={r.enabled}
+                          className={`switch small ${r.enabled ? "on" : ""}`}
+                          disabled={busy}
+                          title="启用/禁用"
+                          onClick={() => toggleRule(r.id)}
+                        >
+                          <span className="switch-thumb" />
+                        </button>
+                        <div className="rule-menu" data-dns-menu>
+                          <button
+                            type="button"
+                            className="rule-menu-trigger"
+                            aria-label="更多操作"
+                            aria-haspopup="menu"
+                            aria-expanded={menuId === mid}
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuId((id) => (id === mid ? null : mid));
+                            }}
+                          >
+                            ⋮
+                          </button>
+                          {menuId === mid && (
+                            <div className="rule-menu-pop" role="menu">
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="rule-menu-item"
+                                onClick={() => openEditRule(r)}
+                              >
+                                编辑
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="rule-menu-item danger"
+                                onClick={() => {
+                                  setMenuId(null);
+                                  removeRule(r.id);
+                                }}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
 
             <div className="dns-add">
-              <div className="dns-add-title">添加规则</div>
+              <div className="dns-add-title">
+                {editRuleId ? "编辑规则" : "添加规则"}
+              </div>
               <div className="dns-add-grid">
                 <SolidSelect
                   value={newRuleMatcher}
@@ -580,14 +772,26 @@ export function DnsPage({ embedded = false }: Props) {
                     { value: "remote", label: "远程 DNS" },
                   ]}
                 />
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={addRule}
-                >
-                  添加
-                </button>
+                <div className="dns-add-actions">
+                  {editRuleId && (
+                    <button
+                      type="button"
+                      className="ghost small"
+                      disabled={busy}
+                      onClick={resetRuleForm}
+                    >
+                      取消
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={saveRuleForm}
+                  >
+                    {editRuleId ? "保存" : "添加"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

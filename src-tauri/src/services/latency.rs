@@ -1,4 +1,7 @@
-//! Latency probe: clash_api delay when core running, else TCP connect.
+//! Latency probe helpers.
+//!
+//! - **UI 测速** (`test_nodes_latency`): always direct TCP to `server:port` (no proxy).
+//! - **Smart switch**: may pass clash API for through-outbound delay when core is up.
 //!
 //! Clash path uses **unified delay** (like mihomo / FlClash): probe twice and
 //! report the second RTT so handshake / cold-connect bias is reduced.

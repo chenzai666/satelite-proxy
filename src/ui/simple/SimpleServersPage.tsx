@@ -16,6 +16,7 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../../components/AddConfigModal";
+import { useImportIntent } from "../../ImportIntentContext";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
@@ -69,6 +70,7 @@ function LatencyLabel({
 }
 
 export function SimpleServersPage() {
+  const { prefill, token, consume, dismiss } = useImportIntent();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -82,6 +84,9 @@ export function SimpleServersPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalBusy, setModalBusy] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [modalInitial, setModalInitial] = useState<ConfigFormValues | null>(
+    null,
+  );
 
   const reload = useCallback(async () => {
     try {
@@ -101,6 +106,21 @@ export function SimpleServersPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // One-click subscribe deep link → open add modal prefilled.
+  useEffect(() => {
+    if (!token || !prefill) return;
+    setModalError(null);
+    setModalInitial({
+      name: prefill.name ?? "",
+      kind: "url",
+      url: prefill.url,
+      autoUpdate: true,
+      autoUpdateIntervalMin: 1440,
+    });
+    setModalOpen(true);
+    consume();
+  }, [token, prefill, consume]);
 
   useEffect(() => {
     try {
@@ -274,6 +294,8 @@ export function SimpleServersPage() {
         );
       }
       setModalOpen(false);
+      setModalInitial(null);
+      dismiss();
       await reload();
     } catch (e) {
       setModalError(typeof e === "string" ? e : String(e));
@@ -303,6 +325,7 @@ export function SimpleServersPage() {
             className="btn-pill"
             onClick={() => {
               setModalError(null);
+              setModalInitial(null);
               setModalOpen(true);
             }}
           >
@@ -454,7 +477,14 @@ export function SimpleServersPage() {
         open={modalOpen}
         busy={modalBusy}
         error={modalError}
-        onClose={() => !modalBusy && setModalOpen(false)}
+        isEdit={false}
+        initial={modalInitial}
+        onClose={() => {
+          if (modalBusy) return;
+          setModalOpen(false);
+          setModalInitial(null);
+          dismiss();
+        }}
         onSubmit={(p) => void onAdd(p)}
       />
     </div>

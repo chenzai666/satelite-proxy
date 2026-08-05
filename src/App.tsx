@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { TopNav } from "./components/TopNav";
+import { ImportIntentProvider, useImportIntent } from "./ImportIntentContext";
 import { LocaleProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
 import { ConfigPage } from "./pages/ConfigPage";
@@ -15,6 +16,12 @@ import "./App.css";
 
 function ProShell() {
   const [nav, setNav] = useState<NavKey>("dashboard");
+  const { token, prefill } = useImportIntent();
+
+  // One-click subscribe → jump to profiles so ConfigPage can open the add form.
+  useEffect(() => {
+    if (token && prefill) setNav("config");
+  }, [token, prefill]);
 
   return (
     <div className="app-shell">
@@ -52,7 +59,9 @@ function App() {
     <ThemeProvider>
       <LocaleProvider>
         <UiModeProvider>
-          <AppShell />
+          <ImportIntentProvider>
+            <AppShell />
+          </ImportIntentProvider>
         </UiModeProvider>
       </LocaleProvider>
     </ThemeProvider>

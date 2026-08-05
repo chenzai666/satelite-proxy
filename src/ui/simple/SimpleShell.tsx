@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useImportIntent } from "../../ImportIntentContext";
 import { UiModeMenu } from "../UiModeMenu";
 import { SimpleConnectPage } from "./SimpleConnectPage";
 import { SimpleServersPage } from "./SimpleServersPage";
@@ -16,6 +17,12 @@ const TABS: { key: SimpleNavKey; label: string }[] = [
 
 export function SimpleShell() {
   const [nav, setNav] = useState<SimpleNavKey>("connect");
+  const { token, prefill } = useImportIntent();
+
+  // One-click subscribe → open 节点 page (add subscription modal).
+  useEffect(() => {
+    if (token && prefill) setNav("servers");
+  }, [token, prefill]);
 
   return (
     <div className="app-shell simple-shell">

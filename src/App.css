@@ -2251,6 +2251,35 @@ code {
   flex-direction: column;
 }
 
+/* SolidSelect / ⋮ menus are position:absolute — escape card clip when open */
+.dns-panel:has(.solid-select.open),
+.dns-panel:has(.rule-menu-pop) {
+  overflow: visible;
+  z-index: 30;
+  position: relative;
+}
+
+.dns-panel-body:has(.solid-select.open),
+.dns-panel-body:has(.rule-menu-pop),
+.dns-add:has(.solid-select.open),
+.dns-add-grid:has(.solid-select.open) {
+  overflow: visible;
+  position: relative;
+  z-index: 5;
+}
+
+.dns-add-grid .solid-select.open {
+  z-index: 40;
+}
+
+/* Neighbor grid cells must not paint over an open menu */
+.dns-stack.dns-grid > .dns-panel:has(.solid-select.open),
+.dns-stack.dns-grid > .dns-panel:has(.rule-menu-pop),
+.dns-stack.dns-grid > [class*="dns-cell"]:has(.solid-select.open),
+.dns-stack.dns-grid > [class*="dns-cell"]:has(.rule-menu-pop) {
+  z-index: 30;
+}
+
 .dns-panel-head {
   padding: 0.7rem 0.95rem 0.6rem;
   border-bottom: 1px solid var(--border);
@@ -2393,6 +2422,9 @@ code {
   padding: 0.55rem 0.85rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
   transition: background 0.12s;
+  /* ⋮ menu opens upward and must not be clipped by the list */
+  overflow: visible;
+  position: relative;
 }
 
 .dns-list-item:hover {
@@ -2403,6 +2435,11 @@ code {
   opacity: 0.55;
 }
 
+.dns-list-item.editing {
+  background: color-mix(in srgb, var(--primary-muted) 55%, transparent);
+  box-shadow: inset 2px 0 0 var(--primary);
+}
+
 .dns-list-item:last-of-type {
   border-bottom: none;
 }
@@ -2410,6 +2447,25 @@ code {
 .dns-list-body {
   flex: 1;
   min-width: 0;
+}
+
+.dns-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.dns-list {
+  overflow: visible;
+}
+
+.dns-add-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  justify-content: flex-end;
 }
 
 .dns-list-title {
@@ -3554,6 +3610,10 @@ select:not([size]),
   min-width: 0;
 }
 
+.solid-select.open {
+  z-index: 40;
+}
+
 .solid-select-trigger {
   appearance: none !important;
   width: 100%;
@@ -3620,11 +3680,12 @@ select:not([size]),
   left: 0;
   right: 0;
   top: calc(100% + 4px);
-  z-index: 80;
+  z-index: 100;
   max-height: 14rem;
   overflow-x: hidden;
   overflow-y: auto;
   padding: 0.25rem;
+  /* Opaque so content under the menu never shows through */
   background: var(--panel-solid);
   border: 1px solid var(--border);
   border-radius: 8px;

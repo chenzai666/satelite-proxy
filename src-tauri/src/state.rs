@@ -18,6 +18,9 @@ pub struct AppState {
     /// Only true when user explicitly quits (tray Quit / close without tray).
     /// Destroying the last WebView would otherwise kill tray + sing-box.
     pub exit_allowed: AtomicBool,
+    /// One-click subscribe deep links waiting for the add-subscription UI.
+    /// Cleared when the user closes the modal (not sticky across intentional dismiss).
+    pending_import_urls: Mutex<Option<Vec<String>>>,
 }
 
 /// Recover from a poisoned mutex so one panic cannot brick the whole app.
@@ -46,7 +49,23 @@ impl AppState {
             runtime: Mutex::new(Runtime::new()),
             ui_visible: AtomicBool::new(true),
             exit_allowed: AtomicBool::new(false),
+            pending_import_urls: Mutex::new(None),
         })
+    }
+
+    /// Queue deep-link URLs for the frontend add-subscription form.
+    pub fn set_pending_import_urls(&self, urls: Vec<String>) {
+        *recover_lock(&self.pending_import_urls, "pending_import") = Some(urls);
+    }
+
+    /// Read pending import URLs without clearing (UI may remount before user closes).
+    pub fn peek_pending_import_urls(&self) -> Option<Vec<String>> {
+        recover_lock(&self.pending_import_urls, "pending_import").clone()
+    }
+
+    /// Drop pending import after user closes / finishes the add form.
+    pub fn clear_pending_import_urls(&self) {
+        *recover_lock(&self.pending_import_urls, "pending_import") = None;
     }
 
     /// Lock order rule: **never** hold `store` while acquiring `runtime`.

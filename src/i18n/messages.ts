@@ -159,7 +159,7 @@ const en = {
   "settings.tunStack": "TUN stack",
   "settings.tunStackHint": "TUN toggle lives on Dashboard · now",
   "settings.networkSaveNote":
-    "Port / stack changes apply after Save and core restart.",
+    "Port changes restart the core automatically when it is running. TUN stack needs a restart to apply.",
   "settings.coreStatus": "Status",
   "settings.coreBundled": "bundled",
   "settings.coreInstalled": "installed",
@@ -531,7 +531,8 @@ const zh: Record<MessageKey, string> = {
   "settings.probeUrl": "延迟测试 URL",
   "settings.tunStack": "TUN 协议栈",
   "settings.tunStackHint": "TUN 开关在概览页 · 当前",
-  "settings.networkSaveNote": "端口 / 协议栈需保存并重启内核后生效。",
+  "settings.networkSaveNote":
+    "修改端口并保存后，若内核正在运行会自动重启；协议栈变更需自行重启内核后生效。",
   "settings.coreStatus": "状态",
   "settings.coreBundled": "内置",
   "settings.coreInstalled": "已安装",

@@ -12,6 +12,10 @@ pub enum Protocol {
     Hysteria2,
     Tuic,
     Socks5,
+    /// AnyTLS (sing-box ≥ 1.12).
+    AnyTls,
+    /// Snell (sing-box ≥ 1.14, versions 4 / 6).
+    Snell,
 }
 
 impl Protocol {
@@ -24,6 +28,8 @@ impl Protocol {
             Self::Hysteria2 => "hysteria2",
             Self::Tuic => "tuic",
             Self::Socks5 => "socks5",
+            Self::AnyTls => "anytls",
+            Self::Snell => "snell",
         }
     }
 
@@ -36,6 +42,8 @@ impl Protocol {
             "hysteria2" | "hy2" => Some(Self::Hysteria2),
             "tuic" => Some(Self::Tuic),
             "socks5" | "socks" => Some(Self::Socks5),
+            "anytls" => Some(Self::AnyTls),
+            "snell" => Some(Self::Snell),
             _ => None,
         }
     }
@@ -143,6 +151,28 @@ pub enum ProtocolConfig {
         username: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         password: Option<String>,
+    },
+    /// AnyTLS password (often a UUID in share links).
+    AnyTls {
+        password: String,
+    },
+    /// Snell PSK + version / obfs (Clash) or mode (v6).
+    Snell {
+        psk: String,
+        /// Protocol version; sing-box accepts 4 or 6 (v5 ≈ v4 wire).
+        version: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        userkey: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reuse: Option<bool>,
+        /// v4 HTTP obfs: `http` / `none` / `tls` (mapped carefully for sing-box).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        obfs_mode: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        obfs_host: Option<String>,
+        /// v6 traffic shaping: default / unshaped / unsafe-raw.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
     },
 }
 

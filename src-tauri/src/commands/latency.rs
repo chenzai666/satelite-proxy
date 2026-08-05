@@ -13,14 +13,18 @@ pub struct LatencyBatchResult {
     pub method: String,
 }
 
-/// Test latency: clash_api delay when core running, else TCP connect.
+/// Test latency via **direct TCP connect** to each node (never via proxy / clash delay API).
+///
+/// Previously used clash_api `/proxies/{tag}/delay` when the core was running, which measures
+/// through the outbound and is skewed by system proxy / current route. UI “测速” should
+/// report raw reachability to the node address instead.
 #[tauri::command]
 pub async fn test_nodes_latency(
     state: State<'_, AppState>,
     ids: Option<Vec<String>>,
     timeout_ms: Option<u64>,
 ) -> Result<LatencyBatchResult, String> {
-    let (nodes, probe_url) = state
+    let nodes = state
         .with_store(|store| {
             let all = store.enabled_nodes();
             let filtered = if let Some(ids) = &ids {
@@ -29,7 +33,7 @@ pub async fn test_nodes_latency(
             } else {
                 all
             };
-            Ok((filtered, store.settings.probe_url.clone()))
+            Ok(filtered)
         })
         .map_err(|e| e.to_string())?;
 
@@ -43,19 +47,8 @@ pub async fn test_nodes_latency(
         });
     }
 
-    let clash = {
-        let r = state.lock_runtime();
-        r.clash_api_clone()
-    };
-
-    // clash_api path uses unified delay (two probes, report second).
-    let method = if clash.is_some() {
-        "clash_api_unified"
-    } else {
-        "tcp"
-    };
-
-    let results = probe_nodes(&nodes, timeout_ms, Some(30), clash, probe_url)
+    // Always TCP — do not pass clash API even when core is running.
+    let results = probe_nodes(&nodes, timeout_ms, Some(30), None, String::new())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -78,6 +71,6 @@ pub async fn test_nodes_latency(
         ok,
         failed,
         results,
-        method: method.into(),
+        method: "tcp".into(),
     })
 }
