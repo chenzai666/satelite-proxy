@@ -271,6 +271,11 @@ impl CoreManager {
             return self.start_elevated_macos(binary, config, &log_path, mixed_port);
         }
 
+        #[cfg(target_os = "windows")]
+        if elevated {
+            return self.start_elevated_windows(binary, config, &log_path, mixed_port);
+        }
+
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -373,6 +378,43 @@ impl CoreManager {
                 self.last_error = Some(msg.clone());
                 AppError::Core(msg)
             })?;
+
+        self.elevated_pid = Some(pid);
+        self.wait_until_ready(mixed_port, true)
+    }
+
+    /// Start sing-box elevated via UAC (Windows). Needed for TUN to create the
+    /// virtual adapter. stdout/stderr are appended to `log_path` directly.
+    #[cfg(target_os = "windows")]
+    fn start_elevated_windows(
+        &mut self,
+        binary: &Path,
+        config: &Path,
+        log_path: &Path,
+        mixed_port: u16,
+    ) -> AppResult<()> {
+        // sing-box redirects its own stdout/stderr when given 2>&1 >>file in the
+        // args, so we pass those flags. Quote paths defensively (spaces).
+        let bin_s = binary.display().to_string();
+        let cfg_s = config.display().to_string();
+        let log_s = log_path.display().to_string();
+        let args = format!(
+            "run -c \"{cfg_s}\" >>\"{log_s}\" 2>&1"
+        );
+
+        let _elevated = match super::elevate::run_elevated(Path::new(&bin_s), &args, None) {
+            Ok(c) => c,
+            Err(e) => {
+                self.state = CoreState::Error;
+                self.last_error = Some(e.to_string());
+                return Err(e);
+            }
+        };
+        // run_elevated returns an ElevatedChild that closes the handle on drop;
+        // we only need the PID — we poll via OpenProcess later (elevate::pid_alive)
+        // and kill via taskkill. Dropping here is fine: closing the handle does
+        // NOT terminate the process.
+        let pid = _elevated.pid;
 
         self.elevated_pid = Some(pid);
         self.wait_until_ready(mixed_port, true)
@@ -510,13 +552,21 @@ fn pid_alive(pid: u32) -> bool {
             .map(|s| s.success())
             .unwrap_or(false)
     }
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
+    {
+        super::elevate::pid_alive(pid)
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = pid;
         false
     }
 }
 
+/// Terminate an elevated sing-box process. macOS re-elevates via osascript to
+/// keep root privileges for the kill; Windows uses taskkill (which itself runs
+/// with the current user's rights — sufficient because the elevated child was
+/// launched by this user and is killable by it despite running high).
 fn elevated_kill_macos(pid: u32) {
     #[cfg(target_os = "macos")]
     {
@@ -527,7 +577,15 @@ fn elevated_kill_macos(pid: u32) {
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // The elevated sing-box was launched by us via ShellExecuteEx, so we hold
+        // PROCESS_TERMINATE access on it despite it running at a higher integrity
+        // level. Use the direct Win32 call instead of taskkill — no UAC prompt,
+        // and it actually works (plain taskkill fails on elevated children).
+        let _ = super::elevate::terminate_pid(pid);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
@@ -545,7 +603,13 @@ fn elevated_kill_macos_force(pid: u32) {
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Same rationale as elevated_kill_macos: direct TerminateProcess via the
+        // handle we're entitled to as the launching parent.
+        let _ = super::elevate::terminate_pid(pid);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = Command::new("kill")
             .args(["-KILL", &pid.to_string()])
@@ -558,13 +622,17 @@ fn map_tun_permission_hint(err: &str) -> String {
     if lower.contains("operation not permitted")
         || lower.contains("configure tun")
         || lower.contains("permission denied")
+        || lower.contains("access is denied")
     {
-        format!(
-            "{err}\n\n\
-             TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
+        let platform_hint = if cfg!(target_os = "windows") {
+            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行 sing-box。\n\
+             请在 UAC 弹窗中点「是」；若点了「否」，请关闭 TUN 开关后重试，或以管理员身份运行本程序。"
+        } else {
+            "TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
              macOS：开启 TUN 时应用会弹出管理员密码框并以 root 运行内核。\n\
              请确认已输入密码且未点「取消」；开发模式也可用：sudo \"path/to/sing-box\" run -c config.json"
-        )
+        };
+        format!("{err}\n\n{platform_hint}")
     } else {
         err.to_string()
     }

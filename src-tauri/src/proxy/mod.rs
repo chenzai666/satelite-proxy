@@ -1,7 +1,9 @@
 //! System HTTP(S) proxy control.
 
 mod macos;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod stub;
 
 use crate::error::AppResult;
@@ -22,7 +24,11 @@ pub fn create_system_proxy() -> Box<dyn SystemProxy> {
     {
         Box::new(macos::MacSystemProxy::default())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WindowsSystemProxy)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Box::new(stub::StubSystemProxy)
     }

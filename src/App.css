@@ -3256,7 +3256,7 @@ button.check.on {
 
 .dash-hero-title {
   margin: 0;
-  font-size: clamp(1.55rem, 3.2vw, 2.15rem);
+  font-size: clamp(1.24rem, 2.56vw, 1.72rem);
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.15;
