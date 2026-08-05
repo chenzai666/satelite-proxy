@@ -281,6 +281,8 @@ pub fn run() {
                 }
                 // macOS Dock / “reopen”: user clicked the app icon while no visible window
                 // (UI destroyed or hidden to tray). Tray already calls show_main; Dock did not.
+                // Reopen is a macOS-only RunEvent variant.
+                #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen {
                     has_visible_windows, ..
                 } => {

@@ -180,7 +180,7 @@ impl CoreManager {
         TcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
-    /// Force-free a TCP listen port: kill processes holding it (macOS/Linux via lsof).
+    /// Force-free a TCP listen port: kill processes holding it.
     pub fn force_free_port(port: u16) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
@@ -196,9 +196,13 @@ impl CoreManager {
         if Self::is_port_free(port) {
             Ok(())
         } else {
+            let manual = if cfg!(windows) {
+                format!("netstat -ano | findstr :{port}")
+            } else {
+                format!("lsof -iTCP:{port} -sTCP:LISTEN")
+            };
             Err(AppError::Core(format!(
-                "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。\
-                 可手动: lsof -iTCP:{port} -sTCP:LISTEN"
+                "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
             )))
         }
     }
@@ -280,7 +284,7 @@ impl CoreManager {
         cmd.args(["run", "-c"]).arg(config);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let child = cmd
+        let mut child = cmd
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .spawn()
@@ -289,6 +293,19 @@ impl CoreManager {
                 self.last_error = Some(e.to_string());
                 AppError::Core(format!("spawn sing-box failed: {e}"))
             })?;
+
+        // Tie the child to the parent's lifetime via a Job Object: if this
+        // process dies for any reason (crash, installer kill, Task Manager),
+        // Windows reaps sing-box too — preventing orphaned ports on next launch.
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(e) = super::job::ensure_child_killed_on_parent_exit(child.id()) {
+                crate::app_log::warn(
+                    "core",
+                    format!("job-object bind failed (orphan possible on crash): {e}"),
+                );
+            }
+        }
 
         self.child = Some(child);
 
@@ -600,8 +617,59 @@ fn kill_listeners_on_port(port: u16) -> String {
     }
     #[cfg(not(unix))]
     {
-        let _ = port;
-        "Windows: 请手动结束占用端口的进程".into()
+        // netstat -ano lists every TCP row with the owning PID in the last column.
+        // We find rows whose local address ends with ":<port>" in LISTENING state,
+        // then taskkill each owning PID.
+        let mut cmd = Command::new("netstat");
+        cmd.args(["-ano"]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => return format!("netstat 不可用: {e}"),
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        let mut pids: Vec<u32> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            // Row shape: "  TCP    127.0.0.1:2080     0.0.0.0:0    LISTENING    10528"
+            if !trimmed.to_ascii_uppercase().contains("LISTENING") {
+                continue;
+            }
+            if !trimmed.contains(&needle) {
+                continue;
+            }
+            // PID is the last whitespace-delimited token.
+            if let Some(pid) = trimmed
+                .split_whitespace()
+                .last()
+                .and_then(|s| s.parse().ok())
+            {
+                pids.push(pid);
+            }
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        // Don't kill ourselves
+        let self_pid = std::process::id();
+        pids.retain(|p| *p != self_pid);
+        if pids.is_empty() {
+            return "未找到监听进程".into();
+        }
+        let mut killed = Vec::new();
+        for pid in pids {
+            // taskkill /F /T: force-kill the process tree (sing-box may have children).
+            let mut k = Command::new("taskkill");
+            k.args(["/F", "/T", "/PID", &pid.to_string()]);
+            #[cfg(target_os = "windows")]
+            k.creation_flags(CREATE_NO_WINDOW);
+            match k.status() {
+                Ok(s) if s.success() => killed.push(pid.to_string()),
+                _ => killed.push(format!("{pid}?(失败)")),
+            }
+        }
+        format!("已结束 PID {}", killed.join(","))
     }
 }
 

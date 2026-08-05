@@ -22,7 +22,7 @@ function Test-Cmd([string]$n) { return [bool](Get-Command $n -ErrorAction Silent
 # --- 0. Toolchain checks -----------------------------------------------------
 foreach ($c in @("node", "pnpm", "cargo", "rustc")) {
   if (-not (Test-Cmd $c)) {
-    Write-Error "'$c' not found in PATH. See dist/windows/BUILD-WINDOWS.md for install steps."
+    Write-Error "'$c' not found in PATH. Install Node.js (winget OpenJS.NodeJS), pnpm (npm i -g pnpm), and Rust stable-msvc (https://win.rustup.rs)."
     exit 1
   }
 }

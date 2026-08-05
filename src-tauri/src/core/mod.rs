@@ -1,5 +1,7 @@
 mod download;
 pub mod manager;
+#[cfg(target_os = "windows")]
+mod job;
 mod paths;
 
 pub use download::{
