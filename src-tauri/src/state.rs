@@ -96,7 +96,7 @@ impl AppState {
 
     pub fn unload_ui_on_tray(&self) -> bool {
         self.with_store(|s| Ok(s.settings.unload_ui_on_tray))
-            .unwrap_or(true)
+            .unwrap_or(false)
     }
 
     pub fn with_store_mut<F, T>(&self, f: F) -> AppResult<T>

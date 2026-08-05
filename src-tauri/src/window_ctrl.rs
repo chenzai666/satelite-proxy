@@ -94,13 +94,14 @@ pub fn soft_hide_main<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Hide to tray. Optionally destroy WebView to free GPU/JS memory.
+/// Hide to tray. Optionally destroy WebView (low-memory mode).
+/// Default is hide-only; destroy is opt-in via `unload_ui_on_tray`.
 /// Does **not** allow process exit — tray and core keep running.
 pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
     let unload = app
         .try_state::<AppState>()
         .map(|s| s.unload_ui_on_tray())
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     if let Some(state) = app.try_state::<AppState>() {
         state.set_ui_visible(false);

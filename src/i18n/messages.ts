@@ -135,9 +135,9 @@ const en = {
   "settings.themeDesc": "Color scheme for the control console",
   "settings.themeAerospace": "Mission",
   "settings.themeDay": "Day",
-  "settings.unloadUi": "Unload UI on tray",
+  "settings.unloadUi": "Low memory mode",
   "settings.unloadUiDesc":
-    "Destroy the WebView when closing to tray to free GPU/JS memory (tray + core stay; reopen reloads UI)",
+    "Destroy the UI when closing to tray to free memory. Reopening recreates the window and may show a black screen briefly",
   "settings.closeToTray": "Close to tray",
   "settings.closeToTrayDesc":
     "Closing the window keeps tray + core; use tray Quit to exit fully",
@@ -510,9 +510,9 @@ const zh: Record<MessageKey, string> = {
   "settings.themeDesc": "控制台配色方案",
   "settings.themeAerospace": "Mission",
   "settings.themeDay": "Day",
-  "settings.unloadUi": "托盘时卸载界面",
+  "settings.unloadUi": "低内存模式",
   "settings.unloadUiDesc":
-    "关闭到托盘时销毁 WebView，释放图形/JS 内存（托盘与内核仍运行；再打开会重新加载界面）",
+    "关闭到托盘时销毁界面以节省内存。再次打开会重建窗口，可能短暂黑屏",
   "settings.closeToTray": "退出时最小化",
   "settings.closeToTrayDesc":
     "关闭窗口时保持托盘与内核（托盘「退出」可彻底退出）",

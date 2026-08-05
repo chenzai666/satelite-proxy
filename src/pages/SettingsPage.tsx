@@ -319,18 +319,18 @@ export function SettingsPage() {
             </div>
             <div className="settings-app-toggles">
               <AppToggle
-                title={t("settings.unloadUi")}
-                desc={t("settings.unloadUiDesc")}
-                checked={settings?.unload_ui_on_tray !== false}
-                disabled={busy}
-                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
-              />
-              <AppToggle
                 title={t("settings.closeToTray")}
                 desc={t("settings.closeToTrayDesc")}
                 checked={settings?.close_to_tray !== false}
                 disabled={busy}
                 onChange={(v) => void patchApp({ closeToTray: v })}
+              />
+              <AppToggle
+                title={t("settings.unloadUi")}
+                desc={t("settings.unloadUiDesc")}
+                checked={!!settings?.unload_ui_on_tray}
+                disabled={busy}
+                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
               />
               <AppToggle
                 title={t("settings.launchAtLogin")}

@@ -304,6 +304,28 @@ export function SimpleSettingsPage() {
               <span className="switch-thumb" />
             </button>
           </div>
+          <div className="simple-setting-row">
+            <div>
+              <div className="simple-setting-title">{t("settings.unloadUi")}</div>
+              <div className="simple-setting-desc muted">
+                {t("settings.unloadUiDesc")}
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              className={`switch ${settings?.unload_ui_on_tray ? "on" : ""}`}
+              disabled={busy || !settings}
+              aria-checked={!!settings?.unload_ui_on_tray}
+              onClick={() =>
+                void patchSettings({
+                  unloadUiOnTray: !settings?.unload_ui_on_tray,
+                })
+              }
+            >
+              <span className="switch-thumb" />
+            </button>
+          </div>
         </div>
       </section>
 

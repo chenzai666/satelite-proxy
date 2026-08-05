@@ -82,8 +82,10 @@ pub struct AppSettings {
     /// UI theme: `day` (light default) | `aerospace` (dark).
     #[serde(default = "default_theme")]
     pub theme: String,
-    /// When closing to tray, destroy WebView to free GPU/JS memory (tray + core stay).
-    #[serde(default = "default_true")]
+    /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
+    /// memory. Default false — hide only so reopen is instant. When true, next
+    /// wake recreates the WebView (brief black screen).
+    #[serde(default)]
     pub unload_ui_on_tray: bool,
     /// Smart node auto-switch: passive observation + on-demand probe (docs/auto.md).
     #[serde(default)]
@@ -129,7 +131,7 @@ impl Default for AppSettings {
             close_connections_on_switch: true,
             locale: default_locale(),
             theme: default_theme(),
-            unload_ui_on_tray: true,
+            unload_ui_on_tray: false,
             smart_switch: false,
         }
     }
