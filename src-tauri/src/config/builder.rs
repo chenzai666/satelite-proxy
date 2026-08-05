@@ -91,7 +91,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
-    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled);
+    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
 
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
@@ -441,6 +441,71 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             o
         }
+        (Protocol::AnyTls, ProtocolConfig::AnyTls { password }) => {
+            // sing-box ≥ 1.12; TLS is required on the outbound.
+            json!({
+                "type": "anytls",
+                "tag": tag.clone(),
+                "server": node.server,
+                "server_port": node.port,
+                "password": password,
+            })
+        }
+        (Protocol::Snell, ProtocolConfig::Snell {
+            psk,
+            version,
+            userkey,
+            reuse,
+            obfs_mode,
+            obfs_host,
+            mode,
+        }) => {
+            // sing-box ≥ 1.14; accepts version 4 or 6 (v1–3/v5 may fail at core runtime).
+            let ver = match *version {
+                6 => 6,
+                // v5 wire ≈ v4 per sing-box docs
+                1 | 2 | 3 | 4 | 5 => 4,
+                other => other,
+            };
+            let mut o = json!({
+                "type": "snell",
+                "tag": tag.clone(),
+                "server": node.server,
+                "server_port": node.port,
+                "version": ver,
+                "psk": psk,
+            });
+            if let Some(uk) = userkey {
+                if !uk.is_empty() {
+                    o["userkey"] = json!(uk);
+                }
+            }
+            if let Some(true) = reuse {
+                o["reuse"] = json!(true);
+            }
+            if ver == 6 {
+                if let Some(m) = mode {
+                    let m = m.replace('_', "-").to_ascii_lowercase();
+                    if matches!(m.as_str(), "default" | "unshaped" | "unsafe-raw") {
+                        o["mode"] = json!(m);
+                    }
+                }
+            } else {
+                // v4: HTTP obfs only (`none` | `http`). Clash also uses `tls` → map to none.
+                if let Some(m) = obfs_mode {
+                    let m = m.to_ascii_lowercase();
+                    if m == "http" {
+                        o["obfs_mode"] = json!("http");
+                        if let Some(h) = obfs_host {
+                            if !h.is_empty() {
+                                o["obfs_host"] = json!(h);
+                            }
+                        }
+                    }
+                }
+            }
+            o
+        }
         _ => {
             return Err(AppError::Config(format!(
                 "protocol/config mismatch for {}",
@@ -454,6 +519,16 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             ob.as_object_mut()
                 .ok_or_else(|| AppError::Config("outbound not object".into()))?
                 .insert("tls".into(), tls_val);
+        }
+    }
+
+    // AnyTLS requires a TLS block in sing-box.
+    if matches!(node.protocol, Protocol::AnyTls) {
+        let obj = ob
+            .as_object_mut()
+            .ok_or_else(|| AppError::Config("outbound not object".into()))?;
+        if !obj.contains_key("tls") {
+            obj.insert("tls".into(), json!({ "enabled": true }));
         }
     }
 

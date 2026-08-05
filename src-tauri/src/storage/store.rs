@@ -1,7 +1,8 @@
 use crate::domain::{
-    default_rules, ensure_bundled_dns_whitelist, load_builtin_rule_sets, sanitize_rules,
-    AppSettings, DnsSettings, ProxyNode, Rule, RuleSet, RuleSetSummary, Subscription,
-    BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME,
+    default_rules, ensure_bundled_dns_whitelist, is_factory_set_id, load_builtin_rule_sets,
+    load_factory_rule_set, sanitize_rules, AppSettings, DnsSettings, ProxyNode, Rule, RuleSet,
+    RuleSetSummary, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
+    GENERAL_SET_NAME,
 };
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -65,7 +66,13 @@ impl AppStore {
         ensure_bundled_dns_whitelist(&mut self.dns, resource_dir);
     }
 
-    /// Ensure builtin sets from `resources/rules/*.list` + 通用规则; migrate legacy fields.
+    /// Ensure factory rule sets from `resources/rules/*.list`.
+    ///
+    /// **Restart policy**: only *insert missing* factory sets. Existing sets keep
+    /// user edits (rules, enabled). Never overwrite rules from disk on startup.
+    ///
+    /// **Reset policy**: use [`Self::reset_rule_set`] to reload one factory set
+    /// from resources (explicit user action).
     pub fn ensure_rule_sets(&mut self, resource_dir: Option<&Path>) {
         // Migrate old id `builtin-shadowrocket` → `builtin-ruleset`
         const OLD_BUILTIN_ID: &str = "builtin-shadowrocket";
@@ -78,36 +85,9 @@ impl AppStore {
             self.active_rule_set_id = Some(BUILTIN_SET_ID.into());
         }
 
-        // Scan resources/rules/*.list — insert missing builtins (edits preserved until reset).
-        let discovered = load_builtin_rule_sets(resource_dir);
-        let builtin_ids: Vec<String> = discovered.iter().map(|s| s.id.clone()).collect();
-        for set in discovered {
-            if self.rule_sets.iter().any(|s| s.id == set.id) {
-                // Keep user edits; refresh display name from file header when present.
-                if let Some(existing) = self.rule_sets.iter_mut().find(|s| s.id == set.id) {
-                    existing.builtin = true;
-                    if !set.name.is_empty() {
-                        existing.name = set.name;
-                    }
-                }
-                continue;
-            }
-            // Insert after last already-present builtin from the same scan order, else at front.
-            let insert_at = self
-                .rule_sets
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.builtin && builtin_ids.iter().any(|id| id == &s.id))
-                .map(|(i, _)| i + 1)
-                .last()
-                .unwrap_or(0);
-            self.rule_sets.insert(insert_at, set);
-        }
-
-        // Rename migrated-legacy / 自定义 → 通用规则
+        // Rename migrated-legacy / 自定义 → 通用规则 (before factory insert)
         for set in self.rule_sets.iter_mut() {
             if set.id == "migrated-legacy"
-                || set.id == GENERAL_SET_ID
                 || set.name == "我的规则（迁移）"
                 || set.name == "自定义"
             {
@@ -116,7 +96,6 @@ impl AppStore {
                 set.builtin = false;
             }
         }
-        // Dedupe general sets if multiple renamed
         let mut seen_general = false;
         self.rule_sets.retain(|s| {
             if s.id == GENERAL_SET_ID {
@@ -124,9 +103,38 @@ impl AppStore {
                     return false;
                 }
                 seen_general = true;
+                // general is factory but not "builtin" label
             }
             true
         });
+        if let Some(g) = self.rule_sets.iter_mut().find(|s| s.id == GENERAL_SET_ID) {
+            g.builtin = false;
+            g.name = GENERAL_SET_NAME.into();
+        }
+
+        // Factory templates: insert missing only; never clobber store rules on restart.
+        let discovered = load_builtin_rule_sets(resource_dir);
+        let factory_ids: Vec<String> = discovered.iter().map(|s| s.id.clone()).collect();
+        for set in discovered {
+            if let Some(existing) = self.rule_sets.iter_mut().find(|s| s.id == set.id) {
+                // Keep edits; only refresh metadata flags/name from template.
+                existing.builtin = set.builtin;
+                if !set.name.is_empty() {
+                    existing.name = set.name;
+                }
+                continue;
+            }
+            // Insert factory sets near the front (after other factory already present).
+            let insert_at = self
+                .rule_sets
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| is_factory_set_id(&s.id) && factory_ids.iter().any(|id| id == &s.id))
+                .map(|(i, _)| i + 1)
+                .last()
+                .unwrap_or(0);
+            self.rule_sets.insert(insert_at, set);
+        }
 
         // Migrate legacy flat rules → 通用规则
         let legacy = sanitize_rules(&self.rules);
@@ -149,31 +157,37 @@ impl AppStore {
             self.rules.clear();
         }
 
-        // Ensure 通用规则 set exists
+        // Ensure 通用规则 exists (file seed, or hardcoded fallback).
         if !self.rule_sets.iter().any(|s| s.id == GENERAL_SET_ID) {
-            let mut general = RuleSet::new_user(GENERAL_SET_NAME, default_rules());
+            let mut general = load_factory_rule_set(resource_dir, GENERAL_SET_ID)
+                .unwrap_or_else(|| {
+                    let mut g = RuleSet::new_user(GENERAL_SET_NAME, default_rules());
+                    g.id = GENERAL_SET_ID.into();
+                    g
+                });
             general.id = GENERAL_SET_ID.into();
+            general.name = GENERAL_SET_NAME.into();
+            general.builtin = false;
             general.enabled = true;
             self.rule_sets.push(general);
         }
 
         // Migrate single active_rule_set_id → RuleSet.enabled (multi)
         if let Some(id) = self.active_rule_set_id.take() {
-            // Enable the previously active set + keep others as-is if already multi
             let any_enabled = self.rule_sets.iter().any(|s| s.enabled);
             if !any_enabled {
                 for s in self.rule_sets.iter_mut() {
-                    s.enabled = s.id == id || s.builtin || s.id == GENERAL_SET_ID;
+                    s.enabled = s.id == id || is_factory_set_id(&s.id);
                 }
             } else if let Some(s) = self.rule_sets.iter_mut().find(|s| s.id == id) {
                 s.enabled = true;
             }
         }
 
-        // If nothing enabled, enable all builtins + 通用规则
+        // If nothing enabled, enable all factory sets
         if !self.rule_sets.iter().any(|s| s.enabled) {
             for s in self.rule_sets.iter_mut() {
-                if s.builtin || s.id == GENERAL_SET_ID {
+                if is_factory_set_id(&s.id) {
                     s.enabled = true;
                 }
             }
@@ -484,34 +498,61 @@ impl AppStore {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        if set.builtin {
-            return Err(AppError::Config("cannot delete built-in rule set".into()));
+        if set.builtin || is_factory_set_id(id) {
+            return Err(AppError::Config(
+                "不能删除出厂规则集（内置/通用）；可重置为资源文件默认".into(),
+            ));
         }
         self.rule_sets.retain(|s| s.id != id);
         Ok(())
     }
 
-    /// Reload all built-in sets from `resources/rules/*.list` (preserves enabled flags).
-    pub fn reset_builtin_rule_set(&mut self, resource_dir: Option<&Path>) {
-        let discovered = load_builtin_rule_sets(resource_dir);
-        for set in discovered {
-            if let Some(s) = self.rule_sets.iter_mut().find(|x| x.id == set.id) {
-                let was_enabled = s.enabled;
-                *s = set;
-                s.enabled = was_enabled;
-            } else {
-                let insert_at = self
-                    .rule_sets
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.builtin)
-                    .map(|(i, _)| i + 1)
-                    .last()
-                    .unwrap_or(0);
-                self.rule_sets.insert(insert_at, set);
-            }
+    /// Reload **one** factory set from `resources/rules/{id}.list` (+ optional `.dns.list`).
+    /// Preserves `enabled`. Fails if id is not a factory template.
+    pub fn reset_rule_set(
+        &mut self,
+        resource_dir: Option<&Path>,
+        set_id: &str,
+    ) -> AppResult<RuleSet> {
+        if !is_factory_set_id(set_id) {
+            return Err(AppError::Config(
+                "只能重置出厂规则集（内置/通用）".into(),
+            ));
         }
-        // Re-apply DNS whitelist from files (idempotent).
+        let template = load_factory_rule_set(resource_dir, set_id).ok_or_else(|| {
+            AppError::NotFound(format!("factory template missing: {set_id}"))
+        })?;
+        if let Some(s) = self.rule_sets.iter_mut().find(|x| x.id == set_id) {
+            let was_enabled = s.enabled;
+            *s = template;
+            s.enabled = was_enabled;
+            if set_id == GENERAL_SET_ID {
+                s.builtin = false;
+                s.name = GENERAL_SET_NAME.into();
+            }
+            Ok(s.clone())
+        } else {
+            let mut inserted = template;
+            if set_id == GENERAL_SET_ID {
+                inserted.builtin = false;
+                inserted.name = GENERAL_SET_NAME.into();
+            }
+            inserted.enabled = true;
+            self.rule_sets.push(inserted.clone());
+            Ok(inserted)
+        }
+    }
+
+    /// Reload all `builtin-*` factory sets from disk (legacy bulk reset).
+    pub fn reset_all_builtin_rule_sets(&mut self, resource_dir: Option<&Path>) {
+        let ids: Vec<String> = load_builtin_rule_sets(resource_dir)
+            .into_iter()
+            .filter(|s| s.builtin)
+            .map(|s| s.id)
+            .collect();
+        for id in ids {
+            let _ = self.reset_rule_set(resource_dir, &id);
+        }
         self.ensure_dns_defaults(resource_dir);
     }
 }

@@ -10,6 +10,15 @@
 
   <body>
     <div id="root"></div>
+    <script>
+      // Apply UI mode before React paints (pairs with Rust window size on recreate).
+      try {
+        var m = localStorage.getItem("satelite.uiMode");
+        if (m === "simple" || m === "pro") {
+          document.documentElement.dataset.uiMode = m;
+        }
+      } catch (e) {}
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

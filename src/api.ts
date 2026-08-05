@@ -232,10 +232,13 @@ export function fetchCoreLatest() {
 }
 
 export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
-  return invoke<LatencyBatchResult>("test_nodes_latency", {
+  // Tauri 2 accepts camelCase; include snake_case for compatibility.
+  const args: Record<string, unknown> = {
     ids: ids ?? null,
     timeoutMs: timeoutMs ?? null,
-  });
+    timeout_ms: timeoutMs ?? null,
+  };
+  return invoke<LatencyBatchResult>("test_nodes_latency", args);
 }
 
 export function getProxyStatus() {
@@ -278,6 +281,11 @@ export function updateDnsSettings(settings: DnsSettings, apply = true) {
   return invoke<DnsSettings>("update_dns_settings", { settings, apply });
 }
 
+/** Reset DNS servers or rules to factory defaults (`"servers"` | `"rules"`). */
+export function resetDnsDefaults(section: "servers" | "rules", apply = true) {
+  return invoke<DnsSettings>("reset_dns_defaults", { section, apply });
+}
+
 export function testDnsLookup(domain: string) {
   return invoke<DnsTestResult>("test_dns_lookup", { domain });
 }
@@ -311,6 +319,12 @@ export function deleteRuleSet(id: string) {
   return invoke<void>("delete_rule_set", { id });
 }
 
+/** Reset one factory set (builtin-* or general-rules) from resources. */
+export function resetRuleSet(id: string) {
+  return invoke<RuleSet>("reset_rule_set", { id });
+}
+
+/** Legacy: reset all builtin-* sets only. Prefer `resetRuleSet(id)`. */
 export function resetBuiltinRuleSet() {
   return invoke<RuleSet>("reset_builtin_rule_set");
 }
@@ -330,6 +344,8 @@ export function saveRule(input: {
   nodeId?: string | null;
   smartInclude?: string[] | null;
   smartExclude?: string[] | null;
+  /** inherit | system */
+  dnsPolicy?: string | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -343,6 +359,7 @@ export function saveRule(input: {
       node_id: input.nodeId ?? null,
       smart_include: input.smartInclude ?? null,
       smart_exclude: input.smartExclude ?? null,
+      dns_policy: input.dnsPolicy ?? null,
     },
   });
 }

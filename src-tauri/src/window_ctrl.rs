@@ -5,24 +5,76 @@
 //! and tray + sing-box stay alive.
 
 use crate::state::AppState;
+use std::fs;
+use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
+/// Matches frontend `windowLayout.ts` (logical px).
+const PRO_SIZE: (f64, f64) = (1024.0, 760.0);
+const SIMPLE_SIZE: (f64, f64) = (420.0, 760.0);
+
+fn ui_mode_file(app_data_dir: &std::path::Path) -> PathBuf {
+    app_data_dir.join("data").join("ui_mode")
+}
+
+/// Persist UI mode so the next WebView recreate uses the correct window size.
+pub fn write_ui_mode(app_data_dir: &std::path::Path, mode: &str) {
+    let path = ui_mode_file(app_data_dir);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let v = match mode.trim().to_ascii_lowercase().as_str() {
+        "simple" => "simple",
+        _ => "pro",
+    };
+    let _ = fs::write(path, v);
+}
+
+pub fn read_ui_mode(app_data_dir: &std::path::Path) -> &'static str {
+    let path = ui_mode_file(app_data_dir);
+    match fs::read_to_string(path) {
+        Ok(s) if s.trim().eq_ignore_ascii_case("simple") => "simple",
+        _ => "pro",
+    }
+}
+
+fn size_for_ui_mode(mode: &str) -> (f64, f64) {
+    if mode == "simple" {
+        SIMPLE_SIZE
+    } else {
+        PRO_SIZE
+    }
+}
+
 /// Show main UI; recreate WebView if it was destroyed on tray.
+///
+/// Called from tray menu/click and from macOS Dock reopen (`RunEvent::Reopen`).
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
     } else {
+        // Use last persisted UI mode so we don't flash pro (1024) then shrink to simple.
+        let mode = app
+            .try_state::<AppState>()
+            .map(|s| read_ui_mode(&s.app_data_dir).to_string())
+            .unwrap_or_else(|| "pro".into());
+        let (w, h) = size_for_ui_mode(&mode);
         let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Satelite")
-            .inner_size(1024.0, 760.0)
+            .inner_size(w, h)
             .resizable(false)
-            .fullscreen(false);
+            .fullscreen(false)
+            // Important on macOS: without activation policy / visible, Dock reopen
+            // can recreate a window that never becomes key.
+            .visible(true)
+            .focused(true);
         match builder.build() {
-            Ok(w) => {
-                let _ = w.show();
-                let _ = w.set_focus();
+            Ok(win) => {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
             }
             Err(e) => eprintln!("[satelite] recreate main window failed: {e}"),
         }

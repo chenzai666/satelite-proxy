@@ -38,5 +38,12 @@
       "resources/rules",
       "resources/dns"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["clash", "sing-box", "singbox"]
+      }
+    }
   }
 }

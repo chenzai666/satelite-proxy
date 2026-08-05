@@ -1,6 +1,6 @@
 //! DNS settings commands (docs/dns.md).
 
-use crate::domain::DnsSettings;
+use crate::domain::{ensure_bundled_dns_whitelist, DnsSettings};
 use crate::state::AppState;
 use serde::Serialize;
 use std::net::ToSocketAddrs;
@@ -40,6 +40,50 @@ pub fn update_dns_settings(
         state
             .restart_if_running(resource_dir.as_deref())
             .map_err(|e| format!("DNS 已保存，但重启内核失败: {e}"))?;
+    }
+
+    Ok(dns)
+}
+
+/// Reset DNS **servers** or **rules** to factory defaults (other fields unchanged).
+///
+/// - `section`: `"servers"` | `"rules"`
+/// - rules reset includes built-in whitelist + `resources/dns/*.list` merge
+#[tauri::command]
+pub fn reset_dns_defaults(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    section: String,
+    apply: Option<bool>,
+) -> Result<DnsSettings, String> {
+    let apply = apply.unwrap_or(true);
+    let resource_dir = app.path().resource_dir().ok();
+    let section = section.trim().to_ascii_lowercase();
+
+    let dns = state
+        .with_store_mut(|store| {
+            match section.as_str() {
+                "servers" => {
+                    store.dns.servers = DnsSettings::factory_servers();
+                }
+                "rules" => {
+                    store.dns.rules = DnsSettings::factory_rules_base();
+                    ensure_bundled_dns_whitelist(&mut store.dns, resource_dir.as_deref());
+                }
+                other => {
+                    return Err(crate::error::AppError::Config(format!(
+                        "unknown DNS reset section: {other} (use servers|rules)"
+                    )));
+                }
+            }
+            Ok(store.dns.clone())
+        })
+        .map_err(|e| e.to_string())?;
+
+    if apply && state.is_core_running() {
+        state
+            .restart_if_running(resource_dir.as_deref())
+            .map_err(|e| format!("DNS 已重置，但重启内核失败: {e}"))?;
     }
 
     Ok(dns)

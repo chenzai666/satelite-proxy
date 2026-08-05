@@ -80,6 +80,8 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
         Protocol::Hysteria2 => parse_hysteria2(map)?,
         Protocol::Tuic => parse_tuic(map)?,
         Protocol::Socks5 => parse_socks5(map)?,
+        Protocol::AnyTls => parse_anytls(map)?,
+        Protocol::Snell => parse_snell(map)?,
     };
 
     Ok(ProxyNode {
@@ -204,6 +206,80 @@ fn parse_trojan(
         Some(tls),
         transport,
         ProtocolConfig::Trojan { password },
+    ))
+}
+
+/// Mihomo / sing-box AnyTLS: password + TLS (sni / skip-cert-verify).
+fn parse_anytls(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let password = get_str(map, &["password", "uuid"])
+        .ok_or_else(|| "anytls: missing password".to_string())?;
+
+    let mut tls = parse_tls_common(map, true).unwrap_or(TlsConfig {
+        enabled: true,
+        ..Default::default()
+    });
+    tls.enabled = true;
+    if tls.server_name.is_none() {
+        tls.server_name = get_str(map, &["sni", "servername", "server-name"]);
+    }
+    if tls.insecure.is_none() {
+        tls.insecure = get_bool(map, &["skip-cert-verify", "skip_cert_verify", "insecure"]);
+    }
+
+    Ok((
+        Some(tls),
+        None,
+        ProtocolConfig::AnyTls { password },
+    ))
+}
+
+/// Clash Snell: psk + version + optional obfs-opts.
+fn parse_snell(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let psk = get_str(map, &["psk", "password"])
+        .ok_or_else(|| "snell: missing psk".to_string())?;
+
+    let version = get_u16(map, &["version"])
+        .map(|v| v as u8)
+        .unwrap_or(4);
+
+    let userkey = get_str(map, &["userkey", "user-key", "user_key"]);
+    let reuse = get_bool(map, &["reuse"]);
+
+    let mut obfs_mode = get_str(map, &["obfs"]);
+    let mut obfs_host = get_str(map, &["obfs-host", "obfs_host", "host"]);
+    if let Some(opts) = get_map(map, &["obfs-opts", "obfs_opts"]) {
+        if obfs_mode.is_none() {
+            obfs_mode = get_str(opts, &["mode"]);
+        }
+        if obfs_host.is_none() {
+            obfs_host = get_str(opts, &["host"]);
+        }
+    }
+
+    // v6 shaping mode (if present as top-level or under mode)
+    let mode = get_str(map, &["mode"]).filter(|m| {
+        matches!(
+            m.to_ascii_lowercase().as_str(),
+            "default" | "unshaped" | "unsafe-raw" | "unsafe_raw"
+        )
+    });
+
+    Ok((
+        None,
+        None,
+        ProtocolConfig::Snell {
+            psk,
+            version,
+            userkey,
+            reuse,
+            obfs_mode,
+            obfs_host,
+            mode,
+        },
     ))
 }
 

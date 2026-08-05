@@ -15,6 +15,7 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../components/AddConfigModal";
+import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
 import type { SubscriptionTraffic, SubscriptionView } from "../types";
 
@@ -187,6 +188,7 @@ function TrafficBlock({ traffic }: { traffic?: SubscriptionTraffic | null }) {
 
 export function ConfigPage() {
   const { t } = useI18n();
+  const { prefill, token, consume, dismiss } = useImportIntent();
   const [items, setItems] = useState<SubscriptionView[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -223,6 +225,22 @@ export function ConfigPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // One-click subscribe deep link → open add modal with URL/name filled.
+  useEffect(() => {
+    if (!token || !prefill) return;
+    setEditId(null);
+    setImportError(null);
+    setEditInitial({
+      name: prefill.name ?? "",
+      kind: "url",
+      url: prefill.url,
+      autoUpdate: true,
+      autoUpdateIntervalMin: 1440,
+    });
+    setModalOpen(true);
+    consume();
+  }, [token, prefill, consume]);
 
   useEffect(() => {
     if (!menuId) return;
@@ -335,6 +353,7 @@ export function ConfigPage() {
       setModalOpen(false);
       setEditId(null);
       setEditInitial(null);
+      dismiss();
       await reload();
     } catch (e) {
       setImportError(typeof e === "string" ? e : String(e));
@@ -585,12 +604,14 @@ export function ConfigPage() {
         open={modalOpen}
         busy={importing}
         error={importError}
+        isEdit={!!editId}
         initial={editInitial}
         onClose={() => {
           if (importing) return;
           setModalOpen(false);
           setEditId(null);
           setEditInitial(null);
+          dismiss();
         }}
         onSubmit={(p) => void handleSubmit(p)}
       />

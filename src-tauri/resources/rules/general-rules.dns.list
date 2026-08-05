@@ -1,0 +1,5 @@
+# name: 通用规则 DNS
+# Pair with general-rules.list — type + payload must match a routing rule.
+
+DOMAIN-SUFFIX,local,SYSTEM
+DOMAIN-SUFFIX,localhost,SYSTEM

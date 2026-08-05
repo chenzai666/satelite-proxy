@@ -19,8 +19,13 @@ interface Props {
   open: boolean;
   busy: boolean;
   error: string | null;
-  /** null = add mode; set = edit mode with initial values */
+  /**
+   * Prefill form fields. Used for edit and for one-click subscribe (add).
+   * Does not imply edit mode — set `isEdit` for that.
+   */
   initial?: ConfigFormValues | null;
+  /** When true, UI treats form as editing an existing profile. */
+  isEdit?: boolean;
   title?: string;
   submitLabel?: string;
   onClose: () => void;
@@ -32,12 +37,12 @@ export function AddConfigModal({
   busy,
   error,
   initial = null,
+  isEdit = false,
   title,
   submitLabel,
   onClose,
   onSubmit,
 }: Props) {
-  const isEdit = !!initial;
   const [kind, setKind] = useState<AddSourceKind>("url");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -54,7 +59,7 @@ export function AddConfigModal({
       setUrl(initial.url ?? "");
       setPath(initial.path ?? "");
       setViaProxy(!!initial.viaProxy);
-      setAutoUpdate(!!initial.autoUpdate);
+      setAutoUpdate(initial.autoUpdate !== false);
       setAutoUpdateIntervalMin(
         String(initial.autoUpdateIntervalMin ?? 1440),
       );

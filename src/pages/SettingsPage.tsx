@@ -3,7 +3,9 @@ import {
   checkCoreUpdate,
   downloadCore,
   getCoreInfo,
+  getProxyStatus,
   getSettings,
+  restartProxy,
   updateSettings,
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
@@ -13,12 +15,12 @@ import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 
-type SettingsTab = "rules" | "dns" | "app" | "network" | "core";
+type SettingsTab = "app" | "rules" | "dns" | "network" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<SettingsTab>("rules");
+  const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [mixed, setMixed] = useState("2080");
   const [api, setApi] = useState("19090");
@@ -35,6 +37,11 @@ export function SettingsPage() {
     () =>
       [
         {
+          id: "app" as const,
+          label: t("settings.tabApp"),
+          hint: t("settings.hintApp"),
+        },
+        {
           id: "rules" as const,
           label: t("settings.tabRules"),
           hint: t("settings.hintRules"),
@@ -43,11 +50,6 @@ export function SettingsPage() {
           id: "dns" as const,
           label: t("settings.tabDns"),
           hint: t("settings.hintDns"),
-        },
-        {
-          id: "app" as const,
-          label: t("settings.tabApp"),
-          hint: t("settings.hintApp"),
         },
         {
           id: "network" as const,
@@ -113,6 +115,9 @@ export function SettingsPage() {
       if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
         throw new Error(t("settings.invalidApi"));
       }
+      const portsChanged =
+        settings != null &&
+        (settings.mixed_port !== mixedPort || settings.api_port !== apiPort);
       const s = await updateSettings({
         mixedPort,
         apiPort,
@@ -120,6 +125,13 @@ export function SettingsPage() {
         tunStack: tunStack.trim() || "mixed",
       });
       setSettings(s);
+      // Port binds at core start — restart running core so new ports take effect.
+      if (portsChanged) {
+        const status = await getProxyStatus().catch(() => null);
+        if (status?.running) {
+          await restartProxy();
+        }
+      }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
