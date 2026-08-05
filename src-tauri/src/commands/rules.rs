@@ -256,6 +256,13 @@ pub fn save_rule(
                 let exclude = Rule::normalize_keywords(
                     input.smart_exclude.as_deref().unwrap_or(&[]),
                 );
+                let overlap = crate::domain::keyword_list_overlap(&include, &exclude);
+                if !overlap.is_empty() {
+                    return Err(crate::error::AppError::Config(format!(
+                        "智能模式：关键字不能同时出现在白名单与黑名单中：{}",
+                        overlap.join("、")
+                    )));
+                }
                 let match_count = store
                     .enabled_nodes()
                     .iter()
@@ -269,7 +276,7 @@ pub fn save_rule(
                     .count();
                 if match_count == 0 {
                     return Err(crate::error::AppError::Config(
-                        "智能模式：当前没有符合关键字条件的节点，请调整「包含/不包含」或先导入订阅"
+                        "智能模式：当前没有符合关键字条件的节点，请调整白名单/黑名单或先导入订阅"
                             .into(),
                     ));
                 }

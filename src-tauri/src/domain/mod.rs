@@ -7,9 +7,9 @@ mod subscription;
 pub use dns::*;
 pub use node::*;
 pub use rule::{
-    default_rules, load_builtin_rule_sets, name_matches_keywords, sanitize_rules, Rule, RuleSet,
-    RuleSetSummary, RuleTarget, RuleType, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
-    GENERAL_SET_NAME,
+    default_rules, keyword_list_overlap, load_builtin_rule_sets, name_matches_keywords,
+    sanitize_rules, Rule, RuleSet, RuleSetSummary, RuleTarget, RuleType, BUILTIN_SET_ID,
+    BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME,
 };
 pub use settings::*;
 pub use subscription::*;

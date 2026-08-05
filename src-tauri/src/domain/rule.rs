@@ -75,10 +75,10 @@ pub struct Rule {
     /// Snapshot of node display name at save time (for stale-node UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
-    /// When `target == Smart`: node display name must contain each keyword (case-insensitive).
+    /// When `target == Smart`: whitelist — name must contain any keyword (OR). Empty = all.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_include: Vec<String>,
-    /// When `target == Smart`: node display name must not contain any keyword (case-insensitive).
+    /// When `target == Smart`: blacklist — name containing any keyword is skipped (OR).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_exclude: Vec<String>,
 }
@@ -163,7 +163,8 @@ impl Rule {
     }
 }
 
-/// Include: name must contain every keyword. Exclude: name must contain none.
+/// Whitelist (`include`): empty = allow all; otherwise name must contain **any** keyword (OR).
+/// Blacklist (`exclude`): name must contain **none** of the keywords (any hit skips).
 /// Matching is case-insensitive substring on the display name.
 pub fn name_matches_keywords(
     node_name: &str,
@@ -171,15 +172,8 @@ pub fn name_matches_keywords(
     exclude: &[String],
 ) -> bool {
     let name = node_name.to_lowercase();
-    for k in include {
-        let k = k.trim();
-        if k.is_empty() {
-            continue;
-        }
-        if !name.contains(&k.to_lowercase()) {
-            return false;
-        }
-    }
+
+    // Blacklist first: any hit → skip
     for k in exclude {
         let k = k.trim();
         if k.is_empty() {
@@ -189,7 +183,36 @@ pub fn name_matches_keywords(
             return false;
         }
     }
-    true
+
+    let include_keys: Vec<&str> = include
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if include_keys.is_empty() {
+        return true;
+    }
+    // Whitelist: any keyword match → allow
+    include_keys
+        .into_iter()
+        .any(|k| name.contains(&k.to_lowercase()))
+}
+
+/// Keywords that appear in both include and exclude (case-insensitive). Empty if no conflict.
+pub fn keyword_list_overlap(include: &[String], exclude: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in include {
+        let al = a.trim().to_lowercase();
+        if al.is_empty() {
+            continue;
+        }
+        if exclude.iter().any(|b| b.trim().to_lowercase() == al)
+            && !out.iter().any(|x: &String| x.to_lowercase() == al)
+        {
+            out.push(a.trim().to_string());
+        }
+    }
+    out
 }
 
 /// Named rule set (built-in or user). Multiple sets can be enabled at once.
@@ -465,15 +488,29 @@ FINAL,PROXY
     }
 
     #[test]
-    fn smart_keywords_include_and_exclude() {
-        let inc = vec!["新加坡".into()];
-        let exc = vec!["香港".into()];
+    fn smart_keywords_whitelist_or_blacklist_or() {
+        let inc = vec!["新加坡".into(), "日本".into()];
+        let exc = vec!["香港".into(), "台湾".into()];
+        // Whitelist OR: either keyword ok
         assert!(name_matches_keywords("新加坡 01", &inc, &exc));
-        assert!(!name_matches_keywords("香港 01", &inc, &exc));
+        assert!(name_matches_keywords("日本 东京", &inc, &exc));
         assert!(!name_matches_keywords("美国 01", &inc, &exc));
+        // Blacklist OR: any hit skips (even if whitelist would pass)
         assert!(!name_matches_keywords("新加坡香港", &inc, &exc));
+        assert!(!name_matches_keywords("香港 01", &inc, &exc));
+        // Empty whitelist = all except blacklist
         assert!(name_matches_keywords("任意节点", &[], &exc));
         assert!(!name_matches_keywords("HK 香港专线", &[], &exc));
+        assert!(!name_matches_keywords("台湾专线", &[], &exc));
+    }
+
+    #[test]
+    fn smart_keywords_list_overlap() {
+        let a = vec!["新加坡".into(), "香港".into()];
+        let b = vec!["香港".into(), "日本".into()];
+        let o = keyword_list_overlap(&a, &b);
+        assert_eq!(o, vec!["香港".to_string()]);
+        assert!(keyword_list_overlap(&a, &[]).is_empty());
     }
 
     #[test]

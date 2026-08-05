@@ -282,9 +282,9 @@ export interface Rule {
   node_id?: string | null;
   /** Snapshot name at save time (stale UI when id missing). */
   node_name?: string | null;
-  /** Smart mode: node name must contain each keyword. */
+  /** Smart mode whitelist: name must contain any keyword (OR). Empty = no whitelist. */
   smart_include?: string[];
-  /** Smart mode: node name must not contain any keyword. */
+  /** Smart mode blacklist: name containing any keyword is skipped (OR). */
   smart_exclude?: string[];
 }
 

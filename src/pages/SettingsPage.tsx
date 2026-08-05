@@ -6,6 +6,7 @@ import {
   getSettings,
   updateSettings,
 } from "../api";
+import { SolidSelect } from "../components/SolidSelect";
 import { useI18n, type Locale } from "../i18n";
 import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
@@ -381,16 +382,18 @@ export function SettingsPage() {
                 placeholder="https://…"
               />
             </label>
-            <label className="field field-span-2">
+            <div className="field field-span-2">
               <span>{t("settings.tunStack")}</span>
-              <select
+              <SolidSelect
                 value={tunStack}
-                onChange={(e) => setTunStack(e.target.value)}
-              >
-                <option value="mixed">mixed</option>
-                <option value="system">system</option>
-                <option value="gvisor">gvisor</option>
-              </select>
+                onChange={setTunStack}
+                aria-label={t("settings.tunStack")}
+                options={[
+                  { value: "mixed", label: "mixed" },
+                  { value: "system", label: "system" },
+                  { value: "gvisor", label: "gvisor" },
+                ]}
+              />
               <span className="field-hint muted">
                 {t("settings.tunStackHint")}{" "}
                 <span className="mono">
@@ -399,7 +402,7 @@ export function SettingsPage() {
                     : t("common.disabled")}
                 </span>
               </span>
-            </label>
+            </div>
           </div>
           <p className="settings-panel-note muted">
             {t("settings.networkSaveNote")}

@@ -20,6 +20,7 @@ import {
   setRuleEnabled,
   setRuleSetEnabled,
 } from "../api";
+import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
   ProxyNode,
@@ -177,12 +178,27 @@ export function RulesPage({ embedded = false }: Props) {
     );
   }, [nodes, nodeQuery]);
 
+  /** Split by whitespace (spaces / tabs / newlines). */
   function parseKeywords(raw: string): string[] {
     return raw
-      .split(/[,，、]/)
+      .split(/\s+/)
       .map((s) => s.trim())
       .filter(Boolean);
   }
+
+  const smartKeywordOverlap = useMemo(() => {
+    if (target !== "smart") return [] as string[];
+    const include = parseKeywords(smartInclude);
+    const exclude = parseKeywords(smartExclude);
+    const out: string[] = [];
+    for (const a of include) {
+      const al = a.toLowerCase();
+      if (exclude.some((b) => b.toLowerCase() === al) && !out.some((x) => x.toLowerCase() === al)) {
+        out.push(a);
+      }
+    }
+    return out;
+  }, [target, smartInclude, smartExclude]);
 
   const smartMatchCount = useMemo(() => {
     if (target !== "smart") return 0;
@@ -190,13 +206,11 @@ export function RulesPage({ embedded = false }: Props) {
     const exclude = parseKeywords(smartExclude);
     return nodes.filter((n) => {
       const name = n.name.toLowerCase();
-      for (const k of include) {
-        if (!name.includes(k.toLowerCase())) return false;
-      }
-      for (const k of exclude) {
-        if (name.includes(k.toLowerCase())) return false;
-      }
-      return true;
+      // Blacklist OR: any hit → skip
+      if (exclude.some((k) => name.includes(k.toLowerCase()))) return false;
+      // Whitelist OR: empty = allow all; else any hit allows
+      if (include.length === 0) return true;
+      return include.some((k) => name.includes(k.toLowerCase()));
     }).length;
   }, [target, smartInclude, smartExclude, nodes]);
 
@@ -272,8 +286,8 @@ export function RulesPage({ embedded = false }: Props) {
     setTarget(r.target);
     setPinNodeId(r.node_id ?? "");
     setNodeQuery("");
-    setSmartInclude((r.smart_include ?? []).join(", "));
-    setSmartExclude((r.smart_exclude ?? []).join(", "));
+    setSmartInclude((r.smart_include ?? []).join(" "));
+    setSmartExclude((r.smart_exclude ?? []).join(" "));
     setEnabled(r.enabled);
     setEditOpen(true);
     void ensureNodesLoaded();
@@ -284,6 +298,12 @@ export function RulesPage({ embedded = false }: Props) {
     if (!viewSetId || !payload.trim()) return;
     if (target === "node" && !pinNodeId.trim()) {
       setError(t("rules.needNode"));
+      return;
+    }
+    if (target === "smart" && smartKeywordOverlap.length > 0) {
+      setError(
+        t("rules.smartKeywordConflict", { k: smartKeywordOverlap.join("、") }),
+      );
       return;
     }
     setBusy(true);
@@ -754,19 +774,15 @@ export function RulesPage({ embedded = false }: Props) {
               </button>
             </header>
             <form className="modal-body" onSubmit={(e) => void onSave(e)}>
-              <label className="field">
+              <div className="field">
                 <span>类型</span>
-                <select
+                <SolidSelect
                   value={ruleType}
-                  onChange={(e) => setRuleType(e.target.value as RuleType)}
-                >
-                  {TYPE_OPTS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  options={TYPE_OPTS}
+                  onChange={(v) => setRuleType(v as RuleType)}
+                  aria-label="类型"
+                />
+              </div>
               <label className="field">
                 <span>匹配内容</span>
                 <input
@@ -776,19 +792,15 @@ export function RulesPage({ embedded = false }: Props) {
                   autoFocus
                 />
               </label>
-              <label className="field">
+              <div className="field">
                 <span>{t("rules.outbound")}</span>
-                <select
+                <SolidSelect
                   value={target}
-                  onChange={(e) => setTarget(e.target.value as RuleTarget)}
-                >
-                  {targetOpts.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  options={targetOpts}
+                  onChange={(v) => setTarget(v as RuleTarget)}
+                  aria-label={t("rules.outbound")}
+                />
+              </div>
               {target === "node" && (
                 <div className="field rule-node-pick">
                   <span>{t("rules.pickNode")}</span>
@@ -804,26 +816,30 @@ export function RulesPage({ embedded = false }: Props) {
                         onChange={(e) => setNodeQuery(e.target.value)}
                         placeholder={t("rules.pickNodePh")}
                       />
-                      <select
+                      <SolidSelect
+                        list
+                        listSize={Math.min(8, Math.max(4, filteredNodes.length || 4))}
                         value={pinNodeId}
-                        onChange={(e) => setPinNodeId(e.target.value)}
-                        size={Math.min(8, Math.max(4, filteredNodes.length || 4))}
-                        className="rule-node-select"
-                      >
-                        <option value="">{t("rules.needNode")}</option>
-                        {pinNodeId && !nodeById.has(pinNodeId) && (
-                          <option value={pinNodeId}>
-                            {t("rules.nodeStaleLabel", {
-                              name: editRule?.node_name ?? pinNodeId,
-                            })}
-                          </option>
-                        )}
-                        {filteredNodes.map((n) => (
-                          <option key={n.id} value={n.id}>
-                            {n.name}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setPinNodeId}
+                        aria-label={t("rules.pickNode")}
+                        options={[
+                          { value: "", label: t("rules.needNode") },
+                          ...(pinNodeId && !nodeById.has(pinNodeId)
+                            ? [
+                                {
+                                  value: pinNodeId,
+                                  label: t("rules.nodeStaleLabel", {
+                                    name: editRule?.node_name ?? pinNodeId,
+                                  }),
+                                },
+                              ]
+                            : []),
+                          ...filteredNodes.map((n) => ({
+                            value: n.id,
+                            label: n.name,
+                          })),
+                        ]}
+                      />
                       {pinNodeId && !nodeById.has(pinNodeId) && (
                         <p className="banner error" style={{ margin: "8px 0 0" }}>
                           {t("rules.nodeStaleHint")}
@@ -854,16 +870,30 @@ export function RulesPage({ embedded = false }: Props) {
                       placeholder={t("rules.smartExcludePh")}
                     />
                   </label>
-                  <p
-                    className="muted"
-                    style={{
-                      margin: 0,
-                      fontSize: 12,
-                      color: smartMatchCount === 0 ? "var(--danger, #e55)" : undefined,
-                    }}
-                  >
-                    {t("rules.smartMatchCount", { n: smartMatchCount })}
-                  </p>
+                  {smartKeywordOverlap.length > 0 ? (
+                    <p
+                      className="banner error"
+                      style={{ margin: "0 0 6px", fontSize: 12 }}
+                    >
+                      {t("rules.smartKeywordConflict", {
+                        k: smartKeywordOverlap.join("、"),
+                      })}
+                    </p>
+                  ) : (
+                    <p
+                      className="muted"
+                      style={{
+                        margin: 0,
+                        fontSize: 12,
+                        color:
+                          smartMatchCount === 0
+                            ? "var(--danger, #e55)"
+                            : undefined,
+                      }}
+                    >
+                      {t("rules.smartMatchCount", { n: smartMatchCount })}
+                    </p>
+                  )}
                 </div>
               )}
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
@@ -887,7 +917,8 @@ export function RulesPage({ embedded = false }: Props) {
                     busy ||
                     !payload.trim() ||
                     (target === "node" && !pinNodeId.trim()) ||
-                    (target === "smart" && nodes.length === 0)
+                    (target === "smart" &&
+                      (nodes.length === 0 || smartKeywordOverlap.length > 0))
                   }
                 >
                   {busy ? "保存中…" : "保存"}
