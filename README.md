@@ -1,6 +1,6 @@
 # Satelite Proxy
 
-A lightweight, modern proxy client designed for macOS.
+A lightweight, modern proxy client for macOS and Windows.
 
 Import Clash-compatible subscriptions, switch proxy nodes, manage routing and DNS, and connect through System Proxy or TUN mode.
 
@@ -13,14 +13,14 @@ Powered by sing-box. Built with Tauri, React and Rust.
 
 轻量级 **sing-box** 桌面代理客户端，基于 **Tauri 2 + React + Rust**。
 
-面向 macOS（优先 arm64）日常使用：订阅导入、节点切换、规则分流、DNS、系统代理 / TUN，以及托盘常驻。
+支持 **macOS** 与 **Windows** 双平台日常使用：订阅导入、节点切换、规则分流、DNS、系统代理 / TUN，以及托盘常驻。
 
 
 
 
 ## Highlights
 
-* Lightweight macOS desktop client
+* Lightweight desktop client for macOS and Windows
 * Clash-compatible subscription import
 * Fast node switching and latency testing
 * System Proxy and TUN modes
@@ -34,8 +34,8 @@ Powered by sing-box. Built with Tauri, React and Rust.
 | Platform            | Status    |
 | ------------------- | --------- |
 | macOS Apple Silicon | Supported |
+| Windows             | Supported |
 | macOS Intel         | Planned   |
-| Windows             | Planned   |
 | Linux               | Planned   |
 
 > Satelite Proxy is under active development. Back up important configurations before upgrading.
