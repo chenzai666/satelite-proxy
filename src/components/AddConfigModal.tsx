@@ -43,7 +43,7 @@ export function AddConfigModal({
   const [url, setUrl] = useState("");
   const [path, setPath] = useState("");
   const [viaProxy, setViaProxy] = useState(false);
-  const [autoUpdate, setAutoUpdate] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState(true);
   const [autoUpdateIntervalMin, setAutoUpdateIntervalMin] = useState("1440");
 
   useEffect(() => {
@@ -64,7 +64,7 @@ export function AddConfigModal({
       setUrl("");
       setPath("");
       setViaProxy(false);
-      setAutoUpdate(false);
+      setAutoUpdate(true);
       setAutoUpdateIntervalMin("1440");
     }
   }, [isOpen, initial]);

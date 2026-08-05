@@ -34,13 +34,15 @@ pub enum RuleTarget {
     Block,
     /// Pin to a specific subscription node (`node_id` on [`Rule`]).
     Node,
+    /// Smart pool: filter nodes by name keywords, then pick best via smart-switch probe.
+    Smart,
 }
 
 impl RuleTarget {
     pub fn outbound_tag(self) -> &'static str {
         match self {
             Self::Direct => "direct",
-            Self::Proxy | Self::Node => "proxy",
+            Self::Proxy | Self::Node | Self::Smart => "proxy",
             Self::Block => "block",
         }
     }
@@ -51,6 +53,7 @@ impl RuleTarget {
             "PROXY" => Some(Self::Proxy),
             "BLOCK" | "REJECT" | "REJECT-NO-DROP" => Some(Self::Block),
             "NODE" => Some(Self::Node),
+            "SMART" => Some(Self::Smart),
             _ => None,
         }
     }
@@ -72,12 +75,18 @@ pub struct Rule {
     /// Snapshot of node display name at save time (for stale-node UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
+    /// When `target == Smart`: whitelist — name must contain any keyword (OR). Empty = all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_include: Vec<String>,
+    /// When `target == Smart`: blacklist — name containing any keyword is skipped (OR).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_exclude: Vec<String>,
 }
 
 impl Rule {
     pub fn new(rule_type: RuleType, payload: String, target: RuleTarget, ord: i32) -> Self {
         let payload = payload.trim().to_string();
-        let id = Self::compute_id(rule_type, &payload, target, None);
+        let id = Self::compute_id(rule_type, &payload, target, None, &[], &[]);
         Self {
             id,
             ord,
@@ -87,6 +96,8 @@ impl Rule {
             enabled: true,
             node_id: None,
             node_name: None,
+            smart_include: Vec::new(),
+            smart_exclude: Vec::new(),
         }
     }
 
@@ -95,6 +106,8 @@ impl Rule {
         payload: &str,
         target: RuleTarget,
         node_id: Option<&str>,
+        smart_include: &[String],
+        smart_exclude: &[String],
     ) -> String {
         let mut h = Sha256::new();
         h.update(rule_type.as_str().as_bytes());
@@ -106,8 +119,100 @@ impl Rule {
             h.update(b"|");
             h.update(nid.as_bytes());
         }
+        if matches!(target, RuleTarget::Smart) {
+            for k in smart_include {
+                h.update(b"|+");
+                h.update(k.as_bytes());
+            }
+            for k in smart_exclude {
+                h.update(b"|-");
+                h.update(k.as_bytes());
+            }
+        }
         hex::encode(&h.finalize()[..12])
     }
+
+    /// Normalize keyword lists (trim, drop empty, de-dup case-insensitively, preserve order).
+    pub fn normalize_keywords(raw: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        for s in raw {
+            let t = s.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let lower = t.to_lowercase();
+            if out
+                .iter()
+                .any(|x: &String| x.to_lowercase() == lower)
+            {
+                continue;
+            }
+            out.push(t.to_string());
+        }
+        out
+    }
+
+    /// Whether a node display name matches this rule's smart include/exclude filters.
+    pub fn smart_name_matches(&self, node_name: &str) -> bool {
+        name_matches_keywords(node_name, &self.smart_include, &self.smart_exclude)
+    }
+
+    /// Selector outbound tag for a smart rule (stable, short).
+    pub fn smart_outbound_tag(&self) -> String {
+        format!("smart-{}", &self.id[..self.id.len().min(16)])
+    }
+}
+
+/// Whitelist (`include`): empty = allow all; otherwise name must contain **any** keyword (OR).
+/// Blacklist (`exclude`): name must contain **none** of the keywords (any hit skips).
+/// Matching is case-insensitive substring on the display name.
+pub fn name_matches_keywords(
+    node_name: &str,
+    include: &[String],
+    exclude: &[String],
+) -> bool {
+    let name = node_name.to_lowercase();
+
+    // Blacklist first: any hit → skip
+    for k in exclude {
+        let k = k.trim();
+        if k.is_empty() {
+            continue;
+        }
+        if name.contains(&k.to_lowercase()) {
+            return false;
+        }
+    }
+
+    let include_keys: Vec<&str> = include
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if include_keys.is_empty() {
+        return true;
+    }
+    // Whitelist: any keyword match → allow
+    include_keys
+        .into_iter()
+        .any(|k| name.contains(&k.to_lowercase()))
+}
+
+/// Keywords that appear in both include and exclude (case-insensitive). Empty if no conflict.
+pub fn keyword_list_overlap(include: &[String], exclude: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in include {
+        let al = a.trim().to_lowercase();
+        if al.is_empty() {
+            continue;
+        }
+        if exclude.iter().any(|b| b.trim().to_lowercase() == al)
+            && !out.iter().any(|x: &String| x.to_lowercase() == al)
+        {
+            out.push(a.trim().to_string());
+        }
+    }
+    out
 }
 
 /// Named rule set (built-in or user). Multiple sets can be enabled at once.
@@ -380,6 +485,32 @@ FINAL,PROXY
         assert_eq!(rules.len(), 4);
         assert!(matches!(rules[0].rule_type, RuleType::DomainSuffix));
         assert!(matches!(rules[2].rule_type, RuleType::DomainKeyword));
+    }
+
+    #[test]
+    fn smart_keywords_whitelist_or_blacklist_or() {
+        let inc = vec!["新加坡".into(), "日本".into()];
+        let exc = vec!["香港".into(), "台湾".into()];
+        // Whitelist OR: either keyword ok
+        assert!(name_matches_keywords("新加坡 01", &inc, &exc));
+        assert!(name_matches_keywords("日本 东京", &inc, &exc));
+        assert!(!name_matches_keywords("美国 01", &inc, &exc));
+        // Blacklist OR: any hit skips (even if whitelist would pass)
+        assert!(!name_matches_keywords("新加坡香港", &inc, &exc));
+        assert!(!name_matches_keywords("香港 01", &inc, &exc));
+        // Empty whitelist = all except blacklist
+        assert!(name_matches_keywords("任意节点", &[], &exc));
+        assert!(!name_matches_keywords("HK 香港专线", &[], &exc));
+        assert!(!name_matches_keywords("台湾专线", &[], &exc));
+    }
+
+    #[test]
+    fn smart_keywords_list_overlap() {
+        let a = vec!["新加坡".into(), "香港".into()];
+        let b = vec!["香港".into(), "日本".into()];
+        let o = keyword_list_overlap(&a, &b);
+        assert_eq!(o, vec!["香港".to_string()]);
+        assert!(keyword_list_overlap(&a, &[]).is_empty());
     }
 
     #[test]

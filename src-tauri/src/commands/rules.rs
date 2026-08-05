@@ -14,6 +14,12 @@ pub struct SaveRuleInput {
     pub enabled: Option<bool>,
     /// Required when `target == node`.
     pub node_id: Option<String>,
+    /// When `target == smart`: name must contain each keyword.
+    #[serde(default)]
+    pub smart_include: Option<Vec<String>>,
+    /// When `target == smart`: name must not contain any keyword.
+    #[serde(default)]
+    pub smart_exclude: Option<Vec<String>>,
 }
 
 fn resource_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -243,6 +249,42 @@ pub fn save_rule(
                 (None, None)
             };
 
+            let (smart_include, smart_exclude) = if matches!(input.target, RuleTarget::Smart) {
+                let include = Rule::normalize_keywords(
+                    input.smart_include.as_deref().unwrap_or(&[]),
+                );
+                let exclude = Rule::normalize_keywords(
+                    input.smart_exclude.as_deref().unwrap_or(&[]),
+                );
+                let overlap = crate::domain::keyword_list_overlap(&include, &exclude);
+                if !overlap.is_empty() {
+                    return Err(crate::error::AppError::Config(format!(
+                        "智能模式：关键字不能同时出现在白名单与黑名单中：{}",
+                        overlap.join("、")
+                    )));
+                }
+                let match_count = store
+                    .enabled_nodes()
+                    .iter()
+                    .filter(|n| {
+                        crate::domain::name_matches_keywords(
+                            &n.name,
+                            &include,
+                            &exclude,
+                        )
+                    })
+                    .count();
+                if match_count == 0 {
+                    return Err(crate::error::AppError::Config(
+                        "智能模式：当前没有符合关键字条件的节点，请调整白名单/黑名单或先导入订阅"
+                            .into(),
+                    ));
+                }
+                (include, exclude)
+            } else {
+                (Vec::new(), Vec::new())
+            };
+
             let rule = if let Some(id) = input.id.clone() {
                 if let Some(existing) = set.rules.iter().find(|r| r.id == id) {
                     let mut r = existing.clone();
@@ -252,6 +294,8 @@ pub fn save_rule(
                     r.ord = ord;
                     r.node_id = node_id;
                     r.node_name = node_name;
+                    r.smart_include = smart_include;
+                    r.smart_exclude = smart_exclude;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -261,6 +305,8 @@ pub fn save_rule(
                     r.id = id;
                     r.node_id = node_id;
                     r.node_name = node_name;
+                    r.smart_include = smart_include;
+                    r.smart_exclude = smart_exclude;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -270,6 +316,18 @@ pub fn save_rule(
                 let mut r = Rule::new(input.rule_type, payload, input.target, ord);
                 r.node_id = node_id;
                 r.node_name = node_name;
+                r.smart_include = smart_include;
+                r.smart_exclude = smart_exclude;
+                if matches!(input.target, RuleTarget::Smart) {
+                    r.id = Rule::compute_id(
+                        r.rule_type,
+                        &r.payload,
+                        r.target,
+                        None,
+                        &r.smart_include,
+                        &r.smart_exclude,
+                    );
+                }
                 if let Some(en) = input.enabled {
                     r.enabled = en;
                 }
@@ -280,6 +338,18 @@ pub fn save_rule(
         })
         .map_err(|e| e.to_string())?;
     apply_running(&app, &state)?;
+    // Best-effort: pick best node for new/updated smart rule after core restarts.
+    if matches!(rule.target, RuleTarget::Smart) && rule.enabled {
+        let r = rule.clone();
+        let app2 = app.clone();
+        tauri::async_runtime::spawn(async move {
+            // Wait for restart/clash_api to come up.
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            if let Some(state) = app2.try_state::<AppState>() {
+                let _ = crate::smart_switch::refresh_smart_rule_now(&state, &r).await;
+            }
+        });
+    }
     Ok(rule)
 }
 

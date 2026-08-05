@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { getDnsSettings, testDnsLookup, updateDnsSettings } from "../api";
+import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
   DnsAction,
@@ -475,17 +476,17 @@ export function DnsPage({ embedded = false }: Props) {
                   value={newServerAddr}
                   onChange={(e) => setNewServerAddr(e.target.value)}
                 />
-                <select
+                <SolidSelect
                   value={newServerRole}
-                  onChange={(e) =>
-                    setNewServerRole(e.target.value as DnsServerRole)
-                  }
-                >
-                  <option value="domestic">国内</option>
-                  <option value="remote">远程</option>
-                  <option value="custom">自定义</option>
-                  <option value="local">系统</option>
-                </select>
+                  onChange={(v) => setNewServerRole(v as DnsServerRole)}
+                  aria-label="服务器角色"
+                  options={[
+                    { value: "domestic", label: "国内" },
+                    { value: "remote", label: "远程" },
+                    { value: "custom", label: "自定义" },
+                    { value: "local", label: "系统" },
+                  ]}
+                />
                 <button
                   type="button"
                   className="secondary"
@@ -551,34 +552,34 @@ export function DnsPage({ embedded = false }: Props) {
             <div className="dns-add">
               <div className="dns-add-title">添加规则</div>
               <div className="dns-add-grid">
-                <select
+                <SolidSelect
                   value={newRuleMatcher}
-                  onChange={(e) =>
-                    setNewRuleMatcher(e.target.value as DomainMatcher)
-                  }
-                >
-                  <option value="domain_suffix">后缀</option>
-                  <option value="domain">精确</option>
-                  <option value="domain_keyword">关键字</option>
-                </select>
+                  onChange={(v) => setNewRuleMatcher(v as DomainMatcher)}
+                  aria-label="匹配类型"
+                  options={[
+                    { value: "domain_suffix", label: "后缀" },
+                    { value: "domain", label: "精确" },
+                    { value: "domain_keyword", label: "关键字" },
+                  ]}
+                />
                 <input
                   className="dns-add-wide"
                   placeholder="company.com / git.internal"
                   value={newRulePayload}
                   onChange={(e) => setNewRulePayload(e.target.value)}
                 />
-                <select
+                <SolidSelect
                   value={newRuleAction}
-                  onChange={(e) =>
-                    setNewRuleAction(
-                      e.target.value as "system" | "domestic" | "remote",
-                    )
+                  onChange={(v) =>
+                    setNewRuleAction(v as "system" | "domestic" | "remote")
                   }
-                >
-                  <option value="system">系统 DNS</option>
-                  <option value="domestic">国内 DNS</option>
-                  <option value="remote">远程 DNS</option>
-                </select>
+                  aria-label="解析动作"
+                  options={[
+                    { value: "system", label: "系统 DNS" },
+                    { value: "domestic", label: "国内 DNS" },
+                    { value: "remote", label: "远程 DNS" },
+                  ]}
+                />
                 <button
                   type="button"
                   className="secondary"

@@ -18,6 +18,9 @@ export function normalizeTheme(raw: string | null | undefined): ThemeId {
 
 export function applyThemeToDom(theme: ThemeId) {
   document.documentElement.dataset.theme = theme;
+  // Drive native <select> / form control chrome (WKWebView) with the UI theme.
+  document.documentElement.style.colorScheme =
+    theme === "day" ? "light" : "dark";
 }
 
 interface ThemeContextValue {

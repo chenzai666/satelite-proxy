@@ -37,7 +37,7 @@ function LatencyDisplay({
 
 function latencyClass(ms?: number | null) {
   if (ms == null || ms < 0) return "lat-none";
-  if (ms < 100) return "lat-good";
+  if (ms < 200) return "lat-good";
   if (ms < 300) return "lat-ok";
   return "lat-slow";
 }

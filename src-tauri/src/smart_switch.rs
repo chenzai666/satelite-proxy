@@ -7,8 +7,8 @@
 //! Lock rule: never hold `store` while acquiring `runtime` (see AppState).
 
 use crate::app_log;
-use crate::config::outbound_tag;
-use crate::domain::ProxyNode;
+use crate::config::{outbound_tag, smart_pool_nodes};
+use crate::domain::{ProxyNode, Rule, RuleTarget};
 use crate::services::latency::probe_nodes;
 use crate::state::AppState;
 use serde::Serialize;
@@ -92,6 +92,10 @@ fn ctrl() -> std::sync::MutexGuard<'static, Controller> {
     CTRL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Per smart-rule selector: last switch time (reuse dwell/cooldown).
+static RULE_LAST: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(10)).await;
@@ -99,6 +103,9 @@ pub fn spawn(app: AppHandle) {
             if let Some(state) = app.try_state::<AppState>() {
                 if let Err(e) = tick(&state).await {
                     app_log::warn("smart_switch", format!("tick: {e}"));
+                }
+                if let Err(e) = tick_smart_rules(&state).await {
+                    app_log::warn("smart_switch", format!("smart_rules: {e}"));
                 }
             }
             tokio::time::sleep(TICK).await;
@@ -196,6 +203,23 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     );
 
     for (batch_idx, batch) in pool.chunks(BOOTSTRAP_BATCH).enumerate() {
+        // User may disable smart switch mid-probe; stop without applying a switch.
+        let still_on = state
+            .with_store(|s| Ok(s.settings.smart_switch))
+            .unwrap_or(false);
+        if !still_on {
+            app_log::info("smart_switch", "bootstrap cancelled (smart_switch off)");
+            return Ok(SmartSwitchNowResult {
+                switched: false,
+                from_id: current_id,
+                to_id: None,
+                to_name: None,
+                latency_ms: None,
+                probed,
+                message: "cancelled".into(),
+            });
+        }
+
         let results = probe_nodes(
             batch,
             Some(PROBE_TIMEOUT_MS),
@@ -240,6 +264,22 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         if best.is_some() && batch_idx >= 1 {
             break;
         }
+    }
+
+    let still_on = state
+        .with_store(|s| Ok(s.settings.smart_switch))
+        .unwrap_or(false);
+    if !still_on {
+        app_log::info("smart_switch", "bootstrap cancelled before apply");
+        return Ok(SmartSwitchNowResult {
+            switched: false,
+            from_id: current_id,
+            to_id: None,
+            to_name: None,
+            latency_ms: None,
+            probed,
+            message: "cancelled".into(),
+        });
     }
 
     let Some((best_id, best_name, best_ms)) = best else {
@@ -604,4 +644,169 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
+    state
+        .with_store(|store| {
+            let mut out = Vec::new();
+            for set in store.rule_sets.iter().filter(|s| s.enabled) {
+                for r in set.rules.iter().filter(|r| {
+                    r.enabled && matches!(r.target, RuleTarget::Smart)
+                }) {
+                    out.push(r.clone());
+                }
+            }
+            Ok(out)
+        })
+        .unwrap_or_default()
+}
+
+/// Maintain keyword-filtered smart rule selectors (independent of global smart_switch toggle).
+async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
+    if !state.is_core_running() {
+        return Ok(());
+    }
+    let rules = collect_enabled_smart_rules(state);
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let (nodes, probe_url) = {
+        let store = state.lock_store();
+        (store.enabled_nodes(), store.settings.probe_url.clone())
+    };
+    let clash = {
+        let rt = state.lock_runtime();
+        rt.clash_api_clone()
+    };
+    let Some(api) = clash else {
+        return Ok(());
+    };
+
+    for rule in rules {
+        if let Err(e) = maintain_smart_rule(state, &rule, &nodes, &probe_url, api.clone()).await {
+            app_log::debug(
+                "smart_switch",
+                format!("smart rule {}: {e}", rule.id),
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn maintain_smart_rule(
+    state: &AppState,
+    rule: &Rule,
+    nodes: &[ProxyNode],
+    probe_url: &str,
+    api: crate::api::ClashApi,
+) -> Result<(), String> {
+    let group = rule.smart_outbound_tag();
+    {
+        let map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(t) = map.get(&rule.id) {
+            if t.elapsed() < MIN_DWELL + COOLDOWN {
+                return Ok(());
+            }
+        }
+    }
+
+    let mut pool = smart_pool_nodes(rule, nodes);
+    if pool.is_empty() {
+        return Ok(());
+    }
+    pool.sort_by(|a, b| {
+        let la = a.latency_ms.unwrap_or(u32::MAX / 4);
+        let lb = b.latency_ms.unwrap_or(u32::MAX / 4);
+        la.cmp(&lb).then_with(|| a.name.cmp(&b.name))
+    });
+    pool.truncate(BOOTSTRAP_MAX.min(TOP_K.max(8)));
+
+    let results = probe_nodes(
+        &pool,
+        Some(PROBE_TIMEOUT_MS),
+        Some(BOOTSTRAP_CONCURRENCY),
+        Some(api),
+        probe_url.to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = state.with_store_mut(|store| {
+        for r in &results {
+            if !r.id.is_empty() {
+                store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
+            }
+        }
+        Ok(())
+    });
+
+    let mut ok: Vec<(String, String, u32)> = results
+        .into_iter()
+        .filter_map(|r| {
+            let ms = r.latency_ms?;
+            Some((r.id, r.name, ms))
+        })
+        .collect();
+    ok.sort_by_key(|(_, _, ms)| *ms);
+    let Some((best_id, best_name, best_ms)) = ok.into_iter().next() else {
+        return Ok(());
+    };
+
+    let tag = {
+        let store = state.lock_store();
+        store
+            .find_node(&best_id)
+            .map(outbound_tag)
+            .ok_or_else(|| format!("node {best_id} missing"))?
+    };
+
+    {
+        let runtime = state.lock_runtime();
+        runtime
+            .select_group_live(&group, &tag)
+            .map_err(|e| e.to_string())?;
+    }
+
+    {
+        let mut map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(rule.id.clone(), Instant::now());
+    }
+
+    app_log::info(
+        "smart_switch",
+        format!(
+            "smart rule {} → {} ({}ms, group={})",
+            rule.payload, best_name, best_ms, group
+        ),
+    );
+    Ok(())
+}
+
+/// Immediate probe for one smart rule (e.g. after save). Best-effort.
+pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(), String> {
+    if !matches!(rule.target, RuleTarget::Smart) || !rule.enabled {
+        return Ok(());
+    }
+    if !state.is_core_running() {
+        return Ok(());
+    }
+    let (nodes, probe_url) = {
+        let store = state.lock_store();
+        (store.enabled_nodes(), store.settings.probe_url.clone())
+    };
+    let api = {
+        let rt = state.lock_runtime();
+        rt.clash_api_clone()
+    };
+    let Some(api) = api else {
+        return Ok(());
+    };
+    // Bypass dwell so new rules get a pick quickly.
+    {
+        let mut map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&rule.id);
+    }
+    maintain_smart_rule(state, rule, &nodes, &probe_url, api).await
 }

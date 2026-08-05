@@ -328,6 +328,8 @@ export function saveRule(input: {
   ord?: number | null;
   enabled?: boolean | null;
   nodeId?: string | null;
+  smartInclude?: string[] | null;
+  smartExclude?: string[] | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -339,6 +341,8 @@ export function saveRule(input: {
       ord: input.ord ?? null,
       enabled: input.enabled ?? null,
       node_id: input.nodeId ?? null,
+      smart_include: input.smartInclude ?? null,
+      smart_exclude: input.smartExclude ?? null,
     },
   });
 }

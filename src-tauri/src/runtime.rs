@@ -466,11 +466,16 @@ impl Runtime {
     }
 
     pub fn select_node_live(&self, node_tag: &str) -> AppResult<()> {
+        self.select_group_live("proxy", node_tag)
+    }
+
+    /// Hot-select outbound `node_tag` inside selector group (main `proxy` or smart-*).
+    pub fn select_group_live(&self, group: &str, node_tag: &str) -> AppResult<()> {
         let api = self
             .api
             .as_ref()
             .ok_or_else(|| AppError::Core("core not running".into()))?;
-        api.select_proxy("proxy", node_tag)
+        api.select_proxy(group, node_tag)
     }
 
     /// Full cleanup on app exit: system proxy off, kill core, free listen ports.

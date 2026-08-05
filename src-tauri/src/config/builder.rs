@@ -85,6 +85,8 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         "outbounds": selector_outbounds,
         "default": selected_tag,
     }));
+    // Per-rule smart selectors (keyword-filtered node pools).
+    outbounds.extend(build_smart_rule_selectors(&opts.rules, nodes, &tags));
     outbounds.extend(node_outbounds);
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
@@ -231,7 +233,71 @@ fn resolve_rule_outbound(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Stri
             // Stale pin (subscription updated / node removed / sub disabled).
             RuleTarget::Proxy.outbound_tag().into()
         }
+        RuleTarget::Smart => {
+            let pool = smart_pool_tags(r, nodes, tags);
+            if pool.is_empty() {
+                RuleTarget::Proxy.outbound_tag().into()
+            } else {
+                r.smart_outbound_tag()
+            }
+        }
     }
+}
+
+/// Node outbound tags matching a smart rule's include/exclude name filters.
+pub fn smart_pool_tags(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Vec<String> {
+    let mut pool: Vec<(u32, String)> = nodes
+        .iter()
+        .filter(|n| r.smart_name_matches(&n.name))
+        .filter_map(|n| {
+            let tag = outbound_tag(n);
+            if tags.iter().any(|t| t == &tag) {
+                Some((n.latency_ms.unwrap_or(u32::MAX / 4), tag))
+            } else {
+                None
+            }
+        })
+        .collect();
+    // Prefer historically better latency as selector default.
+    pool.sort_by_key(|(lat, _)| *lat);
+    pool.into_iter().map(|(_, tag)| tag).collect()
+}
+
+/// Nodes matching smart filters (for probe / UI).
+pub fn smart_pool_nodes(r: &Rule, nodes: &[ProxyNode]) -> Vec<ProxyNode> {
+    nodes
+        .iter()
+        .filter(|n| r.smart_name_matches(&n.name))
+        .cloned()
+        .collect()
+}
+
+fn build_smart_rule_selectors(
+    rules: &[Rule],
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> Vec<Value> {
+    use crate::domain::RuleTarget;
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for r in rules.iter().filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart)) {
+        let group = r.smart_outbound_tag();
+        if !seen.insert(group.clone()) {
+            continue;
+        }
+        let pool = smart_pool_tags(r, nodes, tags);
+        if pool.is_empty() {
+            continue;
+        }
+        let default = pool.first().cloned().unwrap_or_else(|| "direct".into());
+        out.push(json!({
+            "type": "selector",
+            "tag": group,
+            "outbounds": pool,
+            "default": default,
+        }));
+    }
+    out
 }
 
 fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
@@ -804,5 +870,54 @@ mod tests {
             .find(|r| r.get("domain_suffix").is_some())
             .expect("stale pin rule");
         assert_eq!(pinned["outbound"], "proxy");
+    }
+
+    #[test]
+    fn smart_rule_builds_filtered_selector() {
+        use crate::domain::{Rule, RuleTarget, RuleType};
+        let mut hk = sample_ss();
+        hk.id = "aaaaaaaaaaaaaaaa".into();
+        hk.name = "香港 01".into();
+        let mut sg = sample_ss();
+        sg.id = "bbbbbbbbbbbbbbbb".into();
+        sg.name = "新加坡 01".into();
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "chatgpt.com".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        rule.smart_exclude = vec!["香港".into()];
+        let built = build_singbox_config(
+            &[hk, sg.clone()],
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![rule.clone()],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+            },
+        )
+        .unwrap();
+        let group = rule.smart_outbound_tag();
+        let outs = built.value["outbounds"].as_array().unwrap();
+        let sel = outs
+            .iter()
+            .find(|o| o.get("tag") == Some(&json!(group)))
+            .expect("smart selector");
+        let pool = sel["outbounds"].as_array().unwrap();
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0], json!(outbound_tag(&sg)));
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        let routed = rules
+            .iter()
+            .find(|r| r.get("domain_suffix").is_some())
+            .expect("smart route");
+        assert_eq!(routed["outbound"], group);
     }
 }

@@ -82,7 +82,9 @@ export function DashboardPage({
   const [showPreview, setShowPreview] = useState(false);
   const [sysProxyBusy, setSysProxyBusy] = useState(false);
   const [tunBusy, setTunBusy] = useState(false);
-  const [smartBusy, setSmartBusy] = useState(false);
+  /** Bootstrap probe after enabling smart switch (does not lock other controls). */
+  const [smartProbing, setSmartProbing] = useState(false);
+  const smartGenRef = useRef(0);
   const [modeBusy, setModeBusy] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -193,46 +195,71 @@ export function DashboardPage({
   }
 
   async function onToggleSmartSwitch(next: boolean) {
-    setSmartBusy(true);
     setError(null);
-    try {
-      await updateSettings({ smartSwitch: next });
-      // Keep switch state even if bootstrap probe fails.
-      setProxy((prev) => (prev ? { ...prev, smart_switch: next } : prev));
-      if (next) {
-        try {
-          const r = await smartSwitchNow();
-          if (r.message === "core not running") {
-            setError(t("dashboard.smartSwitchNeedCore"));
-          } else if (r.message === "all probes failed") {
-            setError(t("dashboard.smartSwitchProbeFail"));
-          } else if (r.message === "no nodes") {
-            setError(t("dashboard.smartSwitchNoNodes"));
-          } else if (r.message === "clash api unavailable") {
-            setError(t("dashboard.smartSwitchProbeFail"));
-          }
-        } catch (probeErr) {
-          setError(
-            typeof probeErr === "string" ? probeErr : String(probeErr),
-          );
-        }
-        // Refresh status/nodes; don't let status failure flip switch off.
-        try {
-          await reload();
-          setProxy((prev) =>
-            prev ? { ...prev, smart_switch: next } : prev,
-          );
-        } catch {
-          /* ignore */
-        }
-      } else {
+
+    // Turn off: invalidate any in-flight bootstrap probe and free the UI immediately.
+    if (!next) {
+      smartGenRef.current += 1;
+      setSmartProbing(false);
+      setProxy((prev) => (prev ? { ...prev, smart_switch: false } : prev));
+      try {
+        await updateSettings({ smartSwitch: false });
         const s = await getProxyStatus().catch(() => null);
         if (s) setProxy(s);
+      } catch (e) {
+        setError(typeof e === "string" ? e : String(e));
+      }
+      return;
+    }
+
+    // Turn on: enable setting, then probe without locking other quick controls.
+    const gen = ++smartGenRef.current;
+    setSmartProbing(true);
+    setProxy((prev) => (prev ? { ...prev, smart_switch: true } : prev));
+    try {
+      await updateSettings({ smartSwitch: true });
+      if (gen !== smartGenRef.current) {
+        // User turned off while enabling; re-assert off in case our write won the race.
+        await updateSettings({ smartSwitch: false }).catch(() => {});
+        return;
+      }
+      try {
+        const r = await smartSwitchNow();
+        if (gen !== smartGenRef.current) return;
+        if (r.message === "core not running") {
+          setError(t("dashboard.smartSwitchNeedCore"));
+        } else if (r.message === "all probes failed") {
+          setError(t("dashboard.smartSwitchProbeFail"));
+        } else if (r.message === "no nodes") {
+          setError(t("dashboard.smartSwitchNoNodes"));
+        } else if (r.message === "clash api unavailable") {
+          setError(t("dashboard.smartSwitchProbeFail"));
+        }
+      } catch (probeErr) {
+        if (gen !== smartGenRef.current) return;
+        setError(
+          typeof probeErr === "string" ? probeErr : String(probeErr),
+        );
+      }
+      if (gen !== smartGenRef.current) return;
+      try {
+        await reload();
+        if (gen !== smartGenRef.current) return;
+        setProxy((prev) =>
+          prev ? { ...prev, smart_switch: true } : prev,
+        );
+      } catch {
+        /* ignore */
       }
     } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
+      if (gen === smartGenRef.current) {
+        setError(typeof e === "string" ? e : String(e));
+        setProxy((prev) =>
+          prev ? { ...prev, smart_switch: false } : prev,
+        );
+      }
     } finally {
-      setSmartBusy(false);
+      if (gen === smartGenRef.current) setSmartProbing(false);
     }
   }
 
@@ -297,7 +324,8 @@ export function DashboardPage({
   const running = proxy?.running ?? false;
   const stateLabel = proxy?.core_state ?? "stopped";
   const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
-  const controlsBusy = busy || sysProxyBusy || tunBusy || smartBusy || modeBusy;
+  // Smart bootstrap probe must not lock routing / sys proxy / TUN.
+  const controlsBusy = busy || sysProxyBusy || tunBusy || modeBusy;
   const smartSwitchOn = proxy?.smart_switch ?? false;
   const nodeCount = nodes.length;
   const subCount = subs.length;
@@ -579,19 +607,39 @@ export function DashboardPage({
           </div>
           <div className="dash-inline-row dash-inline-switch">
             <span
-              className="dash-inline-label"
-              title={t("dashboard.smartSwitchDesc")}
+              className={`dash-inline-label${smartProbing ? " dash-smart-probing" : ""}`}
+              title={
+                smartProbing
+                  ? t("dashboard.smartSwitchProbing")
+                  : t("dashboard.smartSwitchDesc")
+              }
             >
-              {t("dashboard.smartSwitch")}
+              {smartProbing ? (
+                <>
+                  <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                  <span>{t("dashboard.smartSwitchProbing")}</span>
+                </>
+              ) : (
+                t("dashboard.smartSwitch")
+              )}
             </span>
             <button
               type="button"
               role="switch"
               aria-checked={smartSwitchOn}
-              aria-label={t("dashboard.smartSwitch")}
-              title={t("dashboard.smartSwitchDesc")}
+              aria-busy={smartProbing}
+              aria-label={
+                smartProbing
+                  ? t("dashboard.smartSwitchProbing")
+                  : t("dashboard.smartSwitch")
+              }
+              title={
+                smartProbing
+                  ? t("dashboard.smartSwitchProbingHint")
+                  : t("dashboard.smartSwitchDesc")
+              }
               className={`switch small ${smartSwitchOn ? "on" : ""}`}
-              disabled={controlsBusy || nodeCount === 0}
+              disabled={nodeCount === 0 && !smartSwitchOn}
               onClick={() => void onToggleSmartSwitch(!smartSwitchOn)}
             >
               <span className="switch-thumb" />
