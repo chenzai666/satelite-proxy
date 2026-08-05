@@ -1,4 +1,5 @@
-use crate::domain::{Rule, RuleSet, RuleSetSummary, RuleTarget, RuleType};
+use crate::config::{dump_rule_set_files, remove_rule_set_files};
+use crate::domain::{DnsPolicy, Rule, RuleSet, RuleSetSummary, RuleTarget, RuleType};
 use crate::state::AppState;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
@@ -20,6 +21,9 @@ pub struct SaveRuleInput {
     /// When `target == smart`: name must not contain any keyword.
     #[serde(default)]
     pub smart_exclude: Option<Vec<String>>,
+    /// `inherit` | `system` (user rules; default inherit).
+    #[serde(default)]
+    pub dns_policy: Option<String>,
 }
 
 fn resource_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -34,6 +38,50 @@ fn apply_running(app: &AppHandle, state: &AppState) -> Result<(), String> {
         Ok(None) => Ok(()),
         Err(e) => Err(format!("已保存，但重启内核失败: {e}")),
     }
+}
+
+/// Write Clash `.list` + optional `.dns.list` for a set under app data.
+fn dump_set(state: &AppState, set_id: &str) {
+    let set = state
+        .with_store(|s| Ok(s.get_rule_set(set_id).cloned()))
+        .ok()
+        .flatten();
+    if let Some(set) = set {
+        if let Err(e) = dump_rule_set_files(&state.app_data_dir, &set) {
+            eprintln!("[satelite] dump rule files {set_id}: {e}");
+        }
+    }
+}
+
+fn parse_dns_policy_input(
+    raw: Option<&str>,
+    rule_type: RuleType,
+    target: RuleTarget,
+) -> DnsPolicy {
+    if let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(p) = DnsPolicy::parse(s) {
+            // Only domain-like rules may force system DNS.
+            if matches!(p, DnsPolicy::System)
+                && !matches!(
+                    rule_type,
+                    RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword
+                )
+            {
+                return DnsPolicy::Inherit;
+            }
+            return p;
+        }
+    }
+    // Default for new domain+DIRECT: system (UI usually sends explicitly).
+    if matches!(target, RuleTarget::Direct)
+        && matches!(
+            rule_type,
+            RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword
+        )
+    {
+        return DnsPolicy::System;
+    }
+    DnsPolicy::Inherit
 }
 
 #[tauri::command]
@@ -103,7 +151,7 @@ pub fn reorder_rule_sets(
 
 #[tauri::command]
 pub fn create_rule_set(state: State<'_, AppState>, name: String) -> Result<RuleSet, String> {
-    state
+    let set = state
         .with_store_mut(|store| {
             let n = name.trim();
             if n.is_empty() {
@@ -126,7 +174,9 @@ pub fn create_rule_set(state: State<'_, AppState>, name: String) -> Result<RuleS
             }
             Ok(store.create_rule_set(n))
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    dump_set(&state, &set.id);
+    Ok(set)
 }
 
 #[tauri::command]
@@ -138,9 +188,28 @@ pub fn delete_rule_set(
     state
         .with_store_mut(|store| store.delete_rule_set(&id))
         .map_err(|e| e.to_string())?;
+    remove_rule_set_files(&state.app_data_dir, &id);
     apply_running(&app, &state)
 }
 
+/// Reset one factory set (builtin-* or general-rules) from `resources/rules/{id}.list`.
+#[tauri::command]
+pub fn reset_rule_set(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<RuleSet, String> {
+    let set = state
+        .with_store_mut(|store| {
+            store.reset_rule_set(state.resource_dir.as_deref(), &id)
+        })
+        .map_err(|e| e.to_string())?;
+    dump_set(&state, &set.id);
+    apply_running(&app, &state)?;
+    Ok(set)
+}
+
+/// Legacy: reset all `builtin-*` sets (not general-rules).
 #[tauri::command]
 pub fn reset_builtin_rule_set(
     app: AppHandle,
@@ -148,7 +217,7 @@ pub fn reset_builtin_rule_set(
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
-            store.reset_builtin_rule_set(state.resource_dir.as_deref());
+            store.reset_all_builtin_rule_sets(state.resource_dir.as_deref());
             store
                 .get_rule_set(crate::domain::BUILTIN_SET_ID)
                 .cloned()
@@ -156,6 +225,18 @@ pub fn reset_builtin_rule_set(
                 .ok_or_else(|| crate::error::AppError::NotFound("builtin".into()))
         })
         .map_err(|e| e.to_string())?;
+    // Dump every builtin factory set
+    if let Ok(sets) = state.with_store(|s| {
+        Ok(s.rule_sets
+            .iter()
+            .filter(|x| x.builtin)
+            .cloned()
+            .collect::<Vec<_>>())
+    }) {
+        for s in sets {
+            let _ = crate::config::dump_rule_set_files(&state.app_data_dir, &s);
+        }
+    }
     apply_running(&app, &state)?;
     Ok(set)
 }
@@ -285,6 +366,14 @@ pub fn save_rule(
                 (Vec::new(), Vec::new())
             };
 
+            // User-saved rules may set system DNS; missing/invalid → inherit
+            // (built-in *files* still have no DNS column; store may hold overrides).
+            let dns_policy = parse_dns_policy_input(
+                input.dns_policy.as_deref(),
+                input.rule_type,
+                input.target,
+            );
+
             let rule = if let Some(id) = input.id.clone() {
                 if let Some(existing) = set.rules.iter().find(|r| r.id == id) {
                     let mut r = existing.clone();
@@ -296,6 +385,7 @@ pub fn save_rule(
                     r.node_name = node_name;
                     r.smart_include = smart_include;
                     r.smart_exclude = smart_exclude;
+                    r.dns_policy = dns_policy;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -307,6 +397,7 @@ pub fn save_rule(
                     r.node_name = node_name;
                     r.smart_include = smart_include;
                     r.smart_exclude = smart_exclude;
+                    r.dns_policy = dns_policy;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -318,6 +409,7 @@ pub fn save_rule(
                 r.node_name = node_name;
                 r.smart_include = smart_include;
                 r.smart_exclude = smart_exclude;
+                r.dns_policy = dns_policy;
                 if matches!(input.target, RuleTarget::Smart) {
                     r.id = Rule::compute_id(
                         r.rule_type,
@@ -337,6 +429,12 @@ pub fn save_rule(
             store.upsert_rule_in_set(&set_id, rule)
         })
         .map_err(|e| e.to_string())?;
+    // Dual files: Clash route list + optional SYSTEM DNS sidecar.
+    if let Some(sid) = rule_set_id_of(&state, &rule) {
+        dump_set(&state, &sid);
+    } else if let Some(sid) = input.set_id.as_deref() {
+        dump_set(&state, sid);
+    }
     apply_running(&app, &state)?;
     // Best-effort: pick best node for new/updated smart rule after core restarts.
     if matches!(rule.target, RuleTarget::Smart) && rule.enabled {
@@ -353,6 +451,19 @@ pub fn save_rule(
     Ok(rule)
 }
 
+fn rule_set_id_of(state: &AppState, rule: &Rule) -> Option<String> {
+    state
+        .with_store(|store| {
+            Ok(store
+                .rule_sets
+                .iter()
+                .find(|s| s.rules.iter().any(|r| r.id == rule.id))
+                .map(|s| s.id.clone()))
+        })
+        .ok()
+        .flatten()
+}
+
 #[tauri::command]
 pub fn remove_rule(
     app: AppHandle,
@@ -360,12 +471,11 @@ pub fn remove_rule(
     id: String,
     set_id: Option<String>,
 ) -> Result<(), String> {
+    let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
     state
-        .with_store_mut(|store| {
-            let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
-            store.remove_rule_from_set(&sid, &id)
-        })
+        .with_store_mut(|store| store.remove_rule_from_set(&sid, &id))
         .map_err(|e| e.to_string())?;
+    dump_set(&state, &sid);
     apply_running(&app, &state)
 }
 
@@ -377,14 +487,14 @@ pub fn set_rule_enabled(
     enabled: bool,
     set_id: Option<String>,
 ) -> Result<Rule, String> {
+    let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
     let rule = state
         .with_store_mut(|store| {
-            let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
             let set = store
                 .rule_sets
                 .iter_mut()
                 .find(|s| s.id == sid)
-                .ok_or_else(|| crate::error::AppError::NotFound(sid))?;
+                .ok_or_else(|| crate::error::AppError::NotFound(sid.clone()))?;
             let rule = set
                 .rules
                 .iter_mut()
@@ -394,6 +504,7 @@ pub fn set_rule_enabled(
             Ok(rule.clone())
         })
         .map_err(|e| e.to_string())?;
+    dump_set(&state, &sid);
     apply_running(&app, &state)?;
     Ok(rule)
 }

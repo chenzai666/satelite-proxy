@@ -7,9 +7,11 @@ mod subscription;
 pub use dns::*;
 pub use node::*;
 pub use rule::{
-    default_rules, keyword_list_overlap, load_builtin_rule_sets, name_matches_keywords,
-    sanitize_rules, Rule, RuleSet, RuleSetSummary, RuleTarget, RuleType, BUILTIN_SET_ID,
-    BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME,
+    default_rules, format_clash_rules_list, format_dns_sidecar_list, is_deletable_rule_set,
+    is_factory_set_id, keyword_list_overlap, load_builtin_rule_sets, load_factory_rule_set,
+    name_matches_keywords, parse_dns_sidecar_list, sanitize_rules, DnsPolicy, Rule, RuleSet,
+    RuleSetSummary, RuleTarget, RuleType, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
+    GENERAL_SET_NAME,
 };
 pub use settings::*;
 pub use subscription::*;

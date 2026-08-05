@@ -2284,10 +2284,10 @@ code {
   padding-bottom: 0;
 }
 
-/* General: mode + toggles side by side */
+/* General: mode + toggles side by side (50% / 50%) */
 .dns-general-body {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0;
   padding: 0;
 }
@@ -2713,6 +2713,19 @@ button.check.on {
 
 .field:has(.solid-select.open) {
   z-index: 5;
+}
+
+/* Rule modal: system DNS row (must stay visible after DIRECT selected) */
+.rule-dns-system-row {
+  margin-top: 0.15rem;
+}
+
+.rule-dns-system {
+  border: 1px solid var(--border) !important;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem !important;
+  background: var(--panel-elevated);
+  gap: 0.75rem;
 }
 
 .field input {

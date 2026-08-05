@@ -1,0 +1,12 @@
+# name: 通用规则
+# Factory seed for the user-facing general set (id = filename stem).
+# Restart preserves store edits; use UI「重置」to reload this file.
+
+# Local / private
+DOMAIN-SUFFIX,local,DIRECT
+DOMAIN-SUFFIX,localhost,DIRECT
+IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+DOMAIN-SUFFIX,cn,DIRECT

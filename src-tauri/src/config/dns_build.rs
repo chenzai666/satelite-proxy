@@ -2,7 +2,7 @@
 
 use crate::domain::{
     parse_dns_address, DnsAction, DnsMode, DnsServer, DnsServerRole, DnsSettings, DomainMatcher,
-    ParsedDnsAddress,
+    ParsedDnsAddress, Rule, RuleType,
 };
 use serde_json::{json, Value};
 
@@ -22,7 +22,14 @@ pub struct BuiltDns {
 }
 
 /// Build DNS config. Always produces a valid 1.12+ DNS block.
-pub fn build_dns_section(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
+///
+/// `route_rules`: enabled routing rules (rule page). Entries with
+/// `dns_policy = system` are projected **before** DNS-page rules (rule page wins).
+pub fn build_dns_section(
+    settings: &DnsSettings,
+    tun_enabled: bool,
+    route_rules: &[Rule],
+) -> BuiltDns {
     let effective_mode = if !settings.enabled {
         DnsMode::System
     } else {
@@ -31,9 +38,31 @@ pub fn build_dns_section(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns 
 
     match effective_mode {
         DnsMode::System => build_system(settings, tun_enabled),
-        DnsMode::Smart => build_smart(settings, tun_enabled),
-        DnsMode::Custom => build_custom(settings, tun_enabled),
+        DnsMode::Smart => build_smart(settings, tun_enabled, route_rules),
+        DnsMode::Custom => build_custom(settings, tun_enabled, route_rules),
     }
+}
+
+/// Project domain rules that request system DNS → sing-box DNS rules (rule page priority).
+fn project_route_system_dns(route_rules: &[Rule], tag_local: &str) -> Vec<Value> {
+    let mut out = Vec::new();
+    for r in route_rules.iter().filter(|r| r.wants_system_dns()) {
+        let payload = r.payload.trim();
+        if payload.is_empty() {
+            continue;
+        }
+        let mut rule = match r.rule_type {
+            RuleType::Domain => json!({ "domain": [payload] }),
+            RuleType::DomainSuffix => json!({ "domain_suffix": [payload] }),
+            RuleType::DomainKeyword => json!({ "domain_keyword": [payload] }),
+            _ => continue,
+        };
+        if let Some(obj) = rule.as_object_mut() {
+            obj.insert("server".into(), json!(tag_local));
+        }
+        out.push(rule);
+    }
+    out
 }
 
 fn build_system(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
@@ -52,7 +81,7 @@ fn build_system(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
     }
 }
 
-fn build_smart(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
+fn build_smart(settings: &DnsSettings, tun_enabled: bool, route_rules: &[Rule]) -> BuiltDns {
     let mut servers: Vec<Value> = Vec::new();
     let mut tag_local = TAG_LOCAL.to_string();
     let mut tag_cn = TAG_CN_FALLBACK.to_string();
@@ -135,7 +164,10 @@ fn build_smart(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
 
     let mut rules: Vec<Value> = Vec::new();
 
-    // 1) User whitelist / custom rules
+    // 0) Route-rule projected SYSTEM DNS (rule page wins over DNS page)
+    rules.extend(project_route_system_dns(route_rules, &tag_local));
+
+    // 1) User whitelist / custom rules (DNS page)
     for r in settings.rules.iter().filter(|r| r.enabled) {
         if let Some(rule) = user_rule_to_json(r, &tag_local, &tag_cn, &tag_remote, fake_ip_on) {
             rules.push(rule);
@@ -185,7 +217,7 @@ fn build_smart(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
     }
 }
 
-fn build_custom(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
+fn build_custom(settings: &DnsSettings, tun_enabled: bool, route_rules: &[Rule]) -> BuiltDns {
     let mut servers: Vec<Value> = Vec::new();
     let mut first_tag = TAG_LOCAL.to_string();
     let mut have_local = false;
@@ -239,6 +271,8 @@ fn build_custom(settings: &DnsSettings, tun_enabled: bool) -> BuiltDns {
     }
 
     let mut rules: Vec<Value> = Vec::new();
+    // Rule page SYSTEM DNS first
+    rules.extend(project_route_system_dns(route_rules, &tag_local));
     for r in settings.rules.iter().filter(|r| r.enabled) {
         if let Some(rule) = user_rule_to_json(r, &tag_local, &tag_cn, &tag_remote, fake_ip_on) {
             rules.push(rule);
@@ -399,7 +433,7 @@ mod tests {
     #[test]
     fn smart_default_has_fakeip_and_local() {
         let s = DnsSettings::default();
-        let b = build_dns_section(&s, false);
+        let b = build_dns_section(&s, false, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert!(servers.iter().any(|x| x["type"] == "local"));
         assert!(servers.iter().any(|x| x["type"] == "fakeip"));
@@ -411,10 +445,35 @@ mod tests {
     fn system_mode_only_local() {
         let mut s = DnsSettings::default();
         s.mode = DnsMode::System;
-        let b = build_dns_section(&s, true);
+        let b = build_dns_section(&s, true, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["type"], "local");
         assert!(b.want_hijack);
+    }
+
+    #[test]
+    fn route_system_dns_projected_before_dns_page() {
+        use crate::domain::{DnsPolicy, Rule, RuleTarget, RuleType};
+        let s = DnsSettings::default();
+        let mut r = Rule::new(
+            RuleType::DomainSuffix,
+            "corp.internal".into(),
+            RuleTarget::Direct,
+            10,
+        );
+        r.dns_policy = DnsPolicy::System;
+        let b = build_dns_section(&s, false, &[r]);
+        let rules = b.dns["rules"].as_array().unwrap();
+        let first = rules
+            .iter()
+            .find(|x| x.get("domain_suffix").is_some())
+            .expect("projected system dns");
+        assert!(first["domain_suffix"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("corp.internal")));
+        assert!(first["server"].as_str().unwrap().contains("dns-"));
     }
 }

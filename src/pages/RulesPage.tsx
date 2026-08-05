@@ -15,7 +15,7 @@ import {
   listRules,
   removeRule,
   reorderRuleSets,
-  resetBuiltinRuleSet,
+  resetRuleSet,
   saveRule,
   setRuleEnabled,
   setRuleSetEnabled,
@@ -61,6 +61,8 @@ export function RulesPage({ embedded = false }: Props) {
   const [nodeQuery, setNodeQuery] = useState("");
   const [smartInclude, setSmartInclude] = useState("");
   const [smartExclude, setSmartExclude] = useState("");
+  /** Domain rules: use system DNS (default on for DIRECT). */
+  const [dnsSystem, setDnsSystem] = useState(false);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -241,7 +243,15 @@ export function RulesPage({ embedded = false }: Props) {
       return { text: parts.join(" · "), stale: false, cls: "target-smart" };
     }
     if (r.target !== "node") {
-      return { text: r.target, stale: false, cls: `target-${r.target}` };
+      const base = r.target;
+      if ((r.dns_policy ?? "inherit") === "system") {
+        return {
+          text: `${base} · DNS:sys`,
+          stale: false,
+          cls: `target-${r.target}`,
+        };
+      }
+      return { text: base, stale: false, cls: `target-${r.target}` };
     }
     const id = r.node_id ?? "";
     const live = id ? nodeById.get(id) : undefined;
@@ -265,6 +275,14 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
+  const isDomainLike =
+    ruleType === "domain" ||
+    ruleType === "domain_suffix" ||
+    ruleType === "domain_keyword";
+
+  // Domain + DIRECT → show system-DNS switch (any rule set, including builtin).
+  const showDnsSystem = isDomainLike && target === "direct";
+
   function openCreate() {
     setEditRule(null);
     setRuleType("domain_suffix");
@@ -274,6 +292,7 @@ export function RulesPage({ embedded = false }: Props) {
     setNodeQuery("");
     setSmartInclude("");
     setSmartExclude("");
+    setDnsSystem(false);
     setEnabled(true);
     setEditOpen(true);
     void ensureNodesLoaded();
@@ -288,6 +307,16 @@ export function RulesPage({ embedded = false }: Props) {
     setNodeQuery("");
     setSmartInclude((r.smart_include ?? []).join(" "));
     setSmartExclude((r.smart_exclude ?? []).join(" "));
+    // DIRECT domain defaults to system if field missing (legacy rows).
+    const domainLike =
+      r.type === "domain" ||
+      r.type === "domain_suffix" ||
+      r.type === "domain_keyword";
+    if (domainLike && r.target === "direct") {
+      setDnsSystem((r.dns_policy ?? "system") === "system");
+    } else {
+      setDnsSystem((r.dns_policy ?? "inherit") === "system");
+    }
     setEnabled(r.enabled);
     setEditOpen(true);
     void ensureNodesLoaded();
@@ -309,6 +338,9 @@ export function RulesPage({ embedded = false }: Props) {
     setBusy(true);
     setError(null);
     try {
+      // Domain rules: system iff switch on; else inherit DNS page.
+      const resolvedDns =
+        isDomainLike && dnsSystem ? "system" : "inherit";
       await saveRule({
         setId: viewSetId,
         id: editRule?.id ?? null,
@@ -320,6 +352,7 @@ export function RulesPage({ embedded = false }: Props) {
         nodeId: target === "node" ? pinNodeId : null,
         smartInclude: target === "smart" ? parseKeywords(smartInclude) : null,
         smartExclude: target === "smart" ? parseKeywords(smartExclude) : null,
+        dnsPolicy: resolvedDns,
       });
       setEditOpen(false);
       await reloadRules(viewSetId);
@@ -382,13 +415,24 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onResetBuiltin() {
-    if (!confirm("将内置规则集恢复为出厂 Shadowrocket 列表？当前对内置集的编辑会丢失。")) {
+  function isFactorySet(s: RuleSetSummary | undefined | null) {
+    if (!s) return false;
+    return s.builtin || s.id === "general-rules" || s.id.startsWith("builtin-");
+  }
+
+  async function onResetFactory() {
+    if (!viewSetId || !viewSet || !isFactorySet(viewSet)) return;
+    const name = viewSet.name;
+    if (
+      !confirm(
+        `将「${name}」恢复为出厂配置文件？\n当前对该集的编辑会丢失。\n（重启程序不会自动重置，只会保留你的修改。）`,
+      )
+    ) {
       return;
     }
     try {
-      await resetBuiltinRuleSet();
-      if (viewSetId) await reloadRules(viewSetId);
+      await resetRuleSet(viewSetId);
+      await reloadRules(viewSetId);
       await reloadSets();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
@@ -616,12 +660,20 @@ export function RulesPage({ embedded = false }: Props) {
               <button type="button" onClick={openCreate} disabled={!viewSetId}>
                 {t("rules.addRule")}
               </button>
-              {viewSet?.builtin && (
-                <button type="button" className="secondary" onClick={() => void onResetBuiltin()}>
-                  重置内置
+              {isFactorySet(viewSet) && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => void onResetFactory()}
+                  title={t("rules.resetFactoryHint")}
+                >
+                  {t("rules.resetFactory")}
                 </button>
               )}
-              {viewSet && !viewSet.builtin && viewSet.id !== "general-rules" && (
+              {viewSet &&
+                !viewSet.builtin &&
+                viewSet.id !== "general-rules" &&
+                !viewSet.id.startsWith("builtin-") && (
                 <button type="button" className="danger" onClick={() => void onDeleteSet()}>
                   删除集
                 </button>
@@ -797,10 +849,40 @@ export function RulesPage({ embedded = false }: Props) {
                 <SolidSelect
                   value={target}
                   options={targetOpts}
-                  onChange={(v) => setTarget(v as RuleTarget)}
+                  onChange={(v) => {
+                    const next = v as RuleTarget;
+                    setTarget(next);
+                    // DIRECT + domain → default on.
+                    if (next === "direct" && isDomainLike) {
+                      setDnsSystem(true);
+                    }
+                  }}
                   aria-label={t("rules.outbound")}
                 />
               </div>
+              {showDnsSystem ? (
+                <div className="field rule-dns-system-row">
+                  <div className="sys-proxy-row rule-dns-system">
+                    <div>
+                      <div className="sys-proxy-title">
+                        {t("rules.dnsSystem")}
+                      </div>
+                      <div className="sys-proxy-desc">
+                        {t("rules.dnsSystemHint")}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={dnsSystem}
+                      className={`switch ${dnsSystem ? "on" : ""}`}
+                      onClick={() => setDnsSystem((v) => !v)}
+                    >
+                      <span className="switch-thumb" />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {target === "node" && (
                 <div className="field rule-node-pick">
                   <span>{t("rules.pickNode")}</span>

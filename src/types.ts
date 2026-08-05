@@ -271,6 +271,9 @@ export interface RuleSet {
 
 export type RuleTarget = "direct" | "proxy" | "block" | "node" | "smart";
 
+/** inherit = DNS page; system = local/system DNS (rule page wins). */
+export type DnsPolicy = "inherit" | "system";
+
 export interface Rule {
   id: string;
   ord: number;
@@ -286,6 +289,8 @@ export interface Rule {
   smart_include?: string[];
   /** Smart mode blacklist: name containing any keyword is skipped (OR). */
   smart_exclude?: string[];
+  /** DNS override; built-in sets always inherit. */
+  dns_policy?: DnsPolicy;
 }
 
 /** Live connection or historical request row */

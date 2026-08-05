@@ -311,6 +311,12 @@ export function deleteRuleSet(id: string) {
   return invoke<void>("delete_rule_set", { id });
 }
 
+/** Reset one factory set (builtin-* or general-rules) from resources. */
+export function resetRuleSet(id: string) {
+  return invoke<RuleSet>("reset_rule_set", { id });
+}
+
+/** Legacy: reset all builtin-* sets only. Prefer `resetRuleSet(id)`. */
 export function resetBuiltinRuleSet() {
   return invoke<RuleSet>("reset_builtin_rule_set");
 }
@@ -330,6 +336,8 @@ export function saveRule(input: {
   nodeId?: string | null;
   smartInclude?: string[] | null;
   smartExclude?: string[] | null;
+  /** inherit | system */
+  dnsPolicy?: string | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -343,6 +351,7 @@ export function saveRule(input: {
       node_id: input.nodeId ?? null,
       smart_include: input.smartInclude ?? null,
       smart_exclude: input.smartExclude ?? null,
+      dns_policy: input.dnsPolicy ?? null,
     },
   });
 }

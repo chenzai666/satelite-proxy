@@ -282,6 +282,9 @@ const en = {
   "rules.disableSet": "Disable set",
   "rules.enableSet": "Enable set",
   "rules.resetBuiltin": "Reset built-in",
+  "rules.resetFactory": "Reset to factory",
+  "rules.resetFactoryHint":
+    "Reload this set from the app resource file. Restart keeps your edits; only Reset discards them.",
   "rules.deleteSet": "Delete set",
   "rules.filter": "Filter rules…",
   "rules.empty": "No rules",
@@ -335,6 +338,9 @@ const en = {
   "rules.smartLabel": "Smart",
   "rules.smartLabelInc": "allow {k}",
   "rules.smartLabelExc": "deny {k}",
+  "rules.dnsSystem": "Use system DNS",
+  "rules.dnsSystemHint":
+    "Resolve this domain via system/local DNS (no need for DNS whitelist). Off = follow DNS settings.",
   "rules.nodeStale": "Node missing",
   "rules.nodeStaleHint":
     "Pinned node is gone (subscription updated or disabled). Falls back to PROXY until you re-select.",
@@ -641,6 +647,9 @@ const zh: Record<MessageKey, string> = {
   "rules.disableSet": "关闭此集",
   "rules.enableSet": "启用此集",
   "rules.resetBuiltin": "重置内置",
+  "rules.resetFactory": "重置为出厂",
+  "rules.resetFactoryHint":
+    "从应用资源文件重新加载本集。重启会保留你的修改；只有点重置才会丢掉编辑。",
   "rules.deleteSet": "删除集",
   "rules.filter": "过滤规则…",
   "rules.empty": "暂无规则",
@@ -693,6 +702,9 @@ const zh: Record<MessageKey, string> = {
   "rules.smartLabel": "智能",
   "rules.smartLabelInc": "白 {k}",
   "rules.smartLabelExc": "黑 {k}",
+  "rules.dnsSystem": "使用系统 DNS",
+  "rules.dnsSystemHint":
+    "该域名走系统/本地解析（不必再去 DNS 页加白名单）。关闭则跟随 DNS 设置。",
   "rules.nodeStale": "节点已失效",
   "rules.nodeStaleHint":
     "指定节点已不存在（订阅更新或已禁用）。当前回退到 PROXY，请重新选择。",

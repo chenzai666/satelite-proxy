@@ -170,6 +170,7 @@ pub fn run() {
             commands::create_rule_set,
             commands::reorder_rule_sets,
             commands::delete_rule_set,
+            commands::reset_rule_set,
             commands::reset_builtin_rule_set,
             commands::list_rules,
             commands::save_rule,

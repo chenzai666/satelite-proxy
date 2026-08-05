@@ -91,7 +91,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
-    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled);
+    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
 
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
