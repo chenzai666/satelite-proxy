@@ -9,9 +9,11 @@ import { NodesPage } from "./pages/NodesPage";
 import { TrafficPage } from "./pages/TrafficPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import type { NavKey } from "./types";
+import { UiModeProvider, useUiMode } from "./ui/UiModeContext";
+import { SimpleShell } from "./ui/simple";
 import "./App.css";
 
-function AppShell() {
+function ProShell() {
   const [nav, setNav] = useState<NavKey>("dashboard");
 
   return (
@@ -36,11 +38,18 @@ function AppShell() {
   );
 }
 
+function AppShell() {
+  const { mode } = useUiMode();
+  return mode === "simple" ? <SimpleShell /> : <ProShell />;
+}
+
 function App() {
   return (
     <ThemeProvider>
       <LocaleProvider>
-        <AppShell />
+        <UiModeProvider>
+          <AppShell />
+        </UiModeProvider>
       </LocaleProvider>
     </ThemeProvider>
   );

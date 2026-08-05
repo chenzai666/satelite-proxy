@@ -232,10 +232,13 @@ export function fetchCoreLatest() {
 }
 
 export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
-  return invoke<LatencyBatchResult>("test_nodes_latency", {
+  // Tauri 2 accepts camelCase; include snake_case for compatibility.
+  const args: Record<string, unknown> = {
     ids: ids ?? null,
     timeoutMs: timeoutMs ?? null,
-  });
+    timeout_ms: timeoutMs ?? null,
+  };
+  return invoke<LatencyBatchResult>("test_nodes_latency", args);
 }
 
 export function getProxyStatus() {
