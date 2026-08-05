@@ -226,6 +226,7 @@ pub fn run() {
             commands::set_outbound_mode,
             commands::get_dns_settings,
             commands::update_dns_settings,
+            commands::reset_dns_defaults,
             commands::test_dns_lookup,
             commands::set_current_node_live,
             commands::smart_switch_now,

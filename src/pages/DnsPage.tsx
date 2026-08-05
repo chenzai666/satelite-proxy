@@ -4,7 +4,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getDnsSettings, testDnsLookup, updateDnsSettings } from "../api";
+import {
+  getDnsSettings,
+  resetDnsDefaults,
+  testDnsLookup,
+  updateDnsSettings,
+} from "../api";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
@@ -345,6 +350,31 @@ export function DnsPage({ embedded = false }: Props) {
     });
   }
 
+  async function onResetSection(section: "servers" | "rules") {
+    const label = section === "servers" ? "DNS 服务器" : "白名单规则";
+    if (
+      !window.confirm(
+        `将「${label}」恢复为系统默认？\n当前对该列表的修改会丢失（其它 DNS 选项不受影响）。`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setMenuId(null);
+    if (section === "servers") resetServerForm();
+    else resetRuleForm();
+    try {
+      const s = await resetDnsDefaults(section, true);
+      setDns(s);
+      setBypassText((s.fake_ip.bypass || []).join("\n"));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onTest() {
     setTestBusy(true);
     setError(null);
@@ -513,8 +543,21 @@ export function DnsPage({ embedded = false }: Props) {
         {/* —— Servers —— */}
         <section className="card dns-panel dns-cell dns-cell-servers">
           <header className="dns-panel-head">
-            <h2>服务器</h2>
-            <p>UDP / DoH / DoT / 系统 DNS</p>
+            <div className="dns-panel-head-row">
+              <div>
+                <h2>服务器</h2>
+                <p>UDP / DoH / DoT / 系统 DNS</p>
+              </div>
+              <button
+                type="button"
+                className="ghost small dns-reset-btn"
+                disabled={busy}
+                title="恢复出厂服务器列表"
+                onClick={() => void onResetSection("servers")}
+              >
+                重置默认
+              </button>
+            </div>
           </header>
 
           <div className="dns-panel-body dns-panel-body--flush">
@@ -654,8 +697,21 @@ export function DnsPage({ embedded = false }: Props) {
         {/* —— Rules —— */}
         <section className="card dns-panel dns-cell dns-cell-rules">
           <header className="dns-panel-head">
-            <h2>白名单规则</h2>
-            <p>内网 / 企业域名走指定解析器</p>
+            <div className="dns-panel-head-row">
+              <div>
+                <h2>白名单规则</h2>
+                <p>内网 / 企业域名走指定解析器</p>
+              </div>
+              <button
+                type="button"
+                className="ghost small dns-reset-btn"
+                disabled={busy}
+                title="恢复出厂白名单（含内置列表）"
+                onClick={() => void onResetSection("rules")}
+              >
+                重置默认
+              </button>
+            </div>
           </header>
 
           <div className="dns-panel-body dns-panel-body--flush">

@@ -153,6 +153,19 @@ impl Default for DnsSettings {
     }
 }
 
+impl DnsSettings {
+    /// Built-in server list (System / Ali / Tencent / CF / Google).
+    pub fn factory_servers() -> Vec<DnsServer> {
+        default_servers()
+    }
+
+    /// Built-in whitelist base (local/lan/internal/corp → System).
+    /// Callers may also merge `resources/dns/*.list` via [`ensure_bundled_dns_whitelist`].
+    pub fn factory_rules_base() -> Vec<DnsRule> {
+        default_rules()
+    }
+}
+
 fn default_true() -> bool {
     true
 }

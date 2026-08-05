@@ -281,6 +281,11 @@ export function updateDnsSettings(settings: DnsSettings, apply = true) {
   return invoke<DnsSettings>("update_dns_settings", { settings, apply });
 }
 
+/** Reset DNS servers or rules to factory defaults (`"servers"` | `"rules"`). */
+export function resetDnsDefaults(section: "servers" | "rules", apply = true) {
+  return invoke<DnsSettings>("reset_dns_defaults", { section, apply });
+}
+
 export function testDnsLookup(domain: string) {
   return invoke<DnsTestResult>("test_dns_lookup", { domain });
 }
