@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-resizable",
+    "core:window:allow-inner-size",
     "opener:default",
     "dialog:default"
   ]

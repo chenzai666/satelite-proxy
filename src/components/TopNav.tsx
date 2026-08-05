@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getCoreInfo, getProxyStatus } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import type { NavKey } from "../types";
+import { UiModeMenu } from "../ui/UiModeMenu";
 
 type NavItem = { key: NavKey; label: string };
 
@@ -94,6 +95,7 @@ export function TopNav({ active, onChange }: Props) {
           <span className="topnav-status-text">{stateLabel}</span>
           <span className="topnav-status-ver">v{coreVersion}</span>
         </div>
+        <UiModeMenu />
       </div>
     </header>
   );
