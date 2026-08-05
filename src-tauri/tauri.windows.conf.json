@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": [
+      "resources/bin/windows-amd64/sing-box.exe",
+      "resources/bin/windows-amd64/libcronet.dll",
+      "resources/bin/windows-amd64/version.txt",
+      "resources/rules",
+      "resources/dns"
+    ]
+  }
+}

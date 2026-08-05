@@ -30,4 +30,5 @@ src-tauri/gen/schemas
 # Bundled sing-box core (download via scripts/fetch-bundled-core-*.sh)
 src-tauri/resources/bin/**/sing-box
 src-tauri/resources/bin/**/sing-box.exe
+src-tauri/resources/bin/**/libcronet.*
 src-tauri/resources/bin/**/*.tar.gz

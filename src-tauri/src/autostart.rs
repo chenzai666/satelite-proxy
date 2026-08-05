@@ -5,6 +5,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const LAUNCH_AGENT_LABEL: &str = "com.satelite.proxy";
 
 fn current_exe() -> AppResult<PathBuf> {
@@ -104,8 +110,8 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
         // Registry Run key via reg.exe
         let exe = current_exe()?;
         if enabled {
-            let status = Command::new("reg")
-                .args([
+            let mut cmd = Command::new("reg");
+            cmd.args([
                     "add",
                     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
                     "/v",
@@ -115,7 +121,10 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
                     "/d",
                     &format!("\"{}\"", exe.display()),
                     "/f",
-                ])
+                ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            let status = cmd
                 .status()
                 .map_err(|e| AppError::Core(format!("reg: {e}")))?;
             if !status.success() {
@@ -123,15 +132,17 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
             }
             Ok(())
         } else {
-            let _ = Command::new("reg")
-                .args([
+            let mut cmd = Command::new("reg");
+            cmd.args([
                     "delete",
                     r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
                     "/v",
                     "SateliteProxy",
                     "/f",
-                ])
-                .status();
+                ]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            let _ = cmd.status();
             Ok(())
         }
     }
