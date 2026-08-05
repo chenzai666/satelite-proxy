@@ -58,14 +58,6 @@ pub fn dump_rule_set_files(app_data_dir: &Path, set: &RuleSet) -> AppResult<()> 
     Ok(())
 }
 
-/// Dump all rule sets (best-effort log on individual failure).
-pub fn dump_all_rule_sets(app_data_dir: &Path, sets: &[RuleSet]) -> AppResult<()> {
-    for set in sets {
-        dump_rule_set_files(app_data_dir, set)?;
-    }
-    Ok(())
-}
-
 pub fn remove_rule_set_files(app_data_dir: &Path, set_id: &str) {
     let _ = fs::remove_file(clash_list_path(app_data_dir, set_id));
     let _ = fs::remove_file(dns_sidecar_path(app_data_dir, set_id));

@@ -1,5 +1,6 @@
 use crate::domain::{
-    default_rules, ensure_bundled_dns_whitelist, is_factory_set_id, load_builtin_rule_sets,
+    default_rules, ensure_bundled_dns_whitelist, is_deletable_rule_set, is_factory_set_id,
+    load_builtin_rule_sets,
     load_factory_rule_set, sanitize_rules, AppSettings, DnsSettings, ProxyNode, Rule, RuleSet,
     RuleSetSummary, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
     GENERAL_SET_NAME,
@@ -498,7 +499,7 @@ impl AppStore {
             .iter()
             .find(|s| s.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        if set.builtin || is_factory_set_id(id) {
+        if !is_deletable_rule_set(id, set.builtin) {
             return Err(AppError::Config(
                 "不能删除出厂规则集（内置/通用）；可重置为资源文件默认".into(),
             ));

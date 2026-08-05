@@ -495,10 +495,12 @@ pub fn format_dns_sidecar_list(set_name: &str, rules: &[Rule]) -> String {
     lines.push("# policy: SYSTEM = resolve via system/local DNS (rule page wins)".into());
     lines.push(String::new());
     for r in sorted {
+        // wants_system_dns() ⇒ policy is System; token matches parse_dns_sidecar_list.
         lines.push(format!(
-            "{},{},SYSTEM",
+            "{},{},{}",
             r.clash_type_token(),
-            r.payload.trim()
+            r.payload.trim(),
+            r.dns_policy.as_str().to_ascii_uppercase()
         ));
     }
     lines.push(String::new());
