@@ -180,7 +180,7 @@ impl CoreManager {
         TcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
-    /// Force-free a TCP listen port: kill processes holding it (macOS/Linux via lsof).
+    /// Force-free a TCP listen port: kill processes holding it.
     pub fn force_free_port(port: u16) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
@@ -196,9 +196,13 @@ impl CoreManager {
         if Self::is_port_free(port) {
             Ok(())
         } else {
+            let manual = if cfg!(windows) {
+                format!("netstat -ano | findstr :{port}")
+            } else {
+                format!("lsof -iTCP:{port} -sTCP:LISTEN")
+            };
             Err(AppError::Core(format!(
-                "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。\
-                 可手动: lsof -iTCP:{port} -sTCP:LISTEN"
+                "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
             )))
         }
     }
@@ -267,6 +271,11 @@ impl CoreManager {
             return self.start_elevated_macos(binary, config, &log_path, mixed_port);
         }
 
+        #[cfg(target_os = "windows")]
+        if elevated {
+            return self.start_elevated_windows(binary, config, &log_path, mixed_port);
+        }
+
         let log_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -280,7 +289,7 @@ impl CoreManager {
         cmd.args(["run", "-c"]).arg(config);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let child = cmd
+        let mut child = cmd
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .spawn()
@@ -289,6 +298,19 @@ impl CoreManager {
                 self.last_error = Some(e.to_string());
                 AppError::Core(format!("spawn sing-box failed: {e}"))
             })?;
+
+        // Tie the child to the parent's lifetime via a Job Object: if this
+        // process dies for any reason (crash, installer kill, Task Manager),
+        // Windows reaps sing-box too — preventing orphaned ports on next launch.
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(e) = super::job::ensure_child_killed_on_parent_exit(child.id()) {
+                crate::app_log::warn(
+                    "core",
+                    format!("job-object bind failed (orphan possible on crash): {e}"),
+                );
+            }
+        }
 
         self.child = Some(child);
 
@@ -356,6 +378,43 @@ impl CoreManager {
                 self.last_error = Some(msg.clone());
                 AppError::Core(msg)
             })?;
+
+        self.elevated_pid = Some(pid);
+        self.wait_until_ready(mixed_port, true)
+    }
+
+    /// Start sing-box elevated via UAC (Windows). Needed for TUN to create the
+    /// virtual adapter. stdout/stderr are appended to `log_path` directly.
+    #[cfg(target_os = "windows")]
+    fn start_elevated_windows(
+        &mut self,
+        binary: &Path,
+        config: &Path,
+        log_path: &Path,
+        mixed_port: u16,
+    ) -> AppResult<()> {
+        // sing-box redirects its own stdout/stderr when given 2>&1 >>file in the
+        // args, so we pass those flags. Quote paths defensively (spaces).
+        let bin_s = binary.display().to_string();
+        let cfg_s = config.display().to_string();
+        let log_s = log_path.display().to_string();
+        let args = format!(
+            "run -c \"{cfg_s}\" >>\"{log_s}\" 2>&1"
+        );
+
+        let _elevated = match super::elevate::run_elevated(Path::new(&bin_s), &args, None) {
+            Ok(c) => c,
+            Err(e) => {
+                self.state = CoreState::Error;
+                self.last_error = Some(e.to_string());
+                return Err(e);
+            }
+        };
+        // run_elevated returns an ElevatedChild that closes the handle on drop;
+        // we only need the PID — we poll via OpenProcess later (elevate::pid_alive)
+        // and kill via taskkill. Dropping here is fine: closing the handle does
+        // NOT terminate the process.
+        let pid = _elevated.pid;
 
         self.elevated_pid = Some(pid);
         self.wait_until_ready(mixed_port, true)
@@ -493,13 +552,21 @@ fn pid_alive(pid: u32) -> bool {
             .map(|s| s.success())
             .unwrap_or(false)
     }
-    #[cfg(not(unix))]
+    #[cfg(target_os = "windows")]
+    {
+        super::elevate::pid_alive(pid)
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
     {
         let _ = pid;
         false
     }
 }
 
+/// Terminate an elevated sing-box process. macOS re-elevates via osascript to
+/// keep root privileges for the kill; Windows uses taskkill (which itself runs
+/// with the current user's rights — sufficient because the elevated child was
+/// launched by this user and is killable by it despite running high).
 fn elevated_kill_macos(pid: u32) {
     #[cfg(target_os = "macos")]
     {
@@ -510,7 +577,15 @@ fn elevated_kill_macos(pid: u32) {
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // The elevated sing-box was launched by us via ShellExecuteEx, so we hold
+        // PROCESS_TERMINATE access on it despite it running at a higher integrity
+        // level. Use the direct Win32 call instead of taskkill — no UAC prompt,
+        // and it actually works (plain taskkill fails on elevated children).
+        let _ = super::elevate::terminate_pid(pid);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
@@ -528,7 +603,13 @@ fn elevated_kill_macos_force(pid: u32) {
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Same rationale as elevated_kill_macos: direct TerminateProcess via the
+        // handle we're entitled to as the launching parent.
+        let _ = super::elevate::terminate_pid(pid);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = Command::new("kill")
             .args(["-KILL", &pid.to_string()])
@@ -541,13 +622,17 @@ fn map_tun_permission_hint(err: &str) -> String {
     if lower.contains("operation not permitted")
         || lower.contains("configure tun")
         || lower.contains("permission denied")
+        || lower.contains("access is denied")
     {
-        format!(
-            "{err}\n\n\
-             TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
+        let platform_hint = if cfg!(target_os = "windows") {
+            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行 sing-box。\n\
+             请在 UAC 弹窗中点「是」；若点了「否」，请关闭 TUN 开关后重试，或以管理员身份运行本程序。"
+        } else {
+            "TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
              macOS：开启 TUN 时应用会弹出管理员密码框并以 root 运行内核。\n\
              请确认已输入密码且未点「取消」；开发模式也可用：sudo \"path/to/sing-box\" run -c config.json"
-        )
+        };
+        format!("{err}\n\n{platform_hint}")
     } else {
         err.to_string()
     }
@@ -600,8 +685,59 @@ fn kill_listeners_on_port(port: u16) -> String {
     }
     #[cfg(not(unix))]
     {
-        let _ = port;
-        "Windows: 请手动结束占用端口的进程".into()
+        // netstat -ano lists every TCP row with the owning PID in the last column.
+        // We find rows whose local address ends with ":<port>" in LISTENING state,
+        // then taskkill each owning PID.
+        let mut cmd = Command::new("netstat");
+        cmd.args(["-ano"]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let out = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => return format!("netstat 不可用: {e}"),
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        let mut pids: Vec<u32> = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim();
+            // Row shape: "  TCP    127.0.0.1:2080     0.0.0.0:0    LISTENING    10528"
+            if !trimmed.to_ascii_uppercase().contains("LISTENING") {
+                continue;
+            }
+            if !trimmed.contains(&needle) {
+                continue;
+            }
+            // PID is the last whitespace-delimited token.
+            if let Some(pid) = trimmed
+                .split_whitespace()
+                .last()
+                .and_then(|s| s.parse().ok())
+            {
+                pids.push(pid);
+            }
+        }
+        pids.sort_unstable();
+        pids.dedup();
+        // Don't kill ourselves
+        let self_pid = std::process::id();
+        pids.retain(|p| *p != self_pid);
+        if pids.is_empty() {
+            return "未找到监听进程".into();
+        }
+        let mut killed = Vec::new();
+        for pid in pids {
+            // taskkill /F /T: force-kill the process tree (sing-box may have children).
+            let mut k = Command::new("taskkill");
+            k.args(["/F", "/T", "/PID", &pid.to_string()]);
+            #[cfg(target_os = "windows")]
+            k.creation_flags(CREATE_NO_WINDOW);
+            match k.status() {
+                Ok(s) if s.success() => killed.push(pid.to_string()),
+                _ => killed.push(format!("{pid}?(失败)")),
+            }
+        }
+        format!("已结束 PID {}", killed.join(","))
     }
 }
 

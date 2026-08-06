@@ -42,7 +42,8 @@ export function TrafficPage() {
         </div>
       </header>
 
-      <div className="traffic-panel" role="tabpanel">
+      {/* key={tab} remounts on tab switch → page-enter fade/slide. */}
+      <div className="traffic-panel page-enter" role="tabpanel" key={tab}>
         {tab === "live" ? (
           <ConnectionsPage embedded />
         ) : (

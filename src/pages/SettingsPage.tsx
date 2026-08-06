@@ -248,9 +248,11 @@ export function SettingsPage() {
         <div className="banner error">{error}</div>
       )}
 
-      {tab === "rules" && <RulesPage embedded />}
+      {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
+      <div className="page-enter" key={tab}>
+        {tab === "rules" && <RulesPage embedded />}
 
-      {tab === "dns" && <DnsPage embedded />}
+        {tab === "dns" && <DnsPage embedded />}
 
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
@@ -501,6 +503,7 @@ export function SettingsPage() {
           </div>
         </section>
       )}
+      </div>
     </div>
   );
 }

@@ -1,5 +1,9 @@
 mod download;
+#[cfg(target_os = "windows")]
+mod elevate;
 pub mod manager;
+#[cfg(target_os = "windows")]
+mod job;
 mod paths;
 
 pub use download::{
