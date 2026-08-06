@@ -124,6 +124,9 @@ export interface ProxyNode {
   source?: string;
   latency_ms?: number | null;
   latency_at?: number | null;
+  /** Present from list_all_nodes — owning subscription. */
+  subscription_id?: string;
+  subscription_name?: string;
 }
 
 export type ViewMode = "list" | "grid";

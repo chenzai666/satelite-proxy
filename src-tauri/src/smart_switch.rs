@@ -1,8 +1,12 @@
 //! Smart node auto-switch (docs/auto.md).
 //!
-//! Architecture: passive connection journal → degradation check → on-demand
-//! active URL probe of top-K candidates → hysteretic switch with cooldown.
-//! Uses Selector + Clash API; does not scan the full node list continuously.
+//! Architecture:
+//!   passive connection journal → degradation / healthy re-probe
+//!   → on-demand active URL probe of top-K candidates
+//!   → light score + Clash-style tolerance + dwell / cooldown / eject
+//!
+//! Not a pure Clash `url-test` (no continuous full-list interval).
+//! Healthy periods still get a low-frequency re-probe for drift correction.
 //!
 //! Lock rule: never hold `store` while acquiring `runtime` (see AppState).
 
@@ -17,21 +21,62 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+// —— Schedule ——
 const TICK: Duration = Duration::from_secs(20);
+/// After a switch, refuse further switches for this long.
 const MIN_DWELL: Duration = Duration::from_secs(120);
+/// After dwell, soft switches wait this extra window (hard fail may skip).
 const COOLDOWN: Duration = Duration::from_secs(90);
+/// When healthy, re-probe current + top-K at most this often (url-test-like drift fix).
+const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(600);
+
+// —— Active probe ——
 const PROBE_TIMEOUT_MS: u64 = 2500;
 const TOP_K: usize = 4;
-const MIN_IMPROVEMENT_MS: u32 = 100;
+const CANDIDATE_CONCURRENCY: usize = 3;
+const BOOTSTRAP_BATCH: usize = 8;
+const BOOTSTRAP_MAX: usize = 24;
+const BOOTSTRAP_CONCURRENCY: usize = 4;
+
+// —— Hysteresis (Clash url-test `tolerance` style) ——
+/// Only switch when `best + TOLERANCE_MS < current`.
+const TOLERANCE_MS: u32 = 50;
+/// Secondary: large relative improvement also qualifies if abs ≥ TOLERANCE_MS.
 const MIN_IMPROVEMENT_RATIO: f64 = 0.25;
+
+// —— Passive (connection journal) ——
 const PASSIVE_LOOKBACK_MS: i64 = 30_000;
 const PASSIVE_MIN_SAMPLES: u32 = 8;
 const PASSIVE_FAIL_RATE: f64 = 0.25;
 const CONSECUTIVE_PROBE_FAILS: u32 = 2;
-/// On enable: probe this many candidates first (auto.md Level 2–3).
-const BOOTSTRAP_BATCH: usize = 8;
-const BOOTSTRAP_MAX: usize = 24;
-const BOOTSTRAP_CONCURRENCY: usize = 4;
+
+// —— Score weights (lower is better) ——
+const SCORE_FAIL_PENALTY: f64 = 200.0;
+const SCORE_EJECT_PENALTY: f64 = 5_000.0;
+const SCORE_UNKNOWN_LATENCY: f64 = 8_000.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// No degrade signal; optional periodic health probe.
+    Ok,
+    /// Passive journal looks bad; awaiting / running confirm probe.
+    Suspect,
+    /// Active probe in progress (logical marker for logs).
+    Probing,
+    /// Post-switch dwell / soft cooldown.
+    Cooldown,
+}
+
+impl Phase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Suspect => "suspect",
+            Self::Probing => "probing",
+            Self::Cooldown => "cooldown",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SmartSwitchNowResult {
@@ -44,26 +89,63 @@ pub struct SmartSwitchNowResult {
     pub message: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Controller {
+    phase: Phase,
     last_switch: Option<Instant>,
+    last_health_probe: Option<Instant>,
     consecutive_probe_fails: u32,
     /// node_id → eject until
     ejected: HashMap<String, Instant>,
     eject_counts: HashMap<String, u32>,
 }
 
+impl Default for Controller {
+    fn default() -> Self {
+        Self {
+            phase: Phase::Ok,
+            last_switch: None,
+            last_health_probe: None,
+            consecutive_probe_fails: 0,
+            ejected: HashMap::new(),
+            eject_counts: HashMap::new(),
+        }
+    }
+}
+
 impl Controller {
+    fn set_phase(&mut self, p: Phase) {
+        if self.phase != p {
+            app_log::debug(
+                "smart_switch",
+                format!("phase {} → {}", self.phase.as_str(), p.as_str()),
+            );
+            self.phase = p;
+        }
+    }
+
     fn in_dwell(&self) -> bool {
         self.last_switch
             .map(|t| t.elapsed() < MIN_DWELL)
             .unwrap_or(false)
     }
 
-    fn in_cooldown(&self) -> bool {
+    fn in_soft_cooldown(&self) -> bool {
         self.last_switch
             .map(|t| t.elapsed() < MIN_DWELL + COOLDOWN)
             .unwrap_or(false)
+    }
+
+    fn health_probe_due(&self) -> bool {
+        self.last_health_probe
+            .map(|t| t.elapsed() >= HEALTH_PROBE_INTERVAL)
+            .unwrap_or(true)
+    }
+
+    fn mark_switched(&mut self) {
+        self.last_switch = Some(Instant::now());
+        self.consecutive_probe_fails = 0;
+        self.set_phase(Phase::Cooldown);
     }
 
     fn eject(&mut self, id: &str) {
@@ -83,6 +165,15 @@ impl Controller {
         let now = Instant::now();
         self.ejected.retain(|_, until| *until > now);
     }
+
+    fn ejected_ids(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.ejected
+            .iter()
+            .filter(|(_, until)| now < **until)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
 }
 
 static CTRL: LazyLock<Mutex<Controller>> =
@@ -92,9 +183,65 @@ fn ctrl() -> std::sync::MutexGuard<'static, Controller> {
     CTRL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Per smart-rule selector: last switch time (reuse dwell/cooldown).
-static RULE_LAST: LazyLock<Mutex<HashMap<String, Instant>>> =
+/// Per smart-rule: last switch + last measured latency of the selected leaf.
+#[derive(Debug, Clone)]
+struct RuleState {
+    last_switch: Instant,
+    last_node_id: Option<String>,
+    last_latency_ms: Option<u32>,
+}
+
+static RULE_STATE: LazyLock<Mutex<HashMap<String, RuleState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+// —— Shared decision helpers ——
+
+/// Clash url-test style: switch only if best is better by more than `TOLERANCE_MS`,
+/// or by a large relative margin (≥25% and at least TOLERANCE_MS absolute).
+fn should_prefer(best_ms: u32, cur_ms: u32) -> bool {
+    if best_ms.saturating_add(TOLERANCE_MS) < cur_ms {
+        return true;
+    }
+    let better_ratio = (best_ms as f64) <= (cur_ms as f64) * (1.0 - MIN_IMPROVEMENT_RATIO);
+    better_ratio && cur_ms.saturating_sub(best_ms) >= TOLERANCE_MS
+}
+
+fn should_switch(cur_ms: Option<u32>, best_ms: u32, hard_fail: bool) -> bool {
+    if hard_fail {
+        return true;
+    }
+    match cur_ms {
+        None => true,
+        Some(cms) => should_prefer(best_ms, cms),
+    }
+}
+
+/// Lower is better. Uses probe latency + optional passive fail rate + eject.
+fn score_node(latency_ms: Option<u32>, fail_rate: f64, ejected: bool) -> f64 {
+    let lat = latency_ms
+        .map(|m| m as f64)
+        .unwrap_or(SCORE_UNKNOWN_LATENCY);
+    let fail = fail_rate.clamp(0.0, 1.0) * SCORE_FAIL_PENALTY;
+    let ej = if ejected {
+        SCORE_EJECT_PENALTY
+    } else {
+        0.0
+    };
+    lat + fail + ej
+}
+
+fn sort_candidates_by_score(nodes: &mut [ProxyNode], ejected: &[String]) {
+    nodes.sort_by(|a, b| {
+        let ea = ejected.iter().any(|e| e == &a.id);
+        let eb = ejected.iter().any(|e| e == &b.id);
+        let sa = score_node(a.latency_ms, 0.0, ea);
+        let sb = score_node(b.latency_ms, 0.0, eb);
+        sa.partial_cmp(&sb)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -134,9 +281,9 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     {
         let mut c = ctrl();
         c.clear_eject_if_expired();
+        c.set_phase(Phase::Probing);
     }
 
-    // Separate locks — never nest store under runtime or reverse.
     let (current_id, mut nodes, probe_url) = {
         let store = state.lock_store();
         (
@@ -151,6 +298,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     };
 
     if nodes.is_empty() {
+        ctrl().set_phase(Phase::Ok);
         app_log::warn("smart_switch", "bootstrap: no nodes");
         return Ok(SmartSwitchNowResult {
             switched: false,
@@ -164,6 +312,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     }
 
     let Some(api) = clash else {
+        ctrl().set_phase(Phase::Ok);
         app_log::warn("smart_switch", "bootstrap: clash api unavailable");
         return Ok(SmartSwitchNowResult {
             switched: false,
@@ -176,24 +325,12 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         });
     };
 
-    let ejected: Vec<String> = {
-        let c = ctrl();
-        c.ejected
-            .iter()
-            .filter(|(_, until)| Instant::now() < **until)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
-
+    let ejected = ctrl().ejected_ids();
     nodes.retain(|n| !ejected.iter().any(|e| e == &n.id));
-    nodes.sort_by(|a, b| {
-        let la = a.latency_ms.unwrap_or(u32::MAX / 4);
-        let lb = b.latency_ms.unwrap_or(u32::MAX / 4);
-        la.cmp(&lb).then_with(|| a.name.cmp(&b.name))
-    });
+    sort_candidates_by_score(&mut nodes, &ejected);
 
     let mut probed: u32 = 0;
-    let mut best: Option<(String, String, u32)> = None; // id, name, ms
+    let mut best: Option<(String, String, u32)> = None;
     let limit = nodes.len().min(BOOTSTRAP_MAX);
     let pool = &nodes[..limit];
 
@@ -203,11 +340,11 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     );
 
     for (batch_idx, batch) in pool.chunks(BOOTSTRAP_BATCH).enumerate() {
-        // User may disable smart switch mid-probe; stop without applying a switch.
         let still_on = state
             .with_store(|s| Ok(s.settings.smart_switch))
             .unwrap_or(false);
         if !still_on {
+            ctrl().set_phase(Phase::Ok);
             app_log::info("smart_switch", "bootstrap cancelled (smart_switch off)");
             return Ok(SmartSwitchNowResult {
                 switched: false,
@@ -270,6 +407,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         .with_store(|s| Ok(s.settings.smart_switch))
         .unwrap_or(false);
     if !still_on {
+        ctrl().set_phase(Phase::Ok);
         app_log::info("smart_switch", "bootstrap cancelled before apply");
         return Ok(SmartSwitchNowResult {
             switched: false,
@@ -283,6 +421,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     }
 
     let Some((best_id, best_name, best_ms)) = best else {
+        ctrl().set_phase(Phase::Ok);
         app_log::warn(
             "smart_switch",
             format!("bootstrap: all probes failed (probed={probed})"),
@@ -303,6 +442,8 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             let mut c = ctrl();
             c.last_switch = Some(Instant::now());
             c.consecutive_probe_fails = 0;
+            c.last_health_probe = Some(Instant::now());
+            c.set_phase(Phase::Ok);
         }
         app_log::info(
             "smart_switch",
@@ -322,8 +463,8 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     apply_switch(state, &best_id, false)?;
     {
         let mut c = ctrl();
-        c.last_switch = Some(Instant::now());
-        c.consecutive_probe_fails = 0;
+        c.mark_switched();
+        c.last_health_probe = Some(Instant::now());
     }
 
     app_log::info(
@@ -404,7 +545,11 @@ async fn tick(state: &AppState) -> Result<(), String> {
         let mut c = ctrl();
         c.clear_eject_if_expired();
         if c.in_dwell() {
+            c.set_phase(Phase::Cooldown);
             return Ok(());
+        }
+        if c.phase == Phase::Cooldown && !c.in_soft_cooldown() {
+            c.set_phase(Phase::Ok);
         }
     }
 
@@ -429,33 +574,63 @@ async fn tick(state: &AppState) -> Result<(), String> {
     };
     let current_tag = outbound_tag(&current);
 
-    // —— Level 0: passive observation (connection journal) ——
-    let (sus, total) = {
+    // —— Level 0: passive observation ——
+    let passive = {
         let rt = state.lock_runtime();
-        rt.passive_close_stats(&current_tag, PASSIVE_LOOKBACK_MS)
+        rt.passive_node_stats(&current_tag, PASSIVE_LOOKBACK_MS)
     };
-    let passive_bad =
-        total >= PASSIVE_MIN_SAMPLES && (sus as f64 / total as f64) >= PASSIVE_FAIL_RATE;
+    let passive_soft = passive.soft_degraded(PASSIVE_MIN_SAMPLES, PASSIVE_FAIL_RATE);
+    let passive_hard = passive.hard_degraded();
+    let passive_bad = passive_soft || passive_hard;
 
-    let follow_up = {
+    let (follow_up, health_due, soft_cd) = {
         let c = ctrl();
-        c.consecutive_probe_fails > 0
+        (
+            c.consecutive_probe_fails > 0,
+            c.health_probe_due(),
+            c.in_soft_cooldown(),
+        )
     };
-    if !passive_bad && !follow_up {
+
+    // Nothing to do: healthy and health re-probe not due.
+    if !passive_bad && !follow_up && !health_due {
+        ctrl().set_phase(Phase::Ok);
         return Ok(());
+    }
+
+    // Soft cooldown: block health re-probe and soft passive; allow hard passive / fail streak.
+    if soft_cd && !passive_hard && !follow_up {
+        return Ok(());
+    }
+
+    if passive_bad {
+        ctrl().set_phase(Phase::Suspect);
     }
 
     app_log::debug(
         "smart_switch",
         format!(
-            "degrade signal: passive_bad={passive_bad} sus={sus}/{total} follow_up={follow_up}"
+            "signal phase={} passive_soft={} passive_hard={} sus={}/{} dests={}/{} consec={} follow_up={} health_due={}",
+            ctrl().phase.as_str(),
+            passive_soft,
+            passive_hard,
+            passive.suspicious,
+            passive.total,
+            passive.sus_dests,
+            passive.dests,
+            passive.consecutive_recent_sus,
+            follow_up,
+            health_due
         ),
     );
 
-    // —— Level 1: active probe confirms current node ——
-    let Some(api) = clash.clone() else {
+    let Some(api) = clash else {
         return Ok(());
     };
+
+    ctrl().set_phase(Phase::Probing);
+
+    // —— Level 1: confirm current node ——
     let cur_results = probe_nodes(
         &[current.clone()],
         Some(PROBE_TIMEOUT_MS),
@@ -472,80 +647,87 @@ async fn tick(state: &AppState) -> Result<(), String> {
         let mut c = ctrl();
         if cur_fail {
             c.consecutive_probe_fails = c.consecutive_probe_fails.saturating_add(1);
-        } else if !passive_bad {
-            c.consecutive_probe_fails = 0;
+        } else {
+            // Probe succeeded: clear fail streak when not in passive hard mode.
+            if !passive_hard {
+                c.consecutive_probe_fails = 0;
+            }
             if let Some(ms) = cur_ms {
-                drop(c);
                 let _ = state.with_store_mut(|store| {
                     store.update_node_latency(&current_id, Some(ms), now_secs());
                     Ok(())
                 });
-                let peers: Vec<u32> = nodes
-                    .iter()
-                    .filter(|n| n.id != current_id)
-                    .filter_map(|n| n.latency_ms)
-                    .collect();
-                if peers.len() >= 2 {
-                    let mut sorted = peers;
-                    sorted.sort_unstable();
-                    let median = sorted[sorted.len() / 2];
-                    if ms <= median.saturating_mul(2).saturating_add(150) {
-                        return Ok(());
-                    }
-                } else {
-                    return Ok(());
-                }
             }
         }
     }
 
     let hard_fail = {
         let c = ctrl();
-        cur_fail && c.consecutive_probe_fails >= CONSECUTIVE_PROBE_FAILS
+        (cur_fail && c.consecutive_probe_fails >= CONSECUTIVE_PROBE_FAILS)
+            || (cur_fail && passive_hard)
+            || (cur_fail && passive_soft && c.consecutive_probe_fails >= 1)
     };
-    let soft_degrade = !cur_fail && (passive_bad || cur_ms.is_some());
-    if !hard_fail && !soft_degrade && !passive_bad {
-        let c = ctrl();
-        if c.consecutive_probe_fails < CONSECUTIVE_PROBE_FAILS && !passive_bad {
-            return Ok(());
+
+    // Healthy re-probe path: current OK and no passive bad — only switch if candidate much better.
+    let health_only = !passive_bad && !hard_fail && !cur_fail && health_due;
+
+    if !cur_fail && !passive_bad && !health_only {
+        // Soft passive cleared by successful probe, or follow-up resolved.
+        ctrl().set_phase(Phase::Ok);
+        return Ok(());
+    }
+
+    // Successful current + soft passive only: if latency not worse than peer cache, skip expand.
+    if !cur_fail && passive_soft && !passive_hard && !hard_fail {
+        if let Some(ms) = cur_ms {
+            let peers: Vec<u32> = nodes
+                .iter()
+                .filter(|n| n.id != current_id)
+                .filter_map(|n| n.latency_ms)
+                .collect();
+            if peers.len() >= 2 {
+                let mut sorted = peers;
+                sorted.sort_unstable();
+                let median = sorted[sorted.len() / 2];
+                if ms <= median.saturating_mul(2).saturating_add(150) {
+                    app_log::debug(
+                        "smart_switch",
+                        format!("soft passive but cur {ms}ms within peer median band; skip"),
+                    );
+                    ctrl().set_phase(Phase::Suspect);
+                    return Ok(());
+                }
+            }
         }
     }
 
-    {
+    if !hard_fail {
         let c = ctrl();
-        if !passive_bad && c.consecutive_probe_fails < CONSECUTIVE_PROBE_FAILS && cur_fail {
-            return Ok(());
-        }
-        if c.in_cooldown() && !hard_fail {
+        if c.in_soft_cooldown() && !passive_hard {
+            ctrl().set_phase(Phase::Cooldown);
             return Ok(());
         }
     }
 
     // —— Level 2: probe top-K candidates ——
-    let ejected: Vec<String> = {
-        let c = ctrl();
-        c.ejected
-            .iter()
-            .filter(|(_, until)| Instant::now() < **until)
-            .map(|(id, _)| id.clone())
-            .collect()
-    };
-
+    let ejected = ctrl().ejected_ids();
     let mut candidates: Vec<ProxyNode> = nodes
-        .into_iter()
+        .iter()
         .filter(|n| n.id != current_id)
         .filter(|n| !ejected.iter().any(|e| e == &n.id))
+        .cloned()
         .collect();
-    candidates.sort_by(|a, b| {
-        let la = a.latency_ms.unwrap_or(u32::MAX / 4);
-        let lb = b.latency_ms.unwrap_or(u32::MAX / 4);
-        la.cmp(&lb).then_with(|| a.name.cmp(&b.name))
-    });
+    sort_candidates_by_score(&mut candidates, &ejected);
     candidates.truncate(TOP_K);
+
     if candidates.is_empty() {
         if cur_fail {
             let mut c = ctrl();
             c.eject(&current_id);
+        }
+        if health_only {
+            ctrl().last_health_probe = Some(Instant::now());
+            ctrl().set_phase(Phase::Ok);
         }
         return Ok(());
     }
@@ -553,12 +735,16 @@ async fn tick(state: &AppState) -> Result<(), String> {
     let cand_results = probe_nodes(
         &candidates,
         Some(PROBE_TIMEOUT_MS),
-        Some(3),
+        Some(CANDIDATE_CONCURRENCY),
         Some(api),
         probe_url,
     )
     .await
     .map_err(|e| e.to_string())?;
+
+    if health_only {
+        ctrl().last_health_probe = Some(Instant::now());
+    }
 
     let _ = state.with_store_mut(|store| {
         for r in &cand_results {
@@ -572,13 +758,22 @@ async fn tick(state: &AppState) -> Result<(), String> {
         Ok(())
     });
 
-    let mut ok_cands: Vec<(String, u32)> = cand_results
+    // Rank by live score (latency only post-probe; fail_rate 0 for successful probes).
+    let mut ranked: Vec<(String, u32, f64)> = cand_results
         .into_iter()
-        .filter_map(|r| r.latency_ms.map(|ms| (r.id, ms)))
+        .filter_map(|r| {
+            let ms = r.latency_ms?;
+            let sc = score_node(Some(ms), 0.0, false);
+            Some((r.id, ms, sc))
+        })
         .collect();
-    ok_cands.sort_by_key(|(_, ms)| *ms);
+    ranked.sort_by(|a, b| {
+        a.2.partial_cmp(&b.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.cmp(&b.1))
+    });
 
-    if ok_cands.is_empty() {
+    if ranked.is_empty() {
         app_log::warn(
             "smart_switch",
             "all candidates failed (possible local network issue)",
@@ -587,22 +782,29 @@ async fn tick(state: &AppState) -> Result<(), String> {
             let mut c = ctrl();
             c.eject(&current_id);
         }
+        ctrl().set_phase(if passive_bad {
+            Phase::Suspect
+        } else {
+            Phase::Ok
+        });
         return Ok(());
     }
 
-    let (best_id, best_ms) = ok_cands[0].clone();
+    let (best_id, best_ms, _) = ranked[0].clone();
 
-    let should_switch = if hard_fail || (cur_fail && passive_bad) {
-        true
-    } else if let Some(cms) = cur_ms {
-        let better_ratio = (best_ms as f64) <= (cms as f64) * (1.0 - MIN_IMPROVEMENT_RATIO);
-        let better_abs = cms.saturating_sub(best_ms) >= MIN_IMPROVEMENT_MS;
-        better_ratio || better_abs
-    } else {
-        true
-    };
-
-    if !should_switch {
+    if !should_switch(cur_ms, best_ms, hard_fail) {
+        app_log::debug(
+            "smart_switch",
+            format!(
+                "keep current (cur={:?} best={best_ms} hard={hard_fail} tol={TOLERANCE_MS})",
+                cur_ms
+            ),
+        );
+        ctrl().set_phase(if passive_bad {
+            Phase::Suspect
+        } else {
+            Phase::Ok
+        });
         return Ok(());
     }
 
@@ -618,8 +820,8 @@ async fn tick(state: &AppState) -> Result<(), String> {
 
     {
         let mut c = ctrl();
-        c.last_switch = Some(Instant::now());
-        c.consecutive_probe_fails = 0;
+        c.mark_switched();
+        c.last_health_probe = Some(Instant::now());
         if cur_fail {
             c.eject(&current_id);
         }
@@ -628,11 +830,17 @@ async fn tick(state: &AppState) -> Result<(), String> {
     app_log::info(
         "smart_switch",
         format!(
-            "{} → {} ({}ms{})",
+            "{} → {} ({}ms{}, score-based)",
             current.name,
             best_name,
             best_ms,
-            if hard_fail { ", hard fail" } else { "" }
+            if hard_fail {
+                ", hard fail"
+            } else if health_only {
+                ", health re-probe"
+            } else {
+                ""
+            }
         ),
     );
     Ok(())
@@ -704,30 +912,28 @@ async fn maintain_smart_rule(
 ) -> Result<(), String> {
     let group = rule.smart_outbound_tag();
     {
-        let map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(t) = map.get(&rule.id) {
-            if t.elapsed() < MIN_DWELL + COOLDOWN {
+        let map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(st) = map.get(&rule.id) {
+            if st.last_switch.elapsed() < MIN_DWELL + COOLDOWN {
                 return Ok(());
             }
         }
     }
 
+    let ejected = ctrl().ejected_ids();
     let mut pool = smart_pool_nodes(rule, nodes);
     if pool.is_empty() {
         return Ok(());
     }
-    pool.sort_by(|a, b| {
-        let la = a.latency_ms.unwrap_or(u32::MAX / 4);
-        let lb = b.latency_ms.unwrap_or(u32::MAX / 4);
-        la.cmp(&lb).then_with(|| a.name.cmp(&b.name))
-    });
+    pool.retain(|n| !ejected.iter().any(|e| e == &n.id));
+    sort_candidates_by_score(&mut pool, &ejected);
     pool.truncate(BOOTSTRAP_MAX.min(TOP_K.max(8)));
 
     let results = probe_nodes(
         &pool,
         Some(PROBE_TIMEOUT_MS),
         Some(BOOTSTRAP_CONCURRENCY),
-        Some(api),
+        Some(api.clone()),
         probe_url.to_string(),
     )
     .await
@@ -742,17 +948,56 @@ async fn maintain_smart_rule(
         Ok(())
     });
 
-    let mut ok: Vec<(String, String, u32)> = results
+    let mut ranked: Vec<(String, String, u32, f64)> = results
         .into_iter()
         .filter_map(|r| {
             let ms = r.latency_ms?;
-            Some((r.id, r.name, ms))
+            let sc = score_node(Some(ms), 0.0, false);
+            Some((r.id, r.name, ms, sc))
         })
         .collect();
-    ok.sort_by_key(|(_, _, ms)| *ms);
-    let Some((best_id, best_name, best_ms)) = ok.into_iter().next() else {
+    ranked.sort_by(|a, b| {
+        a.3.partial_cmp(&b.3)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    let Some((best_id, best_name, best_ms, _)) = ranked.into_iter().next() else {
         return Ok(());
     };
+
+    // Same hysteresis as global path when we know previous pick latency.
+    let prev = {
+        let map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+        map.get(&rule.id).cloned()
+    };
+    if let Some(st) = &prev {
+        if st.last_node_id.as_ref() == Some(&best_id) {
+            // Refresh latency bookkeeping only.
+            let mut map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+            map.insert(
+                rule.id.clone(),
+                RuleState {
+                    last_switch: st.last_switch,
+                    last_node_id: Some(best_id),
+                    last_latency_ms: Some(best_ms),
+                },
+            );
+            return Ok(());
+        }
+        if let Some(cur_ms) = st.last_latency_ms {
+            if !should_prefer(best_ms, cur_ms) {
+                app_log::debug(
+                    "smart_switch",
+                    format!(
+                        "smart rule {} keep {} (cur={cur_ms} best={best_ms} tol={TOLERANCE_MS})",
+                        rule.payload,
+                        st.last_node_id.as_deref().unwrap_or("?")
+                    ),
+                );
+                return Ok(());
+            }
+        }
+    }
 
     let tag = {
         let store = state.lock_store();
@@ -770,8 +1015,15 @@ async fn maintain_smart_rule(
     }
 
     {
-        let mut map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
-        map.insert(rule.id.clone(), Instant::now());
+        let mut map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+        map.insert(
+            rule.id.clone(),
+            RuleState {
+                last_switch: Instant::now(),
+                last_node_id: Some(best_id.clone()),
+                last_latency_ms: Some(best_ms),
+            },
+        );
     }
 
     app_log::info(
@@ -805,7 +1057,7 @@ pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(),
     };
     // Bypass dwell so new rules get a pick quickly.
     {
-        let mut map = RULE_LAST.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
         map.remove(&rule.id);
     }
     maintain_smart_rule(state, rule, &nodes, &probe_url, api).await

@@ -48,6 +48,42 @@ pub struct ProxyStatus {
 
 /// Cap history to limit RAM (UI only needs recent activity).
 const MAX_REQUEST_HISTORY: usize = 3_000;
+
+/// Passive connection-journal stats for one outbound tag (smart switch Level 0).
+#[derive(Debug, Clone, Default)]
+pub struct PassiveNodeStats {
+    /// Closed connections in the lookback window on this node.
+    pub total: u32,
+    /// Short-lived low-byte closes (proxy path often died early).
+    pub suspicious: u32,
+    /// Distinct destinations among all samples.
+    pub dests: u32,
+    /// Distinct destinations among suspicious samples.
+    pub sus_dests: u32,
+    /// Trailing consecutive suspicious closes (most recent first).
+    pub consecutive_recent_sus: u32,
+}
+
+impl PassiveNodeStats {
+    pub fn fail_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.suspicious as f64 / self.total as f64
+        }
+    }
+
+    /// Soft degrade: enough samples, high fail rate, ≥2 bad destinations.
+    pub fn soft_degraded(&self, min_samples: u32, fail_rate: f64) -> bool {
+        self.total >= min_samples && self.fail_rate() >= fail_rate && self.sus_dests >= 2
+    }
+
+    /// Stronger passive signal: consecutive bad closes (multi-dest or long streak).
+    pub fn hard_degraded(&self) -> bool {
+        (self.consecutive_recent_sus >= 3 && self.sus_dests >= 2)
+            || self.consecutive_recent_sus >= 5
+    }
+}
 /// Skip redundant HTTP refresh when journal pushed a snapshot this recently.
 const FRESH_SAMPLE: Duration = Duration::from_millis(250);
 
@@ -157,12 +193,15 @@ impl Runtime {
         }
     }
 
-    /// Passive signal for smart switch: short-lived low-byte closed conns on `node_tag`.
-    /// Returns (suspicious_closes, total_closed_samples) in the lookback window.
-    pub fn passive_close_stats(&self, node_tag: &str, lookback_ms: i64) -> (u32, u32) {
+    /// Passive health for smart switch from connection journal (no MITM / no HTTP codes).
+    ///
+    /// Heuristic "suspicious": closed within 3s with almost no bytes — proxy path often
+    /// dies before useful transfer. Multi-destination and consecutive tail reduce
+    /// single-site false positives (docs/auto.md).
+    pub fn passive_node_stats(&self, node_tag: &str, lookback_ms: i64) -> PassiveNodeStats {
         let now = now_unix_ms();
-        let mut sus = 0u32;
-        let mut total = 0u32;
+        let mut samples: Vec<(i64, bool, String)> = Vec::new(); // closed_at, sus, dest_key
+
         for rec in self.request_by_id.values() {
             if !rec.closed {
                 continue;
@@ -171,20 +210,54 @@ impl Runtime {
             if now.saturating_sub(closed_at) > lookback_ms {
                 continue;
             }
-            // Match outbound leaf / tag loosely
             let matches = rec.node == node_tag
                 || rec.chains.iter().any(|c| c == node_tag)
                 || (!node_tag.is_empty() && rec.node.contains(node_tag));
             if !matches {
                 continue;
             }
-            total = total.saturating_add(1);
             let dur = closed_at.saturating_sub(rec.first_seen);
-            if dur <= 3000 && rec.download < 1024 && rec.upload < 1024 {
-                sus = sus.saturating_add(1);
+            let sus = dur <= 3000 && rec.download < 1024 && rec.upload < 1024;
+            let dest = if !rec.host.is_empty() {
+                rec.host.clone()
+            } else if !rec.destination.is_empty() && rec.destination != "—" {
+                rec.destination.clone()
+            } else {
+                "unknown".into()
+            };
+            samples.push((closed_at, sus, dest));
+        }
+
+        samples.sort_by_key(|(t, _, _)| *t);
+
+        let mut all_dests = HashSet::new();
+        let mut sus_dests = HashSet::new();
+        let mut suspicious = 0u32;
+        for (_, sus, dest) in &samples {
+            all_dests.insert(dest.clone());
+            if *sus {
+                suspicious = suspicious.saturating_add(1);
+                sus_dests.insert(dest.clone());
             }
         }
-        (sus, total)
+
+        // Consecutive suspicious at the most recent end of the window.
+        let mut consecutive_recent_sus = 0u32;
+        for (_, sus, _) in samples.iter().rev() {
+            if *sus {
+                consecutive_recent_sus = consecutive_recent_sus.saturating_add(1);
+            } else {
+                break;
+            }
+        }
+
+        PassiveNodeStats {
+            total: samples.len() as u32,
+            suspicious,
+            dests: all_dests.len() as u32,
+            sus_dests: sus_dests.len() as u32,
+            consecutive_recent_sus,
+        }
     }
 
     /// Apply a pre-fetched snapshot (journal / HTTP fallback). Prefer calling I/O outside the lock.

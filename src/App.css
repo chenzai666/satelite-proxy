@@ -1063,6 +1063,22 @@ button.node-card:disabled,
   min-height: 1.4em;
 }
 
+/* Subscription origin under node name */
+.node-sub-label {
+  font-size: 0.68rem;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.node-list-name {
+  font-weight: 500;
+}
+
 .node-card-meta {
   display: flex;
   flex-direction: column;

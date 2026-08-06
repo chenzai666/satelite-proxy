@@ -93,7 +93,8 @@ export function NodesPage() {
         (n) =>
           n.name.toLowerCase().includes(q) ||
           n.server.toLowerCase().includes(q) ||
-          n.protocol.toLowerCase().includes(q),
+          n.protocol.toLowerCase().includes(q) ||
+          (n.subscription_name?.toLowerCase().includes(q) ?? false),
       );
     }
 
@@ -275,7 +276,14 @@ export function NodesPage() {
                     style={{ cursor: "pointer" }}
                   >
                     <td>{active ? "●" : "○"}</td>
-                    <td>{n.name}</td>
+                    <td>
+                      <div className="node-list-name">{n.name}</div>
+                      {n.subscription_name ? (
+                        <div className="node-sub-label" title={n.subscription_name}>
+                          {n.subscription_name}
+                        </div>
+                      ) : null}
+                    </td>
                     <td>
                       <code>{n.protocol}</code>
                     </td>
@@ -316,6 +324,11 @@ export function NodesPage() {
                 <div className="node-card-name" title={n.name}>
                   {n.name}
                 </div>
+                {n.subscription_name ? (
+                  <div className="node-sub-label" title={n.subscription_name}>
+                    {n.subscription_name}
+                  </div>
+                ) : null}
                 <div className="node-card-footer">
                   <span className="node-card-latency">
                     <LatencyDisplay

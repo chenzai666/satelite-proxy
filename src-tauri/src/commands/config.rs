@@ -4,6 +4,7 @@ use crate::config::{
 use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
 use serde::Serialize;
+use std::collections::HashMap;
 use tauri::State;
 
 #[derive(Debug, Serialize)]
@@ -15,6 +16,15 @@ pub struct GenerateConfigResult {
     pub api_port: u16,
     /// Pretty JSON for UI preview (may be large).
     pub preview: String,
+}
+
+/// Node list item for UI: ProxyNode fields + owning subscription (mix mode label).
+#[derive(Debug, Serialize)]
+pub struct ListedNode {
+    #[serde(flatten)]
+    pub node: ProxyNode,
+    pub subscription_id: String,
+    pub subscription_name: String,
 }
 
 #[tauri::command]
@@ -156,9 +166,35 @@ pub fn set_current_node(
 }
 
 #[tauri::command]
-pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ProxyNode>, String> {
+pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
-        .with_store(|store| Ok(store.enabled_nodes()))
+        .with_store(|store| {
+            let names: HashMap<&str, &str> = store
+                .subscriptions
+                .iter()
+                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .collect();
+            let enabled: std::collections::HashSet<&str> = store
+                .subscriptions
+                .iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.id.as_str())
+                .collect();
+            Ok(store
+                .nodes
+                .iter()
+                .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .map(|n| ListedNode {
+                    node: n.node.clone(),
+                    subscription_id: n.subscription_id.clone(),
+                    subscription_name: names
+                        .get(n.subscription_id.as_str())
+                        .copied()
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect())
+        })
         .map_err(|e| e.to_string())
 }
 

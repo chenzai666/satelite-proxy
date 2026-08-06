@@ -289,7 +289,7 @@ impl CoreManager {
         cmd.args(["run", "-c"]).arg(config);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
-        let mut child = cmd
+        let child = cmd
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_err))
             .spawn()
