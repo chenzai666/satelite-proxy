@@ -97,6 +97,7 @@ export function DashboardPage({
   const smartGenRef = useRef(0);
   const [modeBusy, setModeBusy] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
 
@@ -463,7 +464,9 @@ export function DashboardPage({
       await navigator.clipboard.writeText(text);
       setEnvCopied(true);
       setMoreOpen(false);
+      setToast(t("dashboard.envCopied"));
       window.setTimeout(() => setEnvCopied(false), 1500);
+      window.setTimeout(() => setToast(null), 1500);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
@@ -498,6 +501,7 @@ export function DashboardPage({
 
   return (
     <div className="page dashboard-page">
+      {toast && <div className="toast">{toast}</div>}
       {error && <div className="banner error">{error}</div>}
       {proxy?.error && !running && (
         <div className="banner error">core: {proxy.error}</div>
