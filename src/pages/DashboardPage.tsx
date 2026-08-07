@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   getCoreInfo,
   getProxyStatus,
@@ -7,9 +8,8 @@ import {
   listSubscriptions,
   previewSingboxConfig,
   restartProxy,
+  setCaptureMode,
   setOutboundMode,
-  setSystemProxy,
-  setTunEnabled,
   startProxy,
   smartSwitchNow,
   stopProxy,
@@ -18,6 +18,7 @@ import {
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type {
+  AutoSelectMode,
   GenerateConfigResult,
   OutboundMode,
   ProxyNode,
@@ -72,16 +73,25 @@ export function DashboardPage({
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentNode, setCurrentNode] = useState<ProxyNode | null>(null);
+  /** settings.current_node_id — available before full node list. */
+  const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [settingsPorts, setSettingsPorts] = useState({ mixed: 2080, api: 19090 });
   const [coreLabel, setCoreLabel] = useState("—");
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
+  /** false until status wave lands; details (nodes/subs) may still be loading. */
+  const [statusReady, setStatusReady] = useState(false);
+  const [detailsReady, setDetailsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [sysProxyBusy, setSysProxyBusy] = useState(false);
-  const [tunBusy, setTunBusy] = useState(false);
+  const [captureBusy, setCaptureBusy] = useState(false);
+  /** Optimistic selection while backend applies (null = use proxy status). */
+  const [captureUi, setCaptureUi] = useState<"off" | "system" | "tun" | null>(
+    null,
+  );
+  const captureGenRef = useRef(0);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -90,20 +100,30 @@ export function DashboardPage({
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
 
+  /** Full reload (actions after start/stop/etc). */
   const reload = useCallback(async () => {
     setError(null);
     try {
-      const [subList, nodeList, settings, core, status] = await Promise.all([
-        listSubscriptions(),
-        listAllNodes(),
+      // Kick both waves at once; commit status as soon as wave 1 resolves.
+      const statusP = Promise.all([
         getSettings(),
-        getCoreInfo().catch(() => null),
         getProxyStatus().catch(() => null),
       ]);
+      const detailP = Promise.all([
+        listSubscriptions(),
+        listAllNodes(),
+        getCoreInfo().catch(() => null),
+      ]);
+
+      const [settings, status] = await statusP;
+      setSettingsPorts({ mixed: settings.mixed_port, api: settings.api_port });
+      setCurrentNodeId(settings.current_node_id ?? null);
+      setProxy(status);
+      setStatusReady(true);
+
+      const [subList, nodeList, core] = await detailP;
       setSubs(subList);
       setNodes(nodeList);
-      setSettingsPorts({ mixed: settings.mixed_port, api: settings.api_port });
-      setProxy(status);
       const cur =
         nodeList.find((n) => n.id === settings.current_node_id) ??
         nodeList[0] ??
@@ -123,8 +143,11 @@ export function DashboardPage({
         setCoreVersion(null);
         setCoreLabel(t("settings.coreMissing"));
       }
+      setDetailsReady(true);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
+      setStatusReady(true);
+      setDetailsReady(true);
     }
   }, [t]);
 
@@ -133,6 +156,8 @@ export function DashboardPage({
   }, [reload]);
 
   useVisibleInterval(() => {
+    // Do not clobber optimistic capture UI while a switch is in flight.
+    if (captureBusy) return;
     void getProxyStatus()
       .then(setProxy)
       .catch(() => undefined);
@@ -163,99 +188,137 @@ export function DashboardPage({
     }
   }
 
-  async function onToggleSystemProxy(next: boolean) {
-    setSysProxyBusy(true);
-    setError(null);
-    try {
-      const s = await setSystemProxy(next);
-      setProxy(s);
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-      const s = await getProxyStatus().catch(() => null);
-      if (s) setProxy(s);
-    } finally {
-      setSysProxyBusy(false);
-    }
+  type CaptureMode = "off" | "system" | "tun";
+
+  function resolveCaptureMode(p: ProxyStatus | null): CaptureMode {
+    if (p?.tun_enabled) return "tun";
+    if (p?.system_proxy) return "system";
+    return "off";
   }
 
-  async function onToggleTun(next: boolean) {
-    setTunBusy(true);
-    setError(null);
-    try {
-      const s = await setTunEnabled(next);
-      setProxy(s);
-      await reload();
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-      const s = await getProxyStatus().catch(() => null);
-      if (s) setProxy(s);
-    } finally {
-      setTunBusy(false);
-    }
+  const captureMode = captureUi ?? resolveCaptureMode(proxy);
+
+  /**
+   * Optimistic UI: paint target mode immediately, apply in background.
+   * Failure → restore previous selection + error banner.
+   */
+  function onSetCaptureMode(mode: CaptureMode) {
+    if (mode === captureMode || captureBusy) return;
+    const prevProxy = proxy;
+    const prevMode = resolveCaptureMode(proxy);
+    const gen = ++captureGenRef.current;
+
+    // Force commit before IPC so the indicator slides this frame.
+    flushSync(() => {
+      setCaptureUi(mode);
+      setCaptureBusy(true);
+      setError(null);
+      if (prevProxy) {
+        setProxy({
+          ...prevProxy,
+          system_proxy: mode === "system",
+          tun_enabled: mode === "tun",
+        });
+      }
+    });
+
+    void (async () => {
+      try {
+        const s = await setCaptureMode(mode);
+        if (gen !== captureGenRef.current) return;
+        setProxy(s);
+        setCaptureUi(null);
+        if (mode === "tun" || prevMode === "tun") {
+          void reload();
+        }
+      } catch (e) {
+        if (gen !== captureGenRef.current) return;
+        setError(typeof e === "string" ? e : String(e));
+        setCaptureUi(null);
+        if (prevProxy) {
+          setProxy(prevProxy);
+        } else {
+          const s = await getProxyStatus().catch(() => null);
+          if (s) setProxy(s);
+        }
+      } finally {
+        if (gen === captureGenRef.current) {
+          setCaptureBusy(false);
+        }
+      }
+    })();
   }
 
-  async function onToggleSmartSwitch(next: boolean) {
-    setError(null);
+  function resolveAutoSelect(p: ProxyStatus | null): AutoSelectMode {
+    const raw = (p?.auto_select ?? (p?.smart_switch ? "smart" : "off")) as string;
+    if (raw === "smart" || raw === "kernel") return raw;
+    return "off";
+  }
 
-    // Turn off: invalidate any in-flight bootstrap probe and free the UI immediately.
-    if (!next) {
+  async function onSetAutoSelect(mode: AutoSelectMode) {
+    if (mode === autoSelectMode) return;
+    setError(null);
+    const prev = autoSelectMode;
+
+    // Leaving smart: cancel any in-flight bootstrap probe.
+    if (mode !== "smart") {
       smartGenRef.current += 1;
       setSmartProbing(false);
-      setProxy((prev) => (prev ? { ...prev, smart_switch: false } : prev));
-      try {
-        await updateSettings({ smartSwitch: false });
-        const s = await getProxyStatus().catch(() => null);
-        if (s) setProxy(s);
-      } catch (e) {
-        setError(typeof e === "string" ? e : String(e));
-      }
-      return;
     }
 
-    // Turn on: enable setting, then probe without locking other quick controls.
+    setProxy((p) =>
+      p
+        ? {
+            ...p,
+            auto_select: mode,
+            smart_switch: mode === "smart",
+          }
+        : p,
+    );
+
     const gen = ++smartGenRef.current;
-    setSmartProbing(true);
-    setProxy((prev) => (prev ? { ...prev, smart_switch: true } : prev));
+    if (mode === "smart") setSmartProbing(true);
+
     try {
-      await updateSettings({ smartSwitch: true });
-      if (gen !== smartGenRef.current) {
-        // User turned off while enabling; re-assert off in case our write won the race.
-        await updateSettings({ smartSwitch: false }).catch(() => {});
-        return;
-      }
-      try {
-        const r = await smartSwitchNow();
-        if (gen !== smartGenRef.current) return;
-        if (r.message === "core not running") {
-          setError(t("dashboard.smartSwitchNeedCore"));
-        } else if (r.message === "all probes failed") {
-          setError(t("dashboard.smartSwitchProbeFail"));
-        } else if (r.message === "no nodes") {
-          setError(t("dashboard.smartSwitchNoNodes"));
-        } else if (r.message === "clash api unavailable") {
-          setError(t("dashboard.smartSwitchProbeFail"));
-        }
-      } catch (probeErr) {
-        if (gen !== smartGenRef.current) return;
-        setError(
-          typeof probeErr === "string" ? probeErr : String(probeErr),
-        );
-      }
+      await updateSettings({ autoSelect: mode });
       if (gen !== smartGenRef.current) return;
-      try {
-        await reload();
-        if (gen !== smartGenRef.current) return;
-        setProxy((prev) =>
-          prev ? { ...prev, smart_switch: true } : prev,
-        );
-      } catch {
-        /* ignore */
+
+      if (mode === "smart") {
+        try {
+          const r = await smartSwitchNow();
+          if (gen !== smartGenRef.current) return;
+          if (r.message === "core not running") {
+            setError(t("dashboard.smartSwitchNeedCore"));
+          } else if (r.message === "all probes failed") {
+            setError(t("dashboard.smartSwitchProbeFail"));
+          } else if (r.message === "no nodes") {
+            setError(t("dashboard.smartSwitchNoNodes"));
+          } else if (r.message === "clash api unavailable") {
+            setError(t("dashboard.smartSwitchProbeFail"));
+          }
+        } catch (probeErr) {
+          if (gen !== smartGenRef.current) return;
+          setError(
+            typeof probeErr === "string" ? probeErr : String(probeErr),
+          );
+        }
       }
+
+      if (gen !== smartGenRef.current) return;
+      await reload();
+      const s = await getProxyStatus().catch(() => null);
+      if (s) setProxy(s);
     } catch (e) {
       if (gen === smartGenRef.current) {
         setError(typeof e === "string" ? e : String(e));
-        setProxy((prev) =>
-          prev ? { ...prev, smart_switch: false } : prev,
+        setProxy((p) =>
+          p
+            ? {
+                ...p,
+                auto_select: prev,
+                smart_switch: prev === "smart",
+              }
+            : p,
         );
       }
     } finally {
@@ -325,10 +388,14 @@ export function DashboardPage({
   const stateLabel = proxy?.core_state ?? "stopped";
   const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
   // Smart bootstrap probe must not lock routing / sys proxy / TUN.
-  const controlsBusy = busy || sysProxyBusy || tunBusy || modeBusy;
-  const smartSwitchOn = proxy?.smart_switch ?? false;
+  // captureBusy must NOT freeze other controls (optimistic capture runs long).
+  const controlsBusy = busy || modeBusy;
+  const autoSelectMode = resolveAutoSelect(proxy);
   const nodeCount = nodes.length;
   const subCount = subs.length;
+  // Allow start once we know a node id, even if full list is still loading.
+  const canStart =
+    nodeCount > 0 || (!!currentNodeId && statusReady);
   const mixedPort = proxy?.mixed_port ?? settingsPorts.mixed;
 
   const switching =
@@ -361,17 +428,21 @@ export function DashboardPage({
         ? "error"
         : "stopped";
 
-  const heroTitle = running
-    ? currentNode?.name ?? t("dashboard.disconnected")
-    : isError
-      ? t("dashboard.errorTitle")
-      : t("dashboard.disconnected");
+  const heroTitle = !detailsReady && running
+    ? null // skeleton
+    : running
+      ? currentNode?.name ?? t("dashboard.disconnected")
+      : isError
+        ? t("dashboard.errorTitle")
+        : t("dashboard.disconnected");
 
-  const heroSub = running
-    ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
-        .filter(Boolean)
-        .join(" · ")
-    : t("dashboard.desc");
+  const heroSub = !detailsReady && running
+    ? null
+    : running
+      ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
+          .filter(Boolean)
+          .join(" · ")
+      : t("dashboard.desc");
 
   /** Best / avg among nodes that have a successful latency sample. */
   const latencyStats = useMemo(() => {
@@ -454,15 +525,27 @@ export function DashboardPage({
             SING-BOX {coreVersion ?? coreLabel}
           </div>
 
-          <h1 className="dash-hero-title">{heroTitle}</h1>
-          <p className="dash-hero-desc">{heroSub}</p>
+          <h1 className="dash-hero-title">
+            {heroTitle == null ? (
+              <span className="skel skel-inline skel-w-40" aria-hidden />
+            ) : (
+              heroTitle
+            )}
+          </h1>
+          <p className="dash-hero-desc">
+            {heroSub == null ? (
+              <span className="skel skel-inline skel-w-30" aria-hidden />
+            ) : (
+              heroSub
+            )}
+          </p>
 
           <div className="dash-hero-actions">
             {!running ? (
               <button
                 type="button"
                 className="btn-pill"
-                disabled={busy || nodeCount === 0 || switching}
+                disabled={busy || !canStart || switching || !statusReady}
                 onClick={() => void onStart()}
               >
                 {busy || stateLabel === "starting"
@@ -485,7 +568,7 @@ export function DashboardPage({
             <button
               type="button"
               className="btn-pill secondary"
-              disabled={nodeCount === 0}
+              disabled={!canStart}
               onClick={() => onGoNodes?.()}
             >
               {t("dashboard.switchNode")}
@@ -523,7 +606,7 @@ export function DashboardPage({
                   <button
                     type="button"
                     role="menuitem"
-                    disabled={busy || nodeCount === 0}
+                    disabled={busy || !canStart}
                     onClick={() => void onPreview()}
                   >
                     {t("common.preview")}
@@ -583,45 +666,13 @@ export function DashboardPage({
               ))}
             </div>
           </div>
-          <div className="dash-inline-row dash-inline-switch">
-            <span className="dash-inline-label">
-              {t("dashboard.sysProxyTitle")}
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={proxy?.system_proxy ?? false}
-              aria-label={t("dashboard.sysProxyTitle")}
-              className={`switch small ${proxy?.system_proxy ? "on" : ""}`}
-              disabled={controlsBusy}
-              onClick={() =>
-                void onToggleSystemProxy(!(proxy?.system_proxy ?? false))
-              }
-            >
-              <span className="switch-thumb" />
-            </button>
-          </div>
-          <div className="dash-inline-row dash-inline-switch">
-            <span className="dash-inline-label">{t("dashboard.tunTitle")}</span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={proxy?.tun_enabled ?? false}
-              aria-label={t("dashboard.tunTitle")}
-              className={`switch small ${proxy?.tun_enabled ? "on" : ""}`}
-              disabled={controlsBusy || nodeCount === 0}
-              onClick={() => void onToggleTun(!(proxy?.tun_enabled ?? false))}
-            >
-              <span className="switch-thumb" />
-            </button>
-          </div>
-          <div className="dash-inline-row dash-inline-switch">
+          <div className="dash-inline-row dash-auto-select">
             <span
               className={`dash-inline-label${smartProbing ? " dash-smart-probing" : ""}`}
               title={
                 smartProbing
                   ? t("dashboard.smartSwitchProbing")
-                  : t("dashboard.smartSwitchDesc")
+                  : t("dashboard.autoSelectDesc")
               }
             >
               {smartProbing ? (
@@ -630,30 +681,127 @@ export function DashboardPage({
                   <span>{t("dashboard.smartSwitchProbing")}</span>
                 </>
               ) : (
-                t("dashboard.smartSwitch")
+                t("dashboard.autoSelect")
               )}
             </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={smartSwitchOn}
+            <div
+              className="segmented compact mode-seg dash-inline-seg dash-auto-seg"
+              role="group"
+              aria-label={t("dashboard.autoSelect")}
               aria-busy={smartProbing}
-              aria-label={
-                smartProbing
-                  ? t("dashboard.smartSwitchProbing")
-                  : t("dashboard.smartSwitch")
-              }
-              title={
-                smartProbing
-                  ? t("dashboard.smartSwitchProbingHint")
-                  : t("dashboard.smartSwitchDesc")
-              }
-              className={`switch small ${smartSwitchOn ? "on" : ""}`}
-              disabled={nodeCount === 0 && !smartSwitchOn}
-              onClick={() => void onToggleSmartSwitch(!smartSwitchOn)}
             >
-              <span className="switch-thumb" />
-            </button>
+              <span
+                className="seg-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${
+                    autoSelectMode === "off"
+                      ? 0
+                      : autoSelectMode === "smart"
+                        ? 100
+                        : 200
+                  }%)`,
+                }}
+              />
+              {(
+                [
+                  ["off", t("dashboard.autoSelectOff")],
+                  ["smart", t("dashboard.autoSelectSmart")],
+                  ["kernel", t("dashboard.autoSelectKernel")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`seg ${autoSelectMode === key ? "active" : ""}`}
+                  disabled={
+                    modeBusy ||
+                    // While probing: allow Off / Kernel to cancel; only block re-tapping Smart.
+                    (smartProbing && key === "smart") ||
+                    (nodeCount === 0 &&
+                      key !== "off" &&
+                      autoSelectMode === "off" &&
+                      !smartProbing)
+                  }
+                  title={
+                    key === "kernel"
+                      ? t("dashboard.autoSelectKernelHint")
+                      : key === "smart"
+                        ? t("dashboard.smartSwitchDesc")
+                        : t("dashboard.autoSelectDesc")
+                  }
+                  onClick={() => void onSetAutoSelect(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="dash-inline-row dash-auto-select dash-capture">
+            <span
+              className={`dash-inline-label${captureBusy ? " dash-smart-probing" : ""}`}
+              title={
+                captureBusy
+                  ? t("dashboard.captureSwitching")
+                  : t("dashboard.captureDesc")
+              }
+            >
+              {captureBusy ? (
+                <>
+                  <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                  <span>{t("dashboard.captureSwitching")}</span>
+                </>
+              ) : (
+                t("dashboard.capture")
+              )}
+            </span>
+            <div
+              className="segmented compact mode-seg dash-inline-seg dash-auto-seg"
+              role="group"
+              aria-label={t("dashboard.capture")}
+              aria-busy={captureBusy}
+            >
+              <span
+                className="seg-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${
+                    captureMode === "off"
+                      ? 0
+                      : captureMode === "system"
+                        ? 100
+                        : 200
+                  }%)`,
+                }}
+              />
+              {(
+                [
+                  ["off", t("dashboard.captureOff")],
+                  ["system", t("dashboard.captureSystem")],
+                  ["tun", t("dashboard.captureTun")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`seg ${captureMode === key ? "active" : ""}`}
+                  disabled={
+                    (captureBusy && key !== captureMode) ||
+                    (key === "tun" && nodeCount === 0 && captureMode !== "tun")
+                  }
+                  title={
+                    key === "tun"
+                      ? t("dashboard.captureTunHint")
+                      : key === "system"
+                        ? t("dashboard.captureSystemHint")
+                        : t("dashboard.captureDesc")
+                  }
+                  onClick={() => onSetCaptureMode(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </aside>
       </section>
@@ -865,15 +1013,13 @@ export function DashboardPage({
               <span className="kv-v">:{settingsPorts.api}</span>
             </div>
             <div>
-              <span className="kv-k">SYS</span>
+              <span className="kv-k">{t("dashboard.capture")}</span>
               <span className="kv-v">
-                {proxy?.system_proxy ? "ON" : "OFF"}
-              </span>
-            </div>
-            <div>
-              <span className="kv-k">TUN</span>
-              <span className="kv-v">
-                {proxy?.tun_enabled ? "ON" : "OFF"}
+                {proxy?.tun_enabled
+                  ? t("dashboard.captureTun")
+                  : proxy?.system_proxy
+                    ? t("dashboard.captureSystem")
+                    : t("dashboard.captureOff")}
               </span>
             </div>
           </div>

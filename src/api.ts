@@ -126,7 +126,12 @@ export function updateSettings(payload: {
   locale?: string | null;
   theme?: string | null;
   unloadUiOnTray?: boolean | null;
+  /** @deprecated prefer autoSelect */
   smartSwitch?: boolean | null;
+  /** off | smart | kernel */
+  autoSelect?: string | null;
+  /** proxy | direct | block — route.final in Rule mode */
+  routeFinal?: string | null;
 }) {
   return invoke<AppSettings>("update_settings", {
     mixedPort: payload.mixedPort ?? null,
@@ -143,6 +148,8 @@ export function updateSettings(payload: {
     theme: payload.theme ?? null,
     unloadUiOnTray: payload.unloadUiOnTray ?? null,
     smartSwitch: payload.smartSwitch ?? null,
+    autoSelect: payload.autoSelect ?? null,
+    routeFinal: payload.routeFinal ?? null,
   });
 }
 
@@ -266,6 +273,11 @@ export function setSystemProxy(enabled: boolean) {
 /** Toggle TUN; restarts core when running so config applies. */
 export function setTunEnabled(enabled: boolean) {
   return invoke<ProxyStatus>("set_tun_enabled", { enabled });
+}
+
+/** Traffic capture mode: off | system | tun (mutually exclusive). */
+export function setCaptureMode(mode: "off" | "system" | "tun") {
+  return invoke<ProxyStatus>("set_capture_mode", { mode });
 }
 
 /** rule | global | direct — restarts core when running. */

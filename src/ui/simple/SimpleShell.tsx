@@ -1,12 +1,21 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useImportIntent } from "../../ImportIntentContext";
 import { UiModeMenu } from "../UiModeMenu";
 import { SimpleConnectPage } from "./SimpleConnectPage";
-import { SimpleServersPage } from "./SimpleServersPage";
-import { SimpleSettingsPage } from "./SimpleSettingsPage";
-import { SimpleTrafficPage } from "./SimpleTrafficPage";
 
 export type SimpleNavKey = "connect" | "servers" | "traffic" | "settings";
+
+const SimpleServersPage = lazy(() =>
+  import("./SimpleServersPage").then((m) => ({ default: m.SimpleServersPage })),
+);
+const SimpleTrafficPage = lazy(() =>
+  import("./SimpleTrafficPage").then((m) => ({ default: m.SimpleTrafficPage })),
+);
+const SimpleSettingsPage = lazy(() =>
+  import("./SimpleSettingsPage").then((m) => ({
+    default: m.SimpleSettingsPage,
+  })),
+);
 
 const TABS: { key: SimpleNavKey; label: string }[] = [
   { key: "connect", label: "连接" },
@@ -14,6 +23,16 @@ const TABS: { key: SimpleNavKey; label: string }[] = [
   { key: "traffic", label: "流量" },
   { key: "settings", label: "设置" },
 ];
+
+function SimplePageFallback() {
+  return (
+    <div className="simple-page" aria-busy="true">
+      <div className="skel skel-block" />
+      <div className="skel skel-line skel-w-60" />
+      <div className="skel skel-line skel-w-40" />
+    </div>
+  );
+}
 
 export function SimpleShell() {
   const [nav, setNav] = useState<SimpleNavKey>("connect");
@@ -56,9 +75,13 @@ export function SimpleShell() {
         {nav === "connect" && (
           <SimpleConnectPage onGoServers={() => setNav("servers")} />
         )}
-        {nav === "servers" && <SimpleServersPage />}
-        {nav === "traffic" && <SimpleTrafficPage />}
-        {nav === "settings" && <SimpleSettingsPage />}
+        {nav !== "connect" && (
+          <Suspense fallback={<SimplePageFallback />}>
+            {nav === "servers" && <SimpleServersPage />}
+            {nav === "traffic" && <SimpleTrafficPage />}
+            {nav === "settings" && <SimpleSettingsPage />}
+          </Suspense>
+        )}
       </main>
     </div>
   );

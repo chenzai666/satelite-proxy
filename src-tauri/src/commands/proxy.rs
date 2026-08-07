@@ -43,6 +43,29 @@ pub fn set_tun_enabled(
         .map_err(|e| e.to_string())
 }
 
+/// Traffic capture: `off` | `system` | `tun` (mutually exclusive).
+///
+/// Async + spawn_blocking so the webview IPC is not stuck on a sync command
+/// while TUN restart / service stop runs for seconds.
+#[tauri::command]
+pub async fn set_capture_mode(
+    app: AppHandle,
+    mode: String,
+) -> Result<ProxyStatus, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .set_capture_mode(&mode, resource_dir.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("capture mode task: {e}"))?
+}
+
 /// Switch outbound mode: rule | global | direct. Restarts core when running.
 #[tauri::command]
 pub fn set_outbound_mode(

@@ -32,6 +32,46 @@ impl OutboundMode {
     }
 }
 
+/// How the main `proxy` outbound picks a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoSelectMode {
+    /// Manual only (selector; user / app picks node).
+    #[default]
+    Off,
+    /// App-level smart switch (passive + on-demand probe; selector).
+    Smart,
+    /// sing-box `urltest` group; kernel picks by delay.
+    Kernel,
+}
+
+impl AutoSelectMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Smart => "smart",
+            Self::Kernel => "kernel",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "manual" | "false" | "0" => Some(Self::Off),
+            "smart" | "app" | "true" | "1" => Some(Self::Smart),
+            "kernel" | "urltest" | "core" => Some(Self::Kernel),
+            _ => None,
+        }
+    }
+
+    pub fn is_kernel(self) -> bool {
+        matches!(self, Self::Kernel)
+    }
+
+    pub fn is_smart(self) -> bool {
+        matches!(self, Self::Smart)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// mixed inbound listen port
@@ -59,6 +99,10 @@ pub struct AppSettings {
     /// Rule / Global / Direct (Clash-style).
     #[serde(default)]
     pub outbound_mode: OutboundMode,
+    /// `route.final` when in Rule mode: `proxy` | `direct` | `block`.
+    /// Global/Direct modes ignore this and force proxy/direct respectively.
+    #[serde(default = "default_route_final")]
+    pub route_final: String,
 
     // —— Application preferences ——
     /// Close window → hide to tray (keep process + core). If false, quit app.
@@ -87,8 +131,11 @@ pub struct AppSettings {
     /// wake recreates the WebView (brief black screen).
     #[serde(default)]
     pub unload_ui_on_tray: bool,
-    /// Smart node auto-switch: passive observation + on-demand probe (docs/auto.md).
+    /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
+    pub auto_select: AutoSelectMode,
+    /// Legacy bool (pre auto_select). Migrated on store load; not re-written.
+    #[serde(default, skip_serializing)]
     pub smart_switch: bool,
 }
 
@@ -98,6 +145,10 @@ fn default_probe_url() -> String {
 
 fn default_tun_stack() -> String {
     "mixed".into()
+}
+
+fn default_route_final() -> String {
+    "proxy".into()
 }
 
 fn default_true() -> bool {
@@ -124,6 +175,7 @@ impl Default for AppSettings {
             tun_enabled: false,
             tun_stack: default_tun_stack(),
             outbound_mode: OutboundMode::Rule,
+            route_final: default_route_final(),
             close_to_tray: true,
             launch_at_login: false,
             silent_start: false,
@@ -132,7 +184,28 @@ impl Default for AppSettings {
             locale: default_locale(),
             theme: default_theme(),
             unload_ui_on_tray: false,
+            auto_select: AutoSelectMode::Off,
             smart_switch: false,
+        }
+    }
+}
+
+impl AppSettings {
+    /// Apply legacy `smart_switch: true` → `auto_select: smart` once.
+    pub fn migrate_auto_select(&mut self) {
+        if self.auto_select == AutoSelectMode::Off && self.smart_switch {
+            self.auto_select = AutoSelectMode::Smart;
+        }
+        // Keep in-memory legacy flag aligned for any transitional readers.
+        self.smart_switch = self.auto_select.is_smart();
+    }
+
+    /// Normalize `route.final` tag: proxy | direct | block.
+    pub fn normalized_route_final(&self) -> &str {
+        match self.route_final.to_ascii_lowercase().as_str() {
+            "direct" => "direct",
+            "block" => "block",
+            _ => "proxy",
         }
     }
 }

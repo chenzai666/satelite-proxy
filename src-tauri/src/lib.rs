@@ -77,6 +77,12 @@ pub fn run() {
             app.manage(app_state);
             app_log::info("app", "Satelite started");
 
+            // Build reqwest blocking client on a plain OS thread so its internal
+            // Tokio runtime is never created/dropped on a tauri async worker.
+            std::thread::spawn(|| {
+                crate::api::warmup_blocking_client();
+            });
+
             if let Err(e) = tray::setup_tray(app.handle()) {
                 app_log::error("tray", format!("setup failed: {e}"));
             }
@@ -223,6 +229,7 @@ pub fn run() {
             commands::restart_proxy,
             commands::set_system_proxy,
             commands::set_tun_enabled,
+            commands::set_capture_mode,
             commands::set_outbound_mode,
             commands::get_dns_settings,
             commands::update_dns_settings,
@@ -272,11 +279,11 @@ pub fn run() {
                         state.shutdown_runtime();
                     }
                 }
+                // Process is exiting regardless (Cmd+Q / terminate: goes straight here,
+                // bypassing ExitRequested and exit_allowed). Always clean up.
                 tauri::RunEvent::Exit => {
                     if let Some(state) = app_handle.try_state::<AppState>() {
-                        if state.is_exit_allowed() {
-                            state.shutdown_runtime();
-                        }
+                        state.shutdown_runtime();
                     }
                 }
                 // macOS Dock / “reopen”: user clicked the app icon while no visible window

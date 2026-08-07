@@ -49,7 +49,7 @@ const en = {
   "dashboard.sysProxy": "Sys Proxy",
   "dashboard.tun": "TUN",
   "dashboard.mode": "Mode",
-  "dashboard.routing": "Routing",
+  "dashboard.routing": "Routing mode",
   "dashboard.outbound": "Outbound mode",
   "dashboard.outboundRule": "Rule-based routing; unmatched → proxy",
   "dashboard.outboundGlobal": "Ignore rules; all → proxy",
@@ -64,8 +64,19 @@ const en = {
     "HTTP/HTTPS/SOCKS → local mixed port (core must be running)",
   "dashboard.tunTitle": "TUN",
   "dashboard.tunDesc":
-    "System-wide capture via utun. On macOS the OS will ask for admin password (root) so the core can create the interface. Toggle restarts core.",
+    "System-wide capture via utun. First enable authorizes sing-box (setuid; Touch ID via sudo when pam_tid is on; otherwise password once); later start/stop need no password. Re-auth may be needed after core updates.",
   "dashboard.tunShort": "System-wide capture",
+  "dashboard.tunSwitching": "Switching TUN…",
+  "dashboard.capture": "Capture",
+  "dashboard.captureOff": "Off",
+  "dashboard.captureSystem": "System",
+  "dashboard.captureTun": "TUN",
+  "dashboard.captureDesc":
+    "How traffic enters the proxy: Off, System proxy, or TUN (global).",
+  "dashboard.captureSwitching": "Switching capture…",
+  "dashboard.captureSystemHint": "Set system HTTP/SOCKS to local mixed port",
+  "dashboard.captureTunHint":
+    "Global capture via utun (admin once for service install)",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
     "On enable: probe and pick best node. Then passive watch + on-demand probe.",
@@ -74,6 +85,14 @@ const en = {
   "dashboard.smartSwitchNeedCore": "Start the proxy before smart switch can probe.",
   "dashboard.smartSwitchProbeFail": "Smart switch probe failed — check network / nodes.",
   "dashboard.smartSwitchNoNodes": "No nodes available for smart switch.",
+  "dashboard.autoSelect": "Node switch",
+  "dashboard.autoSelectDesc":
+    "Off: manual. Smart: app passive+probe. Kernel: sing-box urltest.",
+  "dashboard.autoSelectOff": "Off",
+  "dashboard.autoSelectSmart": "Smart",
+  "dashboard.autoSelectKernel": "Kernel",
+  "dashboard.autoSelectKernelHint":
+    "Kernel mode restarts core to apply urltest. Selected node syncs from Clash API.",
   "dashboard.enabled": "Enabled",
   "dashboard.disabled": "Disabled",
   "dashboard.advancedSettings": "Advanced settings",
@@ -267,6 +286,12 @@ const en = {
   "rules.title": "Rules",
   "rules.desc":
     "Multiple rule sets · drag left list for priority (top first) · auto-restart when running",
+  "rules.final": "Default outbound (final)",
+  "rules.finalHint":
+    "Traffic that matches no rule. Only applies in Rule mode; Global/Direct on Dashboard override this.",
+  "rules.finalProxy": "Proxy",
+  "rules.finalDirect": "Direct",
+  "rules.finalBlock": "Block",
   "rules.newSet": "New set",
   "rules.addRule": "Add rule",
   "rules.sets": "Rule sets",
@@ -427,7 +452,7 @@ const zh: Record<MessageKey, string> = {
   "dashboard.sysProxy": "系统代理",
   "dashboard.tun": "TUN",
   "dashboard.mode": "模式",
-  "dashboard.routing": "路由",
+  "dashboard.routing": "路由模式",
   "dashboard.outbound": "出站模式",
   "dashboard.outboundRule": "按规则分流，未匹配走代理",
   "dashboard.outboundGlobal": "忽略规则，全部走代理",
@@ -442,8 +467,17 @@ const zh: Record<MessageKey, string> = {
     "HTTP/HTTPS/SOCKS 指向本地 mixed 端口（需代理核心在跑）",
   "dashboard.tunTitle": "TUN 模式",
   "dashboard.tunDesc":
-    "通过 utun 虚拟网卡全局接管流量。macOS 会弹出管理员密码（以 root 启动内核才能创建网卡）。切换会重启内核。",
+    "通过 utun 虚拟网卡全局接管流量。首次开启为 sing-box 设置 setuid（优先 sudo 指纹，系统已开 pam_tid 时）；之后启停不再要权限。更新内核后可能需再授权一次。切换会重启内核。",
   "dashboard.tunShort": "全局流量接管",
+  "dashboard.tunSwitching": "TUN 切换中…",
+  "dashboard.capture": "流量接管",
+  "dashboard.captureOff": "关闭",
+  "dashboard.captureSystem": "系统",
+  "dashboard.captureTun": "TUN",
+  "dashboard.captureDesc": "流量如何进入代理：关闭、系统代理或 TUN（全局）",
+  "dashboard.captureSwitching": "切换中…",
+  "dashboard.captureSystemHint": "将系统 HTTP/SOCKS 指向本地 mixed 端口",
+  "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
     "开启时立即探测并切到最佳节点；之后被动观测 + 按需探测",
@@ -452,6 +486,14 @@ const zh: Record<MessageKey, string> = {
   "dashboard.smartSwitchNeedCore": "请先启动代理，智能切换才能探测节点。",
   "dashboard.smartSwitchProbeFail": "智能切换探测失败，请检查网络或节点。",
   "dashboard.smartSwitchNoNodes": "没有可用节点，无法智能切换。",
+  "dashboard.autoSelect": "节点切换",
+  "dashboard.autoSelectDesc":
+    "关闭：手动选节点。智能：应用层被动观测+探测。内核：sing-box urltest 自动选路。",
+  "dashboard.autoSelectOff": "关闭",
+  "dashboard.autoSelectSmart": "智能",
+  "dashboard.autoSelectKernel": "内核",
+  "dashboard.autoSelectKernelHint":
+    "内核模式会重启核心以应用 urltest；当前节点从 Clash API 同步。",
   "dashboard.enabled": "已开启",
   "dashboard.disabled": "已关闭",
   "dashboard.advancedSettings": "高级设置",
@@ -633,6 +675,12 @@ const zh: Record<MessageKey, string> = {
   "rules.title": "规则",
   "rules.desc":
     "可同时启用多个规则集 · 左侧拖拽优先级（越上越先）· 运行中自动重启",
+  "rules.final": "兜底策略 (final)",
+  "rules.finalHint":
+    "未命中任何规则时的出口。仅在「规则」模式下生效；概览页的全局/直连会覆盖此项。",
+  "rules.finalProxy": "代理",
+  "rules.finalDirect": "直连",
+  "rules.finalBlock": "拒绝",
   "rules.newSet": "新建规则集",
   "rules.addRule": "添加规则",
   "rules.sets": "规则集",

@@ -2,8 +2,8 @@
 
 use crate::config::dns_build::build_dns_section;
 use crate::domain::{
-    DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType, TlsConfig,
-    Transport,
+    AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType,
+    TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -25,6 +25,12 @@ pub struct BuildOptions {
     pub dns: DnsSettings,
     /// Rule / Global / Direct.
     pub outbound_mode: OutboundMode,
+    /// `route.final` in Rule mode: proxy | direct | block.
+    pub route_final: String,
+    /// off/smart → selector; kernel → urltest.
+    pub auto_select: AutoSelectMode,
+    /// URL for kernel urltest (and shared probe default).
+    pub probe_url: String,
 }
 
 impl BuildOptions {
@@ -33,6 +39,14 @@ impl BuildOptions {
             "system" => "system",
             "gvisor" => "gvisor",
             _ => "mixed",
+        }
+    }
+
+    pub fn normalized_route_final(&self) -> &str {
+        match self.route_final.to_ascii_lowercase().as_str() {
+            "direct" => "direct",
+            "block" => "block",
+            _ => "proxy",
         }
     }
 }
@@ -75,16 +89,35 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
 
     let selected_tag = resolve_selected_tag(nodes, &tags, opts.current_node_id.as_deref());
 
-    let mut selector_outbounds = tags.clone();
-    selector_outbounds.push("direct".into());
-
     let mut outbounds = Vec::new();
-    outbounds.push(json!({
-        "type": "selector",
-        "tag": "proxy",
-        "outbounds": selector_outbounds,
-        "default": selected_tag,
-    }));
+    // Main group: selector (manual / app smart) vs urltest (kernel auto).
+    if opts.auto_select.is_kernel() {
+        let url = if opts.probe_url.trim().is_empty() {
+            "https://www.gstatic.com/generate_204".to_string()
+        } else {
+            opts.probe_url.trim().to_string()
+        };
+        // urltest only lists real nodes (never "direct" — would win on latency).
+        outbounds.push(json!({
+            "type": "urltest",
+            "tag": "proxy",
+            "outbounds": tags.clone(),
+            "url": url,
+            "interval": "5m",
+            "tolerance": 50,
+            "idle_timeout": "30m",
+            "interrupt_exist_connections": false,
+        }));
+    } else {
+        let mut selector_outbounds = tags.clone();
+        selector_outbounds.push("direct".into());
+        outbounds.push(json!({
+            "type": "selector",
+            "tag": "proxy",
+            "outbounds": selector_outbounds,
+            "default": selected_tag,
+        }));
+    }
     // Per-rule smart selectors (keyword-filtered node pools).
     outbounds.extend(build_smart_rule_selectors(&opts.rules, nodes, &tags));
     outbounds.extend(node_outbounds);
@@ -100,11 +133,11 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         route_rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
     }
     // Clash-style modes:
-    // - Rule: user rules + final proxy
+    // - Rule: user rules + configurable final (proxy|direct|block)
     // - Global: no user rules, final proxy
     // - Direct: no user rules, final direct
     let (apply_user_rules, route_final) = match opts.outbound_mode {
-        OutboundMode::Rule => (true, "proxy"),
+        OutboundMode::Rule => (true, opts.normalized_route_final()),
         OutboundMode::Global => (false, "proxy"),
         OutboundMode::Direct => (false, "direct"),
     };
@@ -120,13 +153,17 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     })];
 
     if opts.tun_enabled {
+        // strict_route is mainly a Windows multi-homed DNS workaround; on macOS it
+        // can break host → 127.0.0.1 (clash_api / mixed) while TUN is up.
+        // Always exclude loopback so the app can reach clash_api for health checks.
         inbounds.push(json!({
             "type": "tun",
             "tag": "tun-in",
             "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
             "mtu": 9000,
             "auto_route": true,
-            "strict_route": true,
+            "strict_route": cfg!(target_os = "windows"),
+            "route_exclude_address": ["127.0.0.0/8", "::1/128"],
             "stack": opts.normalized_tun_stack()
         }));
     }
@@ -711,6 +748,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
@@ -724,6 +764,50 @@ mod tests {
             .get("default_domain_resolver")
             .is_some());
         assert_eq!(built.value["route"]["final"], "proxy");
+        let proxy = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == "proxy")
+            .unwrap();
+        assert_eq!(proxy["type"], "selector");
+    }
+
+    #[test]
+    fn builds_urltest_when_kernel_auto_select() {
+        let nodes = vec![sample_ss()];
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Kernel,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+            },
+        )
+        .unwrap();
+        let proxy = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == "proxy")
+            .unwrap();
+        assert_eq!(proxy["type"], "urltest");
+        assert_eq!(proxy["url"], "https://www.gstatic.com/generate_204");
+        assert!(proxy["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t != "direct"));
     }
 
     #[test]
@@ -742,6 +826,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
@@ -750,6 +837,9 @@ mod tests {
         assert_eq!(inbounds[1]["type"], "tun");
         assert_eq!(inbounds[1]["auto_route"], true);
         assert_eq!(inbounds[1]["stack"], "mixed");
+        assert!(inbounds[1]["route_exclude_address"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "127.0.0.0/8")));
         assert!(built.value.get("dns").is_some());
         assert!(built.value["route"]
             .get("default_domain_resolver")
@@ -815,6 +905,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap_err();
@@ -837,10 +930,40 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Direct,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
         assert_eq!(built.value["route"]["final"], "direct");
+    }
+
+    #[test]
+    fn rule_mode_honors_route_final() {
+        let nodes = vec![sample_ss()];
+        for (rf, expect) in [("direct", "direct"), ("block", "block"), ("proxy", "proxy")] {
+            let built = build_singbox_config(
+                &nodes,
+                &BuildOptions {
+                    mixed_port: 2080,
+                    api_port: 19090,
+                    api_secret: "test".into(),
+                    current_node_id: None,
+                    log_level: "info".into(),
+                    rules: vec![],
+                    tun_enabled: false,
+                    tun_stack: "mixed".into(),
+                    dns: DnsSettings::default(),
+                    outbound_mode: OutboundMode::Rule,
+                    route_final: rf.into(),
+                    auto_select: crate::domain::AutoSelectMode::Off,
+                    probe_url: "https://www.gstatic.com/generate_204".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(built.value["route"]["final"], expect, "rf={rf}");
+        }
     }
 
     #[test]
@@ -865,6 +988,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Global,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
@@ -900,6 +1026,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
@@ -936,6 +1065,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();
@@ -976,6 +1108,9 @@ mod tests {
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
                 outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
             },
         )
         .unwrap();

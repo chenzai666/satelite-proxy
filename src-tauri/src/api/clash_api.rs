@@ -1,9 +1,15 @@
 //! Minimal Clash-compatible API client (sing-box experimental.clash_api).
+//!
+//! HTTP via **ureq** (no Tokio). Do not use `reqwest::blocking` here — it embeds
+//! a nested runtime and panics when used from Tauri async workers / smart_switch:
+//! "Cannot drop a runtime in a context where blocking is not allowed".
 
 use crate::error::{AppError, AppResult};
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Clash / sing-box sometimes emit ports as strings, sometimes as numbers.
 fn deserialize_stringish<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -53,6 +59,29 @@ pub struct ClashApi {
     pub secret: String,
 }
 
+fn shared_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(3))
+            .timeout(Duration::from_secs(30))
+            .build()
+    })
+}
+
+fn map_ureq(err: ureq::Error) -> AppError {
+    AppError::Core(format!("clash_api: {err}"))
+}
+
+fn auth(secret: &str) -> String {
+    format!("Bearer {secret}")
+}
+
+/// No-op kept for call sites that used to warm reqwest blocking.
+pub fn warmup_blocking_client() {
+    let _ = shared_agent();
+}
+
 impl ClashApi {
     pub fn new(host: &str, port: u16, secret: &str) -> Self {
         Self {
@@ -61,42 +90,26 @@ impl ClashApi {
         }
     }
 
-    fn client() -> AppResult<reqwest::blocking::Client> {
-        reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .map_err(|e| AppError::Core(e.to_string()))
-    }
-
-    pub fn version(&self) -> AppResult<String> {
-        let c = Self::client()?;
-        let resp = c
-            .get(format!("{}/version", self.base))
-            .header("Authorization", format!("Bearer {}", self.secret))
-            .send()
-            .map_err(|e| AppError::Core(format!("clash_api version: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(AppError::Core(format!(
-                "clash_api version status {}",
-                resp.status()
-            )));
-        }
-        Ok(resp.text().unwrap_or_default())
-    }
-
+    /// Fast readiness probe (short timeout). Used while waiting for core start.
     pub fn health_ok(&self) -> bool {
-        self.version().is_ok()
+        shared_agent()
+            .get(&format!("{}/version", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_millis(350))
+            .call()
+            .map(|r| (200..300).contains(&r.status()))
+            .unwrap_or(false)
     }
 
     /// Close all active connections (`DELETE /connections`).
     pub fn close_all_connections(&self) -> AppResult<()> {
-        let c = Self::client()?;
-        let resp = c
-            .delete(format!("{}/connections", self.base))
-            .header("Authorization", format!("Bearer {}", self.secret))
-            .send()
-            .map_err(|e| AppError::Core(format!("close connections: {e}")))?;
-        if !resp.status().is_success() {
+        let resp = shared_agent()
+            .delete(&format!("{}/connections", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_secs(3))
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
             return Err(AppError::Core(format!(
                 "close connections status {}",
                 resp.status()
@@ -105,17 +118,16 @@ impl ClashApi {
         Ok(())
     }
 
-    /// Switch selector group `proxy` to outbound `name` (tag).
+    /// Switch selector/urltest group `proxy` to outbound `name` (tag).
     pub fn select_proxy(&self, group: &str, name: &str) -> AppResult<()> {
-        let c = Self::client()?;
         let body = serde_json::json!({ "name": name });
-        let resp = c
-            .put(format!("{}/proxies/{group}", self.base))
-            .header("Authorization", format!("Bearer {}", self.secret))
-            .json(&body)
-            .send()
-            .map_err(|e| AppError::Core(format!("clash_api select: {e}")))?;
-        if !resp.status().is_success() {
+        let resp = shared_agent()
+            .put(&format!("{}/proxies/{group}", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_secs(3))
+            .send_json(body)
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
             return Err(AppError::Core(format!(
                 "clash_api select status {}",
                 resp.status()
@@ -124,17 +136,43 @@ impl ClashApi {
         Ok(())
     }
 
+    /// Current selected outbound tag of a proxy group (`GET /proxies/{group}` → `now`).
+    pub fn proxy_group_now(&self, group: &str) -> AppResult<Option<String>> {
+        let encoded = urlencoding::encode(group);
+        let resp = shared_agent()
+            .get(&format!("{}/proxies/{encoded}", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_secs(3))
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
+            return Err(AppError::Core(format!(
+                "clash_api proxy now status {}",
+                resp.status()
+            )));
+        }
+        #[derive(Deserialize)]
+        struct ProxyBody {
+            #[serde(default)]
+            now: Option<String>,
+        }
+        let body: ProxyBody = resp
+            .into_json()
+            .map_err(|e| AppError::Core(format!("proxy now json: {e}")))?;
+        Ok(body.now.filter(|s| !s.is_empty()))
+    }
+
     pub fn delay(&self, proxy: &str, url: &str, timeout_ms: u64) -> AppResult<u32> {
-        let c = Self::client()?;
         let encoded = urlencoding::encode(proxy);
-        let resp = c
-            .get(format!("{}/proxies/{encoded}/delay", self.base))
-            .query(&[("url", url), ("timeout", &timeout_ms.to_string())])
-            .header("Authorization", format!("Bearer {}", self.secret))
-            .timeout(std::time::Duration::from_millis(timeout_ms + 1000))
-            .send()
-            .map_err(|e| AppError::Core(format!("clash_api delay: {e}")))?;
-        if !resp.status().is_success() {
+        let resp = shared_agent()
+            .get(&format!("{}/proxies/{encoded}/delay", self.base))
+            .query("url", url)
+            .query("timeout", &timeout_ms.to_string())
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_millis(timeout_ms.saturating_add(1000)))
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
             return Err(AppError::Core(format!(
                 "delay status {}",
                 resp.status()
@@ -145,27 +183,27 @@ impl ClashApi {
             delay: u32,
         }
         let body: DelayBody = resp
-            .json()
+            .into_json()
             .map_err(|e| AppError::Core(format!("delay json: {e}")))?;
         Ok(body.delay)
     }
 
     /// Full connections snapshot from `/connections` (HTTP).
     pub fn list_connections(&self) -> AppResult<ConnectionsSnapshot> {
-        let c = Self::client()?;
-        let resp = c
-            .get(format!("{}/connections", self.base))
-            .header("Authorization", format!("Bearer {}", self.secret))
-            .send()
-            .map_err(|e| AppError::Core(format!("connections: {e}")))?;
-        if !resp.status().is_success() {
+        let resp = shared_agent()
+            .get(&format!("{}/connections", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_secs(3))
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
             return Err(AppError::Core(format!(
                 "connections status {}",
                 resp.status()
             )));
         }
         let text = resp
-            .text()
+            .into_string()
             .map_err(|e| AppError::Core(format!("connections body: {e}")))?;
         parse_connections_json(&text)
     }

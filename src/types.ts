@@ -167,6 +167,8 @@ export interface AppSettings {
   tun_stack?: string;
   /** rule | global | direct */
   outbound_mode?: OutboundMode;
+  /** route.final in Rule mode: proxy | direct | block */
+  route_final?: "proxy" | "direct" | "block" | string;
   /** Close window → tray (keep process + core). */
   close_to_tray?: boolean;
   /** Launch at OS login. */
@@ -183,9 +185,14 @@ export interface AppSettings {
   theme?: string;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
   unload_ui_on_tray?: boolean;
-  /** Smart auto node switch (passive + on-demand probe). */
+  /** off | smart | kernel — node auto-select mode. */
+  auto_select?: AutoSelectMode;
+  /** @deprecated derived from auto_select === "smart" */
   smart_switch?: boolean;
 }
+
+/** Manual / app smart switch / sing-box urltest. */
+export type AutoSelectMode = "off" | "smart" | "kernel";
 
 export type ThemeId = "aerospace" | "day";
 
@@ -243,8 +250,10 @@ export interface ProxyStatus {
   upload_total: number;
   download_total: number;
   connections: number;
-  /** Smart auto node switch (passive + on-demand probe). */
+  /** @deprecated use auto_select === "smart" */
   smart_switch?: boolean;
+  /** off | smart | kernel */
+  auto_select?: AutoSelectMode | string;
   /** Unix seconds when core last started (uptime = now - this). */
   core_started_at?: number | null;
 }

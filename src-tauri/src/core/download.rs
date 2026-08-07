@@ -205,8 +205,12 @@ async fn download_and_install(
     }
 
     let dest = core_bin_path(app_data_dir);
-    // remove old binary first (Windows may need this)
+    // remove old binary first (Windows may need this; macOS setuid needs elevation)
     if dest.exists() {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = crate::core::macos_auth::remove_setuid_core_if_needed(&dest);
+        }
         let _ = fs::remove_file(&dest);
     }
 

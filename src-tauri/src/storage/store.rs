@@ -47,6 +47,7 @@ impl AppStore {
         }
         let mut store: Self = serde_json::from_str(&raw)
             .map_err(|e| AppError::Storage(format!("invalid store json: {e}")))?;
+        store.settings.migrate_auto_select();
         store.ensure_rule_sets(resource_dir);
         store.ensure_dns_defaults(resource_dir);
         store.ensure_subscription_enable_policy();

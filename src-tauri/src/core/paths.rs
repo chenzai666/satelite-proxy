@@ -128,7 +128,8 @@ pub fn find_bundled_core(resource_dir: Option<&Path>) -> Option<PathBuf> {
 fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf> {
     let dest = core_bin_path(app_data_dir);
     if dest.is_file() {
-        // Same size → assume OK; re-copy if source is newer/different size
+        // Same size → assume OK; re-copy if source is newer/different size.
+        // Preserve setuid binaries (TUN auth) when content length matches.
         let same = std::fs::metadata(&dest)
             .ok()
             .zip(std::fs::metadata(bundled).ok())
@@ -136,6 +137,16 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
             .unwrap_or(false);
         if same {
             return Ok(dest);
+        }
+        // Root-owned setuid binary cannot be overwritten by the user without elevation.
+        #[cfg(target_os = "macos")]
+        {
+            if let Err(e) = super::macos_auth::remove_setuid_core_if_needed(&dest) {
+                crate::app_log::warn(
+                    "core",
+                    format!("could not replace setuid sing-box: {e}"),
+                );
+            }
         }
     }
     let dir = core_dir(app_data_dir);

@@ -38,9 +38,12 @@ pub struct ProxyStatus {
     pub upload_total: u64,
     pub download_total: u64,
     pub connections: u32,
-    /// Smart auto node switch enabled.
+    /// Smart auto node switch enabled (derived from auto_select == smart).
     #[serde(default)]
     pub smart_switch: bool,
+    /// off | smart | kernel
+    #[serde(default)]
+    pub auto_select: String,
     /// Unix seconds when the core last entered running state (for uptime UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_started_at: Option<i64>,
@@ -188,7 +191,8 @@ impl Runtime {
                 .as_ref()
                 .map(|(_, t)| t.connections)
                 .unwrap_or(0),
-            smart_switch: store.settings.smart_switch,
+            smart_switch: store.settings.auto_select.is_smart(),
+            auto_select: store.settings.auto_select.as_str().to_string(),
             core_started_at: self.core_started_at,
         }
     }
@@ -452,6 +456,9 @@ impl Runtime {
                 tun_stack: store.settings.tun_stack.clone(),
                 dns: store.dns.clone(),
                 outbound_mode: store.settings.outbound_mode,
+                route_final: store.settings.route_final.clone(),
+                auto_select: store.settings.auto_select,
+                probe_url: store.settings.probe_url.clone(),
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;
@@ -463,7 +470,7 @@ impl Runtime {
         }
 
         let log_dir = app_data_dir.join("logs");
-        // TUN creates utun + routes → needs root on macOS (password prompt).
+        // TUN creates utun + routes → macOS setuid sing-box / Windows UAC.
         let elevated = store.settings.tun_enabled;
         self.core.start_with_ports(
             &bin,
@@ -472,29 +479,66 @@ impl Runtime {
             store.settings.mixed_port,
             Some(store.settings.api_port),
             elevated,
+            resource_dir,
         )?;
         self.last_config_path = Some(config_path.clone());
         self.last_binary_path = Some(bin.clone());
 
         let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
-        // wait for API up to ~2s
+        // TUN start can take a few seconds (utun + routes). Health uses a short
+        // per-try timeout so we do not block the runtime lock for minutes.
+        let attempts = if elevated { 50 } else { 30 }; // ~10s / ~6s
         let mut ok = false;
-        for _ in 0..20 {
+        for _ in 0..attempts {
             if api.health_ok() {
                 ok = true;
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(200));
             self.core.poll();
             if !self.core.is_running() {
                 break;
             }
         }
         if !ok {
+            let log_hint = self
+                .core
+                .last_error()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    let log = log_dir.join("sing-box.log");
+                    std::fs::read(&log).ok().and_then(|b| {
+                        let s = String::from_utf8_lossy(&b);
+                        let tail: String = s
+                            .chars()
+                            .rev()
+                            .take(1200)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect();
+                        let cleaned = tail.replace('\0', "");
+                        if cleaned.trim().is_empty() {
+                            None
+                        } else {
+                            Some(cleaned)
+                        }
+                    })
+                })
+                .unwrap_or_default();
             let _ = self.core.stop();
-            return Err(AppError::Core(
-                "sing-box started but clash_api not responding".into(),
-            ));
+            let detail = if log_hint.is_empty() {
+                format!(
+                    "sing-box started but clash_api not responding at 127.0.0.1:{}",
+                    store.settings.api_port
+                )
+            } else {
+                format!(
+                    "sing-box started but clash_api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
+                    store.settings.api_port
+                )
+            };
+            return Err(AppError::Core(detail));
         }
         self.api = Some(api);
         self.core_started_at = Some(now_unix_secs());

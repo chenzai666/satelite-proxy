@@ -9,7 +9,6 @@
 # 内网 / 本机（示例，可按需增删）
 DOMAIN-SUFFIX,local,SYSTEM
 DOMAIN-SUFFIX,localhost,SYSTEM
-DOMAIN-SUFFIX,xiaojukeji.com,SYSTEM
 
 # 国内常见（与 .list 中 DIRECT 条目对应时才会生效）
 # DOMAIN-SUFFIX,baidu.com,SYSTEM

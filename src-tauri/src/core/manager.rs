@@ -28,11 +28,24 @@ pub enum CoreState {
     Error,
 }
 
+/// How the core process is owned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum RunMode {
+    #[default]
+    None,
+    /// Direct child of the GUI process (macOS TUN: setuid binary, still our Child).
+    Sidecar,
+    /// Windows TUN: elevated process tracked by PID only.
+    #[allow(dead_code)] // constructed only on Windows
+    ElevatedPid,
+}
+
 #[derive(Debug)]
 pub struct CoreManager {
     child: Option<Child>,
-    /// When TUN needs root on macOS we spawn via osascript and only keep the PID.
+    /// Windows TUN elevated process, or legacy macOS elevated (should be unused).
     elevated_pid: Option<u32>,
+    run_mode: RunMode,
     state: CoreState,
     last_error: Option<String>,
     config_path: Option<PathBuf>,
@@ -45,6 +58,7 @@ impl Default for CoreManager {
         Self {
             child: None,
             elevated_pid: None,
+            run_mode: RunMode::None,
             state: CoreState::Stopped,
             last_error: None,
             config_path: None,
@@ -72,6 +86,7 @@ impl CoreManager {
         if let Some(pid) = self.elevated_pid {
             if !pid_alive(pid) {
                 self.elevated_pid = None;
+                self.run_mode = RunMode::None;
                 if self.state == CoreState::Stopping {
                     self.state = CoreState::Stopped;
                 } else if self.state != CoreState::Stopped {
@@ -92,6 +107,7 @@ impl CoreManager {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     self.child = None;
+                    self.run_mode = RunMode::None;
                     if self.state == CoreState::Stopping {
                         self.state = CoreState::Stopped;
                     } else {
@@ -108,6 +124,7 @@ impl CoreManager {
                 Ok(None) => {}
                 Err(e) => {
                     self.child = None;
+                    self.run_mode = RunMode::None;
                     self.state = CoreState::Error;
                     self.last_error = Some(e.to_string());
                 }
@@ -180,45 +197,69 @@ impl CoreManager {
         TcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
-    /// Force-free a TCP listen port: kill processes holding it.
+    /// Force-free a TCP listen port: kill listeners + short wait.
+    ///
+    /// Important: if nothing is in LISTEN, return immediately (or after one short
+    /// settle). A false `bind` failure without a listener used to spin ~2s and
+    /// made settings restarts feel stuck (e.g. changing route.final).
     pub fn force_free_port(port: u16) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
         }
-        let killed = kill_listeners_on_port(port);
-        // brief wait for OS to release
-        for _ in 0..20 {
+        let mut killed = kill_listeners_on_port(port);
+
+        // No server socket → do not busy-wait (CLOSE_WAIT / TIME_WAIT / bind flake).
+        if !port_has_listener(port) {
+            std::thread::sleep(Duration::from_millis(40));
+            if Self::is_port_free(port) || !port_has_listener(port) {
+                return Ok(());
+            }
+        }
+
+        // Real LISTEN holder: wait briefly for kill to take effect (~360ms max).
+        for i in 0..12 {
             if Self::is_port_free(port) {
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(50));
+            if !port_has_listener(port) {
+                return Ok(());
+            }
+            if i == 4 || i == 8 {
+                killed = kill_listeners_on_port(port);
+            }
+            std::thread::sleep(Duration::from_millis(30));
         }
-        if Self::is_port_free(port) {
-            Ok(())
+        if Self::is_port_free(port) || !port_has_listener(port) {
+            return Ok(());
+        }
+        let manual = if cfg!(windows) {
+            format!("netstat -ano | findstr :{port}")
         } else {
-            let manual = if cfg!(windows) {
-                format!("netstat -ano | findstr :{port}")
-            } else {
-                format!("lsof -iTCP:{port} -sTCP:LISTEN")
-            };
-            Err(AppError::Core(format!(
-                "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
-            )))
-        }
+            format!("sudo lsof -iTCP:{port} -sTCP:LISTEN")
+        };
+        Err(AppError::Core(format!(
+            "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
+        )))
     }
 
     /// Ensure mixed + API ports are free (kill leftovers from previous runs).
     pub fn ensure_ports_free(ports: &[u16]) -> AppResult<()> {
-        for &p in ports {
-            if p == 0 {
-                continue;
-            }
+        let list: Vec<u16> = ports.iter().copied().filter(|p| *p != 0).collect();
+        if list.is_empty() {
+            return Ok(());
+        }
+        for &p in &list {
             Self::force_free_port(p)?;
         }
         Ok(())
     }
 
-    /// Start core. When `elevated` is true (TUN on macOS), prompts for admin and runs as root.
+    /// Start core.
+    ///
+    /// When `elevated` is true (TUN):
+    /// - **macOS**: one-time setuid on sing-box (`chown root:admin` + `chmod +sx`),
+    ///   then normal sidecar spawn (euid root, ruid user — parent can kill).
+    /// - **Windows**: UAC-elevate sing-box directly.
     pub fn start_with_ports(
         &mut self,
         binary: &Path,
@@ -227,13 +268,14 @@ impl CoreManager {
         mixed_port: u16,
         api_port: Option<u16>,
         elevated: bool,
+        _resource_dir: Option<&Path>,
     ) -> AppResult<()> {
         self.poll();
         if matches!(self.state, CoreState::Running | CoreState::Starting) {
             return Ok(());
         }
 
-        // Drop our own child first if still tracked, then free ports aggressively.
+        // Drop our own child first if still tracked.
         let _ = self.stop();
         let mut ports = vec![mixed_port];
         if let Some(api) = api_port {
@@ -243,9 +285,23 @@ impl CoreManager {
         }
         Self::ensure_ports_free(&ports)?;
 
+        #[cfg(target_os = "macos")]
+        if elevated {
+            if let Err(e) = super::macos_auth::ensure_core_setuid(binary) {
+                self.state = CoreState::Error;
+                let msg = map_tun_permission_hint(&e.to_string());
+                self.last_error = Some(msg.clone());
+                return Err(AppError::Core(msg));
+            }
+        }
+
         Self::check_config(binary, config)?;
-        // Re-check after kill (should be free)
-        Self::ensure_ports_free(&ports)?;
+        // Light re-check only (first ensure_ports_free already waited if needed).
+        for &p in &ports {
+            if !Self::is_port_free(p) && port_has_listener(p) {
+                Self::force_free_port(p)?;
+            }
+        }
 
         fs::create_dir_all(log_dir)
             .map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
@@ -265,11 +321,7 @@ impl CoreManager {
         self.binary_path = Some(binary.to_path_buf());
         self.elevated_pid = None;
         self.child = None;
-
-        #[cfg(target_os = "macos")]
-        if elevated {
-            return self.start_elevated_macos(binary, config, &log_path, mixed_port);
-        }
+        self.run_mode = RunMode::None;
 
         #[cfg(target_os = "windows")]
         if elevated {
@@ -312,75 +364,21 @@ impl CoreManager {
             }
         }
 
-        self.child = Some(child);
-
-        self.wait_until_ready(mixed_port, false)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn start_elevated_macos(
-        &mut self,
-        binary: &Path,
-        config: &Path,
-        log_path: &Path,
-        mixed_port: u16,
-    ) -> AppResult<()> {
-        // TUN needs root to create utun / install routes. Prompt via macOS auth dialog.
-        let bin_q = shell_single_quote(&binary.to_string_lossy());
-        let cfg_q = shell_single_quote(&config.to_string_lossy());
-        let log_q = shell_single_quote(&log_path.to_string_lossy());
-        // Background + print PID. Do NOT use nohup: under `osascript` / do shell script
-        // there is no console TTY → "nohup: can't detach from console: Inappropriate ioctl".
-        let shell = format!("{bin_q} run -c {cfg_q} </dev/null >>{log_q} 2>&1 & echo $!");
-        let script = format!(
-            "do shell script \"{}\" with administrator privileges",
-            escape_applescript_string(&shell)
-        );
-
-        let output = Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-            .map_err(|e| {
-                self.state = CoreState::Error;
-                let msg = format!("请求管理员权限失败: {e}");
-                self.last_error = Some(msg.clone());
-                AppError::Core(msg)
-            })?;
-
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            let out = String::from_utf8_lossy(&output.stdout);
-            let raw = format!("{err}{out}").trim().to_string();
-            let msg = if raw.contains("User canceled")
-                || raw.contains("(-128)")
-                || raw.contains("-128")
-            {
-                "已取消管理员授权。TUN 模式需要管理员权限以创建虚拟网卡。".into()
-            } else if raw.is_empty() {
-                "管理员授权失败，无法以 root 启动 sing-box（TUN 必需）。".into()
-            } else {
-                format!("管理员授权失败: {raw}")
-            };
-            self.state = CoreState::Error;
-            self.last_error = Some(msg.clone());
-            return Err(AppError::Core(msg));
+        #[cfg(target_os = "macos")]
+        if elevated {
+            crate::app_log::info(
+                "core",
+                format!(
+                    "started setuid sing-box as sidecar pid={} (TUN)",
+                    child.id()
+                ),
+            );
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let pid: u32 = stdout
-            .lines()
-            .rev()
-            .find_map(|l| l.trim().parse().ok())
-            .ok_or_else(|| {
-                self.state = CoreState::Error;
-                let msg = format!("无法解析提权进程 PID，输出: {}", stdout.trim());
-                self.last_error = Some(msg.clone());
-                AppError::Core(msg)
-            })?;
+        self.child = Some(child);
+        self.run_mode = RunMode::Sidecar;
 
-        self.elevated_pid = Some(pid);
-        self.wait_until_ready(mixed_port, true)
+        self.wait_until_ready(mixed_port)
     }
 
     /// Start sing-box elevated via UAC (Windows). Needed for TUN to create the
@@ -417,25 +415,22 @@ impl CoreManager {
         let pid = _elevated.pid;
 
         self.elevated_pid = Some(pid);
-        self.wait_until_ready(mixed_port, true)
+        self.run_mode = RunMode::ElevatedPid;
+        self.wait_until_ready(mixed_port)
     }
 
-    fn wait_until_ready(&mut self, mixed_port: u16, elevated: bool) -> AppResult<()> {
+    fn wait_until_ready(&mut self, mixed_port: u16) -> AppResult<()> {
         // wait a bit for immediate FATAL
         for _ in 0..20 {
             std::thread::sleep(Duration::from_millis(100));
             self.poll();
-            let gone = if elevated {
-                self.elevated_pid.is_none()
-            } else {
-                self.child.is_none()
-            };
-            if gone {
+            if !self.process_tracked_alive() {
                 let err = self
                     .last_error
                     .clone()
                     .unwrap_or_else(|| "process exited immediately".into());
                 self.state = CoreState::Error;
+                self.run_mode = RunMode::None;
                 return Err(AppError::Core(map_tun_permission_hint(&err)));
             }
             if !Self::is_port_free(mixed_port) {
@@ -444,17 +439,13 @@ impl CoreManager {
         }
 
         self.poll();
-        let gone = if elevated {
-            self.elevated_pid.is_none()
-        } else {
-            self.child.is_none()
-        };
-        if gone {
+        if !self.process_tracked_alive() {
             let err = self
                 .last_error
                 .clone()
                 .unwrap_or_else(|| "process exited immediately".into());
             self.state = CoreState::Error;
+            self.run_mode = RunMode::None;
             return Err(AppError::Core(map_tun_permission_hint(&err)));
         }
 
@@ -462,26 +453,46 @@ impl CoreManager {
         Ok(())
     }
 
+    fn process_tracked_alive(&self) -> bool {
+        match self.run_mode {
+            RunMode::ElevatedPid => self.elevated_pid.map(pid_alive).unwrap_or(false),
+            RunMode::Sidecar => self.child.is_some(),
+            RunMode::None => false,
+        }
+    }
+
     pub fn stop(&mut self) -> AppResult<()> {
         self.poll();
 
-        if let Some(pid) = self.elevated_pid.take() {
+        if let Some(pid) = self.elevated_pid {
             self.state = CoreState::Stopping;
-            elevated_kill_macos(pid);
-            // wait for exit
+            elevated_kill(pid);
             let deadline = std::time::Instant::now() + Duration::from_secs(4);
             while pid_alive(pid) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(80));
             }
             if pid_alive(pid) {
-                elevated_kill_macos_force(pid);
+                elevated_kill_force(pid);
             }
+            if pid_alive(pid) {
+                // Do NOT forget the PID — caller must know stop failed.
+                self.state = CoreState::Error;
+                self.last_error = Some(format!(
+                    "无法结束 elevated sing-box (pid {pid})；可能需要管理员权限"
+                ));
+                return Err(AppError::Core(
+                    self.last_error.clone().unwrap_or_default(),
+                ));
+            }
+            self.elevated_pid = None;
+            self.run_mode = RunMode::None;
             self.state = CoreState::Stopped;
             self.last_error = None;
             return Ok(());
         }
 
         let Some(mut child) = self.child.take() else {
+            self.run_mode = RunMode::None;
             self.state = CoreState::Stopped;
             return Ok(());
         };
@@ -515,6 +526,7 @@ impl CoreManager {
             }
         }
 
+        self.run_mode = RunMode::None;
         self.state = CoreState::Stopped;
         self.last_error = None;
         Ok(())
@@ -531,16 +543,9 @@ impl CoreManager {
         self.state = CoreState::Stopped;
         self.child = None;
         self.elevated_pid = None;
+        self.run_mode = RunMode::None;
         self.last_error = None;
     }
-}
-
-fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
-fn escape_applescript_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -563,26 +568,20 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// Terminate an elevated sing-box process. macOS re-elevates via osascript to
-/// keep root privileges for the kill; Windows uses taskkill (which itself runs
-/// with the current user's rights — sufficient because the elevated child was
-/// launched by this user and is killable by it despite running high).
-fn elevated_kill_macos(pid: u32) {
+/// Terminate an elevated (non-service) sing-box process.
+/// Windows: parent retains PROCESS_TERMINATE. macOS legacy path: osascript.
+fn elevated_kill(pid: u32) {
     #[cfg(target_os = "macos")]
     {
         let shell = format!("kill -TERM {pid} 2>/dev/null || true");
         let script = format!(
             "do shell script \"{}\" with administrator privileges",
-            escape_applescript_string(&shell)
+            shell.replace('\\', "\\\\").replace('"', "\\\"")
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
     #[cfg(target_os = "windows")]
     {
-        // The elevated sing-box was launched by us via ShellExecuteEx, so we hold
-        // PROCESS_TERMINATE access on it despite it running at a higher integrity
-        // level. Use the direct Win32 call instead of taskkill — no UAC prompt,
-        // and it actually works (plain taskkill fails on elevated children).
         let _ = super::elevate::terminate_pid(pid);
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -593,20 +592,18 @@ fn elevated_kill_macos(pid: u32) {
     }
 }
 
-fn elevated_kill_macos_force(pid: u32) {
+fn elevated_kill_force(pid: u32) {
     #[cfg(target_os = "macos")]
     {
         let shell = format!("kill -KILL {pid} 2>/dev/null || true");
         let script = format!(
             "do shell script \"{}\" with administrator privileges",
-            escape_applescript_string(&shell)
+            shell.replace('\\', "\\\\").replace('"', "\\\"")
         );
         let _ = Command::new("osascript").arg("-e").arg(&script).status();
     }
     #[cfg(target_os = "windows")]
     {
-        // Same rationale as elevated_kill_macos: direct TerminateProcess via the
-        // handle we're entitled to as the launching parent.
         let _ = super::elevate::terminate_pid(pid);
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -629,8 +626,8 @@ fn map_tun_permission_hint(err: &str) -> String {
              请在 UAC 弹窗中点「是」；若点了「否」，请关闭 TUN 开关后重试，或以管理员身份运行本程序。"
         } else {
             "TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
-             macOS：开启 TUN 时应用会弹出管理员密码框并以 root 运行内核。\n\
-             请确认已输入密码且未点「取消」；开发模式也可用：sudo \"path/to/sing-box\" run -c config.json"
+             macOS：首次开启 TUN 会为 sing-box 设置 setuid（一次 Touch ID / 密码），之后启停不再弹密码。\n\
+             若刚更新过内核，可能需重新授权一次。"
         };
         format!("{err}\n\n{platform_hint}")
     } else {
@@ -638,15 +635,18 @@ fn map_tun_permission_hint(err: &str) -> String {
     }
 }
 
-/// Kill PIDs listening on `port` (TCP LISTEN). Returns a short summary string.
-fn kill_listeners_on_port(port: u16) -> String {
+fn port_has_listener(port: u16) -> bool {
+    !listener_pids_on_port(port).is_empty()
+}
+
+fn listener_pids_on_port(port: u16) -> Vec<u32> {
     #[cfg(unix)]
     {
         let out = Command::new("lsof")
             .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
             .output();
         let Ok(out) = out else {
-            return "lsof 不可用".into();
+            return Vec::new();
         };
         let text = String::from_utf8_lossy(&out.stdout);
         let mut pids: Vec<u32> = text
@@ -655,20 +655,32 @@ fn kill_listeners_on_port(port: u16) -> String {
             .collect();
         pids.sort_unstable();
         pids.dedup();
-        // Don't kill ourselves
         let self_pid = std::process::id();
         pids.retain(|p| *p != self_pid);
+        pids
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = port;
+        Vec::new()
+    }
+}
+
+/// Kill PIDs listening on `port` (TCP LISTEN). Returns a short summary string.
+fn kill_listeners_on_port(port: u16) -> String {
+    #[cfg(unix)]
+    {
+        let pids = listener_pids_on_port(port);
         if pids.is_empty() {
             return "未找到监听进程".into();
         }
         let mut killed = Vec::new();
         for pid in pids {
-            // TERM then KILL
+            // setuid core keeps ruid=user so TERM/KILL from the app works.
             let _ = Command::new("kill")
                 .args(["-TERM", &pid.to_string()])
                 .status();
             std::thread::sleep(Duration::from_millis(80));
-            // still alive?
             let still = Command::new("kill")
                 .args(["-0", &pid.to_string()])
                 .status()

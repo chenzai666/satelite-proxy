@@ -1,6 +1,8 @@
 mod download;
 #[cfg(target_os = "windows")]
 mod elevate;
+#[cfg(target_os = "macos")]
+mod macos_auth;
 pub mod manager;
 #[cfg(target_os = "windows")]
 mod job;

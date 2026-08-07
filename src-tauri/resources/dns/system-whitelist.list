@@ -11,19 +11,3 @@ corp
 localhost
 *.local
 *.lan
-
-# Common OS / update / telemetry that should stay on system DNS
-msftconnecttest.com
-msftncsi.com
-dns.msftncsi.com
-www.msftconnecttest.com
-ipv6.msftconnecttest.com
-
-# Apple platform
-apple.com
-icloud.com
-push.apple.com
-*.push.apple.com
-
-# Didi (PRD reference domain)
-xiaojukeji.com

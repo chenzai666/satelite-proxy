@@ -1,17 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   getProxyStatus,
   getSettings,
   listAllNodes,
+  setCaptureMode,
   setOutboundMode,
-  setSystemProxy,
-  setTunEnabled,
   smartSwitchNow,
   updateSettings,
 } from "../../api";
 import { useI18n, type Locale } from "../../i18n";
 import { useTheme } from "../../theme";
-import type { AppSettings, OutboundMode, ProxyStatus, ThemeId } from "../../types";
+import type {
+  AppSettings,
+  AutoSelectMode,
+  OutboundMode,
+  ProxyStatus,
+  ThemeId,
+} from "../../types";
 import { useUiMode } from "../UiModeContext";
 
 export function SimpleSettingsPage() {
@@ -22,6 +28,11 @@ export function SimpleSettingsPage() {
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [captureUi, setCaptureUi] = useState<"off" | "system" | "tun" | null>(
+    null,
+  );
+  const captureGenRef = useRef(0);
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -58,65 +69,69 @@ export function SimpleSettingsPage() {
     }
   }
 
-  async function onToggleSmartSwitch(next: boolean) {
+  function resolveAutoSelect(): AutoSelectMode {
+    const raw =
+      proxy?.auto_select ??
+      settings?.auto_select ??
+      (proxy?.smart_switch || settings?.smart_switch ? "smart" : "off");
+    if (raw === "smart" || raw === "kernel") return raw;
+    return "off";
+  }
+
+  async function onSetAutoSelect(mode: AutoSelectMode) {
+    const prev = resolveAutoSelect();
+    if (mode === prev) return;
     setError(null);
-    if (!next) {
+    if (mode !== "smart") {
       smartGenRef.current += 1;
       setSmartProbing(false);
-      setProxy((prev) => (prev ? { ...prev, smart_switch: false } : prev));
-      setSettings((prev) =>
-        prev ? { ...prev, smart_switch: false } : prev,
-      );
-      try {
-        await updateSettings({ smartSwitch: false });
-        const s = await getProxyStatus().catch(() => null);
-        if (s) setProxy(s);
-      } catch (e) {
-        setError(typeof e === "string" ? e : String(e));
-      }
-      return;
     }
-
+    setProxy((p) =>
+      p ? { ...p, auto_select: mode, smart_switch: mode === "smart" } : p,
+    );
+    setSettings((s) =>
+      s ? { ...s, auto_select: mode, smart_switch: mode === "smart" } : s,
+    );
     const gen = ++smartGenRef.current;
-    setSmartProbing(true);
-    setProxy((prev) => (prev ? { ...prev, smart_switch: true } : prev));
-    setSettings((prev) => (prev ? { ...prev, smart_switch: true } : prev));
+    if (mode === "smart") setSmartProbing(true);
     try {
-      await updateSettings({ smartSwitch: true });
-      if (gen !== smartGenRef.current) {
-        await updateSettings({ smartSwitch: false }).catch(() => {});
-        return;
-      }
-      try {
-        const r = await smartSwitchNow();
-        if (gen !== smartGenRef.current) return;
-        if (r.message === "core not running") {
-          setError("请先启动代理，智能切换才能探测节点。");
-        } else if (
-          r.message === "all probes failed" ||
-          r.message === "clash api unavailable"
-        ) {
-          setError("智能切换探测失败，请检查网络或节点。");
-        } else if (r.message === "no nodes") {
-          setError("没有可用节点，无法智能切换。");
+      await updateSettings({ autoSelect: mode });
+      if (gen !== smartGenRef.current) return;
+      if (mode === "smart") {
+        try {
+          const r = await smartSwitchNow();
+          if (gen !== smartGenRef.current) return;
+          if (r.message === "core not running") {
+            setError("请先启动代理，智能切换才能探测节点。");
+          } else if (
+            r.message === "all probes failed" ||
+            r.message === "clash api unavailable"
+          ) {
+            setError("智能切换探测失败，请检查网络或节点。");
+          } else if (r.message === "no nodes") {
+            setError("没有可用节点，无法智能切换。");
+          }
+        } catch (probeErr) {
+          if (gen !== smartGenRef.current) return;
+          setError(
+            typeof probeErr === "string" ? probeErr : String(probeErr),
+          );
         }
-      } catch (probeErr) {
-        if (gen !== smartGenRef.current) return;
-        setError(
-          typeof probeErr === "string" ? probeErr : String(probeErr),
-        );
       }
       if (gen !== smartGenRef.current) return;
       await reload();
-      setProxy((prev) => (prev ? { ...prev, smart_switch: true } : prev));
     } catch (e) {
       if (gen === smartGenRef.current) {
         setError(typeof e === "string" ? e : String(e));
-        setProxy((prev) =>
-          prev ? { ...prev, smart_switch: false } : prev,
+        setProxy((p) =>
+          p
+            ? { ...p, auto_select: prev, smart_switch: prev === "smart" }
+            : p,
         );
-        setSettings((prev) =>
-          prev ? { ...prev, smart_switch: false } : prev,
+        setSettings((s) =>
+          s
+            ? { ...s, auto_select: prev, smart_switch: prev === "smart" }
+            : s,
         );
       }
     } finally {
@@ -125,8 +140,7 @@ export function SimpleSettingsPage() {
   }
 
   const mode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
-  const smartOn =
-    proxy?.smart_switch ?? settings?.smart_switch ?? false;
+  const autoSelectMode = resolveAutoSelect();
 
   return (
     <div className="simple-page simple-settings">
@@ -142,90 +156,186 @@ export function SimpleSettingsPage() {
       <section className="simple-section">
         <div className="simple-section-label muted">连接</div>
         <div className="simple-card simple-settings-group">
-          <div className="simple-setting-row">
+          <div className="simple-setting-row simple-auto-select-row">
             <div>
-              <div className="simple-setting-title">系统代理</div>
+              <div
+                className={`simple-setting-title${captureBusy ? " dash-smart-probing" : ""}`}
+              >
+                {captureBusy ? (
+                  <>
+                    <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                    <span>{t("dashboard.captureSwitching")}</span>
+                  </>
+                ) : (
+                  t("dashboard.capture")
+                )}
+              </div>
               <div className="muted simple-setting-desc">
-                HTTP/SOCKS 指向本地 mixed 端口
+                {t("dashboard.captureDesc")}
               </div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${proxy?.system_proxy ? "on" : ""}`}
-              disabled={busy || !proxy?.running}
-              aria-checked={!!proxy?.system_proxy}
-              onClick={() =>
-                void (async () => {
-                  setBusy(true);
-                  try {
-                    setProxy(
-                      await setSystemProxy(!(proxy?.system_proxy ?? false)),
-                    );
-                  } catch (e) {
-                    setError(typeof e === "string" ? e : String(e));
-                  } finally {
-                    setBusy(false);
-                  }
-                })()
-              }
+            <div
+              className="segmented compact mode-seg simple-auto-seg"
+              role="group"
+              aria-label={t("dashboard.capture")}
+              aria-busy={captureBusy}
             >
-              <span className="switch-thumb" />
-            </button>
-          </div>
-          <div className="simple-setting-row">
-            <div>
-              <div className="simple-setting-title">TUN 模式</div>
-              <div className="muted simple-setting-desc">
-                全局接管（可能需要管理员密码）
-              </div>
+              <span
+                className="seg-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${
+                    (captureUi ??
+                      (proxy?.tun_enabled
+                        ? "tun"
+                        : proxy?.system_proxy
+                          ? "system"
+                          : "off")) === "off"
+                      ? 0
+                      : (captureUi ??
+                            (proxy?.tun_enabled
+                              ? "tun"
+                              : proxy?.system_proxy
+                                ? "system"
+                                : "off")) === "system"
+                        ? 100
+                        : 200
+                  }%)`,
+                }}
+              />
+              {(
+                [
+                  ["off", t("dashboard.captureOff")],
+                  ["system", t("dashboard.captureSystem")],
+                  ["tun", t("dashboard.captureTun")],
+                ] as const
+              ).map(([key, label]) => {
+                const resolved =
+                  captureUi ??
+                  (proxy?.tun_enabled
+                    ? "tun"
+                    : proxy?.system_proxy
+                      ? "system"
+                      : "off");
+                const active = resolved === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`seg ${active ? "active" : ""}`}
+                    disabled={
+                      busy ||
+                      (captureBusy && !active) ||
+                      (key === "tun" && nodeCount === 0 && resolved !== "tun")
+                    }
+                    title={
+                      key === "tun"
+                        ? t("dashboard.captureTunHint")
+                        : key === "system"
+                          ? t("dashboard.captureSystemHint")
+                          : t("dashboard.captureDesc")
+                    }
+                    onClick={() => {
+                      if (active || captureBusy) return;
+                      const prev = proxy;
+                      const gen = ++captureGenRef.current;
+                      flushSync(() => {
+                        setCaptureUi(key);
+                        setCaptureBusy(true);
+                        setError(null);
+                        if (prev) {
+                          setProxy({
+                            ...prev,
+                            system_proxy: key === "system",
+                            tun_enabled: key === "tun",
+                          });
+                        }
+                      });
+                      void (async () => {
+                        try {
+                          const s = await setCaptureMode(key);
+                          if (gen !== captureGenRef.current) return;
+                          setProxy(s);
+                          setCaptureUi(null);
+                        } catch (e) {
+                          if (gen !== captureGenRef.current) return;
+                          setError(typeof e === "string" ? e : String(e));
+                          setCaptureUi(null);
+                          if (prev) {
+                            setProxy(prev);
+                          } else {
+                            const s = await getProxyStatus().catch(() => null);
+                            if (s) setProxy(s);
+                          }
+                        } finally {
+                          if (gen === captureGenRef.current) {
+                            setCaptureBusy(false);
+                          }
+                        }
+                      })();
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${proxy?.tun_enabled ? "on" : ""}`}
-              disabled={busy}
-              aria-checked={!!proxy?.tun_enabled}
-              onClick={() =>
-                void (async () => {
-                  setBusy(true);
-                  try {
-                    setProxy(
-                      await setTunEnabled(!(proxy?.tun_enabled ?? false)),
-                    );
-                  } catch (e) {
-                    setError(typeof e === "string" ? e : String(e));
-                  } finally {
-                    setBusy(false);
-                  }
-                })()
-              }
-            >
-              <span className="switch-thumb" />
-            </button>
           </div>
-          <div className="simple-setting-row">
+          <div className="simple-setting-row simple-auto-select-row">
             <div>
               <div className="simple-setting-title">
-                {smartProbing ? "智能探测中…" : "智能切换"}
+                {smartProbing ? "智能探测中…" : "节点切换"}
               </div>
               <div className="muted simple-setting-desc">
                 {smartProbing
-                  ? "正在探测节点，可关闭以结束"
-                  : "开启后探测并自动选最佳节点"}
+                  ? "正在探测节点，可切到「关闭」结束"
+                  : "关闭 / 智能（应用）/ 内核（urltest）"}
               </div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${smartOn ? "on" : ""}`}
-              disabled={busy || (nodeCount === 0 && !smartOn)}
-              aria-checked={smartOn}
+            <div
+              className="segmented compact mode-seg simple-auto-seg"
+              role="group"
+              aria-label="节点切换"
               aria-busy={smartProbing}
-              onClick={() => void onToggleSmartSwitch(!smartOn)}
             >
-              <span className="switch-thumb" />
-            </button>
+              <span
+                className="seg-indicator"
+                aria-hidden="true"
+                style={{
+                  transform: `translateX(${
+                    autoSelectMode === "off"
+                      ? 0
+                      : autoSelectMode === "smart"
+                        ? 100
+                        : 200
+                  }%)`,
+                }}
+              />
+              {(
+                [
+                  ["off", "关闭"],
+                  ["smart", "智能"],
+                  ["kernel", "内核"],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`seg ${autoSelectMode === key ? "active" : ""}`}
+                  disabled={
+                    busy ||
+                    (smartProbing && key === "smart") ||
+                    (nodeCount === 0 &&
+                      key !== "off" &&
+                      autoSelectMode === "off" &&
+                      !smartProbing)
+                  }
+                  onClick={() => void onSetAutoSelect(key)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="simple-setting-row simple-setting-col">
             <div className="simple-setting-title">路由模式</div>

@@ -156,9 +156,76 @@ impl AppState {
     }
 
     pub fn proxy_status(&self) -> AppResult<ProxyStatus> {
+        // Kernel urltest: mirror selected tag → current_node_id so UI / nodes stay accurate.
+        self.sync_kernel_selection();
         let mut runtime = self.lock_runtime();
         let store = self.lock_store();
         Ok(runtime.status(&store))
+    }
+
+    /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.
+    fn sync_kernel_selection(&self) {
+        use crate::config::outbound_tag;
+        use crate::domain::AutoSelectMode;
+
+        let mode = match self.with_store(|s| Ok(s.settings.auto_select)) {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        if mode != AutoSelectMode::Kernel {
+            return;
+        }
+
+        let now_tag = {
+            let mut runtime = self.lock_runtime();
+            runtime.core.poll();
+            if !runtime.core.is_running() {
+                return;
+            }
+            let Some(api) = runtime.api.as_ref() else {
+                return;
+            };
+            match api.proxy_group_now("proxy") {
+                Ok(t) => t,
+                Err(_) => return,
+            }
+        };
+        let Some(tag) = now_tag else {
+            return;
+        };
+
+        let node_id = match self.with_store(|store| {
+            Ok(store
+                .nodes
+                .iter()
+                .find(|n| outbound_tag(&n.node) == tag)
+                .map(|n| n.node.id.clone()))
+        }) {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        let Some(node_id) = node_id else {
+            return;
+        };
+
+        let changed = self
+            .with_store(|s| Ok(s.settings.current_node_id.as_deref() != Some(node_id.as_str())))
+            .unwrap_or(false);
+        if !changed {
+            return;
+        }
+
+        if let Err(e) = self.with_store_mut(|store| {
+            store.settings.current_node_id = Some(node_id.clone());
+            Ok(())
+        }) {
+            app_log::warn("auto_select", format!("persist kernel selection failed: {e}"));
+            return;
+        }
+        app_log::info(
+            "auto_select",
+            format!("kernel urltest now → node {node_id} ({tag})"),
+        );
     }
 
     pub fn shutdown_runtime(&self) {
@@ -206,6 +273,54 @@ impl AppState {
         } else {
             Ok(runtime.status(&store))
         }
+    }
+
+    /// Traffic capture mode (mutually exclusive): `off` | `system` | `tun`.
+    ///
+    /// - off: system proxy off, TUN off  
+    /// - system: TUN off, system proxy on  
+    /// - tun: system proxy off, TUN on  
+    pub fn set_capture_mode(
+        &self,
+        mode: &str,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<ProxyStatus> {
+        let mode = mode.trim().to_ascii_lowercase();
+        if !matches!(mode.as_str(), "off" | "system" | "tun") {
+            return Err(crate::error::AppError::Core(
+                "capture mode must be off | system | tun".into(),
+            ));
+        }
+
+        let mut runtime = self.lock_runtime();
+        let mut store = self.lock_store();
+        runtime.core.poll();
+
+        let want_tun = mode == "tun";
+        let want_sys = mode == "system";
+        let tun_now = store.settings.tun_enabled;
+        let sys_now = runtime.system_proxy_on;
+
+        if tun_now == want_tun && sys_now == want_sys {
+            return Ok(runtime.status(&store));
+        }
+
+        // 1) TUN setting / restart first (heavier).
+        if tun_now != want_tun {
+            store.settings.tun_enabled = want_tun;
+            store.save(&self.store_path)?;
+            if runtime.core.is_running() {
+                runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+                store.save(&self.store_path)?;
+            }
+        }
+
+        // 2) System proxy: always align with mode (TUN implies proxy off).
+        if runtime.system_proxy_on != want_sys {
+            runtime.set_system_proxy(&store, want_sys)?;
+        }
+
+        Ok(runtime.status(&store))
     }
 
     /// Clash-style rule / global / direct. Restarts core when running.

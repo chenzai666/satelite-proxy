@@ -67,26 +67,46 @@ interface Props {
 export function SimpleConnectPage({ onGoServers }: Props) {
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [node, setNode] = useState<ProxyNode | null>(null);
+  const [nodeReady, setNodeReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Tick so uptime label updates without waiting for status poll. */
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
 
-  const reload = useCallback(async () => {
+  /** Wave 1: proxy status only (cheap; used for live traffic poll). */
+  const reloadStatus = useCallback(async () => {
     try {
-      const [status, settings, nodes] = await Promise.all([
-        getProxyStatus().catch(() => null),
-        getSettings().catch(() => null),
-        listAllNodes().catch(() => [] as ProxyNode[]),
-      ]);
+      const status = await getProxyStatus().catch(() => null);
       setProxy(status);
-      const id = settings?.current_node_id;
-      setNode(id ? nodes.find((n) => n.id === id) ?? null : nodes[0] ?? null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
   }, []);
+
+  /** Wave 2: settings + nodes (heavier; only on boot / after actions). */
+  const reloadNode = useCallback(async () => {
+    try {
+      const [settings, nodes] = await Promise.all([
+        getSettings().catch(() => null),
+        listAllNodes().catch(() => [] as ProxyNode[]),
+      ]);
+      const id = settings?.current_node_id;
+      setNode(id ? nodes.find((n) => n.id === id) ?? null : nodes[0] ?? null);
+      setNodeReady(true);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+      setNodeReady(true);
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    // Status commits as soon as ready; node list fills in after (parallel fetch).
+    const statusP = reloadStatus();
+    const nodeP = reloadNode();
+    await statusP;
+    await nodeP;
+  }, [reloadStatus, reloadNode]);
 
   /** Probe current node once; updates local node latency. */
   const probeCurrent = useCallback(async (nodeId: string) => {
@@ -121,8 +141,9 @@ export function SimpleConnectPage({ onGoServers }: Props) {
     void reload();
   }, [reload]);
 
+  // Poll status only (not full node list) — keeps uptime/speeds fresh cheaply.
   useVisibleInterval(() => {
-    void reload();
+    void reloadStatus();
     setNowSec(Math.floor(Date.now() / 1000));
   }, 1000);
 
@@ -218,11 +239,19 @@ export function SimpleConnectPage({ onGoServers }: Props) {
       >
         <div className="simple-node-top">
           <span className="pill target-proxy">
-            {node?.protocol?.toUpperCase() ?? "—"}
+            {!nodeReady ? (
+              <span className="skel skel-inline skel-w-20" aria-hidden />
+            ) : (
+              (node?.protocol?.toUpperCase() ?? "—")
+            )}
           </span>
         </div>
         <div className="simple-node-name">
-          {node?.name ?? "未选择节点 · 点此管理"}
+          {!nodeReady ? (
+            <span className="skel skel-inline skel-w-50" aria-hidden />
+          ) : (
+            (node?.name ?? "未选择节点 · 点此管理")
+          )}
         </div>
         {running && node && (
           <div className="simple-node-latency-row">

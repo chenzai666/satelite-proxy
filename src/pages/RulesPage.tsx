@@ -10,6 +10,7 @@ import {
 import {
   createRuleSet,
   deleteRuleSet,
+  getSettings,
   listAllNodes,
   listRuleSets,
   listRules,
@@ -19,6 +20,7 @@ import {
   saveRule,
   setRuleEnabled,
   setRuleSetEnabled,
+  updateSettings,
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
@@ -29,6 +31,8 @@ import type {
   RuleTarget,
   RuleType,
 } from "../types";
+
+type RouteFinal = "proxy" | "direct" | "block";
 
 const TYPE_OPTS: { value: RuleType; label: string }[] = [
   { value: "domain_suffix", label: "DOMAIN-SUFFIX" },
@@ -51,6 +55,8 @@ export function RulesPage({ embedded = false }: Props) {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [routeFinal, setRouteFinal] = useState<RouteFinal>("proxy");
+  const [finalBusy, setFinalBusy] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editRule, setEditRule] = useState<Rule | null>(null);
@@ -96,6 +102,35 @@ export function RulesPage({ embedded = false }: Props) {
     return { list, preferred };
   }, []);
 
+  const reloadRouteFinal = useCallback(async () => {
+    try {
+      const s = await getSettings();
+      const rf = (s.route_final ?? "proxy").toLowerCase();
+      if (rf === "direct" || rf === "block" || rf === "proxy") {
+        setRouteFinal(rf);
+      }
+    } catch {
+      /* keep default */
+    }
+  }, []);
+
+  const onRouteFinalChange = async (next: RouteFinal) => {
+    if (next === routeFinal || finalBusy) return;
+    setFinalBusy(true);
+    setError(null);
+    try {
+      const s = await updateSettings({ routeFinal: next });
+      const rf = (s.route_final ?? next).toLowerCase();
+      setRouteFinal(
+        rf === "direct" || rf === "block" || rf === "proxy" ? rf : next,
+      );
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setFinalBusy(false);
+    }
+  };
+
   const reloadRules = useCallback(async (setId: string | null) => {
     if (!setId) {
       setRules([]);
@@ -108,6 +143,7 @@ export function RulesPage({ embedded = false }: Props) {
   const reload = useCallback(async () => {
     setError(null);
     try {
+      await reloadRouteFinal();
       const { preferred } = await reloadSets();
       const sid = viewSetId ?? preferred;
       if (sid) {
@@ -119,7 +155,7 @@ export function RulesPage({ embedded = false }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [reloadSets, reloadRules, viewSetId]);
+  }, [reloadSets, reloadRules, reloadRouteFinal, viewSetId]);
 
   useEffect(() => {
     void reload();
@@ -566,6 +602,28 @@ export function RulesPage({ embedded = false }: Props) {
       )}
 
       {error && <div className="banner error">{error}</div>}
+
+      <div className="card rules-final-bar">
+        <div className="rules-final-text">
+          <strong>{t("rules.final")}</strong>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {t("rules.finalHint")}
+          </div>
+        </div>
+        <div className="rules-final-control">
+          <SolidSelect
+            value={routeFinal}
+            disabled={finalBusy}
+            aria-label={t("rules.final")}
+            options={[
+              { value: "proxy", label: t("rules.finalProxy") },
+              { value: "direct", label: t("rules.finalDirect") },
+              { value: "block", label: t("rules.finalBlock") },
+            ]}
+            onChange={(v) => void onRouteFinalChange(v as RouteFinal)}
+          />
+        </div>
+      </div>
 
       <div className="rules-layout">
         <aside className="card ruleset-list">

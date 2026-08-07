@@ -341,11 +341,11 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
 
     for (batch_idx, batch) in pool.chunks(BOOTSTRAP_BATCH).enumerate() {
         let still_on = state
-            .with_store(|s| Ok(s.settings.smart_switch))
+            .with_store(|s| Ok(s.settings.auto_select.is_smart()))
             .unwrap_or(false);
         if !still_on {
             ctrl().set_phase(Phase::Ok);
-            app_log::info("smart_switch", "bootstrap cancelled (smart_switch off)");
+            app_log::info("smart_switch", "bootstrap cancelled (auto_select not smart)");
             return Ok(SmartSwitchNowResult {
                 switched: false,
                 from_id: current_id,
@@ -404,7 +404,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     }
 
     let still_on = state
-        .with_store(|s| Ok(s.settings.smart_switch))
+        .with_store(|s| Ok(s.settings.auto_select.is_smart()))
         .unwrap_or(false);
     if !still_on {
         ctrl().set_phase(Phase::Ok);
@@ -535,7 +535,7 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
 
 async fn tick(state: &AppState) -> Result<(), String> {
     let enabled = state
-        .with_store(|s| Ok(s.settings.smart_switch))
+        .with_store(|s| Ok(s.settings.auto_select.is_smart()))
         .unwrap_or(false);
     if !enabled || !state.is_core_running() {
         return Ok(());

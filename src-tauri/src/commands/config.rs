@@ -51,8 +51,13 @@ pub fn update_settings(
     theme: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
+    auto_select: Option<String>, // off | smart | kernel
+    route_final: Option<String>, // proxy | direct | block (Rule mode)
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
+    let mut auto_select_changed: Option<(crate::domain::AutoSelectMode, crate::domain::AutoSelectMode)> =
+        None;
+    let mut route_final_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -108,11 +113,57 @@ pub fn update_settings(
             if let Some(v) = unload_ui_on_tray {
                 store.settings.unload_ui_on_tray = v;
             }
-            if let Some(v) = smart_switch {
-                store.settings.smart_switch = v;
+            if let Some(rf) = route_final {
+                let rf = rf.trim().to_ascii_lowercase();
+                if matches!(rf.as_str(), "proxy" | "direct" | "block") {
+                    if store.settings.route_final != rf {
+                        route_final_changed = true;
+                        store.settings.route_final = rf;
+                    }
+                }
+            }
+            // Prefer explicit auto_select; legacy smart_switch maps to off/smart.
+            if let Some(raw) = auto_select {
+                if let Some(mode) = crate::domain::AutoSelectMode::parse(&raw) {
+                    let prev = store.settings.auto_select;
+                    if prev != mode {
+                        auto_select_changed = Some((prev, mode));
+                        store.settings.auto_select = mode;
+                        store.settings.smart_switch = mode.is_smart();
+                        crate::app_log::info(
+                            "settings",
+                            format!("auto_select {} → {}", prev.as_str(), mode.as_str()),
+                        );
+                    }
+                }
+            } else if let Some(v) = smart_switch {
+                let mode = if v {
+                    crate::domain::AutoSelectMode::Smart
+                } else {
+                    crate::domain::AutoSelectMode::Off
+                };
+                let prev = store.settings.auto_select;
+                // Don't clobber kernel via legacy bool unless turning smart on/off from non-kernel.
+                if prev.is_kernel() && !v {
+                    // off from UI that still sends smartSwitch:false while on kernel → treat as off
+                    auto_select_changed = Some((prev, crate::domain::AutoSelectMode::Off));
+                    store.settings.auto_select = crate::domain::AutoSelectMode::Off;
+                    store.settings.smart_switch = false;
+                } else if prev != mode && !prev.is_kernel() {
+                    auto_select_changed = Some((prev, mode));
+                    store.settings.auto_select = mode;
+                    store.settings.smart_switch = mode.is_smart();
+                } else if prev.is_kernel() && v {
+                    auto_select_changed = Some((prev, crate::domain::AutoSelectMode::Smart));
+                    store.settings.auto_select = crate::domain::AutoSelectMode::Smart;
+                    store.settings.smart_switch = true;
+                }
                 crate::app_log::info(
                     "settings",
-                    format!("smart_switch → {v}"),
+                    format!(
+                        "smart_switch legacy → auto_select {}",
+                        store.settings.auto_select.as_str()
+                    ),
                 );
             }
             Ok(store.settings.clone())
@@ -121,6 +172,20 @@ pub fn update_settings(
 
     if let Some(enabled) = launch_changed {
         crate::autostart::set_launch_at_login(enabled).map_err(|e| e.to_string())?;
+    }
+
+    // route.final must restart: sing-box Clash PUT /configs often returns OK without
+    // re-applying route.final (file updates, process keeps old final).
+    // selector ↔ urltest also needs a full restart (outbound type changes).
+    let need_restart = route_final_changed
+        || auto_select_changed
+            .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
+            .unwrap_or(false);
+    if need_restart {
+        let res = state.resource_dir.clone();
+        if let Err(e) = state.restart_if_running(res.as_deref()) {
+            return Err(e.to_string());
+        }
     }
 
     Ok(settings)
@@ -228,6 +293,9 @@ pub fn generate_singbox_config(
             tun_stack: settings.tun_stack.clone(),
             dns,
             outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
         },
     )
     .map_err(|e| e.to_string())?;
@@ -300,6 +368,9 @@ pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConf
             tun_stack: settings.tun_stack.clone(),
             dns,
             outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
         },
     )
     .map_err(|e| e.to_string())?;

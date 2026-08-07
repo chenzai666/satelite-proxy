@@ -46,10 +46,30 @@ fn size_for_ui_mode(mode: &str) -> (f64, f64) {
     }
 }
 
+/// macOS: show Dock icon (foreground app). No-op on other platforms.
+#[cfg(target_os = "macos")]
+pub fn set_dock_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) {
+    let policy = if visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        // Accessory ≈ menu-bar / tray-only; Dock icon is hidden.
+        tauri::ActivationPolicy::Accessory
+    };
+    if let Err(e) = app.set_activation_policy(policy) {
+        eprintln!("[satelite] set_activation_policy failed: {e}");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dock_visible<R: Runtime>(_app: &AppHandle<R>, _visible: bool) {}
+
 /// Show main UI; recreate WebView if it was destroyed on tray.
 ///
 /// Called from tray menu/click and from macOS Dock reopen (`RunEvent::Reopen`).
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    // Restore Dock icon before showing so the window can become key.
+    set_dock_visible(app, true);
+
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -92,6 +112,8 @@ pub fn soft_hide_main<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
+    // Silent / tray-only: hide Dock icon on macOS.
+    set_dock_visible(app, false);
 }
 
 /// Hide to tray. Optionally destroy WebView (low-memory mode).
@@ -108,6 +130,9 @@ pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
         // Critical: destroy() may fire ExitRequested; stay alive unless tray Quit.
         // exit_allowed stays false.
     }
+
+    // Hide Dock icon before (or with) hide — matches close-to-tray-and-dock.md.
+    set_dock_visible(app, false);
 
     if let Some(w) = app.get_webview_window("main") {
         if unload {

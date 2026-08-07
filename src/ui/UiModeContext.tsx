@@ -25,7 +25,10 @@ function readStored(): UiMode {
 
 interface UiModeContextValue {
   mode: UiMode;
-  /** True after first window-size sync — avoid painting wrong shell. */
+  /**
+   * Always true: shell paints from localStorage immediately.
+   * Window resize / persist run in the background (Rust already sizes on WebView recreate).
+   */
   layoutReady: boolean;
   setMode: (mode: UiMode) => void;
   toggleMode: () => void;
@@ -35,21 +38,19 @@ const UiModeContext = createContext<UiModeContextValue | null>(null);
 
 export function UiModeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<UiMode>(() => readStored());
-  const [layoutReady, setLayoutReady] = useState(false);
+  const layoutReady = true;
 
-  // On mount: persist + size before showing shell (prevents pro flash on wake).
+  // Background sync only — never block first paint (low-memory wake path).
   useEffect(() => {
-    let cancelled = false;
     const initial = readStored();
     setModeState(initial);
-    void (async () => {
-      await persistUiModePref(initial);
-      await applyWindowSizeForUiMode(initial);
-      if (!cancelled) setLayoutReady(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    try {
+      document.documentElement.dataset.uiMode = initial;
+    } catch {
+      /* ignore */
+    }
+    void persistUiModePref(initial);
+    void applyWindowSizeForUiMode(initial);
   }, []);
 
   const setMode = useCallback((next: UiMode) => {
