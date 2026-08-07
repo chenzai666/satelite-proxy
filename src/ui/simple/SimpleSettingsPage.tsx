@@ -288,8 +288,8 @@ export function SimpleSettingsPage() {
               </div>
               <div className="muted simple-setting-desc">
                 {smartProbing
-                  ? "正在探测节点，可切到「关闭」结束"
-                  : "关闭 / 智能（应用）/ 内核（urltest）"}
+                  ? "正在探测节点，可切到「手动」结束"
+                  : "手动 / 自动（urltest）/ 智能（应用）"}
               </div>
             </div>
             <div
@@ -305,7 +305,7 @@ export function SimpleSettingsPage() {
                   transform: `translateX(${
                     autoSelectMode === "off"
                       ? 0
-                      : autoSelectMode === "smart"
+                      : autoSelectMode === "kernel"
                         ? 100
                         : 200
                   }%)`,
@@ -313,9 +313,9 @@ export function SimpleSettingsPage() {
               />
               {(
                 [
-                  ["off", "关闭"],
+                  ["off", "手动"],
+                  ["kernel", "自动"],
                   ["smart", "智能"],
-                  ["kernel", "内核"],
                 ] as const
               ).map(([key, label]) => (
                 <button

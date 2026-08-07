@@ -559,15 +559,8 @@ button {
   font-size: 0.85rem;
 }
 
-.preview-card {
-  padding: 0.75rem;
-}
-
-.preview-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
+.preview-modal {
+  width: min(720px, 100%);
 }
 
 .preview-json {

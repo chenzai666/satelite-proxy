@@ -697,7 +697,7 @@ export function DashboardPage({
                   transform: `translateX(${
                     autoSelectMode === "off"
                       ? 0
-                      : autoSelectMode === "smart"
+                      : autoSelectMode === "kernel"
                         ? 100
                         : 200
                   }%)`,
@@ -706,8 +706,8 @@ export function DashboardPage({
               {(
                 [
                   ["off", t("dashboard.autoSelectOff")],
-                  ["smart", t("dashboard.autoSelectSmart")],
                   ["kernel", t("dashboard.autoSelectKernel")],
+                  ["smart", t("dashboard.autoSelectSmart")],
                 ] as const
               ).map(([key, label]) => (
                 <button
@@ -1027,18 +1027,32 @@ export function DashboardPage({
       </section>
 
       {showPreview && result && (
-        <div className="card glass preview-card">
-          <div className="preview-head">
-            <strong>{t("common.preview")}</strong>
-            <button
-              type="button"
-              className="secondary small"
-              onClick={() => setShowPreview(false)}
-            >
-              {t("common.close")}
-            </button>
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowPreview(false)}
+        >
+          <div
+            className="modal preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="preview-modal-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h2 id="preview-modal-title">{t("common.preview")}</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowPreview(false)}
+                aria-label={t("common.close")}
+              >
+                ×
+              </button>
+            </header>
+            <div className="modal-body">
+              <pre className="preview-json">{result.preview}</pre>
+            </div>
           </div>
-          <pre className="preview-json">{result.preview}</pre>
         </div>
       )}
     </div>
