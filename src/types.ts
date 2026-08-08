@@ -7,6 +7,7 @@ export type NavKey =
   | "settings";
 
 export type DnsMode = "local" | "smart_local" | "smart_cn";
+export type DnsFinalStrategy = "local" | "domestic" | "remote";
 export type DomainMatcher = "domain" | "domain_suffix" | "domain_keyword";
 
 export type DnsAction =
@@ -67,6 +68,8 @@ export interface DnsSettings {
   hijack: boolean;
   cache: boolean;
   leak_protect: boolean;
+  /** DNS final (兜底解析): local | domestic | remote */
+  dns_final: DnsFinalStrategy;
 }
 
 export interface DnsTestResult {

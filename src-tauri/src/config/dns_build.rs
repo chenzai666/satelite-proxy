@@ -43,7 +43,6 @@ pub fn build_dns_section(
     settings: &DnsSettings,
     tun_enabled: bool,
     route_rules: &[Rule],
-    route_final: &str,
 ) -> BuiltDns {
     let mut effective = settings.clone();
     effective.rules = settings.enabled_dns_rules();
@@ -53,12 +52,14 @@ pub fn build_dns_section(
     // Reserved for future strategy tuning; referenced to avoid dead-code warnings.
     let _ = settings.leak_protect;
     let hijack = tun_enabled || settings.hijack;
-    let final_tag = dns_final_tag(route_final);
+    // DNS final is configured independently on the DNS page (local/domestic/remote);
+    // it no longer follows the routing `final`.
+    let final_tag = dns_final_tag(settings.normalize_dns_final());
 
     let rules_enabled = settings.rules_enabled;
     match settings.mode {
-        DnsMode::Local if rules_enabled => build_local_with_rules(settings, hijack),
-        DnsMode::Local => build_local(settings, hijack),
+        DnsMode::Local if rules_enabled => build_local_with_rules(settings, hijack, final_tag),
+        DnsMode::Local => build_local(settings, hijack, final_tag),
         DnsMode::SmartLocal => build_smart_variant(
             settings,
             hijack,
@@ -82,10 +83,12 @@ pub fn build_dns_section(
     }
 }
 
-/// DNS `final` tag follows the routing `final`: direct → local, otherwise remote.
-fn dns_final_tag(route_final: &str) -> &'static str {
-    match route_final {
-        "direct" => TAG_LOCAL,
+/// Map the DNS `final` strategy to a server tag.
+/// `local` → dns-local · `domestic` → dns-cn · otherwise → dns-remote.
+fn dns_final_tag(dns_final: &str) -> &'static str {
+    match dns_final {
+        "local" => TAG_LOCAL,
+        "domestic" => TAG_CN,
         _ => TAG_REMOTE,
     }
 }
@@ -232,16 +235,24 @@ fn hosts_layer(hosts: &HostsConfig) -> Option<(Value, Value)> {
 }
 
 /// Pure local resolver. Hosts (if enabled) are honored as the highest priority.
-fn build_local(settings: &DnsSettings, hijack: bool) -> BuiltDns {
+fn build_local(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
+    // In pure-local mode the server list normally only contains dns-local. When
+    // the configured final points elsewhere (domestic/remote), include the full
+    // builtin server set so the final resolver is actually defined.
+    let need_all = final_tag != TAG_LOCAL;
+
     // Hosts override — works even in pure-local mode.
     if let Some((host_srv, host_rule)) = hosts_layer(&settings.hosts) {
+        let mut servers: Vec<Value> = if need_all {
+            builtin_servers(&settings.fake_ip)
+        } else {
+            vec![json!({ "type": "local", "tag": TAG_LOCAL })]
+        };
+        servers.push(host_srv);
         let dns = json!({
-            "servers": [
-                { "type": "local", "tag": TAG_LOCAL },
-                host_srv
-            ],
+            "servers": servers,
             "rules": [host_rule],
-            "final": TAG_LOCAL,
+            "final": final_tag,
             "independent_cache": settings.cache,
             "strategy": "prefer_ipv4"
         });
@@ -252,9 +263,14 @@ fn build_local(settings: &DnsSettings, hijack: bool) -> BuiltDns {
         };
     }
 
+    let servers: Vec<Value> = if need_all {
+        builtin_servers(&settings.fake_ip)
+    } else {
+        vec![json!({ "type": "local", "tag": TAG_LOCAL })]
+    };
     let dns = json!({
-        "servers": [{ "type": "local", "tag": TAG_LOCAL }],
-        "final": TAG_LOCAL,
+        "servers": servers,
+        "final": final_tag,
         "independent_cache": settings.cache,
         "strategy": "prefer_ipv4"
     });
@@ -265,9 +281,10 @@ fn build_local(settings: &DnsSettings, hijack: bool) -> BuiltDns {
     }
 }
 
-/// Local baseline with user DNS rules layered on top. The final resolver stays
-/// local, while individual rules may explicitly select domestic or remote DNS.
-fn build_local_with_rules(settings: &DnsSettings, hijack: bool) -> BuiltDns {
+/// Local baseline with user DNS rules layered on top. The final resolver follows
+/// the configured DNS `final` strategy, while individual rules may explicitly
+/// select domestic or remote DNS.
+fn build_local_with_rules(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
     let mut fake_ip_off = settings.fake_ip.clone();
     fake_ip_off.enabled = false;
     let mut servers = builtin_servers(&fake_ip_off);
@@ -288,7 +305,7 @@ fn build_local_with_rules(settings: &DnsSettings, hijack: bool) -> BuiltDns {
     let dns = json!({
         "servers": servers,
         "rules": rules,
-        "final": TAG_LOCAL,
+        "final": final_tag,
         "independent_cache": settings.cache,
         "strategy": "prefer_ipv4"
     });
@@ -436,27 +453,34 @@ mod tests {
     fn smart_local_default_has_fakeip_and_local() {
         let s = DnsSettings::default();
         assert!(matches!(s.mode, DnsMode::SmartLocal));
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert!(servers.iter().any(|x| x["type"] == "local"));
         assert!(servers.iter().any(|x| x["type"] == "fakeip"));
-        // route_final=proxy → DNS final follows → remote
+        // default dns_final=remote → DNS final → remote
         assert_eq!(b.dns["final"].as_str().unwrap(), "dns-remote");
         assert!(!b.want_hijack || s.hijack);
     }
 
     #[test]
-    fn dns_final_follows_route_final_direct() {
-        let s = DnsSettings::default();
-        let b = build_dns_section(&s, false, &[], "direct");
+    fn dns_final_follows_dns_final_setting() {
+        let mut s = DnsSettings::default();
+        s.dns_final = "local".into();
+        let b = build_dns_section(&s, false, &[]);
         assert_eq!(b.dns["final"].as_str().unwrap(), "dns-local");
+
+        let mut s = DnsSettings::default();
+        s.dns_final = "domestic".into();
+        let b = build_dns_section(&s, false, &[]);
+        assert_eq!(b.dns["final"].as_str().unwrap(), "dns-cn");
     }
 
     #[test]
     fn local_mode_only_local_server() {
         let mut s = DnsSettings::default();
         s.mode = DnsMode::Local;
-        let b = build_dns_section(&s, true, &[], "proxy");
+        s.dns_final = "local".into();
+        let b = build_dns_section(&s, true, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0]["type"], "local");
@@ -487,7 +511,7 @@ mod tests {
                 2,
             ),
         ];
-        let b = build_dns_section(&s, false, &rules, "proxy");
+        let b = build_dns_section(&s, false, &rules);
         let dns_rules = b.dns["rules"].as_array().unwrap();
         let direct = dns_rules
             .iter()
@@ -541,7 +565,7 @@ mod tests {
                 3,
             ),
         ];
-        let b = build_dns_section(&s, false, &rules, "proxy");
+        let b = build_dns_section(&s, false, &rules);
         let dns_rules = b.dns["rules"].as_array().unwrap();
         // Exactly one domain_suffix rule (all three direct suffixes collapsed).
         let suffix_rules: Vec<&Value> = dns_rules
@@ -575,7 +599,7 @@ mod tests {
             RuleTarget::Direct,
             1,
         )];
-        let b = build_dns_section(&s, false, &rules, "proxy");
+        let b = build_dns_section(&s, false, &rules);
         let dns_rules = b.dns["rules"].as_array().unwrap();
         let direct = dns_rules
             .iter()
@@ -615,7 +639,7 @@ mod tests {
             RuleTarget::Direct,
             1,
         )];
-        let b = build_dns_section(&s, false, &route, "proxy");
+        let b = build_dns_section(&s, false, &route);
         let dns_rules = b.dns["rules"].as_array().unwrap();
         // First matching rule for x.com must be the user DNS rule → remote.
         let first_for_x = dns_rules
@@ -636,6 +660,7 @@ mod tests {
         let s = DnsSettings {
             mode: DnsMode::Local,
             rules_enabled: true,
+            dns_final: "local".into(),
             rules: vec![DnsRule {
                 id: "force-remote".into(),
                 enabled: true,
@@ -645,7 +670,7 @@ mod tests {
             }],
             ..DnsSettings::default()
         };
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         assert_eq!(b.dns["final"], TAG_LOCAL);
         let rules = b.dns["rules"].as_array().unwrap();
         assert_eq!(rules[0]["domain"], json!(["remote.example"]));
@@ -670,7 +695,7 @@ mod tests {
             },
             ..DnsSettings::default()
         };
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         let rules = b.dns["rules"].as_array().unwrap();
         assert!(rules
             .iter()
@@ -705,7 +730,7 @@ mod tests {
             },
             ..DnsSettings::default()
         };
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         // hosts server present
         let host_srv = servers
@@ -769,7 +794,7 @@ mod tests {
             },
             ..DnsSettings::default()
         };
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert!(servers.iter().all(|x| x["type"] != "hosts"));
     }
@@ -791,7 +816,7 @@ mod tests {
             },
             ..DnsSettings::default()
         };
-        let b = build_dns_section(&s, false, &[], "proxy");
+        let b = build_dns_section(&s, false, &[]);
         let servers = b.dns["servers"].as_array().unwrap();
         assert!(servers.iter().any(|x| x["type"] == "hosts"));
         let rules = b.dns["rules"].as_array().unwrap();

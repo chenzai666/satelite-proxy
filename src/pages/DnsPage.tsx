@@ -16,6 +16,7 @@ import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
   DnsAction,
+  DnsFinalStrategy,
   DnsMode,
   DnsRule,
   DnsRuleSet,
@@ -603,6 +604,25 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 </div>
                 <p className="dns-mode-hint">{MODE_HINTS[mode]}</p>
               </div>
+
+              <SettingRow
+                title="兜底 DNS"
+                desc="未命中规则的网站走兜底 DNS 解析，国外网站优先选择远程"
+              >
+                <SolidSelect
+                  value={dns.dns_final}
+                  disabled={busy}
+                  aria-label="兜底 DNS"
+                  options={[
+                    { value: "local", label: "本地" },
+                    { value: "domestic", label: "国内" },
+                    { value: "remote", label: "远程" },
+                  ]}
+                  onChange={(v) =>
+                    patch({ dns_final: v as DnsFinalStrategy })
+                  }
+                />
+              </SettingRow>
             </div>
 
             <div className="dns-general-toggles">

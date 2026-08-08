@@ -134,9 +134,9 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         OutboundMode::Direct => (false, "direct"),
     };
 
-    // DNS `final` follows the routing `final` so uncovered domains resolve via the
-    // same path they'll be routed through.
-    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules, route_final);
+    // DNS `final` is configured independently on the DNS page (local/domestic/
+    // remote) and no longer follows the routing `final`.
+    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
 
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
