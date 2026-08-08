@@ -196,10 +196,7 @@ pub fn ensure_core_setuid(core: &Path) -> AppResult<()> {
     }
 
     // Best-effort clear quarantine so root/setuid exec is not blocked.
-    let _ = Command::new("xattr")
-        .args(["-cr"])
-        .arg(core)
-        .status();
+    let _ = Command::new("xattr").args(["-cr"]).arg(core).status();
 
     let path_q = shell_single_quote(&core.to_string_lossy());
     let shell = format!(
@@ -332,7 +329,9 @@ fn run_privileged_sudo_pty(tool: &Path, args: &[&str]) -> AppResult<(i32, String
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(AppError::Core("sudo 授权超时（未在 120s 内完成指纹/密码）".into()));
+                return Err(AppError::Core(
+                    "sudo 授权超时（未在 120s 内完成指纹/密码）".into(),
+                ));
             }
             Err(e) => return Err(AppError::Core(format!("sudo wait: {e}"))),
         }
@@ -361,8 +360,7 @@ fn interpret_sudo_output(combined: &str) -> AppResult<(i32, String)> {
     if lower.contains("a password is required")
         || lower.contains("no tty")
         || lower.contains("a terminal is required")
-        || lower.contains("sorry, try again")
-            && !combined.contains("__SATELITE_EXIT__:")
+        || lower.contains("sorry, try again") && !combined.contains("__SATELITE_EXIT__:")
     {
         // Fall through to password path
         return Err(AppError::Core(format!("sudo needs fallback: {combined}")));
@@ -392,9 +390,8 @@ fn interpret_sudo_output(combined: &str) -> AppResult<(i32, String)> {
 }
 
 fn run_privileged_aewp(tool: &Path, args: &[&str]) -> AppResult<(i32, String)> {
-    let exec = auth_exec_fn().ok_or_else(|| {
-        AppError::Core("AuthorizationExecuteWithPrivileges unavailable".into())
-    })?;
+    let exec = auth_exec_fn()
+        .ok_or_else(|| AppError::Core("AuthorizationExecuteWithPrivileges unavailable".into()))?;
 
     let cmdline = build_tool_cmdline(tool, args);
     let shell = format!("{cmdline} 2>&1; printf '\\n__SATELITE_EXIT__:%d\\n' $?");
@@ -431,8 +428,7 @@ fn run_privileged_aewp(tool: &Path, args: &[&str]) -> AppResult<(i32, String)> {
             return Err(AppError::Core(auth_status_message(st)));
         }
 
-        let mut argv_ptrs: Vec<*const c_char> =
-            vec![arg_c.as_ptr(), cmd_c.as_ptr(), ptr::null()];
+        let mut argv_ptrs: Vec<*const c_char> = vec![arg_c.as_ptr(), cmd_c.as_ptr(), ptr::null()];
         let mut pipe: *mut libc::FILE = ptr::null_mut();
         let st = exec(
             auth,
@@ -450,12 +446,7 @@ fn run_privileged_aewp(tool: &Path, args: &[&str]) -> AppResult<(i32, String)> {
         if !pipe.is_null() {
             let mut buf = [0u8; 4096];
             loop {
-                let n = libc::fread(
-                    buf.as_mut_ptr() as *mut c_void,
-                    1,
-                    buf.len(),
-                    pipe,
-                );
+                let n = libc::fread(buf.as_mut_ptr() as *mut c_void, 1, buf.len(), pipe);
                 if n == 0 {
                     break;
                 }

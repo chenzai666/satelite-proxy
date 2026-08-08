@@ -1,8 +1,6 @@
 //! Orchestrates core + system proxy.
 
-use crate::api::{
-    ClashApi, ConnectionInfo, RequestRecord, TrafficTotals,
-};
+use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
     build_singbox_config, generate_api_secret, outbound_tag, write_active_config, BuildOptions,
 };
@@ -568,9 +566,7 @@ impl Runtime {
             self.proxy_snapshot = Some(snap);
             self.system_proxy_on = true;
         } else {
-            let _ = self
-                .system_proxy
-                .disable(self.proxy_snapshot.as_ref());
+            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
@@ -614,9 +610,7 @@ impl Runtime {
     /// Full cleanup on app exit: system proxy off, kill core, free listen ports.
     pub fn shutdown_with_ports(&mut self, ports: &[u16]) {
         if self.system_proxy_on {
-            let _ = self
-                .system_proxy
-                .disable(self.proxy_snapshot.as_ref());
+            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
@@ -767,4 +761,3 @@ fn format_rule(rule: &str, payload: &str) -> String {
     }
     format!("{rule}({payload})")
 }
-

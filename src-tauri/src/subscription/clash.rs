@@ -105,19 +105,12 @@ fn parse_ss(
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
     let method =
         get_str(map, &["cipher", "method"]).ok_or_else(|| "ss: missing cipher".to_string())?;
-    let password =
-        get_str(map, &["password"]).ok_or_else(|| "ss: missing password".to_string())?;
+    let password = get_str(map, &["password"]).ok_or_else(|| "ss: missing password".to_string())?;
     let plugin = get_str(map, &["plugin"]);
     let plugin_opts = get_map(map, &["plugin-opts", "plugin_opts"]).map(|m| {
         // Clash uses nested map; sing-box often wants semicolon opts or structured later.
         m.iter()
-            .filter_map(|(k, v)| {
-                Some(format!(
-                    "{}={}",
-                    value_to_string(k)?,
-                    value_to_string(v)?
-                ))
-            })
+            .filter_map(|(k, v)| Some(format!("{}={}", value_to_string(k)?, value_to_string(v)?)))
             .collect::<Vec<_>>()
             .join(";")
     });
@@ -202,11 +195,7 @@ fn parse_trojan(
 
     let transport = parse_transport(map);
 
-    Ok((
-        Some(tls),
-        transport,
-        ProtocolConfig::Trojan { password },
-    ))
+    Ok((Some(tls), transport, ProtocolConfig::Trojan { password }))
 }
 
 /// Mihomo / sing-box AnyTLS: password + TLS (sni / skip-cert-verify).
@@ -228,23 +217,16 @@ fn parse_anytls(
         tls.insecure = get_bool(map, &["skip-cert-verify", "skip_cert_verify", "insecure"]);
     }
 
-    Ok((
-        Some(tls),
-        None,
-        ProtocolConfig::AnyTls { password },
-    ))
+    Ok((Some(tls), None, ProtocolConfig::AnyTls { password }))
 }
 
 /// Clash Snell: psk + version + optional obfs-opts.
 fn parse_snell(
     map: &serde_yaml::Mapping,
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
-    let psk = get_str(map, &["psk", "password"])
-        .ok_or_else(|| "snell: missing psk".to_string())?;
+    let psk = get_str(map, &["psk", "password"]).ok_or_else(|| "snell: missing psk".to_string())?;
 
-    let version = get_u16(map, &["version"])
-        .map(|v| v as u8)
-        .unwrap_or(4);
+    let version = get_u16(map, &["version"]).map(|v| v as u8).unwrap_or(4);
 
     let userkey = get_str(map, &["userkey", "user-key", "user_key"]);
     let reuse = get_bool(map, &["reuse"]);
@@ -329,11 +311,20 @@ fn parse_tuic(
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
     let uuid = get_str(map, &["uuid"]).ok_or_else(|| "tuic: missing uuid".to_string())?;
     let password = get_str(map, &["password"]).unwrap_or_default();
-    let congestion_control =
-        get_str(map, &["congestion-controller", "congestion_controller", "congestion-control"]);
+    let congestion_control = get_str(
+        map,
+        &[
+            "congestion-controller",
+            "congestion_controller",
+            "congestion-control",
+        ],
+    );
     let udp_relay_mode = get_str(map, &["udp-relay-mode", "udp_relay_mode"]);
-    let zero_rtt_handshake =
-        get_bool(map, &["reduce-rtt", "zero-rtt-handshake", "zero_rtt_handshake"]).unwrap_or(false);
+    let zero_rtt_handshake = get_bool(
+        map,
+        &["reduce-rtt", "zero-rtt-handshake", "zero_rtt_handshake"],
+    )
+    .unwrap_or(false);
 
     let mut tls = parse_tls_common(map, true).unwrap_or(TlsConfig {
         enabled: true,
@@ -369,14 +360,7 @@ fn parse_socks5(
     let password = get_str(map, &["password"]);
     let tls = parse_tls_common(map, false);
 
-    Ok((
-        tls,
-        None,
-        ProtocolConfig::Socks5 {
-            username,
-            password,
-        },
-    ))
+    Ok((tls, None, ProtocolConfig::Socks5 { username, password }))
 }
 
 fn parse_tls_common(map: &serde_yaml::Mapping, default_enabled: bool) -> Option<TlsConfig> {
@@ -479,7 +463,8 @@ fn parse_transport(map: &serde_yaml::Mapping) -> Option<Transport> {
                         m
                     })
                 });
-            let max_early_data = opts.and_then(|m| get_u32(m, &["max-early-data", "max_early_data"]));
+            let max_early_data =
+                opts.and_then(|m| get_u32(m, &["max-early-data", "max_early_data"]));
             Some(Transport::Ws {
                 path,
                 headers,
@@ -489,28 +474,28 @@ fn parse_transport(map: &serde_yaml::Mapping) -> Option<Transport> {
         "grpc" => {
             let opts = get_map(map, &["grpc-opts", "grpc_opts"]);
             let service_name = opts
-                .and_then(|m| get_str(m, &["grpc-service-name", "grpc_service_name", "serviceName"]))
+                .and_then(|m| {
+                    get_str(
+                        m,
+                        &["grpc-service-name", "grpc_service_name", "serviceName"],
+                    )
+                })
                 .or_else(|| get_str(map, &["grpc-service-name", "service_name"]));
             Some(Transport::Grpc { service_name })
         }
         "http" | "h2" => {
             let opts = get_map(map, &["http-opts", "h2-opts", "http_opts"]);
             let path = opts.and_then(|m| {
-                m.get(Value::String("path".into()))
-                    .and_then(|v| match v {
-                        Value::Sequence(seq) => seq
-                            .first()
-                            .and_then(value_to_string),
-                        other => value_to_string(other),
-                    })
+                m.get(Value::String("path".into())).and_then(|v| match v {
+                    Value::Sequence(seq) => seq.first().and_then(value_to_string),
+                    other => value_to_string(other),
+                })
             });
             let host = opts.and_then(|m| {
                 m.get(Value::String("host".into())).and_then(|v| match v {
-                    Value::Sequence(seq) => Some(
-                        seq.iter()
-                            .filter_map(value_to_string)
-                            .collect::<Vec<_>>(),
-                    ),
+                    Value::Sequence(seq) => {
+                        Some(seq.iter().filter_map(value_to_string).collect::<Vec<_>>())
+                    }
                     Value::String(s) => Some(vec![s.clone()]),
                     _ => None,
                 })
@@ -613,21 +598,17 @@ proxies:
         assert_eq!(result.format, SubscriptionFormat::ClashYaml);
         assert_eq!(result.nodes.len(), 7);
         assert_eq!(result.skipped.len(), 1);
-        assert!(result.skipped[0]
-            .reason
-            .contains("unsupported type: ssr"));
+        assert!(result.skipped[0].reason.contains("unsupported type: ssr"));
 
-        let ss = result
-            .nodes
-            .iter()
-            .find(|n| n.name == "SS-HK")
-            .expect("ss");
+        let ss = result.nodes.iter().find(|n| n.name == "SS-HK").expect("ss");
         assert_eq!(ss.protocol, Protocol::Shadowsocks);
         assert_eq!(ss.server, "ss.example.com");
         assert_eq!(ss.port, 8388);
         assert_eq!(ss.udp, Some(true));
         match &ss.config {
-            ProtocolConfig::Shadowsocks { method, password, .. } => {
+            ProtocolConfig::Shadowsocks {
+                method, password, ..
+            } => {
                 assert_eq!(method, "aes-256-gcm");
                 assert_eq!(password, "secret");
             }

@@ -173,10 +173,7 @@ impl ClashApi {
             .call()
             .map_err(map_ureq)?;
         if !(200..300).contains(&resp.status()) {
-            return Err(AppError::Core(format!(
-                "delay status {}",
-                resp.status()
-            )));
+            return Err(AppError::Core(format!("delay status {}", resp.status())));
         }
         #[derive(Deserialize)]
         struct DelayBody {
@@ -273,7 +270,12 @@ struct RawConnection {
     chains: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_stringish")]
     rule: String,
-    #[serde(default, rename = "rulePayload", alias = "rule_payload", deserialize_with = "deserialize_stringish")]
+    #[serde(
+        default,
+        rename = "rulePayload",
+        alias = "rule_payload",
+        deserialize_with = "deserialize_stringish"
+    )]
     rule_payload: String,
 }
 
@@ -283,7 +285,12 @@ struct RawMetadata {
     network: String,
     #[serde(default, rename = "type", deserialize_with = "deserialize_stringish")]
     conn_type: String,
-    #[serde(default, rename = "sourceIP", alias = "source_ip", deserialize_with = "deserialize_stringish")]
+    #[serde(
+        default,
+        rename = "sourceIP",
+        alias = "source_ip",
+        deserialize_with = "deserialize_stringish"
+    )]
     source_ip: String,
     #[serde(
         default,
@@ -315,7 +322,11 @@ struct RawMetadata {
         deserialize_with = "deserialize_stringish"
     )]
     process_path: String,
-    #[serde(default, rename = "process", deserialize_with = "deserialize_stringish")]
+    #[serde(
+        default,
+        rename = "process",
+        deserialize_with = "deserialize_stringish"
+    )]
     process: String,
 }
 
@@ -363,11 +374,7 @@ impl ConnectionInfo {
             "—".into()
         };
 
-        let source = format!(
-            "{}:{}",
-            raw.metadata.source_ip,
-            raw.metadata.source_port
-        );
+        let source = format!("{}:{}", raw.metadata.source_ip, raw.metadata.source_port);
 
         let process = if !raw.metadata.process.is_empty() {
             raw.metadata.process
@@ -506,7 +513,6 @@ impl RequestRecord {
         hay.iter().any(|s| s.to_ascii_lowercase().contains(&q))
     }
 }
-
 
 #[cfg(test)]
 mod parse_tests {

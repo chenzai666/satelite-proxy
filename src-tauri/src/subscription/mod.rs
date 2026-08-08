@@ -74,8 +74,7 @@ fn looks_like_clash_yaml(s: &str) -> bool {
         || head.contains("proxies :")
         || head.contains("proxy-groups:")
         || head.contains("mixed-port:")
-        || head.contains("port:")
-            && (head.contains("socks-port:") || head.contains("allow-lan:"))
+        || head.contains("port:") && (head.contains("socks-port:") || head.contains("allow-lan:"))
 }
 
 fn looks_like_uri_list(s: &str) -> bool {
@@ -108,18 +107,14 @@ fn try_decode_base64_body(s: &str) -> Option<String> {
         }
     }
 
-    let cleaned: String = s
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     if cleaned.len() < 16 {
         return None;
     }
     // Heuristic: base64 alphabet
-    if !cleaned
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '-' || c == '_')
-    {
+    if !cleaned.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '-' || c == '_'
+    }) {
         return None;
     }
 

@@ -7,16 +7,11 @@ use std::path::PathBuf;
 #[tokio::test]
 #[ignore = "network: downloads real sing-box release"]
 async fn download_latest_into_temp() {
-    let dir = std::env::temp_dir().join(format!(
-        "satelite-core-test-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("satelite-core-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    let result = download_core_to(&dir, None)
-        .await
-        .expect("download core");
+    let result = download_core_to(&dir, None).await.expect("download core");
 
     println!(
         "installed {} → {} ({} bytes)",

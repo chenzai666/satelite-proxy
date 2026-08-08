@@ -42,12 +42,7 @@ pub fn write_active_config(app_data_dir: &Path, built: &BuiltConfig) -> AppResul
 fn prune_backups(dir: &Path, keep: usize) -> AppResult<()> {
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "json")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .collect();
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for e in entries.into_iter().skip(keep) {

@@ -50,9 +50,7 @@ pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreI
 
 /// Remote latest version only (network). Call after local info is shown.
 #[tauri::command]
-pub async fn check_core_update(
-    local_version: Option<String>,
-) -> Result<CoreUpdateInfo, String> {
+pub async fn check_core_update(local_version: Option<String>) -> Result<CoreUpdateInfo, String> {
     let latest = fetch_latest_release().await.map_err(|e| e.to_string())?;
     let update_available = match &local_version {
         Some(local) => normalize_cmp(local) != normalize_cmp(&latest.version),

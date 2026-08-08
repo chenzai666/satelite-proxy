@@ -1,5 +1,6 @@
 use crate::config::{
-    active_config_path, build_singbox_config, generate_api_secret, write_active_config, BuildOptions,
+    active_config_path, build_singbox_config, generate_api_secret, write_active_config,
+    BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
@@ -55,8 +56,10 @@ pub fn update_settings(
     route_final: Option<String>, // proxy | direct | block (Rule mode)
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
-    let mut auto_select_changed: Option<(crate::domain::AutoSelectMode, crate::domain::AutoSelectMode)> =
-        None;
+    let mut auto_select_changed: Option<(
+        crate::domain::AutoSelectMode,
+        crate::domain::AutoSelectMode,
+    )> = None;
     let mut route_final_changed = false;
     let settings = state
         .with_store_mut(|store| {
@@ -264,9 +267,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 }
 
 #[tauri::command]
-pub fn generate_singbox_config(
-    state: State<'_, AppState>,
-) -> Result<GenerateConfigResult, String> {
+pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
     let secret = generate_api_secret();
 
     let (nodes, settings, rules, dns) = state

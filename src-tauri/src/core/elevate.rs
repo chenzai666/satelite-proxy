@@ -7,7 +7,11 @@
 //! close — same lifecycle surface as a normal `Command::spawn` child, just
 //! running elevated.
 
+// Field names mirror the Win32 `SHELLEXECUTEINFOW` layout exactly (the struct
+// is passed to the OS by pointer), so the snake_case lint is intentionally
+// silenced here.
 #![cfg(target_os = "windows")]
+#![allow(non_snake_case)]
 
 use crate::error::{AppError, AppResult};
 use core::ffi::c_void as CVoid;
@@ -24,8 +28,6 @@ type LPCWSTR = *const u16;
 
 const SEE_MASK_NOCLOSEPROCESS: DWORD = 0x0000_0040;
 const SW_HIDE: i32 = 0;
-const SW_SHOWNORMAL: i32 = 1;
-const WAIT_FAILED: DWORD = 0xffff_ffff;
 const STILL_ACTIVE: DWORD = 259;
 const SYNCHRONIZE: DWORD = 0x0010_0000;
 const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
@@ -60,20 +62,18 @@ extern "system" {
 
 #[link(name = "kernel32")]
 extern "system" {
-    fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) -> DWORD;
     fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: *mut DWORD) -> BOOL;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
     fn GetProcessId(Process: HANDLE) -> DWORD;
-    fn OpenProcess(
-        dwDesiredAccess: DWORD,
-        bInheritHandle: BOOL,
-        dwProcessId: DWORD,
-    ) -> HANDLE;
+    fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
     fn TerminateProcess(hProcess: HANDLE, uExitCode: u32) -> BOOL;
 }
 
 fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Result of launching an elevated process: the OS handle (for polling/closing)

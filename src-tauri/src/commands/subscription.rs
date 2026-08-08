@@ -17,13 +17,7 @@ pub struct ImportResult {
 #[tauri::command]
 pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<SubscriptionView>, String> {
     state
-        .with_store(|store| {
-            Ok(store
-                .subscriptions
-                .iter()
-                .map(|s| s.to_view())
-                .collect())
-        })
+        .with_store(|store| Ok(store.subscriptions.iter().map(|s| s.to_view()).collect()))
         .map_err(|e| e.to_string())
 }
 
@@ -122,9 +116,15 @@ pub async fn update_subscription(
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().to_string())
                 .ok_or_else(|| "url is required".to_string())?;
-            import_from_url_with_id(Some(display_name), url, Some(id.clone()), via, Some(mixed_port))
-                .await
-                .map_err(|e| e.to_string())?
+            import_from_url_with_id(
+                Some(display_name),
+                url,
+                Some(id.clone()),
+                via,
+                Some(mixed_port),
+            )
+            .await
+            .map_err(|e| e.to_string())?
         }
         "file" => {
             let path = path
@@ -201,25 +201,21 @@ async fn refresh_subscription_inner(
         .map_err(|e| e.to_string())?;
 
     let mut outcome = match &existing.source {
-        crate::domain::SubscriptionSource::Url { url } => {
-            import_from_url_with_id(
-                Some(existing.name.clone()),
-                url.clone(),
-                Some(id.clone()),
-                via,
-                Some(mixed_port),
-            )
-            .await
-            .map_err(|e| e.to_string())?
-        }
-        crate::domain::SubscriptionSource::File { path } => {
-            import_from_file_with_id(
-                Some(existing.name.clone()),
-                &PathBuf::from(path),
-                Some(id.clone()),
-            )
-            .map_err(|e| e.to_string())?
-        }
+        crate::domain::SubscriptionSource::Url { url } => import_from_url_with_id(
+            Some(existing.name.clone()),
+            url.clone(),
+            Some(id.clone()),
+            via,
+            Some(mixed_port),
+        )
+        .await
+        .map_err(|e| e.to_string())?,
+        crate::domain::SubscriptionSource::File { path } => import_from_file_with_id(
+            Some(existing.name.clone()),
+            &PathBuf::from(path),
+            Some(id.clone()),
+        )
+        .map_err(|e| e.to_string())?,
     };
     outcome.subscription.enabled = existing.enabled;
     outcome.subscription.id = id;

@@ -1,6 +1,7 @@
 //! OS login item / launch-at-login helpers.
 
 use crate::error::{AppError, AppResult};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,6 +12,7 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+#[cfg(target_os = "macos")]
 const LAUNCH_AGENT_LABEL: &str = "com.satelite.proxy";
 
 fn current_exe() -> AppResult<PathBuf> {
@@ -112,16 +114,16 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
         if enabled {
             let mut cmd = Command::new("reg");
             cmd.args([
-                    "add",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                    "/v",
-                    "SateliteProxy",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &format!("\"{}\"", exe.display()),
-                    "/f",
-                ]);
+                "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "SateliteProxy",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &format!("\"{}\"", exe.display()),
+                "/f",
+            ]);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let status = cmd
@@ -134,12 +136,12 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
         } else {
             let mut cmd = Command::new("reg");
             cmd.args([
-                    "delete",
-                    r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                    "/v",
-                    "SateliteProxy",
-                    "/f",
-                ]);
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "SateliteProxy",
+                "/f",
+            ]);
             #[cfg(target_os = "windows")]
             cmd.creation_flags(CREATE_NO_WINDOW);
             let _ = cmd.status();
@@ -149,6 +151,8 @@ pub fn set_launch_at_login(enabled: bool) -> AppResult<()> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = enabled;
-        Err(AppError::Core("autostart unsupported on this platform".into()))
+        Err(AppError::Core(
+            "autostart unsupported on this platform".into(),
+        ))
     }
 }

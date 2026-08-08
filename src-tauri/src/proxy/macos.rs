@@ -39,10 +39,7 @@ impl MacSystemProxy {
             .status()
             .map_err(|e| AppError::Core(format!("networksetup: {e}")))?;
         if !status.success() {
-            return Err(AppError::Core(format!(
-                "networksetup {:?} failed",
-                args
-            )));
+            return Err(AppError::Core(format!("networksetup {:?} failed", args)));
         }
         Ok(())
     }
