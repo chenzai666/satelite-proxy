@@ -459,7 +459,11 @@ export function DashboardPage({
   }, [nodes]);
 
   async function onCopyEnv() {
-    const text = `export all_proxy=http://127.0.0.1:${mixedPort}`;
+    const proxyUrl = `http://127.0.0.1:${mixedPort}`;
+    const isWindows = /Windows/i.test(navigator.userAgent);
+    const text = isWindows
+      ? `$env:ALL_PROXY = "${proxyUrl}"`
+      : `export all_proxy=${proxyUrl}`;
     try {
       await navigator.clipboard.writeText(text);
       setEnvCopied(true);

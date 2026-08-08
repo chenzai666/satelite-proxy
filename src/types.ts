@@ -6,25 +6,13 @@ export type NavKey =
   | "logs"
   | "settings";
 
-export type DnsMode = "system" | "smart" | "custom";
-export type DnsServerRole = "local" | "domestic" | "remote" | "custom";
+export type DnsMode = "local" | "smart_local" | "smart_cn";
 export type DomainMatcher = "domain" | "domain_suffix" | "domain_keyword";
 
 export type DnsAction =
-  | { kind: "system" }
+  | { kind: "local" }
   | { kind: "domestic" }
-  | { kind: "remote" }
-  | { kind: "block" }
-  | { kind: "fake_ip" }
-  | { kind: "server"; server_id: string };
-
-export interface DnsServer {
-  id: string;
-  name: string;
-  address: string;
-  role: DnsServerRole;
-  enabled: boolean;
-}
+  | { kind: "remote" };
 
 export interface DnsRule {
   id: string;
@@ -42,12 +30,40 @@ export interface FakeIpConfig {
   bypass: string[];
 }
 
+export interface HostsEntry {
+  id: string;
+  enabled: boolean;
+  domain: string;
+  addr: string;
+}
+
+export interface HostsConfig {
+  enabled: boolean;
+  include_system: boolean;
+  entries: HostsEntry[];
+}
+
+export type DnsRuleSetKind = "dns" | "hosts";
+
+export interface DnsRuleSet {
+  id: string;
+  name: string;
+  kind: DnsRuleSetKind;
+  builtin: boolean;
+  read_only: boolean;
+  enabled: boolean;
+  dns_rules: DnsRule[];
+  hosts: HostsEntry[];
+}
+
 export interface DnsSettings {
   enabled: boolean;
   mode: DnsMode;
-  servers: DnsServer[];
+  rules_enabled: boolean;
   rules: DnsRule[];
   fake_ip: FakeIpConfig;
+  hosts: HostsConfig;
+  rule_sets: DnsRuleSet[];
   hijack: boolean;
   cache: boolean;
   leak_protect: boolean;
@@ -285,9 +301,6 @@ export interface RuleSet {
 
 export type RuleTarget = "direct" | "proxy" | "block" | "node" | "smart";
 
-/** inherit = DNS page; system = local/system DNS (rule page wins). */
-export type DnsPolicy = "inherit" | "system";
-
 export interface Rule {
   id: string;
   ord: number;
@@ -303,8 +316,6 @@ export interface Rule {
   smart_include?: string[];
   /** Smart mode blacklist: name containing any keyword is skipped (OR). */
   smart_exclude?: string[];
-  /** DNS override; built-in sets always inherit. */
-  dns_policy?: DnsPolicy;
 }
 
 /** Live connection or historical request row */

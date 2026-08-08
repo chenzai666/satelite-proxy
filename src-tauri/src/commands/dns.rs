@@ -1,11 +1,22 @@
 //! DNS settings commands (docs/dns.md).
 
-use crate::domain::{ensure_bundled_dns_whitelist, DnsSettings};
+use crate::config::{dump_dns_rules_file, lookup_hosts};
+use crate::domain::{read_system_hosts_entries, DnsSettings, HostsEntry};
 use crate::state::AppState;
 use serde::Serialize;
 use std::net::ToSocketAddrs;
 use std::time::Instant;
 use tauri::{AppHandle, Manager, State};
+
+/// Export the current DNS rules to `{app_data}/data/dns/user-dns-rules.list`.
+fn dump_dns_rules(state: &AppState) {
+    let rules = state
+        .with_store(|s| Ok(s.dns.enabled_dns_rules()))
+        .unwrap_or_default();
+    if let Err(e) = dump_dns_rules_file(&state.app_data_dir, &rules) {
+        eprintln!("[satelite] dump dns rules: {e}");
+    }
+}
 
 #[tauri::command]
 pub fn get_dns_settings(state: State<'_, AppState>) -> Result<DnsSettings, String> {
@@ -14,15 +25,22 @@ pub fn get_dns_settings(state: State<'_, AppState>) -> Result<DnsSettings, Strin
         .map_err(|e| e.to_string())
 }
 
+/// Read the OS hosts file into a read-only entry list (for the Hosts UI).
+#[tauri::command]
+pub fn read_system_hosts() -> Vec<HostsEntry> {
+    read_system_hosts_entries()
+}
+
 /// Replace full DNS settings. Optionally restart core when `apply` is true and running.
 #[tauri::command]
 pub fn update_dns_settings(
     app: AppHandle,
     state: State<'_, AppState>,
-    settings: DnsSettings,
+    mut settings: DnsSettings,
     apply: Option<bool>,
 ) -> Result<DnsSettings, String> {
     let apply = apply.unwrap_or(true);
+    settings.ensure_rule_sets();
     state
         .with_store_mut(|store| {
             store.dns = settings;
@@ -33,6 +51,9 @@ pub fn update_dns_settings(
     let dns = state
         .with_store(|s| Ok(s.dns.clone()))
         .map_err(|e| e.to_string())?;
+
+    // Export user DNS rules to disk (mirror routing rule export).
+    dump_dns_rules(&state);
 
     if apply && state.is_core_running() {
         let resource_dir = app.path().resource_dir().ok();
@@ -45,10 +66,8 @@ pub fn update_dns_settings(
     Ok(dns)
 }
 
-/// Reset DNS **servers** or **rules** to factory defaults (other fields unchanged).
-///
-/// - `section`: `"servers"` | `"rules"`
-/// - rules reset includes built-in whitelist + `resources/dns/*.list` merge
+/// Reset DNS rules to factory defaults (other fields unchanged).
+/// Rules reset reloads `resources/dns/builtin-dns-rules.list`.
 #[tauri::command]
 pub fn reset_dns_defaults(
     app: AppHandle,
@@ -63,22 +82,20 @@ pub fn reset_dns_defaults(
     let dns = state
         .with_store_mut(|store| {
             match section.as_str() {
-                "servers" => {
-                    store.dns.servers = DnsSettings::factory_servers();
-                }
                 "rules" => {
-                    store.dns.rules = DnsSettings::factory_rules_base();
-                    ensure_bundled_dns_whitelist(&mut store.dns, resource_dir.as_deref());
+                    store.dns.reset_builtin_dns_set();
                 }
                 other => {
                     return Err(crate::error::AppError::Config(format!(
-                        "unknown DNS reset section: {other} (use servers|rules)"
+                        "unknown DNS reset section: {other} (use rules)"
                     )));
                 }
             }
             Ok(store.dns.clone())
         })
         .map_err(|e| e.to_string())?;
+
+    dump_dns_rules(&state);
 
     if apply && state.is_core_running() {
         state
@@ -100,10 +117,13 @@ pub struct DnsTestResult {
     pub note: String,
 }
 
-/// Resolve a domain via the OS (diagnostics). When proxy+hijack is on, OS may still
-/// use system DNS; this is a connectivity smoke test, not full FakeIP inspection.
+/// Resolve a domain for diagnostics. Enabled application Hosts entries are checked
+/// first; unmatched names fall back to the OS resolver.
 #[tauri::command]
-pub fn test_dns_lookup(domain: String) -> Result<DnsTestResult, String> {
+pub fn test_dns_lookup(
+    state: State<'_, AppState>,
+    domain: String,
+) -> Result<DnsTestResult, String> {
     let domain = domain.trim().to_string();
     if domain.is_empty() {
         return Err("domain is empty".into());
@@ -121,6 +141,21 @@ pub fn test_dns_lookup(domain: String) -> Result<DnsTestResult, String> {
         .to_string();
 
     let start = Instant::now();
+    let hosts = state
+        .with_store(|store| Ok(store.dns.effective_hosts()))
+        .map_err(|e| e.to_string())?;
+    let host_addrs = lookup_hosts(&hosts, &host);
+    if !host_addrs.is_empty() {
+        return Ok(DnsTestResult {
+            domain: host,
+            ok: true,
+            addrs: host_addrs,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            error: None,
+            note: "应用 Hosts 命中（精确域名匹配）".into(),
+        });
+    }
+
     let query = format!("{host}:0");
     match query.to_socket_addrs() {
         Ok(iter) => {

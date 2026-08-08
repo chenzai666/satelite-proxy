@@ -15,7 +15,7 @@ import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 
-type SettingsTab = "app" | "rules" | "dns" | "network" | "core";
+type SettingsTab = "app" | "rules" | "dns" | "dns_rules" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
@@ -52,9 +52,9 @@ export function SettingsPage() {
           hint: t("settings.hintDns"),
         },
         {
-          id: "network" as const,
-          label: t("settings.tabNetwork"),
-          hint: t("settings.hintNetwork"),
+          id: "dns_rules" as const,
+          label: t("settings.tabDnsRules"),
+          hint: t("settings.hintDnsRules"),
         },
         {
           id: "core" as const,
@@ -201,7 +201,7 @@ export function SettingsPage() {
     }
   }
 
-  const needsSettings = tab === "app" || tab === "network" || tab === "core";
+  const needsSettings = tab === "app" || tab === "core";
   if (needsSettings && !settings && !error) {
     return <div className="page empty">{t("common.loading")}</div>;
   }
@@ -215,7 +215,7 @@ export function SettingsPage() {
           <h1>{t("settings.title")}</h1>
           <p className="page-desc">{activeTab.hint}</p>
         </div>
-        {tab === "network" && (
+        {tab === "app" && (
           <button type="button" disabled={busy} onClick={() => void onSaveNetwork()}>
             {busy ? t("common.saving") : t("common.save")}
           </button>
@@ -244,15 +244,20 @@ export function SettingsPage() {
         ))}
       </div>
 
-      {error && tab !== "rules" && tab !== "dns" && (
+      {error && tab !== "rules" && tab !== "dns" && tab !== "dns_rules" && (
         <div className="banner error">{error}</div>
       )}
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
-      <div className="page-enter" key={tab}>
+      <div
+        className={`page-enter${tab === "app" ? " settings-app-network-page" : ""}`}
+        key={tab}
+      >
         {tab === "rules" && <RulesPage embedded />}
 
-        {tab === "dns" && <DnsPage embedded />}
+        {tab === "dns" && <DnsPage embedded section="settings" />}
+
+        {tab === "dns_rules" && <DnsPage embedded section="rules" />}
 
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
@@ -368,7 +373,7 @@ export function SettingsPage() {
         </section>
       )}
 
-      {tab === "network" && settings && (
+      {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Network">
           <div className="card settings-form settings-form-grid">
             <label className="field">

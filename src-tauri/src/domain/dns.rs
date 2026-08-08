@@ -2,31 +2,57 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// DNS resolution mode. See `dns_build.rs` for the generated sing-box config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsMode {
-    /// Only system resolver (`local`).
-    System,
-    /// Domestic / remote / system split + optional FakeIP (default).
+    /// Pure local resolver (old `system`).
     #[default]
-    Smart,
-    /// Only user-defined servers and rules.
-    Custom,
+    Local,
+    /// Route-derived: `direct` domain rules → local DNS, else → remote DNS.
+    SmartLocal,
+    /// Route-derived: `direct` domain rules → domestic DNS, else → remote DNS.
+    SmartCn,
+    /// Legacy wire value. Migrated to `SmartLocal` + `rules_enabled=true`.
+    Rules,
 }
 
-/// Role of a DNS server in Smart mode routing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DnsServerRole {
-    /// System / local resolver.
-    Local,
-    /// Domestic (direct path).
-    Domestic,
-    /// Remote / foreign (via proxy when possible).
-    #[default]
-    Remote,
-    /// User custom (only used when referenced by a rule in custom mode, or as extra remote).
-    Custom,
+impl<'de> Deserialize<'de> for DnsMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+
+        /// Helper enum that mirrors the snake_case wire form including legacy keys.
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum Wire {
+            Local,
+            SmartLocal,
+            SmartCn,
+            Rules,
+            // Legacy keys (now mapped onto the new variants).
+            System,
+            Smart,
+            Custom,
+        }
+
+        let w = Wire::deserialize(deserializer);
+        Ok(match w {
+            // New keys pass through.
+            Ok(Wire::Local) => Self::Local,
+            Ok(Wire::SmartLocal) => Self::SmartLocal,
+            Ok(Wire::SmartCn) => Self::SmartCn,
+            Ok(Wire::Rules) => Self::Rules,
+            // Legacy migration: system → local, smart → smart_local, custom → rules.
+            Ok(Wire::System) => Self::Local,
+            Ok(Wire::Smart) => Self::SmartLocal,
+            Ok(Wire::Custom) => Self::Rules,
+            // Unknown value → fall back to the default rather than failing the load.
+            Err(_) => {
+                D::Error::custom("unknown dns mode, falling back to default");
+                Self::default()
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -39,39 +65,49 @@ pub enum DomainMatcher {
 }
 
 /// Where a DNS rule sends the query.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DnsAction {
-    /// Use system / local DNS.
-    System,
-    /// Use server by id (tag will be derived).
-    Server { server_id: String },
-    /// Prefer domestic servers.
+    /// Use local / system DNS.
+    Local,
+    /// Prefer domestic DNS.
     Domestic,
-    /// Prefer remote servers.
+    /// Prefer remote DNS.
     Remote,
-    /// Block resolution.
-    Block,
-    /// Force FakeIP for matching domains (A/AAAA).
-    FakeIp,
 }
 
 impl Default for DnsAction {
     fn default() -> Self {
-        Self::System
+        Self::Local
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsServer {
-    pub id: String,
-    pub name: String,
-    /// `local` | `223.5.5.5` | `tcp://8.8.8.8` | `https://1.1.1.1/dns-query` | `tls://1.1.1.1`
-    pub address: String,
-    #[serde(default)]
-    pub role: DnsServerRole,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+impl<'de> Deserialize<'de> for DnsAction {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Wire {
+            Local,
+            Domestic,
+            Remote,
+            // Legacy variants — mapped onto the surviving set below.
+            System,
+            Block,
+            FakeIp,
+            #[allow(dead_code)]
+            Server {
+                server_id: String,
+            },
+        }
+
+        match Wire::deserialize(deserializer)? {
+            Wire::Local | Wire::System => Ok(Self::Local),
+            Wire::Domestic => Ok(Self::Domestic),
+            Wire::Remote => Ok(Self::Remote),
+            // Legacy block/fake_ip/server → safest non-blocking fallback is remote.
+            Wire::Block | Wire::FakeIp | Wire::Server { .. } => Ok(Self::Remote),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,20 +149,125 @@ impl Default for FakeIpConfig {
     }
 }
 
+/// One user-defined static domain→IP mapping (hosts entry).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostsEntry {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub domain: String,
+    /// IPv4 or IPv6 literal (e.g. "10.0.0.1", "::1").
+    pub addr: String,
+}
+
+/// Static hosts configuration. When enabled, entries become the highest-priority
+/// DNS answers (a sing-box `predefined` server + a domain rule prepended to all
+/// other DNS rules).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostsConfig {
+    /// Master switch for the whole hosts feature.
+    #[serde(default)]
+    pub enabled: bool,
+    /// When true, the OS hosts file is read at config-build time and merged in.
+    #[serde(default)]
+    pub include_system: bool,
+    #[serde(default)]
+    pub entries: Vec<HostsEntry>,
+}
+
+impl Default for HostsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            include_system: false,
+            entries: Vec::new(),
+        }
+    }
+}
+
+pub const BUILTIN_DNS_SET_ID: &str = "builtin-dns";
+pub const SYSTEM_HOSTS_SET_ID: &str = "system-hosts";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsRuleSetKind {
+    Dns,
+    Hosts,
+}
+
+/// One independently enabled DNS-page rule set. Sets are evaluated in stored
+/// order. The system-hosts set is built in and read-only; its entries are read
+/// from the OS at config-build time rather than persisted here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsRuleSet {
+    pub id: String,
+    pub name: String,
+    pub kind: DnsRuleSetKind,
+    #[serde(default)]
+    pub builtin: bool,
+    #[serde(default)]
+    pub read_only: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub dns_rules: Vec<DnsRule>,
+    #[serde(default)]
+    pub hosts: Vec<HostsEntry>,
+}
+
+impl DnsRuleSet {
+    fn builtin_dns(rules: Vec<DnsRule>, enabled: bool) -> Self {
+        Self {
+            id: BUILTIN_DNS_SET_ID.into(),
+            name: "内置 DNS 规则".into(),
+            kind: DnsRuleSetKind::Dns,
+            builtin: true,
+            read_only: false,
+            enabled,
+            dns_rules: rules,
+            hosts: Vec::new(),
+        }
+    }
+
+    fn system_hosts(enabled: bool) -> Self {
+        Self {
+            id: SYSTEM_HOSTS_SET_ID.into(),
+            name: "系统 Hosts".into(),
+            kind: DnsRuleSetKind::Hosts,
+            builtin: true,
+            read_only: true,
+            enabled,
+            dns_rules: Vec::new(),
+            hosts: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsSettings {
-    /// Master switch: when false, behave as System mode.
+    /// Master switch: kept for stored-config compatibility only. Selecting the
+    /// `local` mode is now the way to "turn DNS off".
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub mode: DnsMode,
+    /// Whether user DNS rules participate in resolution. This is independent
+    /// from the base resolution mode.
     #[serde(default)]
-    pub servers: Vec<DnsServer>,
-    /// User DNS rules (whitelist / force resolver). Evaluated first.
+    pub rules_enabled: bool,
+    /// User DNS rules (override / force resolver). When enabled these are
+    /// projected first and win over the base mode's route-derived projection.
     #[serde(default)]
     pub rules: Vec<DnsRule>,
     #[serde(default)]
     pub fake_ip: FakeIpConfig,
+    /// Static hosts mapping (highest DNS priority when enabled).
+    #[serde(default)]
+    pub hosts: HostsConfig,
+    /// Ordered DNS/Hosts rule sets. Empty means a pre-rule-set store that must
+    /// be migrated from `rules` / `hosts` above.
+    #[serde(default)]
+    pub rule_sets: Vec<DnsRuleSet>,
     /// Inject route `hijack-dns` (always on with TUN; optional otherwise).
     #[serde(default = "default_true")]
     pub hijack: bool,
@@ -140,12 +281,15 @@ pub struct DnsSettings {
 
 impl Default for DnsSettings {
     fn default() -> Self {
+        let rules = default_rules();
         Self {
             enabled: true,
-            mode: DnsMode::Smart,
-            servers: default_servers(),
-            rules: default_rules(),
+            mode: DnsMode::SmartLocal,
+            rules_enabled: false,
+            rules: rules.clone(),
             fake_ip: FakeIpConfig::default(),
+            hosts: HostsConfig::default(),
+            rule_sets: Vec::new(),
             hijack: true,
             cache: true,
             leak_protect: true,
@@ -154,13 +298,160 @@ impl Default for DnsSettings {
 }
 
 impl DnsSettings {
-    /// Built-in server list (System / Ali / Tencent / CF / Google).
-    pub fn factory_servers() -> Vec<DnsServer> {
-        default_servers()
+    /// Convert the removed `rules` mode into its equivalent independent settings.
+    pub fn migrate_legacy_rules_mode(&mut self) {
+        if self.mode == DnsMode::Rules {
+            self.mode = DnsMode::SmartLocal;
+            self.rules_enabled = true;
+        }
     }
 
-    /// Built-in whitelist base (local/lan/internal/corp → System).
-    /// Callers may also merge `resources/dns/*.list` via [`ensure_bundled_dns_whitelist`].
+    /// Populate the ordered rule-set model from legacy flat DNS/Hosts fields,
+    /// then ensure the two factory sets always exist.
+    pub fn ensure_rule_sets(&mut self) {
+        self.migrate_legacy_rules_mode();
+        if self.rule_sets.is_empty() {
+            self.rule_sets.push(DnsRuleSet::builtin_dns(
+                self.rules.clone(),
+                self.rules_enabled,
+            ));
+            self.rule_sets.push(DnsRuleSet::system_hosts(
+                self.hosts.enabled && self.hosts.include_system,
+            ));
+            if !self.hosts.entries.is_empty() {
+                self.rule_sets.push(DnsRuleSet {
+                    id: "migrated-hosts".into(),
+                    name: "自定义 Hosts".into(),
+                    kind: DnsRuleSetKind::Hosts,
+                    builtin: false,
+                    read_only: false,
+                    enabled: self.hosts.enabled,
+                    dns_rules: Vec::new(),
+                    hosts: self.hosts.entries.clone(),
+                });
+            }
+        }
+        if !self
+            .rule_sets
+            .iter()
+            .any(|set| set.id == BUILTIN_DNS_SET_ID)
+        {
+            self.rule_sets.insert(
+                0,
+                DnsRuleSet::builtin_dns(Self::factory_rules_base(), false),
+            );
+        }
+        if !self
+            .rule_sets
+            .iter()
+            .any(|set| set.id == SYSTEM_HOSTS_SET_ID)
+        {
+            let insert_at = usize::from(!self.rule_sets.is_empty());
+            self.rule_sets
+                .insert(insert_at, DnsRuleSet::system_hosts(false));
+        }
+        if let Some(set) = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == BUILTIN_DNS_SET_ID)
+        {
+            set.name = "内置 DNS 规则".into();
+            set.kind = DnsRuleSetKind::Dns;
+            set.builtin = true;
+            set.read_only = false;
+            set.hosts.clear();
+        }
+        if let Some(set) = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == SYSTEM_HOSTS_SET_ID)
+        {
+            let enabled = set.enabled;
+            *set = DnsRuleSet::system_hosts(enabled);
+        }
+    }
+
+    pub fn enabled_dns_rules(&self) -> Vec<DnsRule> {
+        if self.rule_sets.is_empty() {
+            return self
+                .effective_rules_enabled()
+                .then(|| self.rules.clone())
+                .unwrap_or_default();
+        }
+        self.rule_sets
+            .iter()
+            .filter(|set| set.enabled && set.kind == DnsRuleSetKind::Dns)
+            .flat_map(|set| set.dns_rules.iter().cloned())
+            .collect()
+    }
+
+    pub fn has_enabled_dns_sets(&self) -> bool {
+        if self.rule_sets.is_empty() {
+            return self.effective_rules_enabled();
+        }
+        self.rule_sets.iter().any(|set| {
+            set.enabled
+                && set.kind == DnsRuleSetKind::Dns
+                && set.dns_rules.iter().any(|rule| rule.enabled)
+        })
+    }
+
+    pub fn effective_hosts(&self) -> HostsConfig {
+        if self.rule_sets.is_empty() {
+            return self.hosts.clone();
+        }
+        let mut entries = Vec::new();
+        for set in self
+            .rule_sets
+            .iter()
+            .filter(|set| set.enabled && set.kind == DnsRuleSetKind::Hosts)
+        {
+            if set.id == SYSTEM_HOSTS_SET_ID {
+                entries.extend(read_system_hosts_pairs().into_iter().enumerate().map(
+                    |(index, (domain, addr))| HostsEntry {
+                        id: format!("system-{index}"),
+                        enabled: true,
+                        domain,
+                        addr,
+                    },
+                ));
+            } else {
+                entries.extend(set.hosts.iter().cloned());
+            }
+        }
+        HostsConfig {
+            enabled: !entries.is_empty(),
+            include_system: false,
+            entries,
+        }
+    }
+
+    pub fn reset_builtin_dns_set(&mut self) {
+        let enabled = self
+            .rule_sets
+            .iter()
+            .find(|set| set.id == BUILTIN_DNS_SET_ID)
+            .map(|set| set.enabled)
+            .unwrap_or(true);
+        let replacement = DnsRuleSet::builtin_dns(Self::factory_rules_base(), enabled);
+        if let Some(set) = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == BUILTIN_DNS_SET_ID)
+        {
+            *set = replacement;
+        } else {
+            self.rule_sets.insert(0, replacement);
+        }
+    }
+
+    /// Defensive compatibility for settings that have not been persisted yet.
+    pub fn effective_rules_enabled(&self) -> bool {
+        self.rules_enabled || self.mode == DnsMode::Rules
+    }
+
+    /// Built-in DNS rules loaded from `resources/dns/builtin-dns-rules.list`.
+    /// Falls back to a hardcoded minimum if the file is missing.
     pub fn factory_rules_base() -> Vec<DnsRule> {
         default_rules()
     }
@@ -188,49 +479,8 @@ fn default_fakeip_bypass() -> Vec<String> {
     ]
 }
 
-fn default_servers() -> Vec<DnsServer> {
-    vec![
-        DnsServer {
-            id: "sys-local".into(),
-            name: "System DNS".into(),
-            address: "local".into(),
-            role: DnsServerRole::Local,
-            enabled: true,
-        },
-        DnsServer {
-            id: "cn-ali".into(),
-            name: "AliDNS".into(),
-            address: "223.5.5.5".into(),
-            role: DnsServerRole::Domestic,
-            enabled: true,
-        },
-        DnsServer {
-            id: "cn-tencent".into(),
-            name: "Tencent".into(),
-            address: "119.29.29.29".into(),
-            role: DnsServerRole::Domestic,
-            enabled: true,
-        },
-        DnsServer {
-            id: "remote-cf".into(),
-            name: "Cloudflare".into(),
-            address: "https://1.1.1.1/dns-query".into(),
-            role: DnsServerRole::Remote,
-            enabled: true,
-        },
-        DnsServer {
-            id: "remote-google".into(),
-            name: "Google".into(),
-            address: "https://dns.google/dns-query".into(),
-            role: DnsServerRole::Remote,
-            enabled: false,
-        },
-    ]
-}
-
-fn default_rules() -> Vec<DnsRule> {
-    // PRD default whitelist → System DNS.
-    // Bundled extras: `resources/dns/*.list` (see load_bundled_dns_whitelist).
+/// Hardcoded fallback used when `resources/dns/builtin-dns-rules.list` is unavailable.
+fn hardcoded_default_rules() -> Vec<DnsRule> {
     ["local", "lan", "internal", "corp"]
         .into_iter()
         .map(|s| DnsRule {
@@ -238,36 +488,213 @@ fn default_rules() -> Vec<DnsRule> {
             enabled: true,
             matcher: DomainMatcher::DomainSuffix,
             payload: s.into(),
-            action: DnsAction::System,
+            action: DnsAction::Local,
         })
         .collect()
 }
 
-/// Candidate dirs for bundled DNS lists (dev + packaged).
-pub fn dns_dir_candidates(resource_dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+/// Built-in DNS rules. Loaded from `resources/dns/builtin-dns-rules.list`
+/// (resolved relative to `CARGO_MANIFEST_DIR`); falls back to
+/// [`hardcoded_default_rules`] if the file cannot be read.
+fn default_rules() -> Vec<DnsRule> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("dns")
+        .join("builtin-dns-rules.list");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let parsed = parse_dns_whitelist_text(&text, "builtin");
+            if parsed.is_empty() {
+                hardcoded_default_rules()
+            } else {
+                parsed
+            }
+        }
+        Err(_) => hardcoded_default_rules(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_rules_mode_migrates_to_smart_local_with_rules_enabled() {
+        let mut settings: DnsSettings = serde_json::from_value(serde_json::json!({
+            "mode": "rules"
+        }))
+        .unwrap();
+        assert_eq!(settings.mode, DnsMode::Rules);
+        assert!(!settings.rules_enabled);
+
+        settings.migrate_legacy_rules_mode();
+
+        assert_eq!(settings.mode, DnsMode::SmartLocal);
+        assert!(settings.rules_enabled);
+    }
+
+    #[test]
+    fn legacy_flat_rules_and_hosts_migrate_into_typed_sets() {
+        let mut settings = DnsSettings {
+            rules_enabled: true,
+            hosts: HostsConfig {
+                enabled: true,
+                include_system: true,
+                entries: vec![HostsEntry {
+                    id: "legacy-host".into(),
+                    enabled: true,
+                    domain: "legacy.example".into(),
+                    addr: "10.0.0.8".into(),
+                }],
+            },
+            ..DnsSettings::default()
+        };
+
+        settings.ensure_rule_sets();
+
+        let builtin = settings
+            .rule_sets
+            .iter()
+            .find(|set| set.id == BUILTIN_DNS_SET_ID)
+            .unwrap();
+        assert!(builtin.enabled);
+        assert_eq!(builtin.kind, DnsRuleSetKind::Dns);
+        assert!(!builtin.dns_rules.is_empty());
+
+        let system = settings
+            .rule_sets
+            .iter()
+            .find(|set| set.id == SYSTEM_HOSTS_SET_ID)
+            .unwrap();
+        assert!(system.enabled);
+        assert!(system.read_only);
+
+        let custom = settings
+            .rule_sets
+            .iter()
+            .find(|set| set.id == "migrated-hosts")
+            .unwrap();
+        assert_eq!(custom.kind, DnsRuleSetKind::Hosts);
+        assert_eq!(custom.hosts[0].domain, "legacy.example");
+    }
+
+    #[test]
+    fn enabled_typed_sets_are_flattened_in_set_order() {
+        let mut settings = DnsSettings::default();
+        settings.rule_sets = vec![
+            DnsRuleSet {
+                id: "first".into(),
+                name: "First".into(),
+                kind: DnsRuleSetKind::Dns,
+                builtin: false,
+                read_only: false,
+                enabled: true,
+                dns_rules: vec![DnsRule {
+                    id: "r1".into(),
+                    enabled: true,
+                    matcher: DomainMatcher::Domain,
+                    payload: "first.example".into(),
+                    action: DnsAction::Local,
+                }],
+                hosts: Vec::new(),
+            },
+            DnsRuleSet {
+                id: "second".into(),
+                name: "Second".into(),
+                kind: DnsRuleSetKind::Dns,
+                builtin: false,
+                read_only: false,
+                enabled: true,
+                dns_rules: vec![DnsRule {
+                    id: "r2".into(),
+                    enabled: true,
+                    matcher: DomainMatcher::Domain,
+                    payload: "second.example".into(),
+                    action: DnsAction::Remote,
+                }],
+                hosts: Vec::new(),
+            },
+        ];
+
+        let rules = settings.enabled_dns_rules();
+        assert_eq!(rules[0].payload, "first.example");
+        assert_eq!(rules[1].payload, "second.example");
+    }
+}
+
+/// Path to the OS hosts file.
+fn system_hosts_path() -> std::path::PathBuf {
+    if cfg!(target_os = "windows") {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+        std::path::PathBuf::from(root)
+            .join("System32")
+            .join("drivers")
+            .join("etc")
+            .join("hosts")
+    } else {
+        // macOS / Linux
+        std::path::PathBuf::from("/etc/hosts")
+    }
+}
+
+/// Parse an OS hosts file into `(domain, ip)` pairs.
+///
+/// Format: `IP  domain1  domain2 ...` (whitespace-separated); `#` starts a comment.
+/// Only valid IP literals in the first column are kept.
+fn parse_hosts_text(text: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    out.push(manifest.join("resources/dns"));
-    if let Some(res) = resource_dir {
-        out.push(res.join("resources/dns"));
-        out.push(res.join("dns"));
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_ascii_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let ip = parts[0].trim();
+        // Accept IPv4 / IPv6 literals only.
+        let is_ip = ip.parse::<std::net::IpAddr>().is_ok();
+        if !is_ip {
+            continue;
+        }
+        for domain in &parts[1..] {
+            let d = domain.trim();
+            if !d.is_empty() {
+                out.push((d.to_ascii_lowercase(), ip.to_string()));
+            }
+        }
     }
     out
 }
 
-pub fn find_dns_dir(resource_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    dns_dir_candidates(resource_dir)
+/// Read the OS hosts file and return `(domain, ip)` pairs. Fail-soft: empty on any error.
+pub fn read_system_hosts_pairs() -> Vec<(String, String)> {
+    match std::fs::read_to_string(system_hosts_path()) {
+        Ok(text) => parse_hosts_text(&text),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Read the OS hosts file as [`HostsEntry`] list (for the UI command).
+pub fn read_system_hosts_entries() -> Vec<HostsEntry> {
+    read_system_hosts_pairs()
         .into_iter()
-        .find(|p| p.is_dir())
+        .enumerate()
+        .map(|(i, (domain, addr))| HostsEntry {
+            id: format!("sys-{i}"),
+            enabled: true,
+            domain,
+            addr,
+        })
+        .collect()
 }
 
 fn parse_dns_action(raw: &str) -> Option<DnsAction> {
     match raw.trim().to_ascii_uppercase().as_str() {
-        "SYSTEM" | "LOCAL" => Some(DnsAction::System),
+        "LOCAL" | "SYSTEM" => Some(DnsAction::Local),
         "DOMESTIC" | "CN" => Some(DnsAction::Domestic),
         "REMOTE" | "PROXY" => Some(DnsAction::Remote),
-        "BLOCK" | "REJECT" => Some(DnsAction::Block),
-        "FAKEIP" | "FAKE-IP" => Some(DnsAction::FakeIp),
         _ => None,
     }
 }
@@ -284,8 +711,8 @@ fn parse_dns_matcher(kind: &str) -> Option<DomainMatcher> {
 /// Parse one DNS whitelist list file.
 ///
 /// Lines:
-/// - `example.com` → domain_suffix + system
-/// - `DOMAIN-SUFFIX,example.com,SYSTEM`
+/// - `example.com` → domain_suffix + local
+/// - `DOMAIN-SUFFIX,example.com,LOCAL`
 /// - `DOMAIN,api.example.com,SYSTEM`
 /// - `DOMAIN-KEYWORD,corp,DOMESTIC`
 pub fn parse_dns_whitelist_text(text: &str, file_stem: &str) -> Vec<DnsRule> {
@@ -309,20 +736,20 @@ pub fn parse_dns_whitelist_text(text: &str, file_stem: &str) -> Vec<DnsRule> {
                 continue;
             }
             let action = if parts.len() >= 3 {
-                parse_dns_action(parts[2]).unwrap_or(DnsAction::System)
+                parse_dns_action(parts[2]).unwrap_or(DnsAction::Local)
             } else {
-                DnsAction::System
+                DnsAction::Local
             };
             (matcher, payload.to_string(), action)
         } else {
-            // bare domain → domain_suffix + system
+            // bare domain → domain_suffix + local
             if line.contains(char::is_whitespace) {
                 continue;
             }
             (
                 DomainMatcher::DomainSuffix,
                 line.to_string(),
-                DnsAction::System,
+                DnsAction::Local,
             )
         };
         idx += 1;
@@ -335,56 +762,6 @@ pub fn parse_dns_whitelist_text(text: &str, file_stem: &str) -> Vec<DnsRule> {
         });
     }
     out
-}
-
-/// Scan `resources/dns/*.list` (sorted) and load all bundled DNS rules.
-pub fn load_bundled_dns_whitelist(resource_dir: Option<&std::path::Path>) -> Vec<DnsRule> {
-    let Some(dir) = find_dns_dir(resource_dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| {
-                p.is_file()
-                    && p.extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|e| e.eq_ignore_ascii_case("list"))
-            })
-            .collect(),
-        Err(_) => return Vec::new(),
-    };
-    paths.sort();
-
-    let mut out = Vec::new();
-    for path in paths {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("dns")
-            .to_string();
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        out.extend(parse_dns_whitelist_text(&text, &stem));
-    }
-    out
-}
-
-/// Merge bundled DNS whitelist into settings (idempotent by matcher+payload+action).
-pub fn ensure_bundled_dns_whitelist(settings: &mut DnsSettings, resource_dir: Option<&std::path::Path>) {
-    for rule in load_bundled_dns_whitelist(resource_dir) {
-        let exists = settings.rules.iter().any(|r| {
-            r.payload.eq_ignore_ascii_case(&rule.payload)
-                && r.matcher == rule.matcher
-                && r.action == rule.action
-        });
-        if exists {
-            continue;
-        }
-        settings.rules.insert(0, rule);
-    }
 }
 
 #[cfg(test)]
@@ -404,156 +781,18 @@ DOMAIN-KEYWORD,corp,REMOTE
         assert_eq!(rules.len(), 4);
         assert!(matches!(rules[0].matcher, DomainMatcher::DomainSuffix));
         assert_eq!(rules[0].payload, "xiaojukeji.com");
-        assert!(matches!(rules[0].action, DnsAction::System));
+        assert!(matches!(rules[0].action, DnsAction::Local));
         assert!(matches!(rules[2].matcher, DomainMatcher::Domain));
         assert!(matches!(rules[2].action, DnsAction::Domestic));
         assert!(matches!(rules[3].action, DnsAction::Remote));
     }
 
     #[test]
-    fn scan_bundled_dns_dir() {
-        let rules = load_bundled_dns_whitelist(None);
-        assert!(
-            rules.iter().any(|r| r.payload == "xiaojukeji.com"),
-            "expected resources/dns/system-whitelist.list"
-        );
-        assert!(rules.iter().all(|r| matches!(r.action, DnsAction::System)));
-    }
-}
-
-
-
-/// Parsed form of a user-facing DNS address string.
-#[derive(Debug, Clone)]
-pub enum ParsedDnsAddress {
-    Local,
-    Udp { server: String, port: Option<u16> },
-    Tcp { server: String, port: Option<u16> },
-    Https { server: String, path: Option<String> },
-    Tls { server: String, port: Option<u16> },
-}
-
-/// Parse PRD-style address into sing-box 1.12+ fields.
-pub fn parse_dns_address(raw: &str) -> Option<ParsedDnsAddress> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let lower = s.to_ascii_lowercase();
-    if lower == "local" || lower == "system" {
-        return Some(ParsedDnsAddress::Local);
-    }
-    if let Some(rest) = lower.strip_prefix("udp://") {
-        return parse_host_port(rest).map(|(h, p)| ParsedDnsAddress::Udp {
-            server: h,
-            port: p,
-        });
-    }
-    if let Some(rest) = lower.strip_prefix("tcp://") {
-        return parse_host_port(rest).map(|(h, p)| ParsedDnsAddress::Tcp {
-            server: h,
-            port: p,
-        });
-    }
-    if let Some(rest) = lower.strip_prefix("tls://") {
-        return parse_host_port(rest).map(|(h, p)| ParsedDnsAddress::Tls {
-            server: h,
-            port: p,
-        });
-    }
-    if lower.starts_with("https://") {
-        // https://1.1.1.1/dns-query  or  https://dns.google/dns-query
-        let without = s.trim_start_matches("https://").trim_start_matches("HTTPS://");
-        let (host_port, path) = match without.split_once('/') {
-            Some((h, p)) => (h, Some(format!("/{p}"))),
-            None => (without, None),
-        };
-        let (host, _) = parse_host_port(host_port)?;
-        return Some(ParsedDnsAddress::Https {
-            server: host,
-            path,
-        });
-    }
-    // bare IP / host → UDP
-    parse_host_port(s).map(|(h, p)| ParsedDnsAddress::Udp {
-        server: h,
-        port: p,
-    })
-}
-
-fn parse_host_port(s: &str) -> Option<(String, Option<u16>)> {
-    let s = s.trim().trim_end_matches('/');
-    if s.is_empty() {
-        return None;
-    }
-    // [ipv6]:port
-    if let Some(rest) = s.strip_prefix('[') {
-        let (host, tail) = rest.split_once(']')?;
-        if tail.is_empty() {
-            return Some((host.to_string(), None));
-        }
-        let port = tail.strip_prefix(':')?.parse().ok();
-        return Some((host.to_string(), port));
-    }
-    // host:port (only if single colon and port is numeric — avoid mangling IPv6)
-    if let Some((h, p)) = s.rsplit_once(':') {
-        if !h.is_empty() && p.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(port) = p.parse::<u16>() {
-                // IPv4 or hostname
-                if h.parse::<std::net::Ipv4Addr>().is_ok() || h.contains('.') || h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                    return Some((h.to_string(), Some(port)));
-                }
-            }
-        }
-    }
-    Some((s.to_string(), None))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_local() {
-        assert!(matches!(
-            parse_dns_address("local"),
-            Some(ParsedDnsAddress::Local)
-        ));
-    }
-
-    #[test]
-    fn parse_udp_bare() {
-        let p = parse_dns_address("223.5.5.5").unwrap();
-        match p {
-            ParsedDnsAddress::Udp { server, port } => {
-                assert_eq!(server, "223.5.5.5");
-                assert!(port.is_none());
-            }
-            _ => panic!("expected udp"),
-        }
-    }
-
-    #[test]
-    fn parse_doh() {
-        let p = parse_dns_address("https://1.1.1.1/dns-query").unwrap();
-        match p {
-            ParsedDnsAddress::Https { server, path } => {
-                assert_eq!(server, "1.1.1.1");
-                assert_eq!(path.as_deref(), Some("/dns-query"));
-            }
-            _ => panic!("expected https"),
-        }
-    }
-
-    #[test]
-    fn parse_tls() {
-        let p = parse_dns_address("tls://1.1.1.1").unwrap();
-        match p {
-            ParsedDnsAddress::Tls { server, port } => {
-                assert_eq!(server, "1.1.1.1");
-                assert!(port.is_none());
-            }
-            _ => panic!("expected tls"),
-        }
+    fn default_rules_load_builtin_file() {
+        let rules = default_rules();
+        // The builtin file seeds local/lan/internal/corp/localhost at minimum.
+        assert!(rules.iter().any(|r| r.payload == "local"));
+        assert!(rules.iter().any(|r| r.payload == "localhost"));
+        assert!(rules.iter().all(|r| matches!(r.action, DnsAction::Local)));
     }
 }

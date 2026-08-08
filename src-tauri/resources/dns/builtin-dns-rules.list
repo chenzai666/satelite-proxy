@@ -1,0 +1,17 @@
+# name: 内置 DNS 规则
+# Built-in DNS rules (seeds for the DNS rule list).
+#
+# Format:
+#   bare line           -> domain_suffix + LOCAL
+#   MATCHER,payload,ACTION  (e.g. DOMAIN-SUFFIX,example.com,LOCAL)
+#
+# ACTION: LOCAL (local/system DNS) | DOMESTIC | REMOTE
+
+# Local / internal — resolve via local DNS
+local
+lan
+internal
+corp
+localhost
+*.local
+*.lan

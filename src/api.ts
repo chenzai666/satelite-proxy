@@ -18,6 +18,7 @@ import type {
   SubscriptionView,
   DnsSettings,
   DnsTestResult,
+  HostsEntry,
 } from "./types";
 
 export function listSubscriptions() {
@@ -302,6 +303,11 @@ export function testDnsLookup(domain: string) {
   return invoke<DnsTestResult>("test_dns_lookup", { domain });
 }
 
+/** Read the OS hosts file as a read-only entry list (for the Hosts UI). */
+export function readSystemHosts() {
+  return invoke<HostsEntry[]>("read_system_hosts");
+}
+
 export function listRuleSets() {
   return invoke<RuleSetSummary[]>("list_rule_sets");
 }
@@ -356,8 +362,6 @@ export function saveRule(input: {
   nodeId?: string | null;
   smartInclude?: string[] | null;
   smartExclude?: string[] | null;
-  /** inherit | system */
-  dnsPolicy?: string | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -371,7 +375,6 @@ export function saveRule(input: {
       node_id: input.nodeId ?? null,
       smart_include: input.smartInclude ?? null,
       smart_exclude: input.smartExclude ?? null,
-      dns_policy: input.dnsPolicy ?? null,
     },
   });
 }
