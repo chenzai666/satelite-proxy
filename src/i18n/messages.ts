@@ -147,6 +147,8 @@ const en = {
   "settings.hintApp": "Application · ports · probe · TUN stack",
   "settings.hintNetwork": "Ports · probe · TUN stack",
   "settings.hintCore": "sing-box binary",
+  "settings.networkOptions": "Network options",
+  "settings.saveRestartCore": "Save & restart core",
   "settings.language": "Language",
   "settings.languageDesc":
     "Page content language. Sidebar labels stay English.",
@@ -548,6 +550,8 @@ const zh: Record<MessageKey, string> = {
   "settings.hintApp": "应用设置 · 端口 · 测速 · TUN 协议栈",
   "settings.hintNetwork": "端口 · 测速 · TUN 协议栈",
   "settings.hintCore": "sing-box 二进制",
+  "settings.networkOptions": "端口与网络",
+  "settings.saveRestartCore": "保存并重启内核",
   "settings.language": "语言",
   "settings.languageDesc": "页面文案语言。侧边栏始终英文。",
   "settings.langZh": "中文",

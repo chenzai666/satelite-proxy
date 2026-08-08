@@ -115,9 +115,6 @@ export function SettingsPage() {
       if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
         throw new Error(t("settings.invalidApi"));
       }
-      const portsChanged =
-        settings != null &&
-        (settings.mixed_port !== mixedPort || settings.api_port !== apiPort);
       const s = await updateSettings({
         mixedPort,
         apiPort,
@@ -125,12 +122,10 @@ export function SettingsPage() {
         tunStack: tunStack.trim() || "mixed",
       });
       setSettings(s);
-      // Port binds at core start — restart running core so new ports take effect.
-      if (portsChanged) {
-        const status = await getProxyStatus().catch(() => null);
-        if (status?.running) {
-          await restartProxy();
-        }
+      // These options are consumed when sing-box starts; apply them together.
+      const status = await getProxyStatus().catch(() => null);
+      if (status?.running) {
+        await restartProxy();
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -215,11 +210,6 @@ export function SettingsPage() {
           <h1>{t("settings.title")}</h1>
           <p className="page-desc">{activeTab.hint}</p>
         </div>
-        {tab === "app" && (
-          <button type="button" disabled={busy} onClick={() => void onSaveNetwork()}>
-            {busy ? t("common.saving") : t("common.save")}
-          </button>
-        )}
       </header>
 
       <div
@@ -376,6 +366,19 @@ export function SettingsPage() {
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Network">
           <div className="card settings-form settings-form-grid">
+            <div className="settings-network-card-head field-span-2">
+              <div>
+                <strong>{t("settings.networkOptions")}</strong>
+                <div className="muted">{t("settings.networkSaveNote")}</div>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onSaveNetwork()}
+              >
+                {busy ? t("common.saving") : t("settings.saveRestartCore")}
+              </button>
+            </div>
             <label className="field">
               <span>{t("settings.mixedPort")}</span>
               <input
@@ -423,9 +426,6 @@ export function SettingsPage() {
               </span>
             </div>
           </div>
-          <p className="settings-panel-note muted">
-            {t("settings.networkSaveNote")}
-          </p>
         </section>
       )}
 

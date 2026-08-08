@@ -2362,6 +2362,29 @@ code {
   box-sizing: border-box;
 }
 
+.settings-network-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.settings-network-card-head strong {
+  font-size: 0.88rem;
+}
+
+.settings-network-card-head .muted {
+  margin-top: 0.18rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.settings-network-card-head button {
+  flex-shrink: 0;
+}
+
 @media (max-width: 700px) {
   .settings-app-network-page {
     grid-template-columns: 1fr;
