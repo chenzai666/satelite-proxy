@@ -387,9 +387,16 @@ export function SettingsPage() {
               <AppToggle
                 title={t("settings.closeOnSwitch")}
                 desc={t("settings.closeOnSwitchDesc")}
-                checked={!!settings?.close_connections_on_switch}
+                checked={settings?.close_connections_on_switch !== false}
                 disabled={busy}
                 onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
+              />
+              <AppToggle
+                title={t("settings.findProcess")}
+                desc={t("settings.findProcessDesc")}
+                checked={settings?.find_process !== false}
+                disabled={busy}
+                onChange={(v) => void patchApp({ findProcess: v })}
               />
             </div>
           </div>

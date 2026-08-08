@@ -137,6 +137,11 @@ pub struct AppSettings {
     /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
     pub auto_select: AutoSelectMode,
+    /// Resolve the originating process for each connection (sing-box
+    /// `find_process_mode`): on = always, off = off. Lets the traffic page
+    /// show a real process name. Off saves some CPU.
+    #[serde(default = "default_true")]
+    pub find_process: bool,
     /// Legacy bool (pre auto_select). Migrated on store load; not re-written.
     #[serde(default, skip_serializing)]
     pub smart_switch: bool,
@@ -193,6 +198,7 @@ impl Default for AppSettings {
             accent: default_accent(),
             unload_ui_on_tray: false,
             auto_select: AutoSelectMode::Off,
+            find_process: true,
             smart_switch: false,
         }
     }

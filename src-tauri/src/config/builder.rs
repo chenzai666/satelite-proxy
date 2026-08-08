@@ -31,6 +31,9 @@ pub struct BuildOptions {
     pub auto_select: AutoSelectMode,
     /// URL for kernel urltest (and shared probe default).
     pub probe_url: String,
+    /// Resolve the originating process per connection (sing-box
+    /// `find_process_mode`: on → always, off → off).
+    pub find_process: bool,
 }
 
 impl BuildOptions {
@@ -765,6 +768,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -821,6 +825,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -853,6 +858,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Kernel,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -890,6 +896,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -971,6 +978,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap_err();
@@ -996,6 +1004,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1022,6 +1031,7 @@ mod tests {
                     route_final: rf.into(),
                     auto_select: crate::domain::AutoSelectMode::Off,
                     probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
                 },
             )
             .unwrap();
@@ -1054,6 +1064,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1092,6 +1103,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1131,6 +1143,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1174,6 +1187,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();

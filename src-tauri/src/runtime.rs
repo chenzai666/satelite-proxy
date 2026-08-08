@@ -461,6 +461,7 @@ impl Runtime {
                 route_final: store.settings.route_final.clone(),
                 auto_select: store.settings.auto_select,
                 probe_url: store.settings.probe_url.clone(),
+                find_process: store.settings.find_process,
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;

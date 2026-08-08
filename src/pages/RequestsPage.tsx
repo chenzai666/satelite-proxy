@@ -108,7 +108,6 @@ export function RequestsPage({ embedded = false }: Props) {
                 <th>{t("req.time")}</th>
                 <th>{t("conn.dest")}</th>
                 <th>{t("conn.node")}</th>
-                <th>{t("conn.chain")}</th>
                 <th>{t("conn.rule")}</th>
                 <th>{t("conn.process")}</th>
                 <th>{t("req.type")}</th>
@@ -119,44 +118,55 @@ export function RequestsPage({ embedded = false }: Props) {
               {rows.map((r) => (
                 <tr key={`${r.id}-${r.last_seen ?? 0}`}>
                   <td className="conn-time">
-                    <div>{fmtTime(r.closed_at ?? r.last_seen)}</div>
-                    {r.first_seen &&
-                    r.first_seen !== (r.closed_at ?? r.last_seen) ? (
-                      <div className="muted conn-sub">
-                        {t("req.first", { t: fmtTime(r.first_seen) })}
-                      </div>
-                    ) : null}
-                    <div className="muted conn-sub">
-                      {r.closed ? t("req.closed") : t("req.live")}
+                    <div
+                      className="conn-cell"
+                      title={`${fmtTime(r.closed_at ?? r.last_seen)}${
+                        r.first_seen && r.first_seen !== (r.closed_at ?? r.last_seen)
+                          ? ` · ${t("req.first", { t: fmtTime(r.first_seen) })}`
+                          : ""
+                      }`}
+                    >
+                      {fmtTime(r.closed_at ?? r.last_seen)}
                     </div>
                   </td>
                   <td>
-                    <div className="conn-dest" title={r.destination}>
+                    <div
+                      className="conn-cell conn-dest"
+                      title={`${r.destination}${r.host || r.source ? ` · ${r.host || r.source}` : ""}`}
+                    >
                       {r.destination}
                     </div>
-                    <div className="muted conn-sub">{r.host || r.source}</div>
                   </td>
                   <td>
-                    <strong title={r.node_tag}>
+                    <div
+                      className="conn-cell conn-node"
+                      title={r.node_tag || r.node_name}
+                    >
                       {r.node_name || r.node_tag || "—"}
-                    </strong>
+                    </div>
                   </td>
-                  <td className="conn-chains" title={r.chains_display}>
-                    {r.chains_display || "—"}
-                  </td>
-                  <td className="conn-rule" title={r.rule}>
-                    {r.rule || "—"}
-                  </td>
-                  <td>{r.process || "—"}</td>
                   <td>
-                    <code>
-                      {r.network}
-                      {r.conn_type ? `/${r.conn_type}` : ""}
-                    </code>
+                    <div className="conn-cell conn-rule" title={r.rule}>
+                      {r.rule || "—"}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="conn-cell" title={r.process}>
+                      {r.process || "—"}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="conn-cell" title={`${r.network}${r.conn_type ? `/${r.conn_type}` : ""}`}>
+                      <code>
+                        {r.network}
+                        {r.conn_type ? `/${r.conn_type}` : ""}
+                      </code>
+                    </div>
                   </td>
                   <td className="conn-traffic">
-                    ↑{fmtBytes(r.upload)}
-                    <br />↓{fmtBytes(r.download)}
+                    <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                    </span>
                   </td>
                 </tr>
               ))}

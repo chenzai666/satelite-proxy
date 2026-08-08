@@ -177,6 +177,9 @@ const en = {
   "settings.closeOnSwitch": "Close connections on switch",
   "settings.closeOnSwitchDesc":
     "When changing node, drop existing connections so they rebuild via the new outbound",
+  "settings.findProcess": "Resolve process name",
+  "settings.findProcessDesc":
+    "Show the originating app for each connection in the traffic page. Disable to save CPU",
   "settings.toggleSaveNote": "Toggles save immediately.",
   "settings.mixedPort": "Mixed inbound port",
   "settings.apiPort": "Clash API port",
@@ -582,6 +585,8 @@ const zh: Record<MessageKey, string> = {
   "settings.closeOnSwitch": "切换节点后关闭连接",
   "settings.closeOnSwitchDesc":
     "更换当前节点时断开已有连接，按新节点重建",
+  "settings.findProcess": "解析进程名",
+  "settings.findProcessDesc": "在流量页显示每条连接的发起程序；关闭可节省 CPU 占用",
   "settings.toggleSaveNote": "开关即时保存。",
   "settings.mixedPort": "Mixed 入站端口",
   "settings.apiPort": "Clash API 端口",

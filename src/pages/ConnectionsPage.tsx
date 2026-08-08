@@ -105,7 +105,6 @@ export function ConnectionsPage({ embedded = false }: Props) {
               <tr>
                 <th>{t("conn.dest")}</th>
                 <th>{t("conn.node")}</th>
-                <th>{t("conn.chain")}</th>
                 <th>{t("conn.net")}</th>
                 <th>{t("conn.rule")}</th>
                 <th>{t("conn.process")}</th>
@@ -116,32 +115,40 @@ export function ConnectionsPage({ embedded = false }: Props) {
               {filtered.map((r) => (
                 <tr key={r.id}>
                   <td>
-                    <div className="conn-dest" title={r.destination}>
+                    <div
+                      className="conn-cell conn-dest"
+                      title={`${r.destination}${r.source ? ` · ${r.source}` : ""}`}
+                    >
                       {r.destination}
                     </div>
-                    <div className="muted conn-sub">
-                      {r.conn_type || r.network}
-                      {r.source ? ` · ${r.source}` : ""}
+                  </td>
+                  <td>
+                    <div
+                      className="conn-cell conn-node"
+                      title={r.node_tag || r.node_name}
+                    >
+                      {r.node_name || r.node_tag || "—"}
                     </div>
                   </td>
                   <td>
-                    <strong title={r.node_tag}>
-                      {r.node_name || r.node_tag || "—"}
-                    </strong>
-                  </td>
-                  <td className="conn-chains" title={r.chains_display}>
-                    {r.chains_display || "—"}
+                    <div className="conn-cell" title={r.network}>
+                      <code>{r.network || "—"}</code>
+                    </div>
                   </td>
                   <td>
-                    <code>{r.network || "—"}</code>
+                    <div className="conn-cell conn-rule" title={r.rule}>
+                      {r.rule || "—"}
+                    </div>
                   </td>
-                  <td className="conn-rule" title={r.rule}>
-                    {r.rule || "—"}
+                  <td>
+                    <div className="conn-cell" title={r.process}>
+                      {r.process || "—"}
+                    </div>
                   </td>
-                  <td>{r.process || "—"}</td>
                   <td className="conn-traffic">
-                    ↑{fmtBytes(r.upload)}
-                    <br />↓{fmtBytes(r.download)}
+                    <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                    </span>
                   </td>
                 </tr>
               ))}

@@ -208,6 +208,8 @@ export interface AppSettings {
   unload_ui_on_tray?: boolean;
   /** off | smart | kernel — node auto-select mode. */
   auto_select?: AutoSelectMode;
+  /** Resolve originating process per connection (sing-box find_process_mode). */
+  find_process?: boolean;
   /** @deprecated derived from auto_select === "smart" */
   smart_switch?: boolean;
 }

@@ -63,8 +63,8 @@
   --overlay: rgba(8, 10, 16, 0.72);
   --track: rgba(255, 255, 255, 0.12);
   --track-hover: rgba(255, 255, 255, 0.18);
-  --track-on: #55c89a;
-  --track-on-hover: #6ad4a9;
+  --track-on: #4a9eff;
+  --track-on-hover: #65adff;
   --knob: #f2f4f6;
   --switch-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   --nav-bg: rgba(20, 24, 32, 0.72);
@@ -123,8 +123,8 @@
   --overlay: rgba(20, 24, 28, 0.4);
   --track: rgba(0, 0, 0, 0.12);
   --track-hover: rgba(0, 0, 0, 0.18);
-  --track-on: #1f9a72;
-  --track-on-hover: #178a65;
+  --track-on: #2e86c8;
+  --track-on-hover: #2876b0;
   --knob: #ffffff;
   --switch-inset: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   --nav-bg: rgba(255, 255, 255, 0.78);
@@ -1092,9 +1092,11 @@ tr.row-active {
   font-size: 0.85rem;
 }
 
-/* Latency: green <200ms · yellow <300ms · red ≥300ms */
+/* Latency: green <200ms · yellow <300ms · red ≥300ms.
+   Fixed colors — intentionally NOT bound to --success so they stay
+   green/yellow/red regardless of the accent color picker. */
 .lat-good {
-  color: var(--success);
+  color: #3fb37f;
   font-family: var(--mono);
 }
 
@@ -1563,33 +1565,29 @@ button.switch.small.on .switch-thumb {
   font-size: 0.85rem;
 }
 
-.conn-dest {
-  font-weight: 600;
+/* One line per row: every cell truncates with an ellipsis and the full text
+   shows via the native title tooltip on hover. */
+.conn-table td {
+  vertical-align: middle;
+}
+
+.conn-cell {
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conn-sub {
-  font-size: 0.75rem;
-  margin-top: 2px;
+.conn-dest {
+  font-weight: 600;
 }
 
-.conn-chains {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-size: 0.8rem;
+.conn-node {
+  max-width: 160px;
 }
 
 .conn-rule {
   max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 0.8rem;
 }
 
