@@ -189,7 +189,11 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "rules": route_rules,
             "final": route_final,
             "auto_detect_interface": true,
-            "default_domain_resolver": built_dns.default_resolver
+            "default_domain_resolver": built_dns.default_resolver,
+            // Resolve the originating process for each connection so the
+            // Clash API connections list (and our traffic page) shows a real
+            // process name. 1.13 uses route.find_process (bool).
+            "find_process": opts.find_process
         },
         "experimental": {
             "clash_api": {
