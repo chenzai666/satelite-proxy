@@ -240,23 +240,86 @@ button {
 
 .topnav {
   --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.35rem;
   max-width: 100%;
   padding: 0.28rem 0.35rem 0.28rem 0.55rem;
   border-radius: var(--radius-pill);
-  background: var(--nav-bg);
-  border: 1px solid var(--border);
+  /* Glass body: vertical gradient gives top-to-bottom light variation so the
+     surface reads as lit glass rather than a flat fill. */
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--nav-bg) 88%, #ffffff 4%) 0%,
+      var(--nav-bg) 48%,
+      color-mix(in srgb, var(--nav-bg) 92%, #000000 4%) 100%
+    );
+  border: 1px solid rgba(255, 255, 255, 0.075);
   box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.3),
+    0 4px 14px rgba(0, 0, 0, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
-    0 12px 34px rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(24px) saturate(1.35);
-  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+    inset 0 -1px 0 rgba(255, 255, 255, 0.018);
+  backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+}
+
+/* Surface reflection: a strong white edge concentrated in the upper-left
+   (135°), fading toward the lower-right, layered over a soft top sheen.
+   This is what sells the "lit from upper-left" glass look. */
+.topnav::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.26) 0%,
+      rgba(255, 255, 255, 0.13) 5%,
+      rgba(255, 255, 255, 0.055) 13%,
+      rgba(255, 255, 255, 0.018) 23%,
+      rgba(255, 255, 255, 0) 39%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.065) 0%,
+      rgba(255, 255, 255, 0.018) 28%,
+      rgba(255, 255, 255, 0) 62%
+    );
+}
+
+/* Soft light source bleeding onto the glass from the upper-left. Kept inside
+   the capsule bounds (no negative offsets) so it never clips the tool group's
+   shadow or the wrapper padding. */
+.topnav::after {
+  content: "";
+  position: absolute;
+  width: 220px;
+  height: 96px;
+  top: -36px;
+  left: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.12) 28%,
+    rgba(255, 255, 255, 0.05) 48%,
+    rgba(255, 255, 255, 0) 73%
+  );
+  filter: blur(13px);
+  opacity: 0.9;
 }
 
 .topnav-brand {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -279,6 +342,8 @@ button {
 }
 
 .topnav-divider {
+  position: relative;
+  z-index: 1;
   width: 1px;
   height: 1rem;
   background: var(--border);
@@ -294,6 +359,7 @@ button {
   scrollbar-width: none;
   min-width: 0;
   position: relative;
+  z-index: 1;
 }
 
 .topnav-items::-webkit-scrollbar {
