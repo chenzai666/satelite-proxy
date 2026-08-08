@@ -334,6 +334,8 @@ export interface ConnectionView {
   conn_type: string;
   node_tag: string;
   node_name: string;
+  /** Owning subscription name (for tooltip). */
+  subscription_name?: string;
   chains: string[];
   chains_display: string;
   rule: string;

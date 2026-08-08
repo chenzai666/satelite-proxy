@@ -139,7 +139,11 @@ export function RequestsPage({ embedded = false }: Props) {
                   <td>
                     <div
                       className="conn-cell conn-node"
-                      title={r.node_tag || r.node_name}
+                      title={
+                        r.subscription_name
+                          ? `${r.subscription_name} · ${r.node_name}`
+                          : r.node_name
+                      }
                     >
                       {r.node_name || r.node_tag || "—"}
                     </div>

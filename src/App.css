@@ -1629,9 +1629,6 @@ button.switch.small.on .switch-thumb {
 
 .conn-table {
   font-size: 0.85rem;
-  /* Fixed layout: columns share the container width and never expand beyond
-     it, so the page never scrolls horizontally. Cells truncate via .conn-cell. */
-  table-layout: fixed;
   width: 100%;
 }
 
@@ -1647,20 +1644,17 @@ button.switch.small.on .switch-thumb {
   vertical-align: middle;
 }
 
-/* Fixed layout needs explicit column widths; cells still truncate. */
-.conn-table .conn-time { width: 150px; }
-.conn-table .conn-th-node,
-.conn-table .conn-node { width: 16%; }
-.conn-table .conn-th-rule,
-.conn-table .conn-rule { width: 14%; }
-.conn-table .conn-th-process { width: 14%; }
-.conn-table .conn-th-net { width: 72px; }
+/* Auto layout: columns size to content up to their max-width (set per cell),
+   so the table fills the page width without wasting space. Fixed-width columns
+   (time/net/traffic) stay tight; text columns expand to use the room. */
+.conn-table .conn-time { width: 150px; white-space: nowrap; }
+.conn-table .conn-th-net { width: 64px; white-space: nowrap; }
 .conn-table .conn-th-traffic,
-.conn-table .conn-traffic { width: 120px; }
+.conn-table .conn-traffic { width: 110px; white-space: nowrap; }
 
 .conn-cell {
   min-width: 0;
-  max-width: 100%;
+  max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1668,8 +1662,8 @@ button.switch.small.on .switch-thumb {
 
 .conn-dest {
   font-weight: 600;
-  /* destination absorbs the remaining width */
-  width: auto;
+  /* destination can grow widest — it holds the longest values (hosts) */
+  max-width: 380px;
 }
 
 .conn-node {
