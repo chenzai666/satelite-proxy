@@ -126,6 +126,7 @@ export function updateSettings(payload: {
   closeConnectionsOnSwitch?: boolean | null;
   locale?: string | null;
   theme?: string | null;
+  accent?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
   smartSwitch?: boolean | null;
@@ -133,6 +134,8 @@ export function updateSettings(payload: {
   autoSelect?: string | null;
   /** proxy | direct | block — route.final in Rule mode */
   routeFinal?: string | null;
+  /** Resolve originating process per connection (find_process_mode). */
+  findProcess?: boolean | null;
 }) {
   return invoke<AppSettings>("update_settings", {
     mixedPort: payload.mixedPort ?? null,
@@ -147,10 +150,12 @@ export function updateSettings(payload: {
     closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
     locale: payload.locale ?? null,
     theme: payload.theme ?? null,
+    accent: payload.accent ?? null,
     unloadUiOnTray: payload.unloadUiOnTray ?? null,
     smartSwitch: payload.smartSwitch ?? null,
     autoSelect: payload.autoSelect ?? null,
     routeFinal: payload.routeFinal ?? null,
+    findProcess: payload.findProcess ?? null,
   });
 }
 

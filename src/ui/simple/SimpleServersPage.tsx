@@ -16,6 +16,7 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../../components/AddConfigModal";
+import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
@@ -374,22 +375,18 @@ export function SimpleServersPage() {
                   onClick={() => void onSelectSub(s.id)}
                   aria-pressed={active}
                 >
-                  <div className="simple-sub-main">
-                    <div className="simple-sub-title-row">
-                      <span className="simple-radio" aria-hidden>
-                        {active ? "●" : "○"}
-                      </span>
-                      <strong>{s.name}</strong>
-                    </div>
-                    <span className="muted simple-sub-meta">
-                      {s.node_count} 节点
-                      {s.auto_update ? " · 自动更新" : ""}
-                      {active ? " · 使用中" : ""}
-                    </span>
-                  </div>
+                  <span className="simple-radio" aria-hidden>
+                    {active ? "●" : "○"}
+                  </span>
+                  <strong className="simple-sub-name">{s.name}</strong>
+                  <span className="muted simple-sub-meta">
+                    {s.node_count}节点
+                    {s.auto_update ? " · 自动" : ""}
+                    {active ? " · 使用中" : ""}
+                  </span>
                   <button
                     type="button"
-                    className="btn-pill secondary"
+                    className="btn-pill secondary simple-sub-refresh"
                     disabled={busy}
                     onClick={(e) => void onRefreshSub(s.id, e)}
                   >
@@ -410,28 +407,16 @@ export function SimpleServersPage() {
         </div>
         <div className="simple-sort-row">
           <span className="muted simple-sort-label">排序</span>
-          <div
-            className="segmented compact simple-seg-equal simple-sort-seg"
-            role="group"
-            aria-label="节点排序"
-          >
-            {(
-              [
-                ["latency", "延迟"],
-                ["name", "名称"],
-                ["default", "默认"],
-              ] as const
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                type="button"
-                className={`seg ${sortMode === k ? "active" : ""}`}
-                onClick={() => setSortMode(k)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <GlassSeg
+            value={sortMode}
+            ariaLabel="节点排序"
+            onChange={(v) => setSortMode(v as SortMode)}
+            options={[
+              { value: "latency", label: "延迟" },
+              { value: "name", label: "名称" },
+              { value: "default", label: "默认" },
+            ]}
+          />
         </div>
         {filtered.length === 0 ? (
           <div className="simple-card empty muted">
@@ -451,20 +436,18 @@ export function SimpleServersPage() {
                     disabled={busy}
                     onClick={() => void onSelectNode(n.id)}
                   >
-                    <div className="simple-node-item-top">
-                      <span className="simple-radio" aria-hidden>
-                        {active ? "●" : "○"}
-                      </span>
-                      <span className="pill target-proxy">
-                        {n.protocol.toUpperCase()}
-                      </span>
-                      <LatencyLabel
-                        ms={n.latency_ms}
-                        testedAt={n.latency_at}
-                        testing={testingIds.has(n.id)}
-                      />
-                    </div>
-                    <div className="simple-node-item-name">{n.name}</div>
+                    <span className="simple-radio" aria-hidden>
+                      {active ? "●" : "○"}
+                    </span>
+                    <span className="pill target-proxy">
+                      {n.protocol.toUpperCase()}
+                    </span>
+                    <span className="simple-node-item-name">{n.name}</span>
+                    <LatencyLabel
+                      ms={n.latency_ms}
+                      testedAt={n.latency_at}
+                      testing={testingIds.has(n.id)}
+                    />
                   </button>
                 </li>
               );

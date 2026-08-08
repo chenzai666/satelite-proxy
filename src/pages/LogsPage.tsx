@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearAppLogs, listAppLogs, type AppLogEntry, type AppLogLevel } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 
@@ -111,19 +112,15 @@ export function LogsPage() {
       </div>
 
       <div className="logs-toolbar">
-        <div className="segmented compact" role="group" aria-label={t("logs.level")}>
-          {LEVELS.map((lv) => (
-            <button
-              key={lv}
-              type="button"
-              className={`seg ${minLevel === lv ? "active" : ""}`}
-              onClick={() => setMinLevel(lv)}
-              title={`${t("logs.minLevel")}: ${lv}`}
-            >
-              {lv}
-            </button>
-          ))}
-        </div>
+        <GlassSeg
+          value={minLevel}
+          ariaLabel={t("logs.level")}
+          onChange={(v) => setMinLevel(v as AppLogLevel)}
+          titles={Object.fromEntries(
+            LEVELS.map((lv) => [lv, `${t("logs.minLevel")}: ${lv}`]),
+          )}
+          options={LEVELS.map((lv) => ({ value: lv, label: lv }))}
+        />
         <input
           className="search"
           placeholder={t("logs.filter")}

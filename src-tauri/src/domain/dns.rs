@@ -277,6 +277,9 @@ pub struct DnsSettings {
     /// Prefer remote/final over silent system leak (disables strategy fallbacks).
     #[serde(default = "default_true")]
     pub leak_protect: bool,
+    /// DNS final (兜底解析) for domains that match no rule: `local` | `domestic` | `remote`.
+    #[serde(default = "default_dns_final")]
+    pub dns_final: String,
 }
 
 impl Default for DnsSettings {
@@ -293,6 +296,7 @@ impl Default for DnsSettings {
             hijack: true,
             cache: true,
             leak_protect: true,
+            dns_final: default_dns_final(),
         }
     }
 }
@@ -450,6 +454,16 @@ impl DnsSettings {
         self.rules_enabled || self.mode == DnsMode::Rules
     }
 
+    /// Normalize `dns_final` to a known value: `local` | `domestic` | `remote`.
+    /// Unknown/empty falls back to `remote` (safest for uncovered foreign sites).
+    pub fn normalize_dns_final(&self) -> &str {
+        match self.dns_final.trim().to_ascii_lowercase().as_str() {
+            "local" => "local",
+            "domestic" | "cn" => "domestic",
+            _ => "remote",
+        }
+    }
+
     /// Built-in DNS rules loaded from `resources/dns/builtin-dns-rules.list`.
     /// Falls back to a hardcoded minimum if the file is missing.
     pub fn factory_rules_base() -> Vec<DnsRule> {
@@ -459,6 +473,10 @@ impl DnsSettings {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_dns_final() -> String {
+    "remote".into()
 }
 
 fn default_fakeip_v4() -> String {

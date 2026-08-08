@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { GlassSeg } from "./GlassSeg";
 import type { AddSourceKind } from "../types";
 
 export interface ConfigFormValues {
@@ -161,24 +162,16 @@ export function AddConfigModal({
 
           <div className="field">
             <span>来源</span>
-            <div className="segmented">
-              <button
-                type="button"
-                className={kind === "url" ? "seg active" : "seg"}
-                onClick={() => setKind("url")}
-                disabled={busy}
-              >
-                订阅 URL
-              </button>
-              <button
-                type="button"
-                className={kind === "file" ? "seg active" : "seg"}
-                onClick={() => setKind("file")}
-                disabled={busy}
-              >
-                本地文件
-              </button>
-            </div>
+            <GlassSeg
+              value={kind}
+              ariaLabel="来源"
+              disabled={busy}
+              onChange={(v) => setKind(v as ConfigFormValues["kind"])}
+              options={[
+                { value: "url", label: "订阅 URL" },
+                { value: "file", label: "本地文件" },
+              ]}
+            />
           </div>
 
           {kind === "url" ? (

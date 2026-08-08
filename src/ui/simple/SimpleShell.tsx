@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from "react";
+import { ThemeSwitch } from "../../components/ThemeSwitch";
 import { useImportIntent } from "../../ImportIntentContext";
 import { UiModeMenu } from "../UiModeMenu";
 import { SimpleConnectPage } from "./SimpleConnectPage";
@@ -18,10 +19,10 @@ const SimpleSettingsPage = lazy(() =>
 );
 
 const TABS: { key: SimpleNavKey; label: string }[] = [
-  { key: "connect", label: "连接" },
-  { key: "servers", label: "节点" },
-  { key: "traffic", label: "流量" },
-  { key: "settings", label: "设置" },
+  { key: "connect", label: "Connect" },
+  { key: "servers", label: "Nodes" },
+  { key: "traffic", label: "Traffic" },
+  { key: "settings", label: "Settings" },
 ];
 
 function SimplePageFallback() {
@@ -51,11 +52,6 @@ export function SimpleShell() {
           role="navigation"
           aria-label="Simple"
         >
-          <div className="topnav-brand simple-brand" title="Satelite">
-            <span className="topnav-mark" aria-hidden>
-              ◇
-            </span>
-          </div>
           <nav className="topnav-items simple-topnav-items">
             {TABS.map((item) => (
               <button
@@ -68,7 +64,10 @@ export function SimpleShell() {
               </button>
             ))}
           </nav>
-          <UiModeMenu />
+          <div className="topnav-tools simple-topnav-tools">
+            <ThemeSwitch />
+            <UiModeMenu />
+          </div>
         </div>
       </header>
       <main className="main simple-main">

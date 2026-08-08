@@ -234,64 +234,54 @@ export function SimpleConnectPage({ onGoServers }: Props) {
 
       <button
         type="button"
-        className="simple-card simple-node-card"
+        className="simple-glass-bar"
         onClick={() => onGoServers?.()}
       >
-        <div className="simple-node-top">
-          <span className="pill target-proxy">
-            {!nodeReady ? (
-              <span className="skel skel-inline skel-w-20" aria-hidden />
-            ) : (
-              (node?.protocol?.toUpperCase() ?? "—")
-            )}
-          </span>
-        </div>
-        <div className="simple-node-name">
+        <span className="simple-info-protocol">
+          {!nodeReady ? (
+            <span className="skel skel-inline skel-w-20" aria-hidden />
+          ) : (
+            (node?.protocol?.toUpperCase() ?? "—")
+          )}
+        </span>
+        <span className="simple-info-name">
           {!nodeReady ? (
             <span className="skel skel-inline skel-w-50" aria-hidden />
           ) : (
-            (node?.name ?? "未选择节点 · 点此管理")
+            (node?.name ?? "未选择节点")
           )}
-        </div>
+        </span>
         {running && node && (
-          <div className="simple-node-latency-row">
-            <span className="muted">节点延迟</span>
+          <span className="simple-info-latency">
             {testing ? (
               <span className="lat lat-none mono">测速中…</span>
             ) : (
               <LatencyLabel ms={node.latency_ms} testedAt={node.latency_at} />
             )}
-          </div>
+          </span>
         )}
-        <div className="simple-card-hint muted">点击切换节点 / 订阅</div>
       </button>
 
-      <div className="simple-card simple-kv-card">
-        <div className="simple-kv-row">
-          <span className="muted">本地代理</span>
-          <span className="mono">
-            {running ? `127.0.0.1:${port}` : "未运行"}
-          </span>
-        </div>
-        <div className="simple-kv-row">
-          <span className="muted">运行时长</span>
-          <span className="mono">{uptimeLabel}</span>
-        </div>
+      <div className="simple-glass-bar">
+        <span className="muted mono">
+          {running ? `Proxy on 127.0.0.1:${port}` : "未运行"}
+        </span>
+        <span className="muted mono">{uptimeLabel}</span>
       </div>
 
-      <div className="simple-card simple-traffic-card">
-        <div className="simple-traffic-cell">
-          <span className="muted">上传</span>
+      <div className="simple-glass-bar simple-info-traffic">
+        <span className="simple-info-traffic-cell">
+          <span className="muted">↑</span>
           <strong className="mono">{fmtSpeed(up)}</strong>
-        </div>
-        <div className="simple-traffic-cell">
-          <span className="muted">下载</span>
+        </span>
+        <span className="simple-info-traffic-cell">
+          <span className="muted">↓</span>
           <strong className="mono">{fmtSpeed(down)}</strong>
-        </div>
-        <div className="simple-traffic-cell">
-          <span className="muted">累计</span>
+        </span>
+        <span className="simple-info-traffic-cell">
+          <span className="muted">总计</span>
           <strong className="mono">{fmtBytes(total)}</strong>
-        </div>
+        </span>
       </div>
     </div>
   );

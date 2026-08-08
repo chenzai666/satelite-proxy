@@ -10,6 +10,16 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/** Format a Clash-API ISO start time (e.g. 2024-01-01T00:00:00Z) to local. */
+function fmtIso(iso: string) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
 interface Props {
   /** When true, omit page chrome (used under Traffic tabs). */
   embedded?: boolean;
@@ -103,45 +113,56 @@ export function ConnectionsPage({ embedded = false }: Props) {
           <table className="conn-table">
             <thead>
               <tr>
+                <th className="conn-th-time">{t("conn.time")}</th>
                 <th>{t("conn.dest")}</th>
-                <th>{t("conn.node")}</th>
-                <th>{t("conn.chain")}</th>
-                <th>{t("conn.net")}</th>
-                <th>{t("conn.rule")}</th>
-                <th>{t("conn.process")}</th>
-                <th>{t("conn.traffic")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id}>
+                  <td className="conn-time">
+                    <div className="conn-cell" title={fmtIso(r.start)}>
+                      {fmtIso(r.start)}
+                    </div>
+                  </td>
                   <td>
-                    <div className="conn-dest" title={r.destination}>
+                    <div
+                      className="conn-cell conn-dest"
+                      title={`${r.destination}${r.source ? ` · ${r.source}` : ""}`}
+                    >
                       {r.destination}
                     </div>
-                    <div className="muted conn-sub">
-                      {r.conn_type || r.network}
-                      {r.source ? ` · ${r.source}` : ""}
+                  </td>
+                  <td>
+                    <div
+                      className="conn-cell conn-node"
+                      title={
+                        r.subscription_name
+                          ? `${r.subscription_name} · ${r.node_name}`
+                          : r.node_name
+                      }
+                    >
+                      {r.node_name || r.node_tag || "—"}
                     </div>
                   </td>
                   <td>
-                    <strong title={r.node_tag}>
-                      {r.node_name || r.node_tag || "—"}
-                    </strong>
-                  </td>
-                  <td className="conn-chains" title={r.chains_display}>
-                    {r.chains_display || "—"}
+                    <div className="conn-cell conn-rule" title={r.rule}>
+                      {r.rule || "—"}
+                    </div>
                   </td>
                   <td>
-                    <code>{r.network || "—"}</code>
+                    <div className="conn-cell" title={r.process}>
+                      {r.process || "—"}
+                    </div>
                   </td>
-                  <td className="conn-rule" title={r.rule}>
-                    {r.rule || "—"}
-                  </td>
-                  <td>{r.process || "—"}</td>
                   <td className="conn-traffic">
-                    ↑{fmtBytes(r.upload)}
-                    <br />↓{fmtBytes(r.download)}
+                    <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                    </span>
                   </td>
                 </tr>
               ))}

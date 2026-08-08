@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import { getCoreInfo, getProxyStatus } from "../api";
+import { getProxyStatus } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
-import { useTheme } from "../theme";
 import type { NavKey } from "../types";
+import { ThemeSwitch } from "./ThemeSwitch";
 import { UiModeMenu } from "../ui/UiModeMenu";
 
 type NavItem = { key: NavKey; label: string };
@@ -24,8 +24,6 @@ interface Props {
 }
 
 export function TopNav({ active, onChange }: Props) {
-  const { theme, setTheme } = useTheme();
-  const [coreVersion, setCoreVersion] = useState("—");
   const [running, setRunning] = useState(false);
   const [coreState, setCoreState] = useState("stopped");
 
@@ -46,17 +44,7 @@ export function TopNav({ active, onChange }: Props) {
 
   const tick = useCallback(async () => {
     try {
-      const [core, status] = await Promise.all([
-        getCoreInfo().catch(() => null),
-        getProxyStatus().catch(() => null),
-      ]);
-      if (core?.installed && core.version) {
-        setCoreVersion(core.version.replace(/^v/, ""));
-      } else if (core?.bundled_version) {
-        setCoreVersion(String(core.bundled_version).replace(/^v/, ""));
-      } else {
-        setCoreVersion(core?.installed ? "ok" : "—");
-      }
+      const status = await getProxyStatus().catch(() => null);
       setRunning(status?.running ?? false);
       setCoreState(status?.core_state ?? "stopped");
     } catch {
@@ -120,36 +108,10 @@ export function TopNav({ active, onChange }: Props) {
           ))}
         </nav>
         <div className="topnav-tools">
-          <div
-            className="topnav-theme-switch"
-            role="group"
-            aria-label="外观"
-          >
-            <button
-              type="button"
-              className={`topnav-theme-btn ${theme === "day" ? "active" : ""}`}
-              aria-label="亮色模式"
-              aria-pressed={theme === "day"}
-              title="Day"
-              onClick={() => void setTheme("day")}
-            >
-              ☼
-            </button>
-            <button
-              type="button"
-              className={`topnav-theme-btn ${theme === "aerospace" ? "active" : ""}`}
-              aria-label="暗色模式"
-              aria-pressed={theme === "aerospace"}
-              title="Mission"
-              onClick={() => void setTheme("aerospace")}
-            >
-              ◐
-            </button>
-          </div>
-          <div className="topnav-status" title={`sing-box v${coreVersion}`}>
+          <ThemeSwitch />
+          <div className="topnav-status" title={stateLabel}>
             <span className={`status-dot ${dotClass}`} />
             <span className="topnav-status-text">{stateLabel}</span>
-            <span className="topnav-status-ver">v{coreVersion}</span>
           </div>
           <UiModeMenu />
         </div>

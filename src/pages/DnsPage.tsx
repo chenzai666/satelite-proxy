@@ -12,10 +12,12 @@ import {
   testDnsLookup,
   updateDnsSettings,
 } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
   DnsAction,
+  DnsFinalStrategy,
   DnsMode,
   DnsRule,
   DnsRuleSet,
@@ -523,10 +525,6 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
   const mode = dns.mode;
   const viewSet =
     dns.rule_sets.find((set) => set.id === viewSetId) ?? dns.rule_sets[0] ?? null;
-  const modeIndex = Math.max(
-    0,
-    (["local", "smart_local", "smart_cn"] as const).indexOf(mode),
-  );
   const wrapClass = embedded ? "settings-embed dns-page" : "page dns-page";
 
   return (
@@ -570,39 +568,36 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
               <div className="dns-mode-block">
                 <div className="dns-mode-label">解析模式</div>
-                <div
-                  className="segmented compact mode-seg dns-seg dns-seg-3"
-                  role="group"
-                  aria-label="解析模式"
-                >
-                  {/* Sliding indicator: width = 1/3 of the track, translateX follows active index. */}
-                  <span
-                    className="seg-indicator"
-                    aria-hidden="true"
-                    style={{
-                      transform: `translateX(${modeIndex * 100}%)`,
-                    }}
-                  />
-                  {(
-                    [
-                      ["local", "本地"],
-                      ["smart_local", "优先本地"],
-                      ["smart_cn", "优先国内"],
-                    ] as const
-                  ).map(([k, label]) => (
-                    <button
-                      key={k}
-                      type="button"
-                      className={`seg ${mode === k ? "active" : ""}`}
-                      disabled={busy}
-                      onClick={() => setMode(k)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                <GlassSeg
+                  value={mode}
+                  ariaLabel="解析模式"
+                  disabled={busy}
+                  onChange={(v) => setMode(v as DnsMode)}
+                  options={[
+                    { value: "local", label: "本地" },
+                    { value: "smart_local", label: "优先本地" },
+                    { value: "smart_cn", label: "优先国内" },
+                  ]}
+                />
                 <p className="dns-mode-hint">{MODE_HINTS[mode]}</p>
               </div>
+
+              <SettingRow
+                title="兜底 DNS"
+                desc="未命中规则的网站走兜底 DNS 解析，国外网站优先选择远程"
+              >
+                <GlassSeg
+                  value={dns.dns_final}
+                  ariaLabel="兜底 DNS"
+                  disabled={busy}
+                  onChange={(v) => patch({ dns_final: v as DnsFinalStrategy })}
+                  options={[
+                    { value: "local", label: "本地" },
+                    { value: "domestic", label: "国内" },
+                    { value: "remote", label: "远程" },
+                  ]}
+                />
+              </SettingRow>
             </div>
 
             <div className="dns-general-toggles">

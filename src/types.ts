@@ -7,6 +7,7 @@ export type NavKey =
   | "settings";
 
 export type DnsMode = "local" | "smart_local" | "smart_cn";
+export type DnsFinalStrategy = "local" | "domestic" | "remote";
 export type DomainMatcher = "domain" | "domain_suffix" | "domain_keyword";
 
 export type DnsAction =
@@ -67,6 +68,8 @@ export interface DnsSettings {
   hijack: boolean;
   cache: boolean;
   leak_protect: boolean;
+  /** DNS final (兜底解析): local | domestic | remote */
+  dns_final: DnsFinalStrategy;
 }
 
 export interface DnsTestResult {
@@ -199,10 +202,14 @@ export interface AppSettings {
   locale?: string;
   /** UI theme: aerospace | day */
   theme?: string;
+  /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
+  accent?: string;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
   unload_ui_on_tray?: boolean;
   /** off | smart | kernel — node auto-select mode. */
   auto_select?: AutoSelectMode;
+  /** Resolve originating process per connection (sing-box find_process_mode). */
+  find_process?: boolean;
   /** @deprecated derived from auto_select === "smart" */
   smart_switch?: boolean;
 }
@@ -327,6 +334,8 @@ export interface ConnectionView {
   conn_type: string;
   node_tag: string;
   node_name: string;
+  /** Owning subscription name (for tooltip). */
+  subscription_name?: string;
   chains: string[];
   chains_display: string;
   rule: string;

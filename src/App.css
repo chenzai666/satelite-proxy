@@ -24,10 +24,6 @@
   --bg-deep: #0c0e14;
   --surface: rgba(255, 255, 255, 0.035);
   --surface-2: rgba(255, 255, 255, 0.055);
-  --sidebar: transparent;
-  --sidebar-border: rgba(255, 255, 255, 0.08);
-  --sidebar-text: rgba(255, 255, 255, 0.55);
-  --sidebar-active: rgba(255, 255, 255, 0.1);
   --text: rgba(255, 255, 255, 0.92);
   --muted: rgba(255, 255, 255, 0.55);
   --faint: rgba(255, 255, 255, 0.32);
@@ -67,8 +63,8 @@
   --overlay: rgba(8, 10, 16, 0.72);
   --track: rgba(255, 255, 255, 0.12);
   --track-hover: rgba(255, 255, 255, 0.18);
-  --track-on: #55c89a;
-  --track-on-hover: #6ad4a9;
+  --track-on: #4a9eff;
+  --track-on-hover: #65adff;
   --knob: #f2f4f6;
   --switch-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
   --nav-bg: rgba(20, 24, 32, 0.72);
@@ -88,10 +84,6 @@
   --bg-deep: #e4e7ed;
   --surface: rgba(255, 255, 255, 0.78);
   --surface-2: rgba(255, 255, 255, 0.92);
-  --sidebar: transparent;
-  --sidebar-border: rgba(0, 0, 0, 0.08);
-  --sidebar-text: rgba(0, 0, 0, 0.55);
-  --sidebar-active: rgba(0, 0, 0, 0.06);
   --text: rgba(18, 22, 28, 0.92);
   --muted: rgba(18, 22, 28, 0.55);
   --faint: rgba(18, 22, 28, 0.35);
@@ -131,8 +123,8 @@
   --overlay: rgba(20, 24, 28, 0.4);
   --track: rgba(0, 0, 0, 0.12);
   --track-hover: rgba(0, 0, 0, 0.18);
-  --track-on: #1f9a72;
-  --track-on-hover: #178a65;
+  --track-on: #2e86c8;
+  --track-on-hover: #2876b0;
   --knob: #ffffff;
   --switch-inset: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   --nav-bg: rgba(255, 255, 255, 0.78);
@@ -248,23 +240,86 @@ button {
 
 .topnav {
   --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.35rem;
   max-width: 100%;
-  padding: 0.28rem 0.35rem 0.28rem 0.55rem;
+  padding: 0.06rem 0.3rem 0.06rem 0.5rem;
   border-radius: var(--radius-pill);
-  background: var(--nav-bg);
-  border: 1px solid var(--border);
+  /* Glass body: vertical gradient gives top-to-bottom light variation so the
+     surface reads as lit glass rather than a flat fill. */
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--nav-bg) 88%, #ffffff 4%) 0%,
+      var(--nav-bg) 48%,
+      color-mix(in srgb, var(--nav-bg) 92%, #000000 4%) 100%
+    );
+  border: 1px solid rgba(255, 255, 255, 0.075);
   box-shadow:
+    0 18px 52px rgba(0, 0, 0, 0.3),
+    0 4px 14px rgba(0, 0, 0, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
-    0 12px 34px rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(24px) saturate(1.35);
-  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+    inset 0 -1px 0 rgba(255, 255, 255, 0.018);
+  backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+}
+
+/* Surface reflection: a strong white edge concentrated in the upper-left
+   (135°), fading toward the lower-right, layered over a soft top sheen.
+   This is what sells the "lit from upper-left" glass look. */
+.topnav::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.26) 0%,
+      rgba(255, 255, 255, 0.13) 5%,
+      rgba(255, 255, 255, 0.055) 13%,
+      rgba(255, 255, 255, 0.018) 23%,
+      rgba(255, 255, 255, 0) 39%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.065) 0%,
+      rgba(255, 255, 255, 0.018) 28%,
+      rgba(255, 255, 255, 0) 62%
+    );
+}
+
+/* Soft light source bleeding onto the glass from the upper-left. Kept inside
+   the capsule bounds (no negative offsets) so it never clips the tool group's
+   shadow or the wrapper padding. */
+.topnav::after {
+  content: "";
+  position: absolute;
+  width: 220px;
+  height: 96px;
+  top: -36px;
+  left: 8px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(255, 255, 255, 0.22) 0%,
+    rgba(255, 255, 255, 0.12) 28%,
+    rgba(255, 255, 255, 0.05) 48%,
+    rgba(255, 255, 255, 0) 73%
+  );
+  filter: blur(13px);
+  opacity: 0.9;
 }
 
 .topnav-brand {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -287,6 +342,8 @@ button {
 }
 
 .topnav-divider {
+  position: relative;
+  z-index: 1;
   width: 1px;
   height: 1rem;
   background: var(--border);
@@ -302,27 +359,55 @@ button {
   scrollbar-width: none;
   min-width: 0;
   position: relative;
+  z-index: 1;
 }
 
 .topnav-items::-webkit-scrollbar {
   display: none;
 }
 
-/* Sliding highlight that travels between nav items. Positioned via inline
-   transform/width from TopNav's layout effect. */
+/* Sliding glass capsule that travels between nav items. Positioned via inline
+   transform/width from TopNav's layout effect. It carries the glass-pill look
+   (top-lit, bottom-shaded) so the highlight slides smoothly on tab switch. */
 .topnav-indicator {
   position: absolute;
-  top: auto;
-  bottom: 0.08rem;
+  top: 0;
+  bottom: 0;
   left: 0;
-  height: 2px;
+  width: 0;
   border-radius: var(--radius-pill);
-  background: var(--primary);
-  box-shadow: 0 0 10px var(--primary-glow);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.045),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 2px 5px rgba(0, 0, 0, 0.13);
   pointer-events: none;
   z-index: 0;
-  transition: transform 0.28s cubic-bezier(0.4, 0.0, 0.2, 1),
-    width 0.28s cubic-bezier(0.4, 0.0, 0.2, 1), opacity 0.18s ease;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+}
+
+/* Localized upper-left light pooling on the sliding capsule. */
+.topnav-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0) 70%
+  );
+  pointer-events: none;
 }
 
 .topnav-item {
@@ -334,7 +419,7 @@ button {
   font-weight: 600 !important;
   letter-spacing: 0.04em;
   text-transform: none !important;
-  padding: 0.38rem 0.7rem !important;
+  padding: 0.5rem 0.75rem !important;
   border-radius: var(--radius-pill) !important;
   white-space: nowrap;
   transition: color 0.18s ease;
@@ -348,11 +433,12 @@ button {
   background: var(--hover-wash) !important;
 }
 
-/* The indicator paints the active background now; the button itself stays
-   transparent so the pill slides out cleanly. */
+/* The active tab is transparent — the sliding .topnav-indicator capsule paints
+   the highlight, so switching tabs animates the pill across instead of popping. */
 .topnav-item.active {
-  background: transparent !important;
   color: var(--text) !important;
+  background: transparent !important;
+  border: none !important;
   box-shadow: none !important;
 }
 
@@ -380,35 +466,6 @@ button {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
     0 5px 16px rgba(0, 0, 0, 0.12);
-}
-
-/* Two asymmetrical lobes form the soft liquid bridge seen in the reference.
-   They remain decorative and never intercept tab clicks. */
-.topnav-tools::before,
-.topnav-tools::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  pointer-events: none;
-  background: var(--topnav-liquid);
-}
-
-.topnav-tools::before {
-  left: -1.05rem;
-  top: 0.1rem;
-  width: 1.8rem;
-  height: 1.35rem;
-  border-radius: 62% 38% 48% 52% / 42% 58% 42% 58%;
-  transform: rotate(14deg);
-}
-
-.topnav-tools::after {
-  left: -0.55rem;
-  bottom: 0.08rem;
-  width: 1.25rem;
-  height: 1.05rem;
-  border-radius: 40% 60% 55% 45% / 58% 45% 55% 42%;
-  transform: rotate(-12deg);
 }
 
 .topnav-theme-switch {
@@ -478,10 +535,6 @@ button {
   font-weight: 600;
   color: var(--text);
   min-width: 1.6rem;
-}
-
-.topnav-status-ver {
-  opacity: 0.65;
 }
 
 .main {
@@ -897,6 +950,14 @@ tr.row-active {
   border-left: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
+/* Accent picker: spans full width so the swatch row sits centered below the
+   language/theme pickers (which occupy row 1's two columns). */
+.settings-app-pref.settings-accent-row {
+  grid-column: 1 / -1;
+  border-left: none !important;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
 .settings-app-toggles {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -955,6 +1016,57 @@ tr.row-active {
 .settings-app-text {
   min-width: 0;
   flex: 1;
+}
+
+/* Accent color swatch picker (round dots; background set inline per preset). */
+.settings-accent-swatches {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-accent-dot {
+  appearance: none !important;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 !important;
+  border: 2px solid transparent !important;
+  border-radius: 50% !important;
+  font-size: 0.72rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  color: #fff;
+  display: inline-grid;
+  place-items: center;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15) !important;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.settings-accent-dot:hover:not(:disabled) {
+  transform: scale(1.1);
+}
+
+.settings-accent-dot.active {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.15),
+    0 0 0 2px var(--bg),
+    0 0 0 4px currentColor !important;
+}
+
+/* Check mark stays high-contrast white regardless of the dot's accent color
+   (currentColor drives only the selection ring). */
+.settings-accent-check {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.settings-accent-dot:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .settings-app-title {
@@ -1074,9 +1186,11 @@ tr.row-active {
   font-size: 0.85rem;
 }
 
-/* Latency: green <200ms · yellow <300ms · red ≥300ms */
+/* Latency: green <200ms · yellow <300ms · red ≥300ms.
+   Fixed colors — intentionally NOT bound to --success so they stay
+   green/yellow/red regardless of the accent color picker. */
 .lat-good {
-  color: var(--success);
+  color: #3fb37f;
   font-family: var(--mono);
 }
 
@@ -1152,13 +1266,13 @@ button.node-card,
   border-radius: var(--radius);
   background: var(--surface) !important;
   color: var(--text) !important;
-  padding: 0.75rem 0.8rem 0.7rem;
+  padding: 0.55rem 0.7rem 0.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.25rem;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
   font-weight: 400;
   font-size: inherit;
   box-shadow: none;
@@ -1176,7 +1290,7 @@ button.node-card.active,
 .node-card.active {
   border-color: var(--primary-border-strong);
   box-shadow: inset 0 0 0 1px var(--primary-border);
-  background: var(--primary-muted) !important;
+  background: var(--surface) !important;
   color: var(--text) !important;
 }
 
@@ -1200,7 +1314,7 @@ button.node-card:disabled,
 .node-card-latency {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 0.76rem; /* ~80% of previous 0.95rem */
+  font-size: 0.608rem; /* 80% of 0.76rem */
   line-height: 1;
   white-space: nowrap;
 }
@@ -1222,16 +1336,17 @@ button.node-card:disabled,
 .node-list-latency .lat-timeout,
 .node-list-latency .lat-none {
   font-weight: 600;
+  font-size: 0.68rem; /* 80% of 0.85rem */
 }
 
 .node-card-name {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-  min-height: 1.4em;
+  min-height: 1.3em;
 }
 
 /* Subscription origin under node name */
@@ -1260,9 +1375,15 @@ button.node-card:disabled,
 .node-card-footer {
   margin-top: auto;
   display: flex;
-  align-items: flex-end;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   min-height: 1.1rem;
+}
+
+.node-card-footer .node-sub-label {
+  flex: 1;
+  min-width: 0;
 }
 
 .node-card-badge {
@@ -1314,99 +1435,6 @@ button.node-card:disabled,
   box-shadow: none;
 }
 
-.proxy-control {
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.75rem;
-}
-
-.runtime-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
-  flex-wrap: wrap;
-  min-height: 0;
-  max-height: none;
-  padding: 0.95rem 1.05rem;
-  margin-bottom: 0.75rem;
-  border-left: 3px solid var(--primary);
-  box-shadow: 0 0 24px var(--sidebar-active);
-}
-
-.dashboard-setup {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem 1rem;
-  margin: -0.25rem 0 0.85rem;
-  padding: 0.75rem 1rem;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.dashboard-setup-hint {
-  margin: 0;
-  flex: 1;
-  min-width: 12rem;
-  font-size: 0.75rem;
-  font-family: var(--mono);
-}
-
-.runtime-header-main {
-  min-width: 0;
-}
-
-.runtime-state-row {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-}
-
-.runtime-state-text {
-  font-size: 0.88rem;
-  font-weight: 500;
-  letter-spacing: 1.6px;
-  font-family: var(--mono);
-  text-transform: uppercase;
-}
-
-.runtime-meta {
-  margin-top: 0.5rem;
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  color: var(--muted);
-  line-height: 1.6;
-  letter-spacing: 0.02em;
-}
-
-.runtime-meta strong {
-  color: var(--text);
-  font-weight: 500;
-}
-
-.proxy-control-main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.proxy-state-row {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  margin-top: 0.25rem;
-}
-
-.proxy-state-text {
-  font-size: 0.95rem;
-  text-transform: uppercase;
-  letter-spacing: 1.4px;
-  font-family: var(--mono);
-}
-
 .status-dot {
   width: 7px;
   height: 7px;
@@ -1436,12 +1464,6 @@ button.node-card:disabled,
   }
 }
 
-.proxy-actions {
-  display: flex;
-  gap: 0.45rem;
-  flex-shrink: 0;
-}
-
 .sys-proxy-row,
 .via-proxy-row {
   display: flex;
@@ -1456,10 +1478,6 @@ button.node-card:disabled,
 .via-proxy-row {
   margin-top: 0.5rem;
   padding-top: 0.75rem;
-}
-
-.sys-proxy-text {
-  min-width: 0;
 }
 
 .sys-proxy-title {
@@ -1639,35 +1657,54 @@ button.switch.small.on .switch-thumb {
 
 .conn-table {
   font-size: 0.85rem;
+  /* Fixed layout + per-column widths sized to fit the page (no horizontal
+     scroll). Both live and closed tabs share the same 6 columns, so widths
+     stay consistent across them. */
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* Never scroll the connections table horizontally — cells truncate instead. */
+.conn-table,
+.table-wrap:has(.conn-table) {
+  overflow-x: hidden;
+}
+
+/* One line per row: every cell truncates with an ellipsis and the full text
+   shows via the native title tooltip on hover. */
+.conn-table td {
+  vertical-align: middle;
+}
+
+/* Fixed column widths (≈ page width, no overflow). destination absorbs the
+   leftover since it has no explicit width. */
+.conn-table .conn-th-time,
+.conn-table .conn-time { width: 150px; white-space: nowrap; }
+.conn-table .conn-th-node,
+.conn-table .conn-node { width: 150px; }
+.conn-table .conn-th-rule,
+.conn-table .conn-rule { width: 110px; }
+.conn-table .conn-th-process { width: 110px; }
+.conn-table .conn-th-traffic,
+.conn-table .conn-traffic { width: 100px; white-space: nowrap; }
+
+.conn-cell {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conn-dest {
   font-weight: 600;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.conn-sub {
-  font-size: 0.75rem;
-  margin-top: 2px;
-}
-
-.conn-chains {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
+.conn-node {
   font-size: 0.8rem;
 }
 
 .conn-rule {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: 0.8rem;
 }
 
@@ -2037,7 +2074,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2050,7 +2087,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -2123,7 +2160,7 @@ button.small {
 .sub-card.enabled {
   border-color: var(--primary);
   box-shadow: 0 0 0 1px var(--primary);
-  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  background: var(--surface);
 }
 
 .sub-card-main {
@@ -3531,6 +3568,23 @@ button.check.on {
   align-items: center;
   gap: 0.75rem;
   min-width: 0;
+  width: 100%;
+}
+
+/* GlassSeg fills the quick-control rows so its right edge lines up with the
+   cards below. */
+.dash-side-rail .glass-seg {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+}
+
+/* Settings section tabs stretch full width (was .settings-tabs). */
+.page > .glass-seg {
+  display: flex;
+  width: 100%;
+  margin-bottom: 1rem;
 }
 
 .dash-inline-switch {
@@ -4089,8 +4143,112 @@ button.check.on {
   z-index: 1;
 }
 
-[data-theme="day"] .segmented.compact {
+/* —— Glass segmented control (reusable switch, mirrors navbar material) ——
+   A frosted capsule that slides between options. Same look as the active nav
+   pill: vertical gradient body, top lit edge, bottom shade, upper-left glow. */
+.glass-seg {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0.18rem;
+  border-radius: var(--radius-pill);
+  background: rgba(16, 24, 26, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.glass-seg-indicator {
+  position: absolute;
+  top: 0.18rem;
+  bottom: 0.18rem;
+  left: 0.18rem;
+  /* width = one slot; the track padding (0.18rem each side) is accounted for
+     by using calc so the indicator lands exactly over an option. */
+  width: calc((100% - 0.36rem) / var(--count, 3));
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.045),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 2px 5px rgba(0, 0, 0, 0.13);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-seg-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0) 70%
+  );
+  pointer-events: none;
+}
+
+.glass-seg-btn {
+  position: relative;
+  z-index: 1;
+  appearance: none !important;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.32rem 0.7rem !important;
+  border: none !important;
+  border-radius: var(--radius-pill) !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none !important;
+  transition: color 0.18s ease;
+}
+
+.glass-seg-btn:hover:not(:disabled):not(.active) {
+  color: var(--text) !important;
+}
+
+.glass-seg-btn.active {
+  color: var(--text) !important;
+}
+
+.glass-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+[data-theme="day"] .glass-seg {
   background: rgba(0, 0, 0, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="day"] .glass-seg-indicator {
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 [data-theme="day"] .segmented.compact .seg.active {
@@ -4609,6 +4767,37 @@ button.active-soft {
   color: var(--muted);
 }
 
+.ui-mode-menu-sep {
+  height: 1px;
+  margin: 0.3rem 0.35rem;
+  background: var(--border);
+}
+
+.ui-mode-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ui-mode-menu-item:disabled:hover {
+  background: transparent !important;
+}
+
+.ui-mode-menu-toast {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 90;
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* Vertical strip: window is ~420px; fill width, no wide pro layout */
 .simple-shell {
   width: 100%;
@@ -4629,7 +4818,14 @@ button.active-soft {
 }
 
 .simple-brand {
-  padding: 0 0.2rem 0 0.1rem !important;
+  padding: 0 0.45rem 0 0.2rem !important;
+}
+
+/* Compact tool group: same liquid capsule as full mode, but no status pill,
+   so tighten the left padding. */
+.simple-topnav-tools {
+  margin-left: 0.3rem;
+  padding: 0.15rem 0.25rem 0.15rem 0.35rem;
 }
 
 .simple-topnav-items {
@@ -4644,23 +4840,34 @@ button.active-soft {
   min-width: 0;
   padding: 0.35rem 0.25rem;
   font-size: 0.72rem;
+  border-radius: var(--radius-pill) !important;
+  position: relative;
 }
 
-/* SimpleShell has no separate sliding nav indicator, so its active tab must
-   paint its own pill and foreground instead of relying on TopNav's indicator. */
+/* Active tab: transparent, brighter text. No underline — keeps it clean. */
 .simple-topnav-items .topnav-item.active {
-  background: var(--nav-item-active-bg) !important;
-  color: var(--nav-item-active-fg) !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18) !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
 }
 
 .simple-main {
   width: 100%;
   max-width: 100%;
   margin: 0;
-  padding: 0.35rem 0.75rem 1rem;
+  padding: 0.3rem 0.7rem 0.8rem;
   box-sizing: border-box;
   overflow-x: hidden;
+}
+
+/* Connect page centers its content vertically within the viewport. */
+.simple-shell .simple-main:has(.simple-connect) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  justify-content: center;
+  overflow: hidden;
 }
 
 .simple-conn-list {
@@ -4676,12 +4883,12 @@ button.active-soft {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.7rem;
 }
 
 .simple-conn-host {
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4691,15 +4898,23 @@ button.active-soft {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
 }
 
 .simple-page {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-  padding: 0.25rem 0 1.5rem;
+  gap: 0.6rem;
+  padding: 0.25rem 0 1rem;
   min-height: 0;
+}
+
+/* Connect page wrapper grows to fill available height so its content centers. */
+.simple-page.simple-connect {
+  flex: 1;
+  justify-content: center;
+  align-items: stretch;
+  padding: 0;
 }
 
 .simple-page-head {
@@ -4711,14 +4926,14 @@ button.active-soft {
 
 .simple-kicker {
   font-family: var(--mono);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   letter-spacing: 0.08em;
   font-weight: 600;
 }
 
 .simple-title {
-  margin: 0.15rem 0 0;
-  font-size: 1.45rem;
+  margin: 0.1rem 0 0;
+  font-size: 1.1rem;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -4756,17 +4971,12 @@ button.active-soft {
   margin: 0;
 }
 
-.simple-connect {
-  align-items: stretch;
-  padding-top: 0.5rem;
-}
-
 .simple-connect-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.85rem;
-  padding: 1rem 0 0.35rem;
+  padding: 0;
 }
 
 /* Same orbit language as Overview; clickable power control */
@@ -4837,7 +5047,7 @@ button.active-soft {
 
 .simple-status-label {
   font-family: var(--mono);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -4853,7 +5063,7 @@ button.active-soft {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-solid);
-  padding: 0.85rem 1rem;
+  padding: 0.6rem 0.8rem;
   box-shadow: none;
 }
 
@@ -4915,6 +5125,85 @@ button.simple-node-item:hover:not(:disabled) {
   font-size: 0.72rem;
 }
 
+/* Liquid-glass info bars — reuse the navbar's glass recipe (nav-bg + blur +
+   inner highlights) so the homepage cards read as the same material. */
+.simple-glass-bar {
+  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius);
+  background: var(--topnav-liquid);
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
+    0 8px 22px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  font-size: 0.78rem;
+}
+
+button.simple-glass-bar {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.simple-glass-bar:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--nav-bg) 68%, var(--surface-2));
+}
+
+.simple-info-protocol {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.simple-info-name {
+  font-weight: 600;
+  font-size: 0.82rem;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simple-info-latency {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.simple-info-traffic {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.simple-info-traffic-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.3rem;
+  font-size: 0.76rem;
+}
+
+.simple-info-traffic-cell strong {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 .simple-kv-card {
   display: flex;
   flex-direction: column;
@@ -4953,7 +5242,7 @@ button.simple-node-item:hover:not(:disabled) {
 .simple-section {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.3rem;
 }
 
 .simple-section-label {
@@ -5033,7 +5322,7 @@ button.simple-sub-row:hover:not(:disabled) {
 
 button.simple-sub-row.active {
   border-color: var(--primary-border-strong);
-  background: var(--primary-muted) !important;
+  background: var(--panel-solid) !important;
   box-shadow: inset 0 0 0 1px var(--primary-border);
 }
 
@@ -5043,6 +5332,15 @@ button.simple-sub-row.active {
   gap: 0.15rem;
   min-width: 0;
   flex: 1;
+}
+
+.simple-sub-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
 }
 
 .simple-sub-title-row {
@@ -5059,8 +5357,15 @@ button.simple-sub-row.active {
 }
 
 .simple-sub-meta {
-  font-size: 0.72rem;
-  padding-left: 1.35rem;
+  font-size: 0.68rem;
+  flex-shrink: 0;
+}
+
+/* Tighten the refresh pill so the subscription row matches node-item height. */
+.simple-sub-refresh {
+  padding: 0.25rem 0.6rem !important;
+  font-size: 0.68rem !important;
+  flex-shrink: 0;
 }
 
 .simple-node-list {
@@ -5069,44 +5374,45 @@ button.simple-sub-row.active {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.28rem;
 }
 
 .simple-node-item {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.simple-node-item.active {
-  border-color: var(--primary-border-strong);
-  background: var(--primary-muted) !important;
-  box-shadow: inset 0 0 0 1px var(--primary-border);
-}
-
-.simple-node-item-top {
-  display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.45rem;
 }
 
-.simple-node-item-top .lat {
+.simple-node-item.active {
+  border-color: var(--primary-border-strong);
+  background: var(--panel-solid) !important;
+  box-shadow: inset 0 0 0 1px var(--primary-border);
+}
+
+.simple-node-item .lat {
   margin-left: auto;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .simple-radio {
   color: var(--primary);
   font-size: 0.75rem;
-  width: 1rem;
+  width: 0.9rem;
+  flex-shrink: 0;
 }
 
 .simple-node-item-name {
   font-weight: 600;
-  font-size: 0.9rem;
-  padding-left: 1.35rem;
+  font-size: 0.8rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .simple-settings-group {
@@ -5138,7 +5444,7 @@ button.simple-sub-row.active {
   align-items: center;
   justify-content: space-between;
   gap: 0.85rem;
-  padding: 0.75rem 0.9rem;
+  padding: 0.6rem 0.8rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
@@ -5169,7 +5475,7 @@ button.simple-sub-row.active {
 
 .simple-setting-title {
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
 }
 
 .simple-setting-title.dash-smart-probing {
@@ -5180,7 +5486,7 @@ button.simple-sub-row.active {
 }
 
 .simple-setting-desc {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   margin-top: 0.15rem;
   line-height: 1.35;
 }
