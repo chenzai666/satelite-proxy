@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { CSSProperties } from "react";
 import { getCoreInfo, getProxyStatus } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { useTheme } from "../theme";
 import type { NavKey } from "../types";
 import { UiModeMenu } from "../ui/UiModeMenu";
 
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export function TopNav({ active, onChange }: Props) {
+  const { theme, setTheme } = useTheme();
   const [coreVersion, setCoreVersion] = useState("—");
   const [running, setRunning] = useState(false);
   const [coreState, setCoreState] = useState("stopped");
@@ -117,12 +119,40 @@ export function TopNav({ active, onChange }: Props) {
             </button>
           ))}
         </nav>
-        <div className="topnav-status" title={`sing-box v${coreVersion}`}>
-          <span className={`status-dot ${dotClass}`} />
-          <span className="topnav-status-text">{stateLabel}</span>
-          <span className="topnav-status-ver">v{coreVersion}</span>
+        <div className="topnav-tools">
+          <div
+            className="topnav-theme-switch"
+            role="group"
+            aria-label="外观"
+          >
+            <button
+              type="button"
+              className={`topnav-theme-btn ${theme === "day" ? "active" : ""}`}
+              aria-label="亮色模式"
+              aria-pressed={theme === "day"}
+              title="Day"
+              onClick={() => void setTheme("day")}
+            >
+              ☼
+            </button>
+            <button
+              type="button"
+              className={`topnav-theme-btn ${theme === "aerospace" ? "active" : ""}`}
+              aria-label="暗色模式"
+              aria-pressed={theme === "aerospace"}
+              title="Mission"
+              onClick={() => void setTheme("aerospace")}
+            >
+              ◐
+            </button>
+          </div>
+          <div className="topnav-status" title={`sing-box v${coreVersion}`}>
+            <span className={`status-dot ${dotClass}`} />
+            <span className="topnav-status-text">{stateLabel}</span>
+            <span className="topnav-status-ver">v{coreVersion}</span>
+          </div>
+          <UiModeMenu />
         </div>
-        <UiModeMenu />
       </div>
     </header>
   );

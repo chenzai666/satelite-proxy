@@ -209,6 +209,7 @@ button {
 }
 
 .topnav {
+  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -218,10 +219,11 @@ button {
   background: var(--nav-bg);
   border: 1px solid var(--border);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 8px 28px rgba(0, 0, 0, 0.22);
-  backdrop-filter: blur(18px) saturate(1.2);
-  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
+    0 12px 34px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
 }
 
 .topnav-brand {
@@ -272,12 +274,13 @@ button {
    transform/width from TopNav's layout effect. */
 .topnav-indicator {
   position: absolute;
-  top: 0.28rem;
-  bottom: 0.28rem;
+  top: auto;
+  bottom: 0.08rem;
   left: 0;
+  height: 2px;
   border-radius: var(--radius-pill);
-  background: var(--nav-item-active-bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  background: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
   pointer-events: none;
   z-index: 0;
   transition: transform 0.28s cubic-bezier(0.4, 0.0, 0.2, 1),
@@ -311,17 +314,121 @@ button {
    transparent so the pill slides out cleanly. */
 .topnav-item.active {
   background: transparent !important;
-  color: var(--nav-item-active-fg) !important;
+  color: var(--text) !important;
   box-shadow: none !important;
+}
+
+.topnav-item:focus,
+.topnav-item:focus-visible {
+  outline: none;
+}
+
+.topnav-item:focus-visible {
+  color: var(--text) !important;
+}
+
+.topnav-tools {
+  position: relative;
+  isolation: isolate;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  margin-left: 0.55rem;
+  padding: 0.15rem 0.2rem 0.15rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--topnav-liquid);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 5px 16px rgba(0, 0, 0, 0.12);
+}
+
+/* Two asymmetrical lobes form the soft liquid bridge seen in the reference.
+   They remain decorative and never intercept tab clicks. */
+.topnav-tools::before,
+.topnav-tools::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--topnav-liquid);
+}
+
+.topnav-tools::before {
+  left: -1.05rem;
+  top: 0.1rem;
+  width: 1.8rem;
+  height: 1.35rem;
+  border-radius: 62% 38% 48% 52% / 42% 58% 42% 58%;
+  transform: rotate(14deg);
+}
+
+.topnav-tools::after {
+  left: -0.55rem;
+  bottom: 0.08rem;
+  width: 1.25rem;
+  height: 1.05rem;
+  border-radius: 40% 60% 55% 45% / 58% 45% 55% 42%;
+  transform: rotate(-12deg);
+}
+
+.topnav-theme-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 1.45rem);
+  align-items: center;
+  gap: 0.05rem;
+  padding: 0.12rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg) 24%, transparent);
+}
+
+.topnav-theme-btn {
+  appearance: none !important;
+  width: 1.45rem;
+  height: 1.45rem;
+  min-width: 0;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  color: var(--faint) !important;
+  font-family: var(--font) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  line-height: 1 !important;
+  display: inline-grid;
+  place-items: center;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+
+.topnav-theme-btn:hover:not(.active) {
+  color: var(--text) !important;
+  background: var(--hover-wash) !important;
+}
+
+.topnav-theme-btn.active {
+  color: var(--text) !important;
+  background: var(--surface-2) !important;
+  box-shadow:
+    inset 0 0 0 1px var(--border),
+    0 2px 7px rgba(0, 0, 0, 0.12) !important;
+}
+
+.topnav-theme-btn:focus,
+.topnav-theme-btn:focus-visible {
+  outline: none;
 }
 
 .topnav-status {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  margin-left: 0.25rem;
-  padding: 0.2rem 0.65rem 0.2rem 0.45rem;
-  border-left: 1px solid var(--border);
+  margin-left: 0;
+  padding: 0.2rem 0.55rem 0.2rem 0.35rem;
+  border-left: none;
   flex-shrink: 0;
   font-family: var(--mono);
   font-size: 0.62rem;
@@ -1892,7 +1999,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -1905,7 +2012,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
