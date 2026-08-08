@@ -249,14 +249,14 @@ const en = {
   "nodes.empty": "No nodes. Import a profile first.",
   "nodes.current": "Current",
 
-  // traffic (live + history)
+  // traffic (active + closed)
   "traffic.title": "Traffic",
-  "traffic.desc": "Live connections and request history",
-  "traffic.tabLive": "Live",
-  "traffic.tabHistory": "History",
+  "traffic.desc": "Active and closed connections",
+  "traffic.tabLive": "Active",
+  "traffic.tabHistory": "Closed",
 
   // connections (live tab)
-  "conn.title": "Live",
+  "conn.title": "Active connections",
   "conn.desc": "Active connections · ~1s refresh",
   "conn.filter": "Filter destination / node / process…",
   "conn.active": "active {n}",
@@ -270,18 +270,16 @@ const en = {
   "conn.process": "Process",
   "conn.traffic": "Bytes",
 
-  // requests (history tab)
-  "req.title": "History",
+  // requests (closed tab)
+  "req.title": "Closed connections",
   "req.closed": "closed",
   "req.live": "live",
-  "req.desc":
-    "Connection history (live + closed) · journal via Clash WS @100ms · cap ~10k",
+  "req.desc": "Closed connection history · cap ~10k",
   "req.filter": "Filter host / node / rule / process…",
-  "req.clearConfirm": "Clear all request history?",
+  "req.clearConfirm": "Clear all closed connection history?",
   "req.count": "{n} records",
   "req.filterLabel": " · filter: {q}",
-  "req.empty":
-    "No history yet. Run the proxy and generate traffic — closed connections appear here.",
+  "req.empty": "No closed connections yet.",
   "req.time": "Time",
   "req.type": "Type",
   "req.first": "first {t}",
@@ -648,11 +646,11 @@ const zh: Record<MessageKey, string> = {
   "nodes.current": "当前",
 
   "traffic.title": "流量",
-  "traffic.desc": "实时连接与请求历史",
-  "traffic.tabLive": "Live",
-  "traffic.tabHistory": "History",
+  "traffic.desc": "连接中与已关闭的连接记录",
+  "traffic.tabLive": "连接中",
+  "traffic.tabHistory": "已关闭",
 
-  "conn.title": "实时连接",
+  "conn.title": "连接中",
   "conn.desc": "仅当前活跃连接 · 约 1s 刷新",
   "conn.filter": "过滤目标 / 节点 / 进程…",
   "conn.active": "活跃 {n}",
@@ -666,16 +664,15 @@ const zh: Record<MessageKey, string> = {
   "conn.process": "进程",
   "conn.traffic": "流量",
 
-  "req.title": "历史",
+  "req.title": "已关闭",
   "req.closed": "已关闭",
   "req.live": "活跃",
-  "req.desc": "连接历史（活跃+已关闭）· Clash WS 100ms 采样 · 上限约 1 万条",
+  "req.desc": "已关闭的连接记录 · 上限约 1 万条",
   "req.filter": "关键字：域名、节点、规则、进程…",
-  "req.clearConfirm": "清空全部请求历史？",
+  "req.clearConfirm": "清空全部已关闭连接记录？",
   "req.count": "共 {n} 条",
   "req.filterLabel": "（过滤：{q}）",
-  "req.empty":
-    "暂无历史。启动代理并产生流量后，已关闭的连接会出现在这里。",
+  "req.empty": "暂无已关闭连接。",
   "req.time": "时间",
   "req.type": "类型",
   "req.first": "首次 {t}",

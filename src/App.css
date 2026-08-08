@@ -3915,7 +3915,7 @@ button.check.on {
 /* Sliding indicator for the routing (rule/global/direct) segmented control.
    The track is an equal 3-column grid, so the indicator is 1/3 wide and
    translateX in {0,100,200}% of its own width tracks the active option. */
-.mode-seg.dash-inline-seg {
+.mode-seg {
   position: relative;
 }
 
@@ -4499,6 +4499,14 @@ button.active-soft {
   min-width: 0;
   padding: 0.35rem 0.25rem;
   font-size: 0.72rem;
+}
+
+/* SimpleShell has no separate sliding nav indicator, so its active tab must
+   paint its own pill and foreground instead of relying on TopNav's indicator. */
+.simple-topnav-items .topnav-item.active {
+  background: var(--nav-item-active-bg) !important;
+  color: var(--nav-item-active-fg) !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18) !important;
 }
 
 .simple-main {

@@ -402,6 +402,7 @@ impl Runtime {
         self.request_order
             .iter()
             .filter_map(|id| self.request_by_id.get(id))
+            .filter(|r| r.closed)
             .filter(|r| r.matches_query(q))
             .take(limit)
             .map(|r| ConnectionView::from_record(r, &tag_names))
@@ -409,8 +410,11 @@ impl Runtime {
     }
 
     pub fn clear_request_history(&mut self) {
-        self.request_by_id.clear();
-        self.request_order.clear();
+        // Keep active records so they can still transition into the closed
+        // list when they disappear from a later connection snapshot.
+        self.request_by_id.retain(|_, record| !record.closed);
+        let active_ids: HashSet<String> = self.request_by_id.keys().cloned().collect();
+        self.request_order.retain(|id| active_ids.contains(id));
     }
 
     pub fn clash_api_clone(&self) -> Option<ClashApi> {
