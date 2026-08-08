@@ -443,10 +443,6 @@ button {
   min-width: 1.6rem;
 }
 
-.topnav-status-ver {
-  opacity: 0.65;
-}
-
 .main {
   flex: 1;
   min-width: 0;
@@ -1115,13 +1111,13 @@ button.node-card,
   border-radius: var(--radius);
   background: var(--surface) !important;
   color: var(--text) !important;
-  padding: 0.75rem 0.8rem 0.7rem;
+  padding: 0.55rem 0.7rem 0.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.25rem;
   width: 100%;
   min-width: 0;
-  min-height: 100px;
+  min-height: 0;
   font-weight: 400;
   font-size: inherit;
   box-shadow: none;
@@ -1139,7 +1135,7 @@ button.node-card.active,
 .node-card.active {
   border-color: var(--primary-border-strong);
   box-shadow: inset 0 0 0 1px var(--primary-border);
-  background: var(--primary-muted) !important;
+  background: var(--surface) !important;
   color: var(--text) !important;
 }
 
@@ -1163,7 +1159,7 @@ button.node-card:disabled,
 .node-card-latency {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  font-size: 0.76rem; /* ~80% of previous 0.95rem */
+  font-size: 0.608rem; /* 80% of 0.76rem */
   line-height: 1;
   white-space: nowrap;
 }
@@ -1185,16 +1181,17 @@ button.node-card:disabled,
 .node-list-latency .lat-timeout,
 .node-list-latency .lat-none {
   font-weight: 600;
+  font-size: 0.68rem; /* 80% of 0.85rem */
 }
 
 .node-card-name {
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-  min-height: 1.4em;
+  min-height: 1.3em;
 }
 
 /* Subscription origin under node name */
@@ -1223,9 +1220,15 @@ button.node-card:disabled,
 .node-card-footer {
   margin-top: auto;
   display: flex;
-  align-items: flex-end;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   min-height: 1.1rem;
+}
+
+.node-card-footer .node-sub-label {
+  flex: 1;
+  min-width: 0;
 }
 
 .node-card-badge {
@@ -1897,7 +1900,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -1910,7 +1913,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -1983,7 +1986,7 @@ button.small {
 .sub-card.enabled {
   border-color: var(--primary);
   box-shadow: 0 0 0 1px var(--primary);
-  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+  background: var(--surface);
 }
 
 .sub-card-main {
@@ -4469,6 +4472,37 @@ button.active-soft {
   color: var(--muted);
 }
 
+.ui-mode-menu-sep {
+  height: 1px;
+  margin: 0.3rem 0.35rem;
+  background: var(--border);
+}
+
+.ui-mode-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ui-mode-menu-item:disabled:hover {
+  background: transparent !important;
+}
+
+.ui-mode-menu-toast {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 90;
+  padding: 0.4rem 0.7rem;
+  background: var(--panel-solid);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-elevated);
+  color: var(--text);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* Vertical strip: window is ~420px; fill width, no wide pro layout */
 .simple-shell {
   width: 100%;
@@ -4489,7 +4523,14 @@ button.active-soft {
 }
 
 .simple-brand {
-  padding: 0 0.2rem 0 0.1rem !important;
+  padding: 0 0.45rem 0 0.2rem !important;
+}
+
+/* Compact tool group: same liquid capsule as full mode, but no status pill,
+   so tighten the left padding. */
+.simple-topnav-tools {
+  margin-left: 0.3rem;
+  padding: 0.15rem 0.25rem 0.15rem 0.35rem;
 }
 
 .simple-topnav-items {
@@ -4504,23 +4545,50 @@ button.active-soft {
   min-width: 0;
   padding: 0.35rem 0.25rem;
   font-size: 0.72rem;
+  border-radius: var(--radius-pill) !important;
+  position: relative;
 }
 
-/* SimpleShell has no separate sliding nav indicator, so its active tab must
-   paint its own pill and foreground instead of relying on TopNav's indicator. */
+/* Match full mode's sliding underline look: the active tab draws a primary
+   underline glow; the button itself stays transparent. Non-active tabs get
+   nothing, so the highlight reads the same as TopNav's indicator. */
 .simple-topnav-items .topnav-item.active {
-  background: var(--nav-item-active-bg) !important;
-  color: var(--nav-item-active-fg) !important;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18) !important;
+  background: transparent !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}
+
+.simple-topnav-items .topnav-item.active::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0.08rem;
+  transform: translateX(-50%);
+  width: 60%;
+  height: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+  pointer-events: none;
 }
 
 .simple-main {
   width: 100%;
   max-width: 100%;
   margin: 0;
-  padding: 0.35rem 0.75rem 1rem;
+  padding: 0.3rem 0.7rem 0.8rem;
   box-sizing: border-box;
   overflow-x: hidden;
+}
+
+/* Connect page centers its content vertically within the viewport. */
+.simple-shell .simple-main:has(.simple-connect) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  justify-content: center;
+  overflow: hidden;
 }
 
 .simple-conn-list {
@@ -4536,12 +4604,12 @@ button.active-soft {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.7rem;
 }
 
 .simple-conn-host {
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4551,15 +4619,23 @@ button.active-soft {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
 }
 
 .simple-page {
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-  padding: 0.25rem 0 1.5rem;
+  gap: 0.6rem;
+  padding: 0.25rem 0 1rem;
   min-height: 0;
+}
+
+/* Connect page wrapper grows to fill available height so its content centers. */
+.simple-page.simple-connect {
+  flex: 1;
+  justify-content: center;
+  align-items: stretch;
+  padding: 0;
 }
 
 .simple-page-head {
@@ -4571,14 +4647,14 @@ button.active-soft {
 
 .simple-kicker {
   font-family: var(--mono);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   letter-spacing: 0.08em;
   font-weight: 600;
 }
 
 .simple-title {
-  margin: 0.15rem 0 0;
-  font-size: 1.45rem;
+  margin: 0.1rem 0 0;
+  font-size: 1.1rem;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
@@ -4616,17 +4692,12 @@ button.active-soft {
   margin: 0;
 }
 
-.simple-connect {
-  align-items: stretch;
-  padding-top: 0.5rem;
-}
-
 .simple-connect-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.85rem;
-  padding: 1rem 0 0.35rem;
+  padding: 0;
 }
 
 /* Same orbit language as Overview; clickable power control */
@@ -4697,7 +4768,7 @@ button.active-soft {
 
 .simple-status-label {
   font-family: var(--mono);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   color: var(--muted);
@@ -4713,7 +4784,7 @@ button.active-soft {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-solid);
-  padding: 0.85rem 1rem;
+  padding: 0.6rem 0.8rem;
   box-shadow: none;
 }
 
@@ -4775,6 +4846,85 @@ button.simple-node-item:hover:not(:disabled) {
   font-size: 0.72rem;
 }
 
+/* Liquid-glass info bars — reuse the navbar's glass recipe (nav-bg + blur +
+   inner highlights) so the homepage cards read as the same material. */
+.simple-glass-bar {
+  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--radius);
+  background: var(--topnav-liquid);
+  border: 1px solid var(--border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
+    0 8px 22px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(24px) saturate(1.35);
+  -webkit-backdrop-filter: blur(24px) saturate(1.35);
+  font-size: 0.78rem;
+}
+
+button.simple-glass-bar {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.simple-glass-bar:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--nav-bg) 68%, var(--surface-2));
+}
+
+.simple-info-protocol {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.simple-info-name {
+  font-weight: 600;
+  font-size: 0.82rem;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simple-info-latency {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.simple-info-traffic {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.simple-info-traffic-cell {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.3rem;
+  font-size: 0.76rem;
+}
+
+.simple-info-traffic-cell strong {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 .simple-kv-card {
   display: flex;
   flex-direction: column;
@@ -4813,7 +4963,7 @@ button.simple-node-item:hover:not(:disabled) {
 .simple-section {
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.3rem;
 }
 
 .simple-section-label {
@@ -4893,7 +5043,7 @@ button.simple-sub-row:hover:not(:disabled) {
 
 button.simple-sub-row.active {
   border-color: var(--primary-border-strong);
-  background: var(--primary-muted) !important;
+  background: var(--panel-solid) !important;
   box-shadow: inset 0 0 0 1px var(--primary-border);
 }
 
@@ -4903,6 +5053,15 @@ button.simple-sub-row.active {
   gap: 0.15rem;
   min-width: 0;
   flex: 1;
+}
+
+.simple-sub-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
 }
 
 .simple-sub-title-row {
@@ -4919,8 +5078,15 @@ button.simple-sub-row.active {
 }
 
 .simple-sub-meta {
-  font-size: 0.72rem;
-  padding-left: 1.35rem;
+  font-size: 0.68rem;
+  flex-shrink: 0;
+}
+
+/* Tighten the refresh pill so the subscription row matches node-item height. */
+.simple-sub-refresh {
+  padding: 0.25rem 0.6rem !important;
+  font-size: 0.68rem !important;
+  flex-shrink: 0;
 }
 
 .simple-node-list {
@@ -4929,44 +5095,45 @@ button.simple-sub-row.active {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.28rem;
 }
 
 .simple-node-item {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
-}
-
-.simple-node-item.active {
-  border-color: var(--primary-border-strong);
-  background: var(--primary-muted) !important;
-  box-shadow: inset 0 0 0 1px var(--primary-border);
-}
-
-.simple-node-item-top {
-  display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.45rem;
 }
 
-.simple-node-item-top .lat {
+.simple-node-item.active {
+  border-color: var(--primary-border-strong);
+  background: var(--panel-solid) !important;
+  box-shadow: inset 0 0 0 1px var(--primary-border);
+}
+
+.simple-node-item .lat {
   margin-left: auto;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .simple-radio {
   color: var(--primary);
   font-size: 0.75rem;
-  width: 1rem;
+  width: 0.9rem;
+  flex-shrink: 0;
 }
 
 .simple-node-item-name {
   font-weight: 600;
-  font-size: 0.9rem;
-  padding-left: 1.35rem;
+  font-size: 0.8rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .simple-settings-group {
@@ -4998,7 +5165,7 @@ button.simple-sub-row.active {
   align-items: center;
   justify-content: space-between;
   gap: 0.85rem;
-  padding: 0.75rem 0.9rem;
+  padding: 0.6rem 0.8rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
@@ -5029,7 +5196,7 @@ button.simple-sub-row.active {
 
 .simple-setting-title {
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.8rem;
 }
 
 .simple-setting-title.dash-smart-probing {
@@ -5040,7 +5207,7 @@ button.simple-sub-row.active {
 }
 
 .simple-setting-desc {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   margin-top: 0.15rem;
   line-height: 1.35;
 }

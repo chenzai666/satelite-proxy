@@ -324,12 +324,10 @@ export function NodesPage() {
                 <div className="node-card-name" title={n.name}>
                   {n.name}
                 </div>
-                {n.subscription_name ? (
-                  <div className="node-sub-label" title={n.subscription_name}>
-                    {n.subscription_name}
-                  </div>
-                ) : null}
                 <div className="node-card-footer">
+                  <span className="node-sub-label" title={n.subscription_name ?? ""}>
+                    {n.subscription_name}
+                  </span>
                   <span className="node-card-latency">
                     <LatencyDisplay
                       ms={n.latency_ms}
