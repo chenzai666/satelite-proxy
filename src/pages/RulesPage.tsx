@@ -23,6 +23,7 @@ import {
   updateSettings,
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
+import { GlassSeg } from "../components/GlassSeg";
 import { useI18n } from "../i18n";
 import type {
   ProxyNode,
@@ -578,16 +579,16 @@ export function RulesPage({ embedded = false }: Props) {
           </div>
         </div>
         <div className="rules-final-control">
-          <SolidSelect
+          <GlassSeg
             value={routeFinal}
+            ariaLabel={t("rules.final")}
             disabled={finalBusy}
-            aria-label={t("rules.final")}
+            onChange={(v) => void onRouteFinalChange(v as RouteFinal)}
             options={[
               { value: "proxy", label: t("rules.finalProxy") },
               { value: "direct", label: t("rules.finalDirect") },
               { value: "block", label: t("rules.finalBlock") },
             ]}
-            onChange={(v) => void onRouteFinalChange(v as RouteFinal)}
           />
         </div>
       </div>

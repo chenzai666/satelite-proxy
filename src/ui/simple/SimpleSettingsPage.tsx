@@ -10,6 +10,7 @@ import {
   updateSettings,
 } from "../../api";
 import { useI18n, type Locale } from "../../i18n";
+import { GlassSeg } from "../../components/GlassSeg";
 import { useTheme } from "../../theme";
 import type {
   AppSettings,
@@ -141,6 +142,53 @@ export function SimpleSettingsPage() {
 
   const mode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
   const autoSelectMode = resolveAutoSelect();
+  const captureResolved =
+    captureUi ??
+    (proxy?.tun_enabled
+      ? "tun"
+      : proxy?.system_proxy
+        ? "system"
+        : "off");
+
+  function onCaptureChange(key: "off" | "system" | "tun") {
+    if (key === captureResolved || captureBusy) return;
+    const prev = proxy;
+    const gen = ++captureGenRef.current;
+    flushSync(() => {
+      setCaptureUi(key);
+      setCaptureBusy(true);
+      setError(null);
+      if (prev) {
+        setProxy({
+          ...prev,
+          system_proxy: key === "system",
+          tun_enabled: key === "tun",
+        });
+      }
+    });
+    void (async () => {
+      try {
+        const s = await setCaptureMode(key);
+        if (gen !== captureGenRef.current) return;
+        setProxy(s);
+        setCaptureUi(null);
+      } catch (e) {
+        if (gen !== captureGenRef.current) return;
+        setError(typeof e === "string" ? e : String(e));
+        setCaptureUi(null);
+        if (prev) {
+          setProxy(prev);
+        } else {
+          const s = await getProxyStatus().catch(() => null);
+          if (s) setProxy(s);
+        }
+      } finally {
+        if (gen === captureGenRef.current) {
+          setCaptureBusy(false);
+        }
+      }
+    })();
+  }
 
   return (
     <div className="simple-page simple-settings">
@@ -174,112 +222,32 @@ export function SimpleSettingsPage() {
                 {t("dashboard.captureDesc")}
               </div>
             </div>
-            <div
-              className="segmented compact mode-seg simple-auto-seg"
-              role="group"
-              aria-label={t("dashboard.capture")}
-              aria-busy={captureBusy}
-            >
-              <span
-                className="seg-indicator"
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${
-                    (captureUi ??
-                      (proxy?.tun_enabled
-                        ? "tun"
-                        : proxy?.system_proxy
-                          ? "system"
-                          : "off")) === "off"
-                      ? 0
-                      : (captureUi ??
-                            (proxy?.tun_enabled
-                              ? "tun"
-                              : proxy?.system_proxy
-                                ? "system"
-                                : "off")) === "system"
-                        ? 100
-                        : 200
-                  }%)`,
-                }}
-              />
-              {(
-                [
-                  ["off", t("dashboard.captureOff")],
-                  ["system", t("dashboard.captureSystem")],
-                  ["tun", t("dashboard.captureTun")],
-                ] as const
-              ).map(([key, label]) => {
-                const resolved =
-                  captureUi ??
-                  (proxy?.tun_enabled
-                    ? "tun"
-                    : proxy?.system_proxy
-                      ? "system"
-                      : "off");
-                const active = resolved === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={`seg ${active ? "active" : ""}`}
-                    disabled={
-                      busy ||
-                      (captureBusy && !active) ||
-                      (key === "tun" && nodeCount === 0 && resolved !== "tun")
-                    }
-                    title={
-                      key === "tun"
-                        ? t("dashboard.captureTunHint")
-                        : key === "system"
-                          ? t("dashboard.captureSystemHint")
-                          : t("dashboard.captureDesc")
-                    }
-                    onClick={() => {
-                      if (active || captureBusy) return;
-                      const prev = proxy;
-                      const gen = ++captureGenRef.current;
-                      flushSync(() => {
-                        setCaptureUi(key);
-                        setCaptureBusy(true);
-                        setError(null);
-                        if (prev) {
-                          setProxy({
-                            ...prev,
-                            system_proxy: key === "system",
-                            tun_enabled: key === "tun",
-                          });
-                        }
-                      });
-                      void (async () => {
-                        try {
-                          const s = await setCaptureMode(key);
-                          if (gen !== captureGenRef.current) return;
-                          setProxy(s);
-                          setCaptureUi(null);
-                        } catch (e) {
-                          if (gen !== captureGenRef.current) return;
-                          setError(typeof e === "string" ? e : String(e));
-                          setCaptureUi(null);
-                          if (prev) {
-                            setProxy(prev);
-                          } else {
-                            const s = await getProxyStatus().catch(() => null);
-                            if (s) setProxy(s);
-                          }
-                        } finally {
-                          if (gen === captureGenRef.current) {
-                            setCaptureBusy(false);
-                          }
-                        }
-                      })();
-                    }}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
+            <GlassSeg
+              value={captureResolved}
+              ariaLabel={t("dashboard.capture")}
+              disabled={busy}
+              disabledValues={
+                new Set(
+                  [
+                    captureBusy && captureResolved !== "off" ? "off" : null,
+                    captureBusy && captureResolved !== "system" ? "system" : null,
+                    captureBusy && captureResolved !== "tun" ? "tun" : null,
+                    nodeCount === 0 && captureResolved !== "tun" ? "tun" : null,
+                  ].filter((v): v is string => v != null),
+                )
+              }
+              titles={{
+                tun: t("dashboard.captureTunHint"),
+                system: t("dashboard.captureSystemHint"),
+                off: t("dashboard.captureDesc"),
+              }}
+              onChange={(v) => onCaptureChange(v as "off" | "system" | "tun")}
+              options={[
+                { value: "off", label: t("dashboard.captureOff") },
+                { value: "system", label: t("dashboard.captureSystem") },
+                { value: "tun", label: t("dashboard.captureTun") },
+              ]}
+            />
           </div>
           <div className="simple-setting-row simple-auto-select-row">
             <div>
@@ -292,83 +260,55 @@ export function SimpleSettingsPage() {
                   : "手动 / 自动（urltest）/ 智能（应用）"}
               </div>
             </div>
-            <div
-              className="segmented compact mode-seg simple-auto-seg"
-              role="group"
-              aria-label="节点切换"
-              aria-busy={smartProbing}
-            >
-              <span
-                className="seg-indicator"
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${
-                    autoSelectMode === "off"
-                      ? 0
-                      : autoSelectMode === "kernel"
-                        ? 100
-                        : 200
-                  }%)`,
-                }}
-              />
-              {(
-                [
-                  ["off", "手动"],
-                  ["kernel", "自动"],
-                  ["smart", "智能"],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`seg ${autoSelectMode === key ? "active" : ""}`}
-                  disabled={
-                    busy ||
-                    (smartProbing && key === "smart") ||
-                    (nodeCount === 0 &&
-                      key !== "off" &&
-                      autoSelectMode === "off" &&
-                      !smartProbing)
-                  }
-                  onClick={() => void onSetAutoSelect(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <GlassSeg
+              value={autoSelectMode}
+              ariaLabel="节点切换"
+              disabled={busy}
+              disabledValues={
+                new Set(
+                  [
+                    smartProbing ? "smart" : null,
+                    nodeCount === 0 && autoSelectMode === "off" && !smartProbing
+                      ? "kernel"
+                      : null,
+                    nodeCount === 0 && autoSelectMode === "off" && !smartProbing
+                      ? "smart"
+                      : null,
+                  ].filter((v): v is string => v != null),
+                )
+              }
+              onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}
+              options={[
+                { value: "off", label: "手动" },
+                { value: "kernel", label: "自动" },
+                { value: "smart", label: "智能" },
+              ]}
+            />
           </div>
           <div className="simple-setting-row simple-setting-col">
             <div className="simple-setting-title">路由模式</div>
-            <div className="segmented compact simple-seg-equal">
-              {(
-                [
-                  ["rule", "规则"],
-                  ["global", "全局"],
-                  ["direct", "直连"],
-                ] as const
-              ).map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className={`seg ${mode === k ? "active" : ""}`}
-                  disabled={busy}
-                  onClick={() =>
-                    void (async () => {
-                      setBusy(true);
-                      try {
-                        setProxy(await setOutboundMode(k));
-                      } catch (e) {
-                        setError(typeof e === "string" ? e : String(e));
-                      } finally {
-                        setBusy(false);
-                      }
-                    })()
+            <GlassSeg
+              value={mode}
+              ariaLabel="路由模式"
+              disabled={busy}
+              onChange={(v) =>
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    setProxy(await setOutboundMode(v as OutboundMode));
+                  } catch (e) {
+                    setError(typeof e === "string" ? e : String(e));
+                  } finally {
+                    setBusy(false);
                   }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+                })()
+              }
+              options={[
+                { value: "rule", label: "规则" },
+                { value: "global", label: "全局" },
+                { value: "direct", label: "直连" },
+              ]}
+            />
           </div>
         </div>
       </section>
@@ -444,41 +384,27 @@ export function SimpleSettingsPage() {
         <div className="simple-card simple-settings-group">
           <div className="simple-setting-row simple-setting-col">
             <div className="simple-setting-title">{t("settings.theme")}</div>
-            <div className="segmented compact">
-              <button
-                type="button"
-                className={`seg ${theme === "day" ? "active" : ""}`}
-                onClick={() => void setTheme("day" as ThemeId)}
-              >
-                Day
-              </button>
-              <button
-                type="button"
-                className={`seg ${theme === "aerospace" ? "active" : ""}`}
-                onClick={() => void setTheme("aerospace" as ThemeId)}
-              >
-                Mission
-              </button>
-            </div>
+            <GlassSeg
+              value={theme}
+              ariaLabel={t("settings.theme")}
+              onChange={(v) => void setTheme(v as ThemeId)}
+              options={[
+                { value: "day", label: "Day" },
+                { value: "aerospace", label: "Mission" },
+              ]}
+            />
           </div>
           <div className="simple-setting-row simple-setting-col">
             <div className="simple-setting-title">语言</div>
-            <div className="segmented compact">
-              <button
-                type="button"
-                className={`seg ${locale === "zh" ? "active" : ""}`}
-                onClick={() => void setLocale("zh" as Locale)}
-              >
-                中文
-              </button>
-              <button
-                type="button"
-                className={`seg ${locale === "en" ? "active" : ""}`}
-                onClick={() => void setLocale("en" as Locale)}
-              >
-                EN
-              </button>
-            </div>
+            <GlassSeg
+              value={locale}
+              ariaLabel="语言"
+              onChange={(v) => void setLocale(v as Locale)}
+              options={[
+                { value: "zh", label: "中文" },
+                { value: "en", label: "EN" },
+              ]}
+            />
           </div>
         </div>
       </section>

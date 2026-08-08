@@ -9,6 +9,7 @@ import {
   updateSettings,
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
+import { GlassSeg } from "../components/GlassSeg";
 import { useI18n, type Locale } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
@@ -213,27 +214,15 @@ export function SettingsPage() {
         </div>
       </header>
 
-      <div
-        className="settings-tabs segmented compact"
-        role="tablist"
-        aria-label="Settings sections"
-      >
-        {tabs.map((x) => (
-          <button
-            key={x.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === x.id}
-            className={`seg ${tab === x.id ? "active" : ""}`}
-            onClick={() => {
-              setTab(x.id);
-              setError(null);
-            }}
-          >
-            {x.label}
-          </button>
-        ))}
-      </div>
+      <GlassSeg
+        value={tab}
+        ariaLabel="Settings sections"
+        onChange={(v) => {
+          setTab(v as SettingsTab);
+          setError(null);
+        }}
+        options={tabs.map((x) => ({ value: x.id, label: x.label }))}
+      />
 
       {error && tab !== "rules" && tab !== "dns" && tab !== "dns_rules" && (
         <div className="banner error">{error}</div>
@@ -261,28 +250,16 @@ export function SettingsPage() {
                     {t("settings.languageDesc")}
                   </div>
                 </div>
-                <div
-                  className="segmented compact"
-                  role="group"
-                  aria-label={t("settings.language")}
-                >
-                  <button
-                    type="button"
-                    className={`seg ${locale === "zh" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeLocale("zh")}
-                  >
-                    {t("settings.langZh")}
-                  </button>
-                  <button
-                    type="button"
-                    className={`seg ${locale === "en" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeLocale("en")}
-                  >
-                    {t("settings.langEn")}
-                  </button>
-                </div>
+                <GlassSeg
+                  value={locale}
+                  ariaLabel={t("settings.language")}
+                  disabled={busy}
+                  onChange={(v) => void onChangeLocale(v as Locale)}
+                  options={[
+                    { value: "zh", label: t("settings.langZh") },
+                    { value: "en", label: t("settings.langEn") },
+                  ]}
+                />
               </div>
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
@@ -291,28 +268,16 @@ export function SettingsPage() {
                     {t("settings.themeDesc")}
                   </div>
                 </div>
-                <div
-                  className="segmented compact"
-                  role="group"
-                  aria-label={t("settings.theme")}
-                >
-                  <button
-                    type="button"
-                    className={`seg ${theme === "aerospace" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeTheme("aerospace")}
-                  >
-                    {t("settings.themeAerospace")}
-                  </button>
-                  <button
-                    type="button"
-                    className={`seg ${theme === "day" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeTheme("day")}
-                  >
-                    {t("settings.themeDay")}
-                  </button>
-                </div>
+                <GlassSeg
+                  value={theme}
+                  ariaLabel={t("settings.theme")}
+                  disabled={busy}
+                  onChange={(v) => void onChangeTheme(v as ThemeId)}
+                  options={[
+                    { value: "aerospace", label: t("settings.themeAerospace") },
+                    { value: "day", label: t("settings.themeDay") },
+                  ]}
+                />
               </div>
               <div className="settings-app-row settings-app-pref settings-accent-row">
                 <div className="settings-app-text">

@@ -8,6 +8,7 @@ import {
   testNodesLatency,
 } from "../api";
 import { useI18n } from "../i18n";
+import { GlassSeg } from "../components/GlassSeg";
 import type { ProxyNode, SortMode, ViewMode } from "../types";
 
 /** Render latency cell: spinner / ms / timeout / dash */
@@ -203,43 +204,26 @@ export function NodesPage() {
             onChange={(e) => setQuery(e.target.value)}
           />
 
-          <div className="segmented compact" role="group" aria-label="sort">
-            {(
-              [
-                ["default", t("nodes.sortDefault")],
-                ["name", t("nodes.sortName")],
-                ["latency", t("nodes.sortLatency")],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                className={sortMode === key ? "seg active" : "seg"}
-                onClick={() => setSortMode(key)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <GlassSeg
+            value={sortMode}
+            ariaLabel="sort"
+            onChange={(v) => setSortMode(v as SortMode)}
+            options={[
+              { value: "default", label: t("nodes.sortDefault") },
+              { value: "name", label: t("nodes.sortName") },
+              { value: "latency", label: t("nodes.sortLatency") },
+            ]}
+          />
 
-          <div className="segmented compact" role="group" aria-label="视图">
-            <button
-              type="button"
-              className={viewMode === "list" ? "seg active" : "seg"}
-              onClick={() => setViewMode("list")}
-              title="列表"
-            >
-              列表
-            </button>
-            <button
-              type="button"
-              className={viewMode === "grid" ? "seg active" : "seg"}
-              onClick={() => setViewMode("grid")}
-              title="网格"
-            >
-              网格
-            </button>
-          </div>
+          <GlassSeg
+            value={viewMode}
+            ariaLabel="视图"
+            onChange={(v) => setViewMode(v as ViewMode)}
+            options={[
+              { value: "list", label: "列表" },
+              { value: "grid", label: "网格" },
+            ]}
+          />
         </div>
       </header>
 

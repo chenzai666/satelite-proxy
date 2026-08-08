@@ -16,6 +16,7 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../../components/AddConfigModal";
+import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
@@ -406,28 +407,16 @@ export function SimpleServersPage() {
         </div>
         <div className="simple-sort-row">
           <span className="muted simple-sort-label">排序</span>
-          <div
-            className="segmented compact simple-seg-equal simple-sort-seg"
-            role="group"
-            aria-label="节点排序"
-          >
-            {(
-              [
-                ["latency", "延迟"],
-                ["name", "名称"],
-                ["default", "默认"],
-              ] as const
-            ).map(([k, label]) => (
-              <button
-                key={k}
-                type="button"
-                className={`seg ${sortMode === k ? "active" : ""}`}
-                onClick={() => setSortMode(k)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <GlassSeg
+            value={sortMode}
+            ariaLabel="节点排序"
+            onChange={(v) => setSortMode(v as SortMode)}
+            options={[
+              { value: "latency", label: "延迟" },
+              { value: "name", label: "名称" },
+              { value: "default", label: "默认" },
+            ]}
+          />
         </div>
         {filtered.length === 0 ? (
           <div className="simple-card empty muted">
