@@ -1629,6 +1629,16 @@ button.switch.small.on .switch-thumb {
 
 .conn-table {
   font-size: 0.85rem;
+  /* Fixed layout: columns share the container width and never expand beyond
+     it, so the page never scrolls horizontally. Cells truncate via .conn-cell. */
+  table-layout: fixed;
+  width: 100%;
+}
+
+/* Never scroll the connections table horizontally — cells truncate instead. */
+.conn-table,
+.table-wrap:has(.conn-table) {
+  overflow-x: hidden;
 }
 
 /* One line per row: every cell truncates with an ellipsis and the full text
@@ -1637,8 +1647,20 @@ button.switch.small.on .switch-thumb {
   vertical-align: middle;
 }
 
+/* Fixed layout needs explicit column widths; cells still truncate. */
+.conn-table .conn-time { width: 150px; }
+.conn-table .conn-th-node,
+.conn-table .conn-node { width: 16%; }
+.conn-table .conn-th-rule,
+.conn-table .conn-rule { width: 14%; }
+.conn-table .conn-th-process { width: 14%; }
+.conn-table .conn-th-net { width: 72px; }
+.conn-table .conn-th-traffic,
+.conn-table .conn-traffic { width: 120px; }
+
 .conn-cell {
-  max-width: 220px;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1646,14 +1668,15 @@ button.switch.small.on .switch-thumb {
 
 .conn-dest {
   font-weight: 600;
+  /* destination absorbs the remaining width */
+  width: auto;
 }
 
 .conn-node {
-  max-width: 160px;
+  font-size: 0.8rem;
 }
 
 .conn-rule {
-  max-width: 140px;
   font-size: 0.8rem;
 }
 

@@ -104,11 +104,11 @@ export function ConnectionsPage({ embedded = false }: Props) {
             <thead>
               <tr>
                 <th>{t("conn.dest")}</th>
-                <th>{t("conn.node")}</th>
-                <th>{t("conn.net")}</th>
-                <th>{t("conn.rule")}</th>
-                <th>{t("conn.process")}</th>
-                <th>{t("conn.traffic")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-net">{t("conn.net")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
             <tbody>

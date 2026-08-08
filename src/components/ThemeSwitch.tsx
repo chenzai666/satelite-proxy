@@ -30,7 +30,7 @@ export function ThemeSwitch() {
         title="Mission"
         onClick={() => void setTheme("aerospace")}
       >
-        ◐
+        ☾
       </button>
     </div>
   );

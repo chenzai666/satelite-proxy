@@ -107,11 +107,10 @@ export function RequestsPage({ embedded = false }: Props) {
               <tr>
                 <th>{t("req.time")}</th>
                 <th>{t("conn.dest")}</th>
-                <th>{t("conn.node")}</th>
-                <th>{t("conn.rule")}</th>
-                <th>{t("conn.process")}</th>
-                <th>{t("req.type")}</th>
-                <th>{t("conn.traffic")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
             <tbody>
@@ -153,14 +152,6 @@ export function RequestsPage({ embedded = false }: Props) {
                   <td>
                     <div className="conn-cell" title={r.process}>
                       {r.process || "—"}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="conn-cell" title={`${r.network}${r.conn_type ? `/${r.conn_type}` : ""}`}>
-                      <code>
-                        {r.network}
-                        {r.conn_type ? `/${r.conn_type}` : ""}
-                      </code>
                     </div>
                   </td>
                   <td className="conn-traffic">
