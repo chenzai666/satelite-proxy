@@ -105,7 +105,7 @@ export function RequestsPage({ embedded = false }: Props) {
           <table className="conn-table">
             <thead>
               <tr>
-                <th>{t("req.time")}</th>
+                <th className="conn-th-time">{t("req.time")}</th>
                 <th>{t("conn.dest")}</th>
                 <th className="conn-th-node">{t("conn.node")}</th>
                 <th className="conn-th-rule">{t("conn.rule")}</th>

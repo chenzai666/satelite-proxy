@@ -245,7 +245,7 @@ button {
   align-items: center;
   gap: 0.35rem;
   max-width: 100%;
-  padding: 0.28rem 0.35rem 0.28rem 0.55rem;
+  padding: 0.06rem 0.3rem 0.06rem 0.5rem;
   border-radius: var(--radius-pill);
   /* Glass body: vertical gradient gives top-to-bottom light variation so the
      surface reads as lit glass rather than a flat fill. */
@@ -366,21 +366,48 @@ button {
   display: none;
 }
 
-/* Sliding highlight that travels between nav items. Positioned via inline
-   transform/width from TopNav's layout effect. */
+/* Sliding glass capsule that travels between nav items. Positioned via inline
+   transform/width from TopNav's layout effect. It carries the glass-pill look
+   (top-lit, bottom-shaded) so the highlight slides smoothly on tab switch. */
 .topnav-indicator {
   position: absolute;
-  top: auto;
-  bottom: 0.08rem;
+  top: 0;
+  bottom: 0;
   left: 0;
-  height: 2px;
+  width: 0;
   border-radius: var(--radius-pill);
-  background: var(--primary);
-  box-shadow: 0 0 10px var(--primary-glow);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.045),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 2px 5px rgba(0, 0, 0, 0.13);
   pointer-events: none;
   z-index: 0;
-  transition: transform 0.28s cubic-bezier(0.4, 0.0, 0.2, 1),
-    width 0.28s cubic-bezier(0.4, 0.0, 0.2, 1), opacity 0.18s ease;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+}
+
+/* Localized upper-left light pooling on the sliding capsule. */
+.topnav-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0) 70%
+  );
+  pointer-events: none;
 }
 
 .topnav-item {
@@ -392,7 +419,7 @@ button {
   font-weight: 600 !important;
   letter-spacing: 0.04em;
   text-transform: none !important;
-  padding: 0.38rem 0.7rem !important;
+  padding: 0.5rem 0.75rem !important;
   border-radius: var(--radius-pill) !important;
   white-space: nowrap;
   transition: color 0.18s ease;
@@ -406,11 +433,12 @@ button {
   background: var(--hover-wash) !important;
 }
 
-/* The indicator paints the active background now; the button itself stays
-   transparent so the pill slides out cleanly. */
+/* The active tab is transparent — the sliding .topnav-indicator capsule paints
+   the highlight, so switching tabs animates the pill across instead of popping. */
 .topnav-item.active {
-  background: transparent !important;
   color: var(--text) !important;
+  background: transparent !important;
+  border: none !important;
   box-shadow: none !important;
 }
 
@@ -1629,6 +1657,10 @@ button.switch.small.on .switch-thumb {
 
 .conn-table {
   font-size: 0.85rem;
+  /* Fixed layout + per-column widths sized to fit the page (no horizontal
+     scroll). Both live and closed tabs share the same 6 columns, so widths
+     stay consistent across them. */
+  table-layout: fixed;
   width: 100%;
 }
 
@@ -1644,17 +1676,21 @@ button.switch.small.on .switch-thumb {
   vertical-align: middle;
 }
 
-/* Auto layout: columns size to content up to their max-width (set per cell),
-   so the table fills the page width without wasting space. Fixed-width columns
-   (time/net/traffic) stay tight; text columns expand to use the room. */
+/* Fixed column widths (≈ page width, no overflow). destination absorbs the
+   leftover since it has no explicit width. */
+.conn-table .conn-th-time,
 .conn-table .conn-time { width: 150px; white-space: nowrap; }
-.conn-table .conn-th-net { width: 64px; white-space: nowrap; }
+.conn-table .conn-th-node,
+.conn-table .conn-node { width: 150px; }
+.conn-table .conn-th-rule,
+.conn-table .conn-rule { width: 110px; }
+.conn-table .conn-th-process { width: 110px; }
 .conn-table .conn-th-traffic,
-.conn-table .conn-traffic { width: 110px; white-space: nowrap; }
+.conn-table .conn-traffic { width: 100px; white-space: nowrap; }
 
 .conn-cell {
   min-width: 0;
-  max-width: 320px;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1662,8 +1698,6 @@ button.switch.small.on .switch-thumb {
 
 .conn-dest {
   font-weight: 600;
-  /* destination can grow widest — it holds the longest values (hosts) */
-  max-width: 380px;
 }
 
 .conn-node {
@@ -4689,27 +4723,11 @@ button.active-soft {
   position: relative;
 }
 
-/* Match full mode's sliding underline look: the active tab draws a primary
-   underline glow; the button itself stays transparent. Non-active tabs get
-   nothing, so the highlight reads the same as TopNav's indicator. */
+/* Active tab: transparent, brighter text. No underline — keeps it clean. */
 .simple-topnav-items .topnav-item.active {
   background: transparent !important;
   color: var(--text) !important;
   box-shadow: none !important;
-}
-
-.simple-topnav-items .topnav-item.active::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: 0.08rem;
-  transform: translateX(-50%);
-  width: 60%;
-  height: 2px;
-  border-radius: var(--radius-pill);
-  background: var(--primary);
-  box-shadow: 0 0 10px var(--primary-glow);
-  pointer-events: none;
 }
 
 .simple-main {

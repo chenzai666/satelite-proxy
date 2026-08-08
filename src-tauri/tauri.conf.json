@@ -15,7 +15,8 @@
         "title": "Satelite",
         "width": 1024,
         "height": 760,
-        "resizable": false
+        "resizable": false,
+        "center": true
       }
     ],
     "security": {

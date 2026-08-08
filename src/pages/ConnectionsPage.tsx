@@ -10,6 +10,16 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+/** Format a Clash-API ISO start time (e.g. 2024-01-01T00:00:00Z) to local. */
+function fmtIso(iso: string) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
 interface Props {
   /** When true, omit page chrome (used under Traffic tabs). */
   embedded?: boolean;
@@ -103,9 +113,9 @@ export function ConnectionsPage({ embedded = false }: Props) {
           <table className="conn-table">
             <thead>
               <tr>
+                <th className="conn-th-time">{t("conn.time")}</th>
                 <th>{t("conn.dest")}</th>
                 <th className="conn-th-node">{t("conn.node")}</th>
-                <th className="conn-th-net">{t("conn.net")}</th>
                 <th className="conn-th-rule">{t("conn.rule")}</th>
                 <th className="conn-th-process">{t("conn.process")}</th>
                 <th className="conn-th-traffic">{t("conn.traffic")}</th>
@@ -114,6 +124,11 @@ export function ConnectionsPage({ embedded = false }: Props) {
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id}>
+                  <td className="conn-time">
+                    <div className="conn-cell" title={fmtIso(r.start)}>
+                      {fmtIso(r.start)}
+                    </div>
+                  </td>
                   <td>
                     <div
                       className="conn-cell conn-dest"
@@ -132,11 +147,6 @@ export function ConnectionsPage({ embedded = false }: Props) {
                       }
                     >
                       {r.node_name || r.node_tag || "—"}
-                    </div>
-                  </td>
-                  <td>
-                    <div className="conn-cell" title={r.network}>
-                      <code>{r.network || "—"}</code>
                     </div>
                   </td>
                   <td>
