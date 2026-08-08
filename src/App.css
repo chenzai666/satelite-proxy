@@ -3568,6 +3568,16 @@ button.check.on {
   align-items: center;
   gap: 0.75rem;
   min-width: 0;
+  width: 100%;
+}
+
+/* GlassSeg fills the quick-control rows so its right edge lines up with the
+   cards below. */
+.dash-side-rail .glass-seg {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  display: flex;
 }
 
 .dash-inline-switch {
@@ -4126,8 +4136,112 @@ button.check.on {
   z-index: 1;
 }
 
-[data-theme="day"] .segmented.compact {
+/* —— Glass segmented control (reusable switch, mirrors navbar material) ——
+   A frosted capsule that slides between options. Same look as the active nav
+   pill: vertical gradient body, top lit edge, bottom shade, upper-left glow. */
+.glass-seg {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0.18rem;
+  border-radius: var(--radius-pill);
+  background: rgba(16, 24, 26, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.glass-seg-indicator {
+  position: absolute;
+  top: 0.18rem;
+  bottom: 0.18rem;
+  left: 0.18rem;
+  /* width = one slot; the track padding (0.18rem each side) is accounted for
+     by using calc so the indicator lands exactly over an option. */
+  width: calc((100% - 0.36rem) / var(--count, 3));
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.19) 0%,
+    rgba(255, 255, 255, 0.11) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 1px 0 0 rgba(255, 255, 255, 0.045),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.1),
+    0 2px 5px rgba(0, 0, 0, 0.13);
+  pointer-events: none;
+  z-index: 0;
+  transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-seg-indicator::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 65%;
+  height: 45%;
+  border-radius: var(--radius-pill);
+  background: radial-gradient(
+    ellipse at top left,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0) 70%
+  );
+  pointer-events: none;
+}
+
+.glass-seg-btn {
+  position: relative;
+  z-index: 1;
+  appearance: none !important;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.32rem 0.7rem !important;
+  border: none !important;
+  border-radius: var(--radius-pill) !important;
+  background: transparent !important;
+  color: var(--muted) !important;
+  font-family: var(--mono) !important;
+  font-size: 0.72rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none !important;
+  transition: color 0.18s ease;
+}
+
+.glass-seg-btn:hover:not(:disabled):not(.active) {
+  color: var(--text) !important;
+}
+
+.glass-seg-btn.active {
+  color: var(--text) !important;
+}
+
+.glass-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+[data-theme="day"] .glass-seg {
   background: rgba(0, 0, 0, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="day"] .glass-seg-indicator {
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 [data-theme="day"] .segmented.compact .seg.active {
