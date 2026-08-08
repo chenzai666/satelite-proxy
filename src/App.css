@@ -199,6 +199,44 @@ button {
   color: var(--text);
 }
 
+/* Carry the hero's green atmosphere behind the top navigation. This gives
+   the glass capsule real colour variation to refract instead of a flat fill. */
+.dashboard-shell {
+  background:
+    radial-gradient(
+      ellipse 105% 68% at 50% 18%,
+      rgba(24, 92, 72, 0.32) 0%,
+      rgba(18, 62, 52, 0.2) 34%,
+      rgba(13, 30, 28, 0.08) 58%,
+      transparent 76%
+    ),
+    var(--page-glow),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+}
+
+.dashboard-shell .topnav {
+  --topnav-liquid: rgba(22, 32, 30, 0.5);
+  background: rgba(15, 20, 23, 0.42);
+}
+
+[data-theme="day"] .dashboard-shell {
+  background:
+    radial-gradient(
+      ellipse 105% 68% at 50% 18%,
+      rgba(48, 155, 119, 0.2) 0%,
+      rgba(77, 158, 132, 0.12) 36%,
+      rgba(112, 164, 148, 0.05) 60%,
+      transparent 77%
+    ),
+    var(--page-glow),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+}
+
+[data-theme="day"] .dashboard-shell .topnav {
+  --topnav-liquid: rgba(244, 250, 248, 0.54);
+  background: rgba(255, 255, 255, 0.46);
+}
+
 /* Top capsule navigation */
 .topnav-wrap {
   flex-shrink: 0;
