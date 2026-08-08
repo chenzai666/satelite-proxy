@@ -199,6 +199,8 @@ export interface AppSettings {
   locale?: string;
   /** UI theme: aerospace | day */
   theme?: string;
+  /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
+  accent?: string;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
   unload_ui_on_tray?: boolean;
   /** off | smart | kernel — node auto-select mode. */

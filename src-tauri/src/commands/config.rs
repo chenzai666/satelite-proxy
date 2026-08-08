@@ -50,6 +50,7 @@ pub fn update_settings(
     close_connections_on_switch: Option<bool>,
     locale: Option<String>,
     theme: Option<String>,
+    accent: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
     auto_select: Option<String>, // off | smart | kernel
@@ -111,6 +112,15 @@ pub fn update_settings(
                 let th = th.trim().to_ascii_lowercase();
                 if matches!(th.as_str(), "aerospace" | "day") {
                     store.settings.theme = th;
+                }
+            }
+            if let Some(ac) = accent {
+                let ac = ac.trim().to_ascii_lowercase();
+                if matches!(
+                    ac.as_str(),
+                    "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
+                ) {
+                    store.settings.accent = ac;
                 }
             }
             if let Some(v) = unload_ui_on_tray {

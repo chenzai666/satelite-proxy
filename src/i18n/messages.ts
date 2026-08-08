@@ -158,6 +158,8 @@ const en = {
   "settings.themeDesc": "Color scheme for the control console",
   "settings.themeAerospace": "Mission",
   "settings.themeDay": "Day",
+  "settings.accent": "Accent color",
+  "settings.accentDesc": "Brand color used across buttons and highlights",
   "settings.unloadUi": "Low memory mode",
   "settings.unloadUiDesc":
     "Destroy the UI when closing to tray to free memory. Reopening recreates the window and may show a black screen briefly",
@@ -558,6 +560,8 @@ const zh: Record<MessageKey, string> = {
   "settings.themeDesc": "控制台配色方案",
   "settings.themeAerospace": "Mission",
   "settings.themeDay": "Day",
+  "settings.accent": "主题色",
+  "settings.accentDesc": "按钮与高亮等处使用的主色调",
   "settings.unloadUi": "低内存模式",
   "settings.unloadUiDesc":
     "关闭到托盘时销毁界面以节省内存。再次打开会重建窗口，可能短暂黑屏",

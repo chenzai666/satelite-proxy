@@ -856,6 +856,14 @@ tr.row-active {
   border-left: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
+/* Accent picker: spans full width so the swatch row sits centered below the
+   language/theme pickers (which occupy row 1's two columns). */
+.settings-app-pref.settings-accent-row {
+  grid-column: 1 / -1;
+  border-left: none !important;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
 .settings-app-toggles {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -914,6 +922,57 @@ tr.row-active {
 .settings-app-text {
   min-width: 0;
   flex: 1;
+}
+
+/* Accent color swatch picker (round dots; background set inline per preset). */
+.settings-accent-swatches {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.settings-accent-dot {
+  appearance: none !important;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 !important;
+  border: 2px solid transparent !important;
+  border-radius: 50% !important;
+  font-size: 0.72rem !important;
+  font-weight: 700 !important;
+  line-height: 1 !important;
+  color: #fff;
+  display: inline-grid;
+  place-items: center;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15) !important;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.settings-accent-dot:hover:not(:disabled) {
+  transform: scale(1.1);
+}
+
+.settings-accent-dot.active {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.15),
+    0 0 0 2px var(--bg),
+    0 0 0 4px currentColor !important;
+}
+
+/* Check mark stays high-contrast white regardless of the dot's accent color
+   (currentColor drives only the selection ring). */
+.settings-accent-check {
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.settings-accent-dot:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .settings-app-title {

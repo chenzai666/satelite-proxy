@@ -126,6 +126,9 @@ pub struct AppSettings {
     /// UI theme: `day` (light default) | `aerospace` (dark).
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
+    #[serde(default = "default_accent")]
+    pub accent: String,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
     /// memory. Default false — hide only so reopen is instant. When true, next
     /// wake recreates the WebView (brief black screen).
@@ -163,6 +166,10 @@ fn default_theme() -> String {
     "day".into()
 }
 
+fn default_accent() -> String {
+    "green".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -183,6 +190,7 @@ impl Default for AppSettings {
             close_connections_on_switch: true,
             locale: default_locale(),
             theme: default_theme(),
+            accent: default_accent(),
             unload_ui_on_tray: false,
             auto_select: AutoSelectMode::Off,
             smart_switch: false,

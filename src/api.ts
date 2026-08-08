@@ -126,6 +126,7 @@ export function updateSettings(payload: {
   closeConnectionsOnSwitch?: boolean | null;
   locale?: string | null;
   theme?: string | null;
+  accent?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
   smartSwitch?: boolean | null;
@@ -147,6 +148,7 @@ export function updateSettings(payload: {
     closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
     locale: payload.locale ?? null,
     theme: payload.theme ?? null,
+    accent: payload.accent ?? null,
     unloadUiOnTray: payload.unloadUiOnTray ?? null,
     smartSwitch: payload.smartSwitch ?? null,
     autoSelect: payload.autoSelect ?? null,

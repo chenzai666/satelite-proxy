@@ -10,6 +10,7 @@ import {
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n, type Locale } from "../i18n";
+import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
@@ -19,7 +20,7 @@ type SettingsTab = "app" | "rules" | "dns" | "dns_rules" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, accent, setAccent } = useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [mixed, setMixed] = useState("2080");
@@ -311,6 +312,39 @@ export function SettingsPage() {
                   >
                     {t("settings.themeDay")}
                   </button>
+                </div>
+              </div>
+              <div className="settings-app-row settings-app-pref settings-accent-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.accent")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.accentDesc")}
+                  </div>
+                </div>
+                <div
+                  className="settings-accent-swatches"
+                  role="group"
+                  aria-label={t("settings.accent")}
+                >
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`settings-accent-dot ${accent === a.id ? "active" : ""}`}
+                      style={{ background: a[theme], color: a[theme] }}
+                      title={a.name}
+                      aria-label={a.name}
+                      aria-pressed={accent === a.id}
+                      disabled={busy}
+                      onClick={() => void setAccent(a.id)}
+                    >
+                      {accent === a.id ? (
+                        <span className="settings-accent-check">✓</span>
+                      ) : (
+                        ""
+                      )}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
