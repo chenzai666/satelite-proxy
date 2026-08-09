@@ -409,6 +409,35 @@ impl Runtime {
             .collect()
     }
 
+    /// Closed requests that look like failures / timeouts: short-lived (≤ 3s)
+    /// with almost no bytes transferred — same heuristic used by the passive
+    /// smart-switch health check (see `passive_node_stats`).
+    pub fn request_failures(
+        &mut self,
+        store: &AppStore,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Vec<ConnectionView> {
+        self.core.poll();
+        self.refresh_traffic_if_stale();
+        let tag_info = node_tag_info_map(store);
+        let q = query.unwrap_or("").trim();
+        let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
+        self.request_order
+            .iter()
+            .filter_map(|id| self.request_by_id.get(id))
+            .filter(|r| r.closed)
+            .filter(|r| {
+                let closed_at = r.closed_at.unwrap_or(r.last_seen);
+                let dur = closed_at.saturating_sub(r.first_seen);
+                dur <= 3000 && r.download < 1024 && r.upload < 1024
+            })
+            .filter(|r| r.matches_query(q))
+            .take(limit)
+            .map(|r| ConnectionView::from_record(r, &tag_info))
+            .collect()
+    }
+
     pub fn clear_request_history(&mut self) {
         // Keep active records so they can still transition into the closed
         // list when they disappear from a later connection snapshot.

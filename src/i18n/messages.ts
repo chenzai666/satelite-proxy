@@ -259,6 +259,7 @@ const en = {
   "traffic.desc": "Active and closed connections",
   "traffic.tabLive": "Active",
   "traffic.tabHistory": "Closed",
+  "traffic.tabFailures": "Failed",
 
   // connections (live tab)
   "conn.title": "Active connections",
@@ -289,6 +290,25 @@ const en = {
   "req.time": "Time",
   "req.type": "Type",
   "req.first": "first {t}",
+
+  // requests: failures (suspicious closes)
+  "fails.title": "Failed requests",
+  "fails.desc":
+    "Connections that closed very fast with almost no bytes — likely blocked, dropped, or timed out",
+  "fails.filter": "Filter host / node / rule / process…",
+  "fails.count": "{n} suspicious closes",
+  "fails.empty": "No failed requests detected yet.",
+  "fails.addRule": "Add rule",
+  "fails.addRuleTitle": "Quick add rule",
+  "fails.noSuffix": "No domain to extract from this row",
+  "fails.ruleSet": "Rule set",
+  "fails.newSetPh": "Create a new rule set…",
+  "fails.noSets": "No rule sets yet — create one below",
+  "fails.typeHint": "Auto-extracted from the request host (last two labels).",
+  "fails.payloadPh": "example.com",
+  "fails.fromHost": "From host: {host}",
+  "fails.needPayload": "Payload cannot be empty",
+  "fails.needSet": "Select or create a rule set",
 
   // rules
   "rules.title": "Rules",
@@ -664,6 +684,7 @@ const zh: Record<MessageKey, string> = {
   "traffic.desc": "连接中与已关闭的连接记录",
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",
+  "traffic.tabFailures": "失败",
 
   "conn.title": "连接中",
   "conn.desc": "仅当前活跃连接 · 约 1s 刷新",
@@ -692,6 +713,24 @@ const zh: Record<MessageKey, string> = {
   "req.time": "时间",
   "req.type": "类型",
   "req.first": "首次 {t}",
+
+  // requests: failures (suspicious closes)
+  "fails.title": "失败请求",
+  "fails.desc": "极短时间内关闭且几乎没有流量的连接 —— 多为被拦截、断流或超时",
+  "fails.filter": "关键字：域名、节点、规则、进程…",
+  "fails.count": "{n} 条疑似失败",
+  "fails.empty": "暂无失败请求。",
+  "fails.addRule": "添加规则",
+  "fails.addRuleTitle": "快速添加规则",
+  "fails.noSuffix": "该请求无法提取出可匹配的后缀",
+  "fails.ruleSet": "规则集",
+  "fails.newSetPh": "新建一个规则集…",
+  "fails.noSets": "暂无规则集，请在下方新建",
+  "fails.typeHint": "从请求域名自动提取（取最后两段作为后缀）。",
+  "fails.payloadPh": "example.com",
+  "fails.fromHost": "来源域名：{host}",
+  "fails.needPayload": "匹配内容不能为空",
+  "fails.needSet": "请选择或新建规则集",
 
   "rules.title": "规则",
   "rules.desc":

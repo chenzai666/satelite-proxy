@@ -4187,6 +4187,12 @@ button.check.on {
   transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* First paint after mount: skip the slide so the capsule doesn't animate
+   from option 0 to the active option every time the page re-renders. */
+.glass-seg-indicator.no-anim {
+  transition: none !important;
+}
+
 .glass-seg-indicator::before {
   content: "";
   position: absolute;
@@ -4307,6 +4313,55 @@ button.check.on {
 .traffic-meta {
   margin-bottom: 8px;
   font-size: 12px;
+}
+
+/* —— Failed requests (suspicious closes) —— */
+.fails-table .conn-th-actions,
+.fails-table .conn-actions-cell {
+  width: 96px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Small primary "Add rule" button inside the actions column. */
+button.compact {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.7rem;
+}
+
+.fails-set-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.fails-set-row .inline,
+.fails-new-set {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fails-set-row .inline input[type="radio"],
+.fails-new-set input[type="radio"] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/* The select / text input next to a radio fills the remaining space. */
+.fails-set-row .inline .solid-select,
+.fails-new-set input:not([type="radio"]) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.fails-type-tag {
+  font-family: var(--mono, monospace);
+  font-size: 0.78rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--primary-muted, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border-subtle);
 }
 
 /* —— App logs —— */
