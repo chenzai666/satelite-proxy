@@ -1,0 +1,444 @@
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  clearRequestHistory,
+  createRuleSet,
+  listRequestFailures,
+  listRuleSets,
+  saveRule,
+} from "../api";
+import { SolidSelect } from "../components/SolidSelect";
+import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { useI18n } from "../i18n";
+import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
+
+function fmtBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function fmtTime(ms?: number | null) {
+  if (!ms) return "—";
+  try {
+    return new Date(ms).toLocaleString();
+  } catch {
+    return String(ms);
+  }
+}
+
+/** Derive the host (no port) for a request row, preferring the SNI host. */
+function rowHost(r: ConnectionView): string {
+  const h = r.host.trim();
+  if (h) return h;
+  const dest = r.destination.trim();
+  if (!dest || dest === "—") return "";
+  // destination looks like "example.com:443" or "1.2.3.4:443"
+  const i = dest.lastIndexOf(":");
+  return i > 0 ? dest.slice(0, i) : dest;
+}
+
+/**
+ * Extract a DOMAIN-SUFFIX payload from a request.
+ *
+ * Returns the last two labels of the host (so `cdn.api.example.com` →
+ * `example.com`), which is what most DOMAIN-SUFFIX rule lists want. IP
+ * literals and single-label hosts fall back to the whole value.
+ */
+export function extractDomainSuffix(host: string): string {
+  const h = host.trim().toLowerCase();
+  if (!h) return "";
+  // IPv4 / IPv6 / single label → can't split meaningfully.
+  const isIp = /^\[?[0-9a-f:.]+\]?$/i.test(h);
+  if (isIp || !h.includes(".")) return h;
+  const labels = h.split(".").filter(Boolean);
+  if (labels.length <= 2) return h;
+  return labels.slice(-2).join(".");
+}
+
+const LAST_SET_KEY = "traffic.lastRuleSetId";
+
+interface Props {
+  /** When true, omit page chrome (used under Traffic tabs). */
+  embedded?: boolean;
+}
+
+export function FailuresPage({ embedded = false }: Props) {
+  const { t } = useI18n();
+  const [rows, setRows] = useState<ConnectionView[]>([]);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const reload = useCallback(async () => {
+    try {
+      const list = await listRequestFailures(query.trim() || null, 800);
+      setRows(list);
+      setError(null);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [query]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  useVisibleInterval(() => {
+    void reload();
+  }, 2500);
+
+  async function onClear() {
+    if (!confirm(t("req.clearConfirm"))) return;
+    try {
+      await clearRequestHistory();
+      setRows([]);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  // —— Quick add-rule modal state ——
+  const [addOpen, setAddOpen] = useState(false);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addHost, setAddHost] = useState("");
+  const [payload, setPayload] = useState("");
+  const [target, setTarget] = useState<RuleTarget>("proxy");
+  const [sets, setSets] = useState<RuleSetSummary[]>([]);
+  const [setId, setSetId] = useState<string>("");
+  const [newSetName, setNewSetName] = useState("");
+  const [createNewSet, setCreateNewSet] = useState(false);
+
+  const targetOpts: { value: RuleTarget; label: string }[] = useMemo(
+    () => [
+      { value: "proxy", label: t("rules.targetProxy") },
+      { value: "direct", label: t("rules.targetDirect") },
+      { value: "block", label: t("rules.targetBlock") },
+    ],
+    [t],
+  );
+
+  const setOptions = useMemo(
+    () => sets.map((s) => ({ value: s.id, label: s.name })),
+    [sets],
+  );
+
+  /** Load rule sets + resolve the default: last-used, else first enabled, else first. */
+  const reloadSets = useCallback(async () => {
+    const list = await listRuleSets();
+    setSets(list);
+    const lastUsed = localStorage.getItem(LAST_SET_KEY) ?? "";
+    const exists = list.some((s) => s.id === lastUsed);
+    if (exists) {
+      setSetId(lastUsed);
+      return;
+    }
+    const preferred =
+      list.find((s) => s.enabled)?.id ?? list[0]?.id ?? "";
+    setSetId(preferred);
+  }, []);
+
+  function openAddRule(r: ConnectionView) {
+    setError(null);
+    const host = rowHost(r);
+    const suffix = extractDomainSuffix(host);
+    setAddHost(host);
+    setPayload(suffix);
+    setTarget("proxy");
+    setNewSetName("");
+    setCreateNewSet(false);
+    setAddOpen(true);
+    void reloadSets();
+  }
+
+  async function onAddSave(e: FormEvent) {
+    e.preventDefault();
+    const body = payload.trim();
+    if (!body) {
+      setError(t("fails.needPayload"));
+      return;
+    }
+    if (createNewSet && !newSetName.trim()) {
+      setError(t("rules.needName"));
+      return;
+    }
+    setAddBusy(true);
+    setError(null);
+    try {
+      let targetSetId = setId;
+      if (createNewSet) {
+        const set = await createRuleSet(newSetName.trim());
+        const list = await listRuleSets();
+        setSets(list);
+        targetSetId = set.id;
+      }
+      if (!targetSetId) {
+        setError(t("fails.needSet"));
+        setAddBusy(false);
+        return;
+      }
+      await saveRule({
+        setId: targetSetId,
+        ruleType: "domain_suffix",
+        payload: body,
+        target,
+        enabled: true,
+      });
+      localStorage.setItem(LAST_SET_KEY, targetSetId);
+      setSetId(targetSetId);
+      setAddOpen(false);
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  const toolbar = (
+    <div className={`traffic-toolbar ${embedded ? "" : "page-header"}`}>
+      {!embedded && (
+        <div>
+          <h1>{t("fails.title")}</h1>
+          <p className="page-desc">{t("fails.desc")}</p>
+        </div>
+      )}
+      <div className="header-actions traffic-toolbar-actions">
+        <input
+          className="search"
+          placeholder={t("fails.filter")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button type="button" className="secondary" onClick={() => void reload()}>
+          {t("common.refresh")}
+        </button>
+        <button type="button" className="danger" onClick={() => void onClear()}>
+          {t("common.clear")}
+        </button>
+      </div>
+    </div>
+  );
+
+  const body = (
+    <>
+      {error && !addOpen && <div className="banner error">{error}</div>}
+
+      <div className="muted mono traffic-meta">
+        {t("fails.count", { n: rows.length })}
+        {query.trim() ? t("req.filterLabel", { q: query.trim() }) : ""}
+      </div>
+
+      {loading ? (
+        <div className="empty">{t("common.loading")}</div>
+      ) : rows.length === 0 ? (
+        <div className="empty card muted">{t("fails.empty")}</div>
+      ) : (
+        <div className="card table-wrap">
+          <table className="conn-table fails-table">
+            <thead>
+              <tr>
+                <th className="conn-th-time">{t("req.time")}</th>
+                <th>{t("conn.dest")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
+                <th className="conn-th-actions">{t("common.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const host = rowHost(r);
+                const suffix = extractDomainSuffix(host);
+                return (
+                  <tr key={`${r.id}-${r.closed_at ?? r.last_seen ?? 0}`}>
+                    <td className="conn-time">
+                      <div className="conn-cell" title={fmtTime(r.closed_at ?? r.last_seen)}>
+                        {fmtTime(r.closed_at ?? r.last_seen)}
+                      </div>
+                    </td>
+                    <td>
+                      <div
+                        className="conn-cell conn-dest"
+                        title={`${r.destination}${host ? ` · ${host}` : ""}`}
+                      >
+                        {r.destination}
+                      </div>
+                    </td>
+                    <td>
+                      <div
+                        className="conn-cell conn-node"
+                        title={
+                          r.subscription_name
+                            ? `${r.subscription_name} · ${r.node_name}`
+                            : r.node_name
+                        }
+                      >
+                        {r.node_name || r.node_tag || "—"}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="conn-cell conn-rule" title={r.rule}>
+                        {r.rule || "—"}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="conn-cell" title={r.process}>
+                        {r.process || "—"}
+                      </div>
+                    </td>
+                    <td className="conn-traffic">
+                      <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                        ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                      </span>
+                    </td>
+                    <td className="conn-actions-cell">
+                      <button
+                        type="button"
+                        className="compact"
+                        disabled={!suffix}
+                        title={suffix ? `DOMAIN-SUFFIX, ${suffix}` : t("fails.noSuffix")}
+                        onClick={() => openAddRule(r)}
+                      >
+                        {t("fails.addRule")}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+
+  const modal = addOpen && (
+    <div className="modal-backdrop" onClick={() => !addBusy && setAddOpen(false)}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <header className="modal-header">
+          <h2>{t("fails.addRuleTitle")}</h2>
+          <button
+            type="button"
+            className="icon-btn"
+            disabled={addBusy}
+            onClick={() => setAddOpen(false)}
+          >
+            ×
+          </button>
+        </header>
+        <form className="modal-body" onSubmit={(e) => void onAddSave(e)}>
+          {error && <div className="banner error">{error}</div>}
+
+          <div className="field">
+            <span>{t("fails.ruleSet")}</span>
+            <div className="fails-set-row">
+              <label className="inline">
+                <input
+                  type="radio"
+                  checked={!createNewSet}
+                  onChange={() => setCreateNewSet(false)}
+                />
+                <SolidSelect
+                  value={setId}
+                  options={setOptions}
+                  onChange={setSetId}
+                  disabled={createNewSet || setOptions.length === 0}
+                  aria-label={t("fails.ruleSet")}
+                  placeholder={setOptions.length === 0 ? t("fails.noSets") : undefined}
+                />
+              </label>
+            </div>
+            <label className="inline fails-new-set">
+              <input
+                type="radio"
+                checked={createNewSet}
+                onChange={() => setCreateNewSet(true)}
+              />
+              <input
+                value={newSetName}
+                onChange={(e) => setNewSetName(e.target.value)}
+                placeholder={t("fails.newSetPh")}
+                maxLength={64}
+                disabled={!createNewSet}
+              />
+            </label>
+          </div>
+
+          <div className="field">
+            <span>{t("rules.type")}</span>
+            <code className="fails-type-tag">DOMAIN-SUFFIX</code>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {t("fails.typeHint")}
+            </span>
+          </div>
+
+          <label className="field">
+            <span>{t("rules.payload")}</span>
+            <input
+              value={payload}
+              onChange={(e) => setPayload(e.target.value)}
+              placeholder={t("fails.payloadPh")}
+              autoFocus
+            />
+            {addHost && addHost !== payload && (
+              <span className="muted" style={{ fontSize: 12 }}>
+                {t("fails.fromHost", { host: addHost })}
+              </span>
+            )}
+          </label>
+
+          <div className="field">
+            <span>{t("rules.outbound")}</span>
+            <SolidSelect
+              value={target}
+              options={targetOpts}
+              onChange={(v) => setTarget(v as RuleTarget)}
+              aria-label={t("rules.outbound")}
+            />
+          </div>
+
+          <footer className="modal-footer">
+            <button
+              type="button"
+              className="secondary"
+              disabled={addBusy}
+              onClick={() => setAddOpen(false)}
+            >
+              {t("common.cancel")}
+            </button>
+            <button
+              type="submit"
+              disabled={
+                addBusy ||
+                !payload.trim() ||
+                (createNewSet && !newSetName.trim())
+              }
+            >
+              {addBusy ? t("common.saving") : t("common.save")}
+            </button>
+          </footer>
+        </form>
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="traffic-embed">
+        {toolbar}
+        {body}
+        {modal}
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      {toolbar}
+      {body}
+      {modal}
+    </div>
+  );
+}

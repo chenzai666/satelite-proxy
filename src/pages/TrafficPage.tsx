@@ -2,9 +2,10 @@ import { useState } from "react";
 import { GlassSeg } from "../components/GlassSeg";
 import { useI18n } from "../i18n";
 import { ConnectionsPage } from "./ConnectionsPage";
+import { FailuresPage } from "./FailuresPage";
 import { RequestsPage } from "./RequestsPage";
 
-type TrafficTab = "live" | "history";
+type TrafficTab = "live" | "history" | "failures";
 
 export function TrafficPage() {
   const { t } = useI18n();
@@ -24,6 +25,7 @@ export function TrafficPage() {
           options={[
             { value: "live", label: t("traffic.tabLive") },
             { value: "history", label: t("traffic.tabHistory") },
+            { value: "failures", label: t("traffic.tabFailures") },
           ]}
         />
       </header>
@@ -32,8 +34,10 @@ export function TrafficPage() {
       <div className="traffic-panel page-enter" role="tabpanel" key={tab}>
         {tab === "live" ? (
           <ConnectionsPage embedded />
-        ) : (
+        ) : tab === "history" ? (
           <RequestsPage embedded />
+        ) : (
+          <FailuresPage embedded />
         )}
       </div>
     </div>

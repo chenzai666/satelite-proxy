@@ -407,6 +407,14 @@ export function listRequests(query?: string | null, limit?: number | null) {
   });
 }
 
+/** Suspicious closed requests: short-lived & near-zero bytes (failure/timeout). */
+export function listRequestFailures(query?: string | null, limit?: number | null) {
+  return invoke<ConnectionView[]>("list_request_failures", {
+    query: query ?? null,
+    limit: limit ?? null,
+  });
+}
+
 export function clearRequestHistory() {
   return invoke<void>("clear_request_history");
 }
