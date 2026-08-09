@@ -3099,7 +3099,7 @@ code {
 
 .pill.ok {
   background: var(--success-muted);
-  color: #15803d;
+  color: var(--success);
   text-transform: none;
 }
 
