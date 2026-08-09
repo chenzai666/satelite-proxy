@@ -260,6 +260,10 @@ const en = {
   "traffic.tabLive": "Active",
   "traffic.tabHistory": "Closed",
   "traffic.tabFailures": "Failed",
+  "traffic.scopeAll": "All",
+  "traffic.scopeDirect": "Direct",
+  "traffic.scopeProxy": "Proxy",
+  "traffic.scopeLabel": "Outbound",
 
   // connections (live tab)
   "conn.title": "Active connections",
@@ -685,6 +689,10 @@ const zh: Record<MessageKey, string> = {
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",
   "traffic.tabFailures": "失败",
+  "traffic.scopeAll": "全部",
+  "traffic.scopeDirect": "直连",
+  "traffic.scopeProxy": "代理",
+  "traffic.scopeLabel": "出口",
 
   "conn.title": "连接中",
   "conn.desc": "仅当前活跃连接 · 约 1s 刷新",

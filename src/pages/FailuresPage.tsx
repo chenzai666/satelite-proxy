@@ -6,10 +6,12 @@ import {
   listRuleSets,
   saveRule,
 } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
+import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -68,6 +70,7 @@ export function FailuresPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<TrafficScope>("proxy");
 
   const reload = useCallback(async () => {
     try {
@@ -115,6 +118,16 @@ export function FailuresPage({ embedded = false }: Props) {
       { value: "proxy", label: t("rules.targetProxy") },
       { value: "direct", label: t("rules.targetDirect") },
       { value: "block", label: t("rules.targetBlock") },
+    ],
+    [t],
+  );
+
+  const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  const scopeOpts = useMemo(
+    () => [
+      { value: "all", label: t("traffic.scopeAll") },
+      { value: "direct", label: t("traffic.scopeDirect") },
+      { value: "proxy", label: t("traffic.scopeProxy") },
     ],
     [t],
   );
@@ -210,6 +223,12 @@ export function FailuresPage({ embedded = false }: Props) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <GlassSeg
+          value={scope}
+          ariaLabel={t("traffic.scopeLabel")}
+          onChange={(v) => setScope(v as TrafficScope)}
+          options={scopeOpts}
+        />
         <button type="button" className="secondary" onClick={() => void reload()}>
           {t("common.refresh")}
         </button>
@@ -225,13 +244,13 @@ export function FailuresPage({ embedded = false }: Props) {
       {error && !addOpen && <div className="banner error">{error}</div>}
 
       <div className="muted mono traffic-meta">
-        {t("fails.count", { n: rows.length })}
+        {t("fails.count", { n: scoped.length })}
         {query.trim() ? t("req.filterLabel", { q: query.trim() }) : ""}
       </div>
 
       {loading ? (
         <div className="empty">{t("common.loading")}</div>
-      ) : rows.length === 0 ? (
+      ) : scoped.length === 0 ? (
         <div className="empty card muted">{t("fails.empty")}</div>
       ) : (
         <div className="card table-wrap">
@@ -248,7 +267,7 @@ export function FailuresPage({ embedded = false }: Props) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => {
+              {scoped.map((r) => {
                 const host = rowHost(r);
                 const suffix = extractDomainSuffix(host);
                 return (

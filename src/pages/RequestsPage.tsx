@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { clearRequestHistory, listRequests } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
+import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -30,6 +32,7 @@ export function RequestsPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<TrafficScope>("proxy");
 
   const reload = useCallback(async () => {
     try {
@@ -62,6 +65,16 @@ export function RequestsPage({ embedded = false }: Props) {
     }
   }
 
+  const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  const scopeOpts = useMemo(
+    () => [
+      { value: "all", label: t("traffic.scopeAll") },
+      { value: "direct", label: t("traffic.scopeDirect") },
+      { value: "proxy", label: t("traffic.scopeProxy") },
+    ],
+    [t],
+  );
+
   const toolbar = (
     <div className={`traffic-toolbar ${embedded ? "" : "page-header"}`}>
       {!embedded && (
@@ -76,6 +89,12 @@ export function RequestsPage({ embedded = false }: Props) {
           placeholder={t("req.filter")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+        />
+        <GlassSeg
+          value={scope}
+          ariaLabel={t("traffic.scopeLabel")}
+          onChange={(v) => setScope(v as TrafficScope)}
+          options={scopeOpts}
         />
         <button type="button" className="secondary" onClick={() => void reload()}>
           {t("common.refresh")}
@@ -92,13 +111,13 @@ export function RequestsPage({ embedded = false }: Props) {
       {error && <div className="banner error">{error}</div>}
 
       <div className="muted mono traffic-meta">
-        {t("req.count", { n: rows.length })}
+        {t("req.count", { n: scoped.length })}
         {query.trim() ? t("req.filterLabel", { q: query.trim() }) : ""}
       </div>
 
       {loading ? (
         <div className="empty">{t("common.loading")}</div>
-      ) : rows.length === 0 ? (
+      ) : scoped.length === 0 ? (
         <div className="empty card muted">{t("req.empty")}</div>
       ) : (
         <div className="card table-wrap">
@@ -114,7 +133,7 @@ export function RequestsPage({ embedded = false }: Props) {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {scoped.map((r) => (
                 <tr key={`${r.id}-${r.last_seen ?? 0}`}>
                   <td className="conn-time">
                     <div
