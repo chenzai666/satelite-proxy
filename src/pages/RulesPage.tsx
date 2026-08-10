@@ -28,6 +28,7 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n } from "../i18n";
 import type {
   ProxyNode,
@@ -87,6 +88,8 @@ export function RulesPage({ embedded = false }: Props) {
   const [newSetBusy, setNewSetBusy] = useState(false);
   /** Row ⋮ menu open for this rule id */
   const [menuRuleId, setMenuRuleId] = useState<string | null>(null);
+  /** Rule-set card ⋮ menu open for this set id. */
+  const [menuSetId, setMenuSetId] = useState<string | null>(null);
 
   /** Pointer drag (HTML5 DnD is unreliable in Tauri WebView). */
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -180,14 +183,18 @@ export function RulesPage({ embedded = false }: Props) {
   }, [viewSetId, reloadRules]);
 
   useEffect(() => {
-    if (!menuRuleId) return;
+    if (!menuRuleId && !menuSetId) return;
     function onDocPointerDown(e: PointerEvent) {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.("[data-rule-menu]")) return;
+      if (t?.closest?.("[data-rule-menu], [data-ruleset-menu]")) return;
       setMenuRuleId(null);
+      setMenuSetId(null);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMenuRuleId(null);
+      if (e.key === "Escape") {
+        setMenuRuleId(null);
+        setMenuSetId(null);
+      }
     }
     document.addEventListener("pointerdown", onDocPointerDown, true);
     document.addEventListener("keydown", onKey);
@@ -195,7 +202,7 @@ export function RulesPage({ embedded = false }: Props) {
       document.removeEventListener("pointerdown", onDocPointerDown, true);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menuRuleId]);
+  }, [menuRuleId, menuSetId]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -486,14 +493,14 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onDeleteSet() {
-    if (!viewSetId || viewSet?.builtin || busy) return;
-    if (!confirm(`删除规则集「${viewSet?.name}」？`)) return;
+  async function onDeleteSet(target: RuleSetSummary | null | undefined = viewSet) {
+    if (!target || target.builtin || busy) return;
+    if (!confirm(`删除规则集「${target.name}」？`)) return;
     setBusy(true);
     setError(null);
     try {
-      await deleteRuleSet(viewSetId);
-      setViewSetId(null);
+      await deleteRuleSet(target.id);
+      if (viewSetId === target.id) setViewSetId(null);
       await reload();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
@@ -507,9 +514,9 @@ export function RulesPage({ embedded = false }: Props) {
     return s.id.startsWith("builtin-");
   }
 
-  async function onResetFactory() {
-    if (!viewSetId || !viewSet || !isFactorySet(viewSet)) return;
-    const name = viewSet.name;
+  async function onResetFactory(target: RuleSetSummary | null | undefined = viewSet) {
+    if (!target || !isFactorySet(target)) return;
+    const name = target.name;
     if (
       !confirm(
         `将「${name}」恢复为出厂配置文件？\n当前对该集的编辑会丢失。\n（重启程序不会自动重置，只会保留你的修改。）`,
@@ -518,8 +525,8 @@ export function RulesPage({ embedded = false }: Props) {
       return;
     }
     try {
-      await resetRuleSet(viewSetId);
-      await reloadRules(viewSetId);
+      await resetRuleSet(target.id);
+      if (viewSetId === target.id) await reloadRules(target.id);
       await reloadSets();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
@@ -677,7 +684,7 @@ export function RulesPage({ embedded = false }: Props) {
       </div>
 
       <div className="rules-layout">
-        <aside className="card ruleset-list">
+        <aside className="card ruleset-list rules-route-list">
           <div className="ruleset-list-actions">
             <GlassButton
               icon="+"
@@ -746,27 +753,65 @@ export function RulesPage({ embedded = false }: Props) {
                 </span>
                 <span className="ruleset-prio muted">{index + 1}</span>
                 <span className="ruleset-name">{s.name}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={s.enabled}
-                  className={`switch small ${s.enabled ? "on" : ""}`}
+                <GlassSwitchControl
+                  checked={s.enabled}
+                  size="sm"
                   title={s.enabled ? "关闭规则集" : "启用规则集"}
                   onClick={(e) => {
                     e.stopPropagation();
-                    void onToggleSet(s.id, !s.enabled);
                   }}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={(checked) => void onToggleSet(s.id, checked)}
+                />
+                <div className="rule-menu" data-ruleset-menu>
+                  <button
+                    type="button"
+                    className="rule-menu-trigger"
+                    aria-label={`${s.name} 操作`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuSetId === s.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuRuleId(null);
+                      setMenuSetId((id) => (id === s.id ? null : s.id));
+                    }}
+                  >
+                    ⋮
+                  </button>
+                  {menuSetId === s.id && (
+                    <div className="rule-menu-pop ruleset-menu-pop" role="menu">
+                      {isFactorySet(s) ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="rule-menu-item"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuSetId(null);
+                            void onResetFactory(s);
+                          }}
+                        >
+                          重置
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="rule-menu-item danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuSetId(null);
+                            void onDeleteSet(s);
+                          }}
+                        >
+                          删除
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
-                {s.rule_count} 条 · 路由 {s.strategy} · DNS {s.strategy === "block" ? "reject" : s.dns_strategy}
-                {s.builtin ? ` · ${t("rules.builtin")}` : ""}
-                {s.remote ? " · 远程" : ""} · {s.strategy}
-                {s.enabled
-                  ? ` · ${t("rules.setOn")}`
-                  : ` · ${t("rules.setOff")}`}
+                {s.rule_count} 条 · {s.strategy} · dns {s.strategy === "block" ? "reject" : s.dns_strategy}
               </div>
             </div>
           ))}
@@ -774,10 +819,7 @@ export function RulesPage({ embedded = false }: Props) {
 
         <section className="rules-main">
           <div className="rules-toolbar card">
-            <div>
-              <strong>{viewSet?.name ?? "—"}</strong>
-            </div>
-            <div className="header-actions">
+            <div className="header-actions rules-main-actions">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="muted" style={{ fontSize: 12 }}>路由</span>
                 <GlassSeg
@@ -807,45 +849,26 @@ export function RulesPage({ embedded = false }: Props) {
                   ]}
                 />
               </div>}
-              <GlassButton
-                variant="primary"
-                icon="+"
-                onClick={openCreate}
-                disabled={!viewSetId || !!viewSet?.remote}
-                title={t("rules.addRuleTitle")}
-              >
-                添加规则
-              </GlassButton>
-              {isFactorySet(viewSet) && (
+              <div className="rules-toolbar-tail">
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="search rules-filter"
+                  placeholder="过滤规则…"
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                />
                 <GlassButton
-                  icon="↺"
-                  onClick={() => void onResetFactory()}
-                  title={t("rules.resetFactoryHint")}
+                  variant="primary"
+                  icon="+"
+                  onClick={openCreate}
+                  disabled={!viewSetId || !!viewSet?.remote}
+                  title={t("rules.addRuleTitle")}
                 >
-                  {t("rules.resetFactory")}
+                  添加规则
                 </GlassButton>
-              )}
-              {viewSet &&
-                viewSet.ownership === "user" && (
-                <GlassButton
-                  variant="danger"
-                  icon="⌫"
-                  onClick={() => void onDeleteSet()}
-                  disabled={busy}
-                  title={t("rules.deleteSet")}
-                >
-                  {t("rules.deleteSet")}
-                </GlassButton>
-              )}
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="search"
-                placeholder="过滤规则…"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
+              </div>
             </div>
           </div>
 
@@ -928,15 +951,12 @@ export function RulesPage({ embedded = false }: Props) {
                         className="rule-enabled-cell"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={r.enabled}
-                          className={`switch small ${r.enabled ? "on" : ""}`}
-                          onClick={() => void onToggle(r)}
-                        >
-                          <span className="switch-thumb" />
-                        </button>
+                        <GlassSwitchControl
+                          checked={r.enabled}
+                          size="sm"
+                          title={r.enabled ? "关闭规则" : "启用规则"}
+                          onChange={() => void onToggle(r)}
+                        />
                       </td>
                       <td
                         className="rule-actions-cell"
@@ -1141,14 +1161,11 @@ export function RulesPage({ embedded = false }: Props) {
               )}
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>{t("rules.enabled")}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch ${enabled ? "on" : ""}`}
-                  onClick={() => setEnabled((v) => !v)}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                <GlassSwitchControl
+                  checked={enabled}
+                  title={t("rules.enabled")}
+                  onChange={setEnabled}
+                />
               </label>
               <footer className="modal-footer">
                 <button type="button" className="secondary" onClick={() => setEditOpen(false)}>

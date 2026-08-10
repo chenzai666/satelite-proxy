@@ -1,7 +1,10 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
-
-type Size = "md" | "sm";
+import {
+  GlassSwitchControl,
+  GlassSwitchTrack,
+  type GlassSwitchSize,
+  useGlassSwitchAnimation,
+} from "./GlassSwitchControl";
 
 interface Props {
   checked: boolean;
@@ -18,7 +21,7 @@ interface Props {
    */
   capsule?: boolean;
   /** Switch track size: `md` (default, 40×22) or `sm` (32×18, ~80%). */
-  size?: Size;
+  size?: GlassSwitchSize;
   /** False while the parent is still loading the initial persisted value. */
   ready?: boolean;
 }
@@ -45,32 +48,7 @@ export function GlassSwitch({
   size = "md",
   ready = true,
 }: Props) {
-  const [canAnimate, setCanAnimate] = useState(false);
-  useEffect(() => {
-    if (!ready) {
-      setCanAnimate(false);
-      return;
-    }
-
-    let nextRaf = 0;
-    const paintRaf = requestAnimationFrame(() => {
-      nextRaf = requestAnimationFrame(() => setCanAnimate(true));
-    });
-    return () => {
-      cancelAnimationFrame(paintRaf);
-      cancelAnimationFrame(nextRaf);
-    };
-  }, [ready]);
-
-  const track = (
-    <span
-      className={`glass-switch-track${size === "sm" ? " sm" : ""}${
-        checked ? " on" : ""
-      }${canAnimate ? "" : " no-anim"}`}
-    >
-      <span className="glass-switch-thumb" />
-    </span>
-  );
+  const canAnimate = useGlassSwitchAnimation(ready);
 
   if (capsule) {
     return (
@@ -86,18 +64,25 @@ export function GlassSwitch({
         onClick={() => onChange(!checked)}
       >
         {label != null && <span className="glass-switch-label">{label}</span>}
-        {track}
+        <GlassSwitchTrack checked={checked} size={size} animate={canAnimate} />
       </button>
     );
   }
 
   return (
-    <label
+    <div
       className={`glass-switch-row${disabled ? " disabled" : ""}`}
       title={title}
     >
       {label != null && <span className="glass-switch-label">{label}</span>}
-      {track}
-    </label>
+      <GlassSwitchControl
+        checked={checked}
+        onChange={onChange}
+        title={title}
+        disabled={disabled}
+        size={size}
+        ready={ready}
+      />
+    </div>
   );
 }

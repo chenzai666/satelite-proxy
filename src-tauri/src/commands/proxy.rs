@@ -26,8 +26,15 @@ pub fn start_proxy(
 }
 
 #[tauri::command]
-pub fn set_system_proxy(state: State<'_, AppState>, enabled: bool) -> Result<ProxyStatus, String> {
-    state.set_system_proxy(enabled).map_err(|e| e.to_string())
+pub fn set_system_proxy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<ProxyStatus, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    state
+        .set_system_proxy(enabled, resource_dir.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// Enable/disable TUN. Persists setting; restarts core if currently running so config applies.

@@ -1488,71 +1488,6 @@ button.node-card:disabled,
   line-height: 1.45;
 }
 
-/* Sliding switch */
-button.switch {
-  position: relative;
-  flex-shrink: 0;
-  width: 42px;
-  height: 24px;
-  padding: 0 !important;
-  border: none !important;
-  border-radius: 999px !important;
-  background: var(--track) !important;
-  box-shadow: var(--switch-inset);
-  cursor: pointer;
-  transition: background 0.2s ease;
-}
-
-button.switch.on {
-  background: var(--track-on) !important;
-  box-shadow: 0 0 10px var(--primary-glow);
-}
-
-button.switch:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-button.switch .switch-thumb {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--knob);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-  transition: transform 0.2s ease;
-}
-
-button.switch.on .switch-thumb {
-  transform: translateX(18px);
-}
-
-button.switch:hover:not(:disabled) {
-  background: var(--track-hover) !important;
-}
-
-button.switch.on:hover:not(:disabled) {
-  background: var(--track-on-hover) !important;
-}
-
-button.switch.small {
-  width: 36px;
-  height: 20px;
-}
-
-button.switch.small .switch-thumb {
-  width: 14px;
-  height: 14px;
-  top: 3px;
-  left: 3px;
-}
-
-button.switch.small.on .switch-thumb {
-  transform: translateX(16px);
-}
-
 .rules-form {
   padding: 1rem;
   margin-bottom: 0.85rem;
@@ -1905,6 +1840,10 @@ button.switch.small.on .switch-thumb {
   white-space: nowrap;
 }
 
+.rules-route-list .ruleset-name {
+  font-size: 0.72rem;
+}
+
 .rules-main {
   min-width: 0;
 }
@@ -1917,6 +1856,21 @@ button.switch.small.on .switch-thumb {
   flex-wrap: wrap;
   padding: 0.85rem 1rem;
   margin-bottom: 0.75rem;
+}
+
+.rules-main-actions {
+  width: 100%;
+}
+
+.rules-toolbar-tail {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.ruleset-menu-pop {
+  min-width: 5.5rem;
 }
 
 tr.rule-row {
@@ -2079,7 +2033,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2092,7 +2046,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -4359,6 +4313,28 @@ button.check.on {
 }
 
 /* —— Glass switch (frosted toggle, same family) —— */
+.glass-switch {
+  appearance: none;
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.glass-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.glass-switch:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
 .glass-switch-row {
   display: inline-flex;
   align-items: center;

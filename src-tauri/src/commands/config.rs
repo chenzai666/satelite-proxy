@@ -79,6 +79,11 @@ pub fn update_settings(
             }
             if let Some(t) = tun_enabled {
                 store.settings.tun_enabled = t;
+                if t {
+                    store.settings.capture_mode = crate::domain::CaptureMode::Tun;
+                } else if store.settings.capture_mode == crate::domain::CaptureMode::Tun {
+                    store.settings.capture_mode = crate::domain::CaptureMode::Off;
+                }
             }
             if let Some(s) = tun_stack {
                 let s = s.trim().to_ascii_lowercase();

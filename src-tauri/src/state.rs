@@ -126,12 +126,27 @@ impl AppState {
     ) -> AppResult<ProxyStatus> {
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
-        let status = runtime.start_proxy(
+        let stored_capture = store.settings.capture_mode;
+        let enable_system_proxy = match stored_capture {
+            crate::domain::CaptureMode::System => true,
+            crate::domain::CaptureMode::Tun => false,
+            crate::domain::CaptureMode::Off => enable_system_proxy,
+        };
+        // Preserve compatibility with callers that explicitly request system
+        // proxy on first start, while never overriding a saved TUN preference.
+        if enable_system_proxy && stored_capture == crate::domain::CaptureMode::Off {
+            store.settings.capture_mode = crate::domain::CaptureMode::System;
+            store.settings.tun_enabled = false;
+        }
+        let mut status = runtime.start_proxy(
             &self.app_data_dir,
             resource_dir,
             &mut store,
             enable_system_proxy,
         )?;
+        if runtime.system_proxy_on != enable_system_proxy {
+            status = runtime.set_system_proxy(&store, enable_system_proxy)?;
+        }
         store.save(&self.store_path)?;
         Ok(status)
     }
@@ -145,7 +160,11 @@ impl AppState {
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
-        let status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+        let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
+        let mut status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+        if runtime.system_proxy_on != want_system {
+            status = runtime.set_system_proxy(&store, want_system)?;
+        }
         store.save(&self.store_path)?;
         Ok(status)
     }
@@ -252,10 +271,12 @@ impl AppState {
         r.core.is_running()
     }
 
-    pub fn set_system_proxy(&self, enabled: bool) -> AppResult<ProxyStatus> {
-        let mut runtime = self.lock_runtime();
-        let store = self.lock_store();
-        runtime.set_system_proxy(&store, enabled)
+    pub fn set_system_proxy(
+        &self,
+        enabled: bool,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<ProxyStatus> {
+        self.set_capture_mode(if enabled { "system" } else { "off" }, resource_dir)
     }
 
     /// Toggle TUN mode. When core is running, regenerate config and restart.
@@ -264,24 +285,7 @@ impl AppState {
         enabled: bool,
         resource_dir: Option<&Path>,
     ) -> AppResult<ProxyStatus> {
-        let mut runtime = self.lock_runtime();
-        let mut store = self.lock_store();
-
-        if store.settings.tun_enabled == enabled {
-            return Ok(runtime.status(&store));
-        }
-        store.settings.tun_enabled = enabled;
-        store.save(&self.store_path)?;
-
-        runtime.core.poll();
-        if runtime.core.is_running() {
-            // Apply new inbound set via full restart
-            let status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
-            store.save(&self.store_path)?;
-            Ok(status)
-        } else {
-            Ok(runtime.status(&store))
-        }
+        self.set_capture_mode(if enabled { "tun" } else { "off" }, resource_dir)
     }
 
     /// Traffic capture mode (mutually exclusive): `off` | `system` | `tun`.
@@ -294,25 +298,23 @@ impl AppState {
         mode: &str,
         resource_dir: Option<&Path>,
     ) -> AppResult<ProxyStatus> {
-        let mode = mode.trim().to_ascii_lowercase();
-        if !matches!(mode.as_str(), "off" | "system" | "tun") {
-            return Err(crate::error::AppError::Core(
-                "capture mode must be off | system | tun".into(),
-            ));
-        }
-
+        let mode = crate::domain::CaptureMode::parse(mode).ok_or_else(|| {
+            crate::error::AppError::Core("capture mode must be off | system | tun".into())
+        })?;
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
         runtime.core.poll();
 
-        let want_tun = mode == "tun";
-        let want_sys = mode == "system";
+        let want_tun = mode == crate::domain::CaptureMode::Tun;
+        let want_sys = mode == crate::domain::CaptureMode::System;
         let tun_now = store.settings.tun_enabled;
         let sys_now = runtime.system_proxy_on;
 
-        if tun_now == want_tun && sys_now == want_sys {
+        if tun_now == want_tun && sys_now == want_sys && store.settings.capture_mode == mode {
             return Ok(runtime.status(&store));
         }
+
+        store.settings.capture_mode = mode;
 
         // 1) TUN setting / restart first (heavier).
         if tun_now != want_tun {
@@ -328,6 +330,8 @@ impl AppState {
         if runtime.system_proxy_on != want_sys {
             runtime.set_system_proxy(&store, want_sys)?;
         }
+
+        store.save(&self.store_path)?;
 
         Ok(runtime.status(&store))
     }

@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
 import type {
@@ -538,16 +539,12 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 title="DNS 劫持"
                 desc="拦截系统 DNS 流量进入 sing-box（TUN 建议开）"
               >
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch ${dns.hijack ? "on" : ""}`}
+                <GlassSwitchControl
+                  checked={dns.hijack}
+                  title="DNS 劫持"
                   disabled={busy}
-                  aria-checked={dns.hijack}
-                  onClick={() => patch({ hijack: !dns.hijack })}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={(checked) => patch({ hijack: checked })}
+                />
               </SettingRow>
 
               <SettingRow
@@ -570,31 +567,23 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
             <div className="dns-general-toggles">
               <SettingRow title="DNS 缓存" desc="independent_cache，减少重复查询">
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch ${dns.cache ? "on" : ""}`}
+                <GlassSwitchControl
+                  checked={dns.cache}
+                  title="DNS 缓存"
                   disabled={busy}
-                  aria-checked={dns.cache}
-                  onClick={() => patch({ cache: !dns.cache })}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={(checked) => patch({ cache: checked })}
+                />
               </SettingRow>
               <SettingRow
                 title="防泄漏"
                 desc="优先按规则与 final 解析，避免静默回落"
               >
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch ${dns.leak_protect ? "on" : ""}`}
+                <GlassSwitchControl
+                  checked={dns.leak_protect}
+                  title="防泄漏"
                   disabled={busy}
-                  aria-checked={dns.leak_protect}
-                  onClick={() => patch({ leak_protect: !dns.leak_protect })}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={(checked) => patch({ leak_protect: checked })}
+                />
               </SettingRow>
             </div>
           </div>
@@ -629,20 +618,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               >
                 <div className="ruleset-item-top">
                   <span className="ruleset-name">{set.name}</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    className={`switch small ${set.enabled ? "on" : ""}`}
+                  <GlassSwitchControl
+                    checked={set.enabled}
+                    size="sm"
                     disabled={busy}
-                    aria-checked={set.enabled}
                     title={`启用 / 禁用 ${set.name}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      toggleRuleSet(set.id);
                     }}
-                  >
-                    <span className="switch-thumb" />
-                  </button>
+                    onChange={() => toggleRuleSet(set.id)}
+                  />
                 </div>
                 <div className="dns-ruleset-footer">
                   <span className="muted dns-ruleset-meta">
@@ -773,16 +758,13 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                           <div className="dns-list-addr muted">→ {actionLabel(rule.action)}</div>
                         </div>
                         <div className="dns-list-actions" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={rule.enabled}
-                            className={`switch small ${rule.enabled ? "on" : ""}`}
+                          <GlassSwitchControl
+                            checked={rule.enabled}
+                            size="sm"
+                            title="启用规则"
                             disabled={busy}
-                            onClick={() => toggleRule(rule.id)}
-                          >
-                            <span className="switch-thumb" />
-                          </button>
+                            onChange={() => toggleRule(rule.id)}
+                          />
                           <button
                             type="button"
                             className="rule-menu-trigger"
@@ -815,16 +797,13 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                         <div className="dns-list-addr muted mono">→ {host.addr}</div>
                       </div>
                       <div className="dns-list-actions" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={host.enabled}
-                          className={`switch small ${host.enabled ? "on" : ""}`}
+                        <GlassSwitchControl
+                          checked={host.enabled}
+                          size="sm"
+                          title="启用 Host"
                           disabled={busy}
-                          onClick={() => toggleHost(host.id)}
-                        >
-                          <span className="switch-thumb" />
-                        </button>
+                          onChange={() => toggleHost(host.id)}
+                        />
                         <button
                           type="button"
                           className="rule-menu-trigger"
@@ -854,24 +833,20 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               title="启用 FakeIP"
               desc="使用虚拟 IP 加速域名路由"
             >
-              <button
-                type="button"
-                role="switch"
-                className={`switch ${dns.fake_ip.enabled ? "on" : ""}`}
+              <GlassSwitchControl
+                checked={dns.fake_ip.enabled}
+                title="启用 FakeIP"
                 disabled={busy}
-                aria-checked={dns.fake_ip.enabled}
-                onClick={() =>
+                onChange={(checked) =>
                   void save({
                     ...dns,
                     fake_ip: {
                       ...dns.fake_ip,
-                      enabled: !dns.fake_ip.enabled,
+                      enabled: checked,
                     },
                   })
                 }
-              >
-                <span className="switch-thumb" />
-              </button>
+              />
             </SettingRow>
 
             <label className="field dns-field">
@@ -896,24 +871,20 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             </label>
 
             <SettingRow title="IPv6 FakeIP" desc="需要时再开启">
-              <button
-                type="button"
-                role="switch"
-                className={`switch ${dns.fake_ip.inet6_enabled ? "on" : ""}`}
+              <GlassSwitchControl
+                checked={dns.fake_ip.inet6_enabled}
+                title="IPv6 FakeIP"
                 disabled={busy}
-                aria-checked={dns.fake_ip.inet6_enabled}
-                onClick={() =>
+                onChange={(checked) =>
                   void save({
                     ...dns,
                     fake_ip: {
                       ...dns.fake_ip,
-                      inet6_enabled: !dns.fake_ip.inet6_enabled,
+                      inet6_enabled: checked,
                     },
                   })
                 }
-              >
-                <span className="switch-thumb" />
-              </button>
+              />
             </SettingRow>
 
             <label className="field dns-field">
@@ -1123,15 +1094,11 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               </div>
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>启用</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={editRuleEnabled}
-                  className={`switch ${editRuleEnabled ? "on" : ""}`}
-                  onClick={() => setEditRuleEnabled((v) => !v)}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                <GlassSwitchControl
+                  checked={editRuleEnabled}
+                  title="启用"
+                  onChange={setEditRuleEnabled}
+                />
               </label>
               <footer className="modal-footer">
                 <button
@@ -1201,15 +1168,11 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               </label>
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>启用</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={editHostEnabled}
-                  className={`switch ${editHostEnabled ? "on" : ""}`}
-                  onClick={() => setEditHostEnabled((v) => !v)}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                <GlassSwitchControl
+                  checked={editHostEnabled}
+                  title="启用"
+                  onChange={setEditHostEnabled}
+                />
               </label>
               <footer className="modal-footer">
                 <button

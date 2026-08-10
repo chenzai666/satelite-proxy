@@ -182,6 +182,8 @@ export interface AppSettings {
   mix_mode?: boolean;
   /** sing-box TUN inbound (global capture). */
   tun_enabled?: boolean;
+  /** Persisted traffic capture preference. */
+  capture_mode?: "off" | "system" | "tun";
   /** system | gvisor | mixed */
   tun_stack?: string;
   /** rule | global | direct */
@@ -260,6 +262,8 @@ export interface ProxyStatus {
   core_state: CoreState;
   system_proxy: boolean;
   tun_enabled: boolean;
+  /** Persisted desired traffic capture mode. */
+  capture_mode?: "off" | "system" | "tun";
   /** rule | global | direct */
   outbound_mode: string;
   mixed_port: number;

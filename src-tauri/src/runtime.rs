@@ -21,6 +21,8 @@ pub struct ProxyStatus {
     pub system_proxy: bool,
     /// Whether TUN is enabled in settings (applied on next start / restart).
     pub tun_enabled: bool,
+    /// Persisted desired capture mode: off | system | tun.
+    pub capture_mode: String,
     /// rule | global | direct
     pub outbound_mode: String,
     pub mixed_port: u16,
@@ -159,6 +161,7 @@ impl Runtime {
             core_state: self.core.state(),
             system_proxy: self.system_proxy_on,
             tun_enabled: store.settings.tun_enabled,
+            capture_mode: store.settings.capture_mode.as_str().to_string(),
             outbound_mode: store.settings.outbound_mode.as_str().to_string(),
             mixed_port: store.settings.mixed_port,
             api_port: store.settings.api_port,

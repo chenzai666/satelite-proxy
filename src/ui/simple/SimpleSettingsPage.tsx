@@ -11,6 +11,7 @@ import {
 } from "../../api";
 import { useI18n, type Locale } from "../../i18n";
 import { GlassSeg } from "../../components/GlassSeg";
+import { GlassSwitchControl } from "../../components/GlassSwitchControl";
 import { useTheme } from "../../theme";
 import type {
   AppSettings,
@@ -144,11 +145,13 @@ export function SimpleSettingsPage() {
   const autoSelectMode = resolveAutoSelect();
   const captureResolved =
     captureUi ??
-    (proxy?.tun_enabled
-      ? "tun"
-      : proxy?.system_proxy
-        ? "system"
-        : "off");
+    (proxy?.capture_mode === "system" || proxy?.capture_mode === "tun"
+      ? proxy.capture_mode
+      : proxy?.tun_enabled
+        ? "tun"
+        : proxy?.system_proxy
+          ? "system"
+          : "off");
 
   function onCaptureChange(key: "off" | "system" | "tun") {
     if (key === captureResolved || captureBusy) return;
@@ -163,6 +166,7 @@ export function SimpleSettingsPage() {
           ...prev,
           system_proxy: key === "system",
           tun_enabled: key === "tun",
+          capture_mode: key,
         });
       }
     });
@@ -320,39 +324,33 @@ export function SimpleSettingsPage() {
             <div>
               <div className="simple-setting-title">开机启动</div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${settings?.launch_at_login ? "on" : ""}`}
+            <GlassSwitchControl
+              checked={!!settings?.launch_at_login}
+              title="开机启动"
               disabled={busy || !settings}
-              aria-checked={!!settings?.launch_at_login}
-              onClick={() =>
+              ready={!!settings}
+              onChange={(next) =>
                 void patchSettings({
-                  launchAtLogin: !settings?.launch_at_login,
+                  launchAtLogin: next,
                 })
               }
-            >
-              <span className="switch-thumb" />
-            </button>
+            />
           </div>
           <div className="simple-setting-row">
             <div>
               <div className="simple-setting-title">关窗到托盘</div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${settings?.close_to_tray ? "on" : ""}`}
+            <GlassSwitchControl
+              checked={!!settings?.close_to_tray}
+              title="关窗到托盘"
               disabled={busy || !settings}
-              aria-checked={!!settings?.close_to_tray}
-              onClick={() =>
+              ready={!!settings}
+              onChange={(next) =>
                 void patchSettings({
-                  closeToTray: !settings?.close_to_tray,
+                  closeToTray: next,
                 })
               }
-            >
-              <span className="switch-thumb" />
-            </button>
+            />
           </div>
           <div className="simple-setting-row">
             <div>
@@ -361,20 +359,17 @@ export function SimpleSettingsPage() {
                 {t("settings.unloadUiDesc")}
               </div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              className={`switch ${settings?.unload_ui_on_tray ? "on" : ""}`}
+            <GlassSwitchControl
+              checked={!!settings?.unload_ui_on_tray}
+              title={t("settings.unloadUi")}
               disabled={busy || !settings}
-              aria-checked={!!settings?.unload_ui_on_tray}
-              onClick={() =>
+              ready={!!settings}
+              onChange={(next) =>
                 void patchSettings({
-                  unloadUiOnTray: !settings?.unload_ui_on_tray,
+                  unloadUiOnTray: next,
                 })
               }
-            >
-              <span className="switch-thumb" />
-            </button>
+            />
           </div>
         </div>
       </section>

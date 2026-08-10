@@ -51,6 +51,7 @@ impl AppStore {
             .map_err(|e| AppError::Storage(format!("invalid store json: {e}")))?;
         let schema_before = store.schema_version;
         store.settings.migrate_auto_select();
+        store.settings.migrate_capture_mode();
         store.dns.ensure_rule_sets();
         store.migrate_unified_rule_sets();
         store.ensure_rule_sets(resource_dir);

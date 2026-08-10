@@ -193,6 +193,9 @@ export function DashboardPage({
   type CaptureMode = "off" | "system" | "tun";
 
   function resolveCaptureMode(p: ProxyStatus | null): CaptureMode {
+    if (p?.capture_mode === "system" || p?.capture_mode === "tun") {
+      return p.capture_mode;
+    }
     if (p?.tun_enabled) return "tun";
     if (p?.system_proxy) return "system";
     return "off";
@@ -220,6 +223,7 @@ export function DashboardPage({
           ...prevProxy,
           system_proxy: mode === "system",
           tun_enabled: mode === "tun",
+          capture_mode: mode,
         });
       }
     });

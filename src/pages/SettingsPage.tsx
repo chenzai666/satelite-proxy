@@ -11,6 +11,7 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n, type Locale } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
@@ -550,16 +551,12 @@ function AppToggle({
         <div className="settings-app-title">{title}</div>
         <div className="settings-app-desc muted">{desc}</div>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        className={`switch ${checked ? "on" : ""}`}
+      <GlassSwitchControl
+        checked={checked}
+        title={title}
         disabled={disabled}
-        onClick={() => onChange(!checked)}
-      >
-        <span className="switch-thumb" />
-      </button>
+        onChange={onChange}
+      />
     </div>
   );
 }

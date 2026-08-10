@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { getDnsSettings, readSystemHosts, updateDnsSettings } from "../api";
 import { GlassButton } from "../components/GlassButton";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import type { DnsRuleSet, DnsSettings, HostsEntry } from "../types";
 
 const SYSTEM_HOSTS_ID = "system-hosts";
@@ -261,19 +262,16 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
             >
               <div className="ruleset-item-top">
                 <span className="ruleset-name">{set.name}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch small ${set.enabled ? "on" : ""}`}
-                  aria-checked={set.enabled}
+                <GlassSwitchControl
+                  checked={set.enabled}
+                  size="sm"
+                  title={set.enabled ? "关闭 Hosts 集" : "启用 Hosts 集"}
                   disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
-                    toggleSet(set.id);
                   }}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={() => toggleSet(set.id)}
+                />
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
                 {set.read_only ? "系统文件 · 只读" : `${set.hosts.length} 条映射`}
@@ -350,7 +348,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
                 <div className="dns-list-addr muted mono">→ {entry.addr}</div>
               </div>
               <div className="dns-list-actions" onClick={(e) => e.stopPropagation()}>
-                <button type="button" role="switch" aria-checked={entry.enabled} className={`switch small ${entry.enabled ? "on" : ""}`} disabled={busy} onClick={() => toggleEntry(entry.id)}><span className="switch-thumb" /></button>
+                <GlassSwitchControl checked={entry.enabled} size="sm" title="启用映射" disabled={busy} onChange={() => toggleEntry(entry.id)} />
                 <button type="button" className="rule-menu-trigger" disabled={busy} aria-label="删除映射" onClick={() => removeEntry(entry.id)}>×</button>
               </div>
             </li>)}
@@ -374,7 +372,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
           <form className="modal-body" onSubmit={(e) => void saveEntry(e)}>
             <label className="field"><span>域名</span><input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus /></label>
             <label className="field"><span>IP 地址</span><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="127.0.0.1 或 ::1" /></label>
-            <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}><span>启用</span><button type="button" role="switch" aria-checked={entryEnabled} className={`switch ${entryEnabled ? "on" : ""}`} onClick={() => setEntryEnabled((value) => !value)}><span className="switch-thumb" /></button></label>
+            <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}><span>启用</span><GlassSwitchControl checked={entryEnabled} title="启用" onChange={setEntryEnabled} /></label>
             <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setEntryOpen(false)}>取消</button><button type="submit" disabled={busy || !domain.trim() || !addr.trim()}>{busy ? "保存中…" : "保存"}</button></footer>
           </form>
         </div>
