@@ -57,6 +57,10 @@
   --accent-cyan: #4da7be;
   --accent-yellow: #c6a25f;
   --accent-green: #55c89a;
+  /* Directional traffic colors — static, never follow the accent preset.
+     Green ↓ = download (inbound), red ↑ = upload (outbound). */
+  --download: #3fb37f;
+  --upload: var(--danger);
   --shadow-card: none;
   --shadow-elevated: 0 12px 40px rgba(0, 0, 0, 0.35);
   --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.55);
@@ -117,6 +121,10 @@
   --accent-cyan: #2a8a9e;
   --accent-yellow: #a67c2a;
   --accent-green: #1f9a72;
+  /* Directional traffic colors — static, never follow the accent preset.
+     Green ↓ = download (inbound), red ↑ = upload (outbound). */
+  --download: #2f9e6b;
+  --upload: var(--danger);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
   --shadow-elevated: 0 12px 32px rgba(0, 0, 0, 0.1);
   --shadow-modal: 0 24px 50px rgba(0, 0, 0, 0.16);
@@ -1661,16 +1669,17 @@ button.switch.small.on .switch-thumb {
 }
 
 /* Fixed column widths (≈ page width, no overflow). destination absorbs the
-   leftover since it has no explicit width. */
+   leftover since it has no explicit width. Node / rule / traffic are widened
+   and share the space taken from the (narrower) destination column. */
 .conn-table .conn-th-time,
 .conn-table .conn-time { width: 150px; white-space: nowrap; }
 .conn-table .conn-th-node,
-.conn-table .conn-node { width: 150px; }
+.conn-table .conn-node { width: 190px; }
 .conn-table .conn-th-rule,
-.conn-table .conn-rule { width: 110px; }
+.conn-table .conn-rule { width: 150px; }
 .conn-table .conn-th-process { width: 110px; }
 .conn-table .conn-th-traffic,
-.conn-table .conn-traffic { width: 100px; white-space: nowrap; }
+.conn-table .conn-traffic { width: 140px; white-space: nowrap; }
 
 .conn-cell {
   min-width: 0;
@@ -3731,6 +3740,12 @@ button.check.on {
   color: var(--faint);
   margin-right: 0.35rem;
 }
+.instrument-kv .kv-k.down {
+  color: var(--download);
+}
+.instrument-kv .kv-k.up {
+  color: var(--upload);
+}
 
 .instrument-kv .kv-v {
   color: var(--muted);
@@ -3745,9 +3760,17 @@ button.check.on {
   color: var(--text);
 }
 
-.instrument-traffic .tr-dir {
-  color: var(--accent-blue);
+/* Directional traffic arrows: green ↓ download, red ↑ upload.
+   Global (not scoped to .instrument-traffic) so the same colors apply to the
+   dashboard traffic card, the simple-mode bar, and the conn-table rows. */
+.tr-dir {
   font-weight: 600;
+}
+.tr-dir.down {
+  color: var(--download);
+}
+.tr-dir.up {
+  color: var(--upload);
 }
 
 .orbit {

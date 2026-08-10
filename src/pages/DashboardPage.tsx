@@ -810,23 +810,23 @@ export function DashboardPage({
           </header>
           <div className="instrument-traffic">
             <div>
-              <span className="tr-dir">↓</span>{" "}
+              <span className="tr-dir down">↓</span>{" "}
               {fmtSpeed(proxy?.download_speed ?? 0)}
             </div>
             <div>
-              <span className="tr-dir">↑</span>{" "}
+              <span className="tr-dir up">↑</span>{" "}
               {fmtSpeed(proxy?.upload_speed ?? 0)}
             </div>
           </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">Σ ↓</span>
+              <span className="kv-k down">Σ ↓</span>
               <span className="kv-v">
                 {fmtBytes(proxy?.download_total ?? 0)}
               </span>
             </div>
             <div>
-              <span className="kv-k">Σ ↑</span>
+              <span className="kv-k up">Σ ↑</span>
               <span className="kv-v">{fmtBytes(proxy?.upload_total ?? 0)}</span>
             </div>
           </div>

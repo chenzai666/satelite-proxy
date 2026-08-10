@@ -33,7 +33,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<TrafficScope>("proxy");
+  const [scope, setScope] = useState<TrafficScope>("all");
 
   const reload = useCallback(async () => {
     try {
@@ -183,7 +183,8 @@ export function ConnectionsPage({ embedded = false }: Props) {
                   </td>
                   <td className="conn-traffic">
                     <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
-                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                      <span className="tr-dir up">↑</span>{fmtBytes(r.upload)}{" "}
+                      <span className="tr-dir down">↓</span>{fmtBytes(r.download)}
                     </span>
                   </td>
                 </tr>

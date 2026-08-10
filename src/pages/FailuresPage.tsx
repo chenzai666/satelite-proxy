@@ -14,12 +14,6 @@ import { useI18n } from "../i18n";
 import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
-function fmtBytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
 function fmtTime(ms?: number | null) {
   if (!ms) return "—";
   try {
@@ -71,7 +65,7 @@ export function FailuresPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [scope, setScope] = useState<TrafficScope>("proxy");
+  const [scope, setScope] = useState<TrafficScope>("all");
 
   const reload = useCallback(async () => {
     try {
@@ -275,7 +269,6 @@ export function FailuresPage({ embedded = false }: Props) {
                 <th className="conn-th-node">{t("conn.node")}</th>
                 <th className="conn-th-rule">{t("conn.rule")}</th>
                 <th className="conn-th-process">{t("conn.process")}</th>
-                <th className="conn-th-traffic">{t("conn.traffic")}</th>
                 <th className="conn-th-actions">{t("common.actions")}</th>
               </tr>
             </thead>
@@ -319,11 +312,6 @@ export function FailuresPage({ embedded = false }: Props) {
                       <div className="conn-cell" title={r.process}>
                         {r.process || "—"}
                       </div>
-                    </td>
-                    <td className="conn-traffic">
-                      <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
-                        ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
-                      </span>
                     </td>
                     <td className="conn-actions-cell">
                       <button
