@@ -434,9 +434,11 @@ export function ConfigPage() {
         <div className="header-actions">
           <GlassSwitch
             checked={mixMode}
+            ready={!loading}
             onChange={() => void onToggleMix()}
             label={t("config.mix")}
             title={mixMode ? t("config.mixEnabled") : t("config.mixDisabled")}
+            disabled={loading || busy}
             capsule
             size="sm"
           />

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 type Size = "md" | "sm";
 
@@ -18,6 +19,8 @@ interface Props {
   capsule?: boolean;
   /** Switch track size: `md` (default, 40×22) or `sm` (32×18, ~80%). */
   size?: Size;
+  /** False while the parent is still loading the initial persisted value. */
+  ready?: boolean;
 }
 
 /**
@@ -40,12 +43,30 @@ export function GlassSwitch({
   disabled,
   capsule = false,
   size = "md",
+  ready = true,
 }: Props) {
+  const [canAnimate, setCanAnimate] = useState(false);
+  useEffect(() => {
+    if (!ready) {
+      setCanAnimate(false);
+      return;
+    }
+
+    let nextRaf = 0;
+    const paintRaf = requestAnimationFrame(() => {
+      nextRaf = requestAnimationFrame(() => setCanAnimate(true));
+    });
+    return () => {
+      cancelAnimationFrame(paintRaf);
+      cancelAnimationFrame(nextRaf);
+    };
+  }, [ready]);
+
   const track = (
     <span
       className={`glass-switch-track${size === "sm" ? " sm" : ""}${
         checked ? " on" : ""
-      }`}
+      }${canAnimate ? "" : " no-anim"}`}
     >
       <span className="glass-switch-thumb" />
     </span>
@@ -57,7 +78,9 @@ export function GlassSwitch({
         type="button"
         role="switch"
         aria-checked={checked}
-        className={`glass-btn glass-switch-capsule${checked ? " on" : ""}`}
+        className={`glass-btn glass-switch-capsule${checked ? " on" : ""}${
+          canAnimate ? "" : " no-anim"
+        }`}
         title={title}
         disabled={disabled}
         onClick={() => onChange(!checked)}

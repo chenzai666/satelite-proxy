@@ -643,8 +643,9 @@ export function DashboardPage({
             <span className="dash-inline-label">{t("dashboard.routing")}</span>
             <GlassSeg
               value={outboundMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.routing")}
-              disabled={controlsBusy}
+              disabled={controlsBusy || !statusReady}
               onChange={(v) => void onSetMode(v as OutboundMode)}
               options={[
                 { value: "rule", label: t("dashboard.modeRule") },
@@ -673,8 +674,9 @@ export function DashboardPage({
             </span>
             <GlassSeg
               value={autoSelectMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.autoSelect")}
-              disabled={modeBusy}
+              disabled={modeBusy || !statusReady}
               disabledValues={
                 new Set(
                   [
@@ -725,7 +727,9 @@ export function DashboardPage({
             </span>
             <GlassSeg
               value={captureMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.capture")}
+              disabled={!statusReady}
               disabledValues={
                 new Set(
                   [

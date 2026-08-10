@@ -1794,6 +1794,18 @@ button.switch.small.on .switch-thumb {
   overflow: auto;
 }
 
+.ruleset-list-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.35rem;
+}
+
+.ruleset-list-actions .glass-btn {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+}
+
 .ruleset-list-title {
   display: flex;
   align-items: baseline;
@@ -4390,6 +4402,14 @@ button.check.on {
   box-shadow:
     inset 0 1px 2px rgba(0, 0, 0, 0.25),
     0 0 10px var(--primary-glow);
+}
+
+/* Initial persisted state may arrive asynchronously. Paint that target state
+   directly, then enable transitions for subsequent user-driven changes. */
+.glass-switch-track.no-anim,
+.glass-switch-track.no-anim .glass-switch-thumb,
+.glass-switch-capsule.no-anim {
+  transition: none !important;
 }
 
 /* Small variant (~80%): 32×18 track, 13px thumb, 14px travel. */

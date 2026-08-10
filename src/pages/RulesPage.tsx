@@ -678,21 +678,23 @@ export function RulesPage({ embedded = false }: Props) {
 
       <div className="rules-layout">
         <aside className="card ruleset-list">
-          <GlassButton
-            icon="+"
-            onClick={openNewSet}
-            title={t("rules.newSetTitle")}
-          >
-            {t("rules.newSet")}
-          </GlassButton>
-          <GlassButton
-            icon="↺"
-            onClick={() => void onResetAllBuiltin()}
-            disabled={busy}
-            title="删除并重新加载所有内置规则，不影响用户规则"
-          >
-            重置全部内置
-          </GlassButton>
+          <div className="ruleset-list-actions">
+            <GlassButton
+              icon="+"
+              onClick={openNewSet}
+              title={t("rules.newSetTitle")}
+            >
+              {t("rules.newSet")}
+            </GlassButton>
+            <GlassButton
+              icon="↺"
+              onClick={() => void onResetAllBuiltin()}
+              disabled={busy}
+              title="删除并重新加载所有内置规则，不影响用户规则"
+            >
+              重置
+            </GlassButton>
+          </div>
           <div className="ruleset-list-title">
             {t("rules.sets")}
             <span className="ruleset-list-hint">{t("rules.dragHint")}</span>
@@ -774,13 +776,6 @@ export function RulesPage({ embedded = false }: Props) {
           <div className="rules-toolbar card">
             <div>
               <strong>{viewSet?.name ?? "—"}</strong>
-              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                {viewSet?.enabled
-                  ? viewSet.remote
-                    ? `已启用：远程 ${viewSet.remote.format} · 每 ${viewSet.remote.update_interval} 更新`
-                    : "已启用：路由与 DNS 均按规则集整体策略生成"
-                  : "未启用：打开左侧开关即可参与路由（可多选）"}
-              </div>
             </div>
             <div className="header-actions">
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
