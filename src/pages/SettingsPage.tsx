@@ -17,8 +17,9 @@ import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
+import { HostsPage } from "./HostsPage";
 
-type SettingsTab = "app" | "rules" | "dns" | "dns_rules" | "core";
+type SettingsTab = "app" | "rules" | "dns" | "hosts" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
@@ -55,9 +56,9 @@ export function SettingsPage() {
           hint: t("settings.hintDns"),
         },
         {
-          id: "dns_rules" as const,
-          label: t("settings.tabDnsRules"),
-          hint: t("settings.hintDnsRules"),
+          id: "hosts" as const,
+          label: t("settings.tabHosts"),
+          hint: t("settings.hintHosts"),
         },
         {
           id: "core" as const,
@@ -225,7 +226,7 @@ export function SettingsPage() {
         options={tabs.map((x) => ({ value: x.id, label: x.label }))}
       />
 
-      {error && tab !== "rules" && tab !== "dns" && tab !== "dns_rules" && (
+      {error && tab !== "rules" && tab !== "dns" && tab !== "hosts" && (
         <div className="banner error">{error}</div>
       )}
 
@@ -237,9 +238,7 @@ export function SettingsPage() {
         {tab === "rules" && <RulesPage embedded />}
 
         {tab === "dns" && <DnsPage embedded section="settings" />}
-
-        {tab === "dns_rules" && <DnsPage embedded section="rules" />}
-
+        {tab === "hosts" && <HostsPage embedded />}
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">

@@ -12,7 +12,7 @@
 
 use crate::app_log;
 use crate::config::{outbound_tag, smart_pool_nodes};
-use crate::domain::{ProxyNode, Rule, RuleTarget};
+use crate::domain::{ProxyNode, Rule, RuleSetStrategy, RuleTarget};
 use crate::services::latency::probe_nodes;
 use crate::state::AppState;
 use serde::Serialize;
@@ -855,7 +855,11 @@ fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
     state
         .with_store(|store| {
             let mut out = Vec::new();
-            for set in store.rule_sets.iter().filter(|s| s.enabled) {
+            for set in store
+                .rule_sets
+                .iter()
+                .filter(|s| s.enabled && s.strategy == RuleSetStrategy::Smart)
+            {
                 for r in set
                     .rules
                     .iter()

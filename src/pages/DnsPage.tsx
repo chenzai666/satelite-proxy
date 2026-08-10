@@ -19,7 +19,6 @@ import { useI18n } from "../i18n";
 import type {
   DnsAction,
   DnsFinalStrategy,
-  DnsMode,
   DnsRule,
   DnsRuleSet,
   DnsRuleSetKind,
@@ -41,6 +40,8 @@ function actionLabel(a: DnsAction): string {
       return "国内 DNS";
     case "remote":
       return "远程 DNS";
+    case "block":
+      return "拦截";
   }
 }
 
@@ -54,18 +55,6 @@ function matcherLabel(m: DomainMatcher) {
       return "关键字";
   }
 }
-
-const MODE_HINTS: Record<DnsMode, string> = {
-  local: "默认使用系统解析；开启 DNS 规则后，命中的域名可改走指定解析器",
-  smart_local: "办公网建议使用（直连域名走本地 DNS，其余走远程）",
-  smart_cn: "使用国内公共 DNS 解析，办公网不建议使用（直连域名走国内 DNS）",
-};
-
-const MODE_LABELS: Record<DnsMode, string> = {
-  local: "本地",
-  smart_local: "优先本地",
-  smart_cn: "优先国内",
-};
 
 function SettingRow({
   title,
@@ -191,11 +180,6 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
   function patch(partial: Partial<DnsSettings>) {
     if (!dns) return;
     void save({ ...dns, ...partial });
-  }
-
-  function setMode(mode: DnsMode) {
-    if (!dns) return;
-    void save({ ...dns, mode });
   }
 
   function withUpdatedSet(
@@ -523,7 +507,6 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
     );
   }
 
-  const mode = dns.mode;
   const viewSet =
     dns.rule_sets.find((set) => set.id === viewSetId) ?? dns.rule_sets[0] ?? null;
   const wrapClass = embedded ? "settings-embed dns-page" : "page dns-page";
@@ -546,7 +529,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         {section !== "rules" && <section className="card dns-panel dns-cell dns-cell-general">
           <header className="dns-panel-head">
             <h2>常规</h2>
-            <p>解析模式与全局行为</p>
+            <p>默认解析与全局行为</p>
           </header>
 
           <div className="dns-panel-body dns-general-body">
@@ -567,29 +550,13 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 </button>
               </SettingRow>
 
-              <div className="dns-mode-block">
-                <div className="dns-mode-label">解析模式</div>
-                <GlassSeg
-                  value={mode}
-                  ariaLabel="解析模式"
-                  disabled={busy}
-                  onChange={(v) => setMode(v as DnsMode)}
-                  options={[
-                    { value: "local", label: "本地" },
-                    { value: "smart_local", label: "优先本地" },
-                    { value: "smart_cn", label: "优先国内" },
-                  ]}
-                />
-                <p className="dns-mode-hint">{MODE_HINTS[mode]}</p>
-              </div>
-
               <SettingRow
-                title="兜底 DNS"
-                desc="未命中规则的网站走兜底 DNS 解析，国外网站优先选择远程"
+                title="默认解析"
+                desc="未命中任何规则集时使用的解析器"
               >
                 <GlassSeg
                   value={dns.dns_final}
-                  ariaLabel="兜底 DNS"
+                  ariaLabel="默认解析"
                   disabled={busy}
                   onChange={(v) => patch({ dns_final: v as DnsFinalStrategy })}
                   options={[
@@ -682,7 +649,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                     {set.read_only
                       ? `${set.enabled ? "已启用" : "未启用"} · 系统只读`
                       : set.enabled
-                        ? `已启用 · ${set.kind === "dns" ? `叠加到${MODE_LABELS[mode]}` : "静态映射"}`
+                        ? `已启用 · ${set.kind === "dns" ? "兼容旧 DNS 规则" : "静态映射"}`
                         : "未启用"}
                   </span>
                   <span className="pill matcher-pill dns-ruleset-type">
@@ -885,13 +852,13 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
           <div className="dns-panel-body">
             <SettingRow
               title="启用 FakeIP"
-              desc="非「本地」模式生效；本地模式下忽略"
+              desc="使用虚拟 IP 加速域名路由"
             >
               <button
                 type="button"
                 role="switch"
                 className={`switch ${dns.fake_ip.enabled ? "on" : ""}`}
-                disabled={busy || mode === "local"}
+                disabled={busy}
                 aria-checked={dns.fake_ip.enabled}
                 onClick={() =>
                   void save({

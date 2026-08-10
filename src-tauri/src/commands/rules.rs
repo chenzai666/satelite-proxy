@@ -1,5 +1,7 @@
 use crate::config::{dump_rule_set_files, remove_rule_set_files};
-use crate::domain::{Rule, RuleSet, RuleSetSummary, RuleTarget, RuleType};
+use crate::domain::{
+    Rule, RuleSet, RuleSetDnsStrategy, RuleSetStrategy, RuleSetSummary, RuleTarget, RuleType,
+};
 use crate::state::AppState;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
@@ -95,6 +97,63 @@ pub fn set_rule_set_enabled(
     apply_running(&app, &state)
 }
 
+#[tauri::command]
+pub fn set_rule_set_strategy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    strategy: RuleSetStrategy,
+) -> Result<RuleSet, String> {
+    let set = state
+        .with_store_mut(|store| {
+            let set = store
+                .rule_sets
+                .iter_mut()
+                .find(|set| set.id == id)
+                .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
+            if set.remote.is_some() && strategy == RuleSetStrategy::Smart {
+                return Err(crate::error::AppError::Config(
+                    "远程规则集不支持智能单项策略".into(),
+                ));
+            }
+            set.strategy = strategy;
+            if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
+                set.dns_strategy = dns_strategy;
+            }
+            if let Some(remote) = set.remote.as_mut() {
+                if let Some(target) = strategy.route_target() {
+                    remote.target = target;
+                }
+            }
+            Ok(set.clone())
+        })
+        .map_err(|e| e.to_string())?;
+    apply_running(&app, &state)?;
+    Ok(set)
+}
+
+#[tauri::command]
+pub fn set_rule_set_dns_strategy(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    strategy: RuleSetDnsStrategy,
+) -> Result<RuleSet, String> {
+    let set = state
+        .with_store_mut(|store| {
+            let set = store
+                .rule_sets
+                .iter_mut()
+                .find(|set| set.id == id)
+                .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
+            set.dns_strategy = strategy;
+            Ok(set.clone())
+        })
+        .map_err(|e| e.to_string())?;
+    apply_running(&app, &state)?;
+    Ok(set)
+}
+
 /// Reorder rule sets. `ids` is full preferred order (first = highest priority).
 #[tauri::command]
 pub fn reorder_rule_sets(
@@ -116,7 +175,12 @@ pub fn reorder_rule_sets(
 }
 
 #[tauri::command]
-pub fn create_rule_set(state: State<'_, AppState>, name: String) -> Result<RuleSet, String> {
+pub fn create_rule_set(
+    state: State<'_, AppState>,
+    name: String,
+    remote_url: Option<String>,
+    target: Option<RuleTarget>,
+) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
             let n = name.trim();
@@ -138,7 +202,29 @@ pub fn create_rule_set(state: State<'_, AppState>, name: String) -> Result<RuleS
                     "已存在同名规则集「{n}」"
                 )));
             }
-            Ok(store.create_rule_set(n))
+            if let Some(url) = remote_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            {
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    return Err(crate::error::AppError::Config(
+                        "远程规则集 URL 必须以 http:// 或 https:// 开头".into(),
+                    ));
+                }
+                let target = target.unwrap_or(RuleTarget::Proxy);
+                if !matches!(
+                    target,
+                    RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+                ) {
+                    return Err(crate::error::AppError::Config(
+                        "远程规则集仅支持 proxy/direct/block 策略".into(),
+                    ));
+                }
+                Ok(store.create_remote_rule_set(n, url, target))
+            } else {
+                Ok(store.create_rule_set(n))
+            }
         })
         .map_err(|e| e.to_string())?;
     dump_set(&state, &set.id);
@@ -158,7 +244,7 @@ pub fn delete_rule_set(
     apply_running(&app, &state)
 }
 
-/// Reset one factory set (builtin-* or general-rules) from `resources/rules/{id}.list`.
+/// Reset one builtin factory set from `resources/rules/{id}.list`.
 #[tauri::command]
 pub fn reset_rule_set(
     app: AppHandle,
@@ -173,7 +259,7 @@ pub fn reset_rule_set(
     Ok(set)
 }
 
-/// Legacy: reset all `builtin-*` sets (not general-rules).
+/// Legacy: reset all `builtin-*` sets.
 #[tauri::command]
 pub fn reset_builtin_rule_set(
     app: AppHandle,
@@ -181,7 +267,10 @@ pub fn reset_builtin_rule_set(
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
-            store.reset_all_builtin_rule_sets(state.resource_dir.as_deref());
+            let removed = store.reset_all_builtin_rule_sets(state.resource_dir.as_deref());
+            for id in removed {
+                remove_rule_set_files(&state.app_data_dir, &id);
+            }
             store
                 .get_rule_set(crate::domain::BUILTIN_SET_ID)
                 .cloned()
@@ -249,21 +338,27 @@ pub fn save_rule(
                 store
                     .rule_sets
                     .iter()
-                    .find(|s| s.id == crate::domain::GENERAL_SET_ID || s.enabled)
+                    .find(|s| s.enabled && s.remote.is_none())
                     .map(|s| s.id.clone())
-                    .unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into())
+                    .unwrap_or_default()
             });
 
             let set = store
                 .get_rule_set(&set_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(set_id.clone()))?;
+            if set.remote.is_some() {
+                return Err(crate::error::AppError::Config(
+                    "远程规则集不能编辑单项".into(),
+                ));
+            }
+            let effective_target = set.strategy.route_target().unwrap_or(input.target);
 
             let ord = input
                 .ord
                 .unwrap_or_else(|| set.rules.iter().map(|r| r.ord).max().unwrap_or(0) + 10);
 
             // Resolve pin fields for target=node (snapshot name for stale UI).
-            let (node_id, node_name) = if matches!(input.target, RuleTarget::Node) {
+            let (node_id, node_name) = if matches!(effective_target, RuleTarget::Node) {
                 let nid = input
                     .node_id
                     .as_deref()
@@ -286,7 +381,7 @@ pub fn save_rule(
                 (None, None)
             };
 
-            let (smart_include, smart_exclude) = if matches!(input.target, RuleTarget::Smart) {
+            let (smart_include, smart_exclude) = if matches!(effective_target, RuleTarget::Smart) {
                 let include =
                     Rule::normalize_keywords(input.smart_include.as_deref().unwrap_or(&[]));
                 let exclude =
@@ -319,7 +414,7 @@ pub fn save_rule(
                     let mut r = existing.clone();
                     r.rule_type = input.rule_type;
                     r.payload = payload;
-                    r.target = input.target;
+                    r.target = effective_target;
                     r.ord = ord;
                     r.node_id = node_id;
                     r.node_name = node_name;
@@ -330,7 +425,7 @@ pub fn save_rule(
                     }
                     r
                 } else {
-                    let mut r = Rule::new(input.rule_type, payload, input.target, ord);
+                    let mut r = Rule::new(input.rule_type, payload, effective_target, ord);
                     r.id = id;
                     r.node_id = node_id;
                     r.node_name = node_name;
@@ -342,7 +437,7 @@ pub fn save_rule(
                     r
                 }
             } else {
-                let mut r = Rule::new(input.rule_type, payload, input.target, ord);
+                let mut r = Rule::new(input.rule_type, payload, effective_target, ord);
                 r.node_id = node_id;
                 r.node_name = node_name;
                 r.smart_include = smart_include;
@@ -408,7 +503,19 @@ pub fn remove_rule(
     id: String,
     set_id: Option<String>,
 ) -> Result<(), String> {
-    let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
+    let sid = match set_id {
+        Some(sid) => sid,
+        None => state
+            .with_store(|store| {
+                store
+                    .rule_sets
+                    .iter()
+                    .find(|set| set.rules.iter().any(|rule| rule.id == id))
+                    .map(|set| set.id.clone())
+                    .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))
+            })
+            .map_err(|e| e.to_string())?,
+    };
     state
         .with_store_mut(|store| store.remove_rule_from_set(&sid, &id))
         .map_err(|e| e.to_string())?;
@@ -424,7 +531,19 @@ pub fn set_rule_enabled(
     enabled: bool,
     set_id: Option<String>,
 ) -> Result<Rule, String> {
-    let sid = set_id.unwrap_or_else(|| crate::domain::GENERAL_SET_ID.into());
+    let sid = match set_id {
+        Some(sid) => sid,
+        None => state
+            .with_store(|store| {
+                store
+                    .rule_sets
+                    .iter()
+                    .find(|set| set.rules.iter().any(|rule| rule.id == id))
+                    .map(|set| set.id.clone())
+                    .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))
+            })
+            .map_err(|e| e.to_string())?,
+    };
     let rule = state
         .with_store_mut(|store| {
             let set = store

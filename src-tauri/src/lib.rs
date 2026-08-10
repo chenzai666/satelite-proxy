@@ -241,6 +241,8 @@ pub fn run() {
             commands::get_rule_set,
             commands::set_active_rule_set,
             commands::set_rule_set_enabled,
+            commands::set_rule_set_strategy,
+            commands::set_rule_set_dns_strategy,
             commands::create_rule_set,
             commands::reorder_rule_sets,
             commands::delete_rule_set,

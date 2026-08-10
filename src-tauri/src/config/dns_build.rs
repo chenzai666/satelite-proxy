@@ -1,15 +1,11 @@
 //! Build sing-box 1.12+ `dns` object from [`DnsSettings`].
 //!
-//! Resolution modes (see `DnsMode`):
-//! - `local`:      local resolver by default.
-//! - `smart_local`: route-derived — `direct` domain rules → local DNS, else → remote DNS.
-//! - `smart_cn`:   route-derived — `direct` domain rules → domestic DNS, else → remote DNS.
-//! User DNS rules are an independent layer. When enabled, they are projected **first**
-//! in every base mode so they override the mode's normal behavior.
+//! Each unified rule set chooses its own resolver. This module defines the
+//! resolver pool, unmatched-query default, Hosts, and FakeIP behavior.
 
 use crate::domain::{
-    read_system_hosts_pairs, DnsAction, DnsMode, DnsRule, DnsSettings, DomainMatcher, FakeIpConfig,
-    HostsConfig, Rule, RuleTarget, RuleType,
+    read_system_hosts_pairs, DnsAction, DnsRule, DnsSettings, DomainMatcher, FakeIpConfig,
+    HostsConfig, Rule,
 };
 use serde_json::{json, Value};
 
@@ -32,17 +28,10 @@ pub struct BuiltDns {
 
 /// Build DNS config. Always produces a valid 1.12+ DNS block.
 ///
-/// `route_rules`: enabled routing rules (rule page). In route-derived modes, each
-/// domain-like rule contributes a DNS rule: `direct` target → direct-tag, otherwise →
-/// remote-tag. Enabled DNS-page user rules are projected first (they win).
-///
-/// `route_final`: the normalized routing `final` (`"direct"` | `"proxy"` | `"block"`).
-/// The DNS `final` follows it: `direct` → local resolver, otherwise → remote, so that
-/// domains not covered by any rule resolve via the same path they'll be routed through.
 pub fn build_dns_section(
     settings: &DnsSettings,
     tun_enabled: bool,
-    route_rules: &[Rule],
+    _route_rules: &[Rule],
 ) -> BuiltDns {
     let mut effective = settings.clone();
     effective.rules = settings.enabled_dns_rules();
@@ -56,31 +45,7 @@ pub fn build_dns_section(
     // it no longer follows the routing `final`.
     let final_tag = dns_final_tag(settings.normalize_dns_final());
 
-    let rules_enabled = settings.rules_enabled;
-    match settings.mode {
-        DnsMode::Local if rules_enabled => build_local_with_rules(settings, hijack, final_tag),
-        DnsMode::Local => build_local(settings, hijack, final_tag),
-        DnsMode::SmartLocal => build_smart_variant(
-            settings,
-            hijack,
-            route_rules,
-            TAG_LOCAL,
-            final_tag,
-            rules_enabled,
-        ),
-        DnsMode::SmartCn => build_smart_variant(
-            settings,
-            hijack,
-            route_rules,
-            TAG_CN,
-            final_tag,
-            rules_enabled,
-        ),
-        // Legacy value is equivalent to SmartLocal with the rules layer enabled.
-        DnsMode::Rules => {
-            build_smart_variant(settings, hijack, route_rules, TAG_LOCAL, final_tag, true)
-        }
-    }
+    build_default(settings, hijack, final_tag)
 }
 
 /// Map the DNS `final` strategy to a server tag.
@@ -234,60 +199,10 @@ fn hosts_layer(hosts: &HostsConfig) -> Option<(Value, Value)> {
     Some((server, rule))
 }
 
-/// Pure local resolver. Hosts (if enabled) are honored as the highest priority.
-fn build_local(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
-    // In pure-local mode the server list normally only contains dns-local. When
-    // the configured final points elsewhere (domestic/remote), include the full
-    // builtin server set so the final resolver is actually defined.
-    let need_all = final_tag != TAG_LOCAL;
-
-    // Hosts override — works even in pure-local mode.
-    if let Some((host_srv, host_rule)) = hosts_layer(&settings.hosts) {
-        let mut servers: Vec<Value> = if need_all {
-            builtin_servers(&settings.fake_ip)
-        } else {
-            vec![json!({ "type": "local", "tag": TAG_LOCAL })]
-        };
-        servers.push(host_srv);
-        let dns = json!({
-            "servers": servers,
-            "rules": [host_rule],
-            "final": final_tag,
-            "independent_cache": settings.cache,
-            "strategy": "prefer_ipv4"
-        });
-        return BuiltDns {
-            dns,
-            default_resolver: TAG_LOCAL.into(),
-            want_hijack: hijack,
-        };
-    }
-
-    let servers: Vec<Value> = if need_all {
-        builtin_servers(&settings.fake_ip)
-    } else {
-        vec![json!({ "type": "local", "tag": TAG_LOCAL })]
-    };
-    let dns = json!({
-        "servers": servers,
-        "final": final_tag,
-        "independent_cache": settings.cache,
-        "strategy": "prefer_ipv4"
-    });
-    BuiltDns {
-        dns,
-        default_resolver: TAG_LOCAL.into(),
-        want_hijack: hijack,
-    }
-}
-
-/// Local baseline with user DNS rules layered on top. The final resolver follows
-/// the configured DNS `final` strategy, while individual rules may explicitly
-/// select domestic or remote DNS.
-fn build_local_with_rules(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
-    let mut fake_ip_off = settings.fake_ip.clone();
-    fake_ip_off.enabled = false;
-    let mut servers = builtin_servers(&fake_ip_off);
+/// Global DNS baseline. Unified rule-set DNS rules are prepended later by the
+/// top-level builder and therefore override FakeIP and the unmatched default.
+fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
+    let mut servers = builtin_servers(&settings.fake_ip);
     let mut rules: Vec<Value> = Vec::new();
 
     if let Some((host_srv, host_rule)) = hosts_layer(&settings.hosts) {
@@ -301,53 +216,6 @@ fn build_local_with_rules(settings: &DnsSettings, hijack: bool, final_tag: &str)
             .filter(|r| r.enabled)
             .filter_map(user_rule_to_json),
     );
-
-    let dns = json!({
-        "servers": servers,
-        "rules": rules,
-        "final": final_tag,
-        "independent_cache": settings.cache,
-        "strategy": "prefer_ipv4"
-    });
-    BuiltDns {
-        dns,
-        default_resolver: TAG_LOCAL.into(),
-        want_hijack: hijack,
-    }
-}
-
-/// Route-derived smart mode. `direct_tag` is `TAG_LOCAL` (smart_local) or `TAG_CN` (smart_cn):
-/// domain-like rules with `direct` target → `direct_tag`, everything else → remote.
-/// `final_tag` is the DNS `final` (derived from the routing final).
-fn build_smart_variant(
-    settings: &DnsSettings,
-    hijack: bool,
-    route_rules: &[Rule],
-    direct_tag: &str,
-    final_tag: &str,
-    rules_enabled: bool,
-) -> BuiltDns {
-    let mut servers = builtin_servers(&settings.fake_ip);
-
-    let mut rules: Vec<Value> = Vec::new();
-    // 0) Hosts override — highest priority (prepended, sing-box first-match).
-    if let Some((host_srv, host_rule)) = hosts_layer(&settings.hosts) {
-        servers.push(host_srv);
-        rules.push(host_rule);
-    }
-    // 1) Optional user DNS rules override the base mode.
-    if rules_enabled {
-        rules.extend(
-            settings
-                .rules
-                .iter()
-                .filter(|r| r.enabled)
-                .filter_map(user_rule_to_json),
-        );
-    }
-    // 2) Route-derived projection.
-    rules.extend(project_route_dns(route_rules, direct_tag, TAG_REMOTE));
-    // 3) FakeIP.
     rules.extend(fakeip_rules(&settings.fake_ip, TAG_LOCAL));
 
     let dns = json!({
@@ -364,50 +232,6 @@ fn build_smart_variant(
     }
 }
 
-/// Project domain-like routing rules into DNS rules, **collapsing same-direction
-/// entries into one rule per matcher type** (sing-box `domain_suffix`/`domain`/
-/// `domain_keyword` accept arrays).
-///
-/// `direct` target → `direct_tag`; `proxy`/`node`/`smart`/`block` → `remote_tag`.
-/// Non-domain types (IP-CIDR, PROCESS, GEOIP) are skipped (irrelevant to DNS).
-fn project_route_dns(route_rules: &[Rule], direct_tag: &str, remote_tag: &str) -> Vec<Value> {
-    // 6 slots: matcher(0..3) × direction(direct=0, remote=3).
-    // Collapsing same-direction entries into one rule per matcher type keeps the
-    // generated config small (sing-box domain/domain_suffix/domain_keyword accept arrays).
-    let mut slots: [Vec<String>; 6] = Default::default();
-    for r in route_rules
-        .iter()
-        .filter(|r| r.enabled && r.is_domain_like())
-    {
-        let payload = r.payload.trim();
-        if payload.is_empty() {
-            continue;
-        }
-        let m_idx = match r.rule_type {
-            RuleType::Domain => 0,
-            RuleType::DomainSuffix => 1,
-            RuleType::DomainKeyword => 2,
-            _ => continue,
-        };
-        let dir = if r.target == RuleTarget::Direct { 0 } else { 3 };
-        slots[m_idx + dir].push(payload.to_string());
-    }
-
-    let keys = ["domain", "domain_suffix", "domain_keyword"];
-    let mut out = Vec::new();
-    for (i, key) in keys.iter().enumerate() {
-        // direct bucket
-        if !slots[i].is_empty() {
-            out.push(json!({ (*key): slots[i].clone(), "server": direct_tag }));
-        }
-        // remote bucket
-        if !slots[i + 3].is_empty() {
-            out.push(json!({ (*key): slots[i + 3].clone(), "server": remote_tag }));
-        }
-    }
-    out
-}
-
 /// One DNS-page rule → sing-box rule. Servers are the builtin tags.
 fn user_rule_to_json(r: &DnsRule) -> Option<Value> {
     let payload = r.payload.trim();
@@ -422,18 +246,23 @@ fn user_rule_to_json(r: &DnsRule) -> Option<Value> {
         return None;
     }
 
-    let server = match r.action {
-        DnsAction::Local => TAG_LOCAL,
-        DnsAction::Domestic => TAG_CN,
-        DnsAction::Remote => TAG_REMOTE,
-    };
-
     let mut rule = match r.matcher {
         DomainMatcher::Domain => json!({ "domain": [payload] }),
         DomainMatcher::DomainSuffix => json!({ "domain_suffix": [payload] }),
         DomainMatcher::DomainKeyword => json!({ "domain_keyword": [payload] }),
     };
-    rule.as_object_mut()?.insert("server".into(), json!(server));
+    if r.action == DnsAction::Block {
+        rule.as_object_mut()?
+            .insert("action".into(), json!("reject"));
+    } else {
+        let server = match r.action {
+            DnsAction::Local => TAG_LOCAL,
+            DnsAction::Domestic => TAG_CN,
+            DnsAction::Remote => TAG_REMOTE,
+            DnsAction::Block => unreachable!(),
+        };
+        rule.as_object_mut()?.insert("server".into(), json!(server));
+    }
     Some(rule)
 }
 
@@ -450,19 +279,6 @@ mod tests {
     use crate::domain::DnsSettings;
 
     #[test]
-    fn smart_local_default_has_fakeip_and_local() {
-        let s = DnsSettings::default();
-        assert!(matches!(s.mode, DnsMode::SmartLocal));
-        let b = build_dns_section(&s, false, &[]);
-        let servers = b.dns["servers"].as_array().unwrap();
-        assert!(servers.iter().any(|x| x["type"] == "local"));
-        assert!(servers.iter().any(|x| x["type"] == "fakeip"));
-        // default dns_final=remote → DNS final → remote
-        assert_eq!(b.dns["final"].as_str().unwrap(), "dns-remote");
-        assert!(!b.want_hijack || s.hijack);
-    }
-
-    #[test]
     fn dns_final_follows_dns_final_setting() {
         let mut s = DnsSettings::default();
         s.dns_final = "local".into();
@@ -476,148 +292,21 @@ mod tests {
     }
 
     #[test]
-    fn local_mode_only_local_server() {
-        let mut s = DnsSettings::default();
-        s.mode = DnsMode::Local;
-        s.dns_final = "local".into();
-        let b = build_dns_section(&s, true, &[]);
-        let servers = b.dns["servers"].as_array().unwrap();
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0]["type"], "local");
-        assert!(b.want_hijack);
+    fn legacy_resolution_mode_no_longer_changes_dns_output() {
+        let mut local = DnsSettings::default();
+        local.mode = crate::domain::DnsMode::Local;
+        let mut old_smart = local.clone();
+        old_smart.mode = crate::domain::DnsMode::SmartCn;
+
+        let local_dns = build_dns_section(&local, false, &[]).dns;
+        let old_smart_dns = build_dns_section(&old_smart, false, &[]).dns;
+        assert_eq!(local_dns, old_smart_dns);
     }
 
     #[test]
-    fn smart_local_projects_direct_to_local_and_others_to_remote() {
-        use crate::domain::{Rule, RuleTarget, RuleType};
-        let s = DnsSettings {
-            fake_ip: FakeIpConfig {
-                enabled: false,
-                ..FakeIpConfig::default()
-            },
-            ..DnsSettings::default()
-        };
-        let rules = vec![
-            Rule::new(
-                RuleType::DomainSuffix,
-                "cn.example.com".into(),
-                RuleTarget::Direct,
-                1,
-            ),
-            Rule::new(
-                RuleType::DomainSuffix,
-                "fw.example.com".into(),
-                RuleTarget::Proxy,
-                2,
-            ),
-        ];
-        let b = build_dns_section(&s, false, &rules);
-        let dns_rules = b.dns["rules"].as_array().unwrap();
-        let direct = dns_rules
-            .iter()
-            .find(|x| {
-                x.get("domain_suffix").is_some_and(|a| {
-                    a.as_array()
-                        .is_some_and(|v| v.iter().any(|v| v.as_str() == Some("cn.example.com")))
-                })
-            })
-            .expect("direct rule projected");
-        assert_eq!(direct["server"].as_str().unwrap(), "dns-local");
-        let proxied = dns_rules
-            .iter()
-            .find(|x| {
-                x.get("domain_suffix").is_some_and(|a| {
-                    a.as_array()
-                        .is_some_and(|v| v.iter().any(|v| v.as_str() == Some("fw.example.com")))
-                })
-            })
-            .expect("proxy rule projected");
-        assert_eq!(proxied["server"].as_str().unwrap(), "dns-remote");
-    }
-
-    #[test]
-    fn smart_local_collapses_same_direction_into_one_rule() {
-        use crate::domain::{Rule, RuleTarget, RuleType};
-        let s = DnsSettings {
-            fake_ip: FakeIpConfig {
-                enabled: false,
-                ..FakeIpConfig::default()
-            },
-            ..DnsSettings::default()
-        };
-        let rules = vec![
-            Rule::new(
-                RuleType::DomainSuffix,
-                "a.com".into(),
-                RuleTarget::Direct,
-                1,
-            ),
-            Rule::new(
-                RuleType::DomainSuffix,
-                "b.com".into(),
-                RuleTarget::Direct,
-                2,
-            ),
-            Rule::new(
-                RuleType::DomainSuffix,
-                "c.com".into(),
-                RuleTarget::Direct,
-                3,
-            ),
-        ];
-        let b = build_dns_section(&s, false, &rules);
-        let dns_rules = b.dns["rules"].as_array().unwrap();
-        // Exactly one domain_suffix rule (all three direct suffixes collapsed).
-        let suffix_rules: Vec<&Value> = dns_rules
-            .iter()
-            .filter(|x| x.get("domain_suffix").is_some())
-            .collect();
-        assert_eq!(
-            suffix_rules.len(),
-            1,
-            "direct suffixes should collapse into one rule"
-        );
-        let arr = suffix_rules[0]["domain_suffix"].as_array().unwrap();
-        assert_eq!(arr.len(), 3);
-        assert_eq!(suffix_rules[0]["server"].as_str().unwrap(), "dns-local");
-    }
-
-    #[test]
-    fn smart_cn_projects_direct_to_domestic() {
-        use crate::domain::{Rule, RuleTarget, RuleType};
-        let s = DnsSettings {
-            mode: DnsMode::SmartCn,
-            fake_ip: FakeIpConfig {
-                enabled: false,
-                ..FakeIpConfig::default()
-            },
-            ..DnsSettings::default()
-        };
-        let rules = vec![Rule::new(
-            RuleType::DomainSuffix,
-            "cn.example.com".into(),
-            RuleTarget::Direct,
-            1,
-        )];
-        let b = build_dns_section(&s, false, &rules);
-        let dns_rules = b.dns["rules"].as_array().unwrap();
-        let direct = dns_rules
-            .iter()
-            .find(|x| {
-                x.get("domain_suffix").is_some_and(|a| {
-                    a.as_array()
-                        .is_some_and(|v| v.iter().any(|v| v.as_str() == Some("cn.example.com")))
-                })
-            })
-            .expect("direct rule projected");
-        assert_eq!(direct["server"].as_str().unwrap(), "dns-cn");
-    }
-
-    #[test]
-    fn enabled_dns_rules_override_smart_cn_route_projection() {
+    fn enabled_legacy_dns_rules_are_preserved() {
         use crate::domain::{DnsAction, DnsRule, DomainMatcher, Rule, RuleTarget, RuleType};
         let s = DnsSettings {
-            mode: DnsMode::SmartCn,
             rules_enabled: true,
             rules: vec![DnsRule {
                 id: "force-remote".into(),
@@ -655,10 +344,9 @@ mod tests {
     }
 
     #[test]
-    fn enabled_dns_rules_layer_onto_local_mode() {
+    fn enabled_legacy_dns_rules_layer_onto_default() {
         use crate::domain::{DnsAction, DnsRule, DomainMatcher};
         let s = DnsSettings {
-            mode: DnsMode::Local,
             rules_enabled: true,
             dns_final: "local".into(),
             rules: vec![DnsRule {
@@ -678,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_dns_rules_do_not_affect_smart_mode() {
+    fn disabled_legacy_dns_rules_do_not_affect_default() {
         use crate::domain::{DnsAction, DnsRule, DomainMatcher};
         let s = DnsSettings {
             rules_enabled: false,
@@ -800,10 +488,9 @@ mod tests {
     }
 
     #[test]
-    fn hosts_works_in_local_mode() {
+    fn hosts_work_with_default_resolver() {
         use crate::domain::{HostsConfig, HostsEntry};
         let s = DnsSettings {
-            mode: DnsMode::Local,
             hosts: HostsConfig {
                 enabled: true,
                 include_system: false,

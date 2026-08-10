@@ -6,14 +6,14 @@ export type NavKey =
   | "logs"
   | "settings";
 
-export type DnsMode = "local" | "smart_local" | "smart_cn";
 export type DnsFinalStrategy = "local" | "domestic" | "remote";
 export type DomainMatcher = "domain" | "domain_suffix" | "domain_keyword";
 
 export type DnsAction =
   | { kind: "local" }
   | { kind: "domestic" }
-  | { kind: "remote" };
+  | { kind: "remote" }
+  | { kind: "block" };
 
 export interface DnsRule {
   id: string;
@@ -59,16 +59,16 @@ export interface DnsRuleSet {
 
 export interface DnsSettings {
   enabled: boolean;
-  mode: DnsMode;
   rules_enabled: boolean;
   rules: DnsRule[];
   fake_ip: FakeIpConfig;
   hosts: HostsConfig;
   rule_sets: DnsRuleSet[];
+  unified_rules: boolean;
   hijack: boolean;
   cache: boolean;
   leak_protect: boolean;
-  /** DNS final (兜底解析): local | domestic | remote */
+  /** Default resolver for domains unmatched by a rule set. */
   dns_final: DnsFinalStrategy;
 }
 
@@ -296,6 +296,20 @@ export interface RuleSetSummary {
   rule_count: number;
   /** Multiple sets can be enabled and merged for routing. */
   enabled: boolean;
+  ownership: "builtin" | "user" | "system";
+  strategy: RuleSetStrategy;
+  dns_strategy: RuleSetDnsStrategy;
+  remote?: RemoteRuleSetConfig | null;
+}
+
+export type RuleSetStrategy = "proxy" | "direct" | "block" | "smart";
+export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
+
+export interface RemoteRuleSetConfig {
+  url: string;
+  format: "source" | string;
+  update_interval: string;
+  target: "proxy" | "direct" | "block";
 }
 
 export interface RuleSet {
@@ -303,6 +317,11 @@ export interface RuleSet {
   name: string;
   builtin: boolean;
   enabled: boolean;
+  ownership: "builtin" | "user" | "system";
+  strategy: RuleSetStrategy;
+  dns_strategy: RuleSetDnsStrategy;
+  remote?: RemoteRuleSetConfig | null;
+  dns_rules: DnsRule[];
   rules: Rule[];
 }
 

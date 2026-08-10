@@ -2,57 +2,19 @@
 
 use serde::{Deserialize, Serialize};
 
-/// DNS resolution mode. See `dns_build.rs` for the generated sing-box config.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+/// Legacy stored value. Resolution modes were removed in schema v3; this is
+/// deserialized only so older stores can still be opened safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DnsMode {
-    /// Pure local resolver (old `system`).
     #[default]
+    #[serde(alias = "system")]
     Local,
-    /// Route-derived: `direct` domain rules → local DNS, else → remote DNS.
+    #[serde(alias = "smart")]
     SmartLocal,
-    /// Route-derived: `direct` domain rules → domestic DNS, else → remote DNS.
     SmartCn,
-    /// Legacy wire value. Migrated to `SmartLocal` + `rules_enabled=true`.
+    #[serde(alias = "custom")]
     Rules,
-}
-
-impl<'de> Deserialize<'de> for DnsMode {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de::Error as _;
-
-        /// Helper enum that mirrors the snake_case wire form including legacy keys.
-        #[derive(Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        enum Wire {
-            Local,
-            SmartLocal,
-            SmartCn,
-            Rules,
-            // Legacy keys (now mapped onto the new variants).
-            System,
-            Smart,
-            Custom,
-        }
-
-        let w = Wire::deserialize(deserializer);
-        Ok(match w {
-            // New keys pass through.
-            Ok(Wire::Local) => Self::Local,
-            Ok(Wire::SmartLocal) => Self::SmartLocal,
-            Ok(Wire::SmartCn) => Self::SmartCn,
-            Ok(Wire::Rules) => Self::Rules,
-            // Legacy migration: system → local, smart → smart_local, custom → rules.
-            Ok(Wire::System) => Self::Local,
-            Ok(Wire::Smart) => Self::SmartLocal,
-            Ok(Wire::Custom) => Self::Rules,
-            // Unknown value → fall back to the default rather than failing the load.
-            Err(_) => {
-                D::Error::custom("unknown dns mode, falling back to default");
-                Self::default()
-            }
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -74,6 +36,8 @@ pub enum DnsAction {
     Domestic,
     /// Prefer remote DNS.
     Remote,
+    /// Reject the DNS query.
+    Block,
 }
 
 impl Default for DnsAction {
@@ -104,8 +68,9 @@ impl<'de> Deserialize<'de> for DnsAction {
             Wire::Local | Wire::System => Ok(Self::Local),
             Wire::Domestic => Ok(Self::Domestic),
             Wire::Remote => Ok(Self::Remote),
-            // Legacy block/fake_ip/server → safest non-blocking fallback is remote.
-            Wire::Block | Wire::FakeIp | Wire::Server { .. } => Ok(Self::Remote),
+            Wire::Block => Ok(Self::Block),
+            // Legacy fake_ip/server → safest non-blocking fallback is remote.
+            Wire::FakeIp | Wire::Server { .. } => Ok(Self::Remote),
         }
     }
 }
@@ -245,18 +210,15 @@ impl DnsRuleSet {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsSettings {
-    /// Master switch: kept for stored-config compatibility only. Selecting the
-    /// `local` mode is now the way to "turn DNS off".
+    /// Master switch kept for stored-config compatibility.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub mode: DnsMode,
-    /// Whether user DNS rules participate in resolution. This is independent
-    /// from the base resolution mode.
+    /// Compatibility switch for legacy DNS-page rules.
     #[serde(default)]
     pub rules_enabled: bool,
-    /// User DNS rules (override / force resolver). When enabled these are
-    /// projected first and win over the base mode's route-derived projection.
+    /// Legacy DNS rules retained for migration and backward compatibility.
     #[serde(default)]
     pub rules: Vec<DnsRule>,
     #[serde(default)]
@@ -268,6 +230,9 @@ pub struct DnsSettings {
     /// be migrated from `rules` / `hosts` above.
     #[serde(default)]
     pub rule_sets: Vec<DnsRuleSet>,
+    /// DNS matcher sets were moved into the unified routing rule-set model.
+    #[serde(default)]
+    pub unified_rules: bool,
     /// Inject route `hijack-dns` (always on with TUN; optional otherwise).
     #[serde(default = "default_true")]
     pub hijack: bool,
@@ -277,7 +242,7 @@ pub struct DnsSettings {
     /// Prefer remote/final over silent system leak (disables strategy fallbacks).
     #[serde(default = "default_true")]
     pub leak_protect: bool,
-    /// DNS final (兜底解析) for domains that match no rule: `local` | `domestic` | `remote`.
+    /// Default resolver for domains that match no rule set.
     #[serde(default = "default_dns_final")]
     pub dns_final: String,
 }
@@ -287,12 +252,13 @@ impl Default for DnsSettings {
         let rules = default_rules();
         Self {
             enabled: true,
-            mode: DnsMode::SmartLocal,
+            mode: DnsMode::Local,
             rules_enabled: false,
             rules: rules.clone(),
             fake_ip: FakeIpConfig::default(),
             hosts: HostsConfig::default(),
             rule_sets: Vec::new(),
+            unified_rules: false,
             hijack: true,
             cache: true,
             leak_protect: true,
@@ -302,10 +268,9 @@ impl Default for DnsSettings {
 }
 
 impl DnsSettings {
-    /// Convert the removed `rules` mode into its equivalent independent settings.
-    pub fn migrate_legacy_rules_mode(&mut self) {
+    fn migrate_legacy_rules_mode(&mut self) {
         if self.mode == DnsMode::Rules {
-            self.mode = DnsMode::SmartLocal;
+            self.mode = DnsMode::Local;
             self.rules_enabled = true;
         }
     }
@@ -314,6 +279,18 @@ impl DnsSettings {
     /// then ensure the two factory sets always exist.
     pub fn ensure_rule_sets(&mut self) {
         self.migrate_legacy_rules_mode();
+        if self.unified_rules {
+            self.rule_sets
+                .retain(|set| set.kind == DnsRuleSetKind::Hosts);
+            if !self
+                .rule_sets
+                .iter()
+                .any(|set| set.id == SYSTEM_HOSTS_SET_ID)
+            {
+                self.rule_sets.insert(0, DnsRuleSet::system_hosts(false));
+            }
+            return;
+        }
         if self.rule_sets.is_empty() {
             self.rule_sets.push(DnsRuleSet::builtin_dns(
                 self.rules.clone(),
@@ -451,7 +428,7 @@ impl DnsSettings {
 
     /// Defensive compatibility for settings that have not been persisted yet.
     pub fn effective_rules_enabled(&self) -> bool {
-        self.rules_enabled || self.mode == DnsMode::Rules
+        self.rules_enabled
     }
 
     /// Normalize `dns_final` to a known value: `local` | `domestic` | `remote`.
@@ -537,7 +514,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_rules_mode_migrates_to_smart_local_with_rules_enabled() {
+    fn legacy_rules_mode_enables_legacy_rules_layer() {
         let mut settings: DnsSettings = serde_json::from_value(serde_json::json!({
             "mode": "rules"
         }))
@@ -547,7 +524,7 @@ mod tests {
 
         settings.migrate_legacy_rules_mode();
 
-        assert_eq!(settings.mode, DnsMode::SmartLocal);
+        assert_eq!(settings.mode, DnsMode::Local);
         assert!(settings.rules_enabled);
     }
 
@@ -713,6 +690,7 @@ fn parse_dns_action(raw: &str) -> Option<DnsAction> {
         "LOCAL" | "SYSTEM" => Some(DnsAction::Local),
         "DOMESTIC" | "CN" => Some(DnsAction::Domestic),
         "REMOTE" | "PROXY" => Some(DnsAction::Remote),
+        "BLOCK" | "REJECT" => Some(DnsAction::Block),
         _ => None,
     }
 }
