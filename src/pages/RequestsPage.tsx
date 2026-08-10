@@ -86,6 +86,9 @@ export function RequestsPage({ embedded = false }: Props) {
       )}
       <div className="header-actions traffic-toolbar-actions">
         <input
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           className="search"
           placeholder={t("req.filter")}
           value={query}

@@ -61,6 +61,9 @@ export function SimpleTrafficPage() {
       </header>
 
       <input
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         className="search simple-search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}

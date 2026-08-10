@@ -199,6 +199,9 @@ export function NodesPage() {
         </div>
         <div className="header-actions nodes-toolbar">
           <input
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
             className="search"
             placeholder={t("nodes.search")}
             value={query}

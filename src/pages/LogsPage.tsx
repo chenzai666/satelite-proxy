@@ -133,6 +133,9 @@ export function LogsPage() {
           options={LEVELS.map((lv) => ({ value: lv, label: lv }))}
         />
         <input
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           className="search"
           placeholder={t("logs.filter")}
           value={query}

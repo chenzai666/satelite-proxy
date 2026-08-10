@@ -720,6 +720,9 @@ export function RulesPage({ embedded = false }: Props) {
                 </GlassButton>
               )}
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="search"
                 placeholder="过滤规则…"
                 value={filter}
@@ -879,6 +882,9 @@ export function RulesPage({ embedded = false }: Props) {
               <label className="field">
                 <span>匹配内容</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={payload}
                   onChange={(e) => setPayload(e.target.value)}
                   placeholder="google.com / youtube / 10.0.0.0/8"
@@ -904,6 +910,9 @@ export function RulesPage({ embedded = false }: Props) {
                   ) : (
                     <>
                       <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
                         className="search"
                         value={nodeQuery}
                         onChange={(e) => setNodeQuery(e.target.value)}
@@ -950,6 +959,9 @@ export function RulesPage({ embedded = false }: Props) {
                   <label className="field" style={{ marginBottom: 8 }}>
                     <span>{t("rules.smartInclude")}</span>
                     <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={smartInclude}
                       onChange={(e) => setSmartInclude(e.target.value)}
                       placeholder={t("rules.smartIncludePh")}
@@ -958,6 +970,9 @@ export function RulesPage({ embedded = false }: Props) {
                   <label className="field" style={{ marginBottom: 8 }}>
                     <span>{t("rules.smartExclude")}</span>
                     <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       value={smartExclude}
                       onChange={(e) => setSmartExclude(e.target.value)}
                       placeholder={t("rules.smartExcludePh")}
@@ -1042,6 +1057,9 @@ export function RulesPage({ embedded = false }: Props) {
               <label className="field">
                 <span>名称</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={newSetName}
                   onChange={(e) => setNewSetName(e.target.value)}
                   placeholder="例如：公司内网"

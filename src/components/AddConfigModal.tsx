@@ -153,6 +153,9 @@ export function AddConfigModal({
           <label className="field">
             <span>名称</span>
             <input
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="例如：机场 A"
@@ -179,6 +182,9 @@ export function AddConfigModal({
               <label className="field">
                 <span>订阅链接</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="https://…"
@@ -210,6 +216,9 @@ export function AddConfigModal({
               <span>配置文件</span>
               <div className="file-row">
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
                   placeholder="选择 Clash YAML / URI 列表文件"
@@ -245,6 +254,9 @@ export function AddConfigModal({
             <label className="field">
               <span>更新间隔（分钟）</span>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mono"
                 type="number"
                 min={1}
