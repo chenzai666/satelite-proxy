@@ -602,6 +602,11 @@ button {
   box-shadow: var(--shadow-card);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  /* Give cards their own stacking context so the navbar's backdrop-filter
+     (and its hover repaints) don't bleed a white layer into card/table
+     surfaces. Without this, hovering the navbar re-composites and the
+     .card's own backdrop-filter glitches a white overlay on the table head. */
+  isolation: isolate;
 }
 
 .card.glass {
@@ -820,6 +825,16 @@ tr.row-active {
 
 .settings-page.settings-wide {
   max-width: none;
+}
+
+/* WebView2 can flash a white compositor tile over settings and traffic cards
+   when the glass navbar repaints on hover. The card fill already provides the
+   intended translucent surface, so avoid a second backdrop-filter layer on
+   these pages. */
+.settings-page .card,
+.traffic-page .card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .settings-tabs {
