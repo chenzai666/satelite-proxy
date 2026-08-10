@@ -6,6 +6,7 @@ import {
   listRuleSets,
   saveRule,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
@@ -229,12 +230,21 @@ export function FailuresPage({ embedded = false }: Props) {
           onChange={(v) => setScope(v as TrafficScope)}
           options={scopeOpts}
         />
-        <button type="button" className="secondary" onClick={() => void reload()}>
+        <GlassButton
+          icon="↻"
+          onClick={() => void reload()}
+          title={t("common.refresh")}
+        >
           {t("common.refresh")}
-        </button>
-        <button type="button" className="danger" onClick={() => void onClear()}>
+        </GlassButton>
+        <GlassButton
+          variant="danger"
+          icon="⌫"
+          onClick={() => void onClear()}
+          title={t("common.clear")}
+        >
           {t("common.clear")}
-        </button>
+        </GlassButton>
       </div>
     </div>
   );

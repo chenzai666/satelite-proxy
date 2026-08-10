@@ -12,6 +12,7 @@ import {
   testDnsLookup,
   updateDnsSettings,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
@@ -633,9 +634,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         </section>}
 
         {section !== "settings" && <aside className="card ruleset-list dns-ruleset-nav dns-cell-ruleset-nav">
-          <button type="button" className="secondary" onClick={openNewSet}>
+          <GlassButton icon="+" onClick={openNewSet} title="新建规则集">
             新建规则集
-          </button>
+          </GlassButton>
           <div className="ruleset-list-title">
             DNS 规则集
             <span className="ruleset-list-hint">顺序即匹配优先级</span>
@@ -709,23 +710,24 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 </div>
                 <div className="header-actions">
                   {!viewSet.read_only && (
-                    <button
-                      type="button"
+                    <GlassButton
+                      variant="primary"
+                      icon="+"
                       disabled={busy}
                       onClick={viewSet.kind === "dns" ? openAddRule : openAddHost}
                     >
                       {viewSet.kind === "dns" ? "添加规则" : "添加 Host"}
-                    </button>
+                    </GlassButton>
                   )}
                   {viewSet.id === "builtin-dns" && (
-                    <button
-                      type="button"
-                      className="secondary"
+                    <GlassButton
+                      icon="↺"
                       disabled={busy}
                       onClick={() => void onResetRules()}
+                      title="恢复出厂"
                     >
                       恢复出厂
-                    </button>
+                    </GlassButton>
                   )}
                   <button
                     type="button"
@@ -749,14 +751,15 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                     ↓
                   </button>
                   {!viewSet.builtin && (
-                    <button
-                      type="button"
-                      className="danger"
+                    <GlassButton
+                      variant="danger"
+                      icon="⌫"
                       disabled={busy}
                       onClick={() => void deleteCurrentSet()}
+                      title="删除集"
                     >
                       删除集
-                    </button>
+                    </GlassButton>
                   )}
                 </div>
               </div>
@@ -973,13 +976,14 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                     if (e.key === "Enter") void onTest();
                   }}
                 />
-                <button
-                  type="button"
+                <GlassButton
+                  variant="primary"
+                  icon="⌕"
                   disabled={testBusy}
                   onClick={() => void onTest()}
                 >
                   {testBusy ? "查询中…" : "测试"}
-                </button>
+                </GlassButton>
               </div>
             </label>
 

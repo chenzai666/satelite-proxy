@@ -22,6 +22,7 @@ import {
   setRuleSetEnabled,
   updateSettings,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { useI18n } from "../i18n";
@@ -595,9 +596,13 @@ export function RulesPage({ embedded = false }: Props) {
 
       <div className="rules-layout">
         <aside className="card ruleset-list">
-          <button type="button" className="secondary" onClick={openNewSet}>
+          <GlassButton
+            icon="+"
+            onClick={openNewSet}
+            title={t("rules.newSetTitle")}
+          >
             {t("rules.newSet")}
-          </button>
+          </GlassButton>
           <div className="ruleset-list-title">
             {t("rules.sets")}
             <span className="ruleset-list-hint">{t("rules.dragHint")}</span>
@@ -683,26 +688,36 @@ export function RulesPage({ embedded = false }: Props) {
               </div>
             </div>
             <div className="header-actions">
-              <button type="button" onClick={openCreate} disabled={!viewSetId}>
+              <GlassButton
+                variant="primary"
+                icon="+"
+                onClick={openCreate}
+                disabled={!viewSetId}
+                title={t("rules.addRuleTitle")}
+              >
                 {t("rules.addRule")}
-              </button>
+              </GlassButton>
               {isFactorySet(viewSet) && (
-                <button
-                  type="button"
-                  className="secondary"
+                <GlassButton
+                  icon="↺"
                   onClick={() => void onResetFactory()}
                   title={t("rules.resetFactoryHint")}
                 >
                   {t("rules.resetFactory")}
-                </button>
+                </GlassButton>
               )}
               {viewSet &&
                 !viewSet.builtin &&
                 viewSet.id !== "general-rules" &&
                 !viewSet.id.startsWith("builtin-") && (
-                <button type="button" className="danger" onClick={() => void onDeleteSet()}>
-                  删除集
-                </button>
+                <GlassButton
+                  variant="danger"
+                  icon="⌫"
+                  onClick={() => void onDeleteSet()}
+                  title={t("rules.deleteSet")}
+                >
+                  {t("rules.deleteSet")}
+                </GlassButton>
               )}
               <input
                 className="search"

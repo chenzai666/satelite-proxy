@@ -15,6 +15,8 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../components/AddConfigModal";
+import { GlassButton } from "../components/GlassButton";
+import { GlassSwitch } from "../components/GlassSwitch";
 import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
 import type { SubscriptionTraffic, SubscriptionView } from "../types";
@@ -430,26 +432,31 @@ export function ConfigPage() {
           <p className="page-desc">{t("config.desc")}</p>
         </div>
         <div className="header-actions">
-          <button
-            type="button"
-            className={mixMode ? "mix-on" : "secondary"}
-            disabled={busy || items.length === 0}
+          <GlassSwitch
+            checked={mixMode}
+            onChange={() => void onToggleMix()}
+            label={t("config.mix")}
             title={mixMode ? t("config.mixEnabled") : t("config.mixDisabled")}
-            onClick={() => void onToggleMix()}
-          >
-            {mixMode ? t("config.mixOn") : t("config.mix")}
-          </button>
-          <button
-            type="button"
-            className="secondary"
+            capsule
+            size="sm"
+          />
+          <GlassButton
+            icon="↻"
             disabled={busy || items.length === 0}
             onClick={() => void onRefreshAll()}
+            title={t("config.refreshAll")}
           >
             {refreshingAll ? t("config.refreshing") : t("config.refreshAll")}
-          </button>
-          <button type="button" disabled={busy} onClick={openAdd}>
+          </GlassButton>
+          <GlassButton
+            variant="primary"
+            icon="+"
+            disabled={busy}
+            onClick={openAdd}
+            title={t("config.add")}
+          >
             {t("config.add")}
-          </button>
+          </GlassButton>
         </div>
       </header>
 
@@ -461,9 +468,9 @@ export function ConfigPage() {
         <div className="empty card">
           <p>{t("config.empty")}</p>
           <p className="muted">{t("config.emptyHint")}</p>
-          <button type="button" onClick={openAdd}>
+          <GlassButton variant="primary" icon="+" onClick={openAdd}>
             {t("config.add")}
-          </button>
+          </GlassButton>
         </div>
       ) : (
         <div className="sub-grid">

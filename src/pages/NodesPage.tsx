@@ -7,6 +7,7 @@ import {
   setCurrentNode,
   testNodesLatency,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import type { ProxyNode, SortMode, ViewMode } from "../types";
@@ -215,6 +216,16 @@ export function NodesPage() {
             ]}
           />
 
+          <GlassButton
+            variant="primary"
+            icon="⚡"
+            disabled={testing || displayed.length === 0}
+            onClick={() => void onTestLatency()}
+            title={t("nodes.testLatency")}
+          >
+            {testing ? t("nodes.testing") : t("nodes.testLatency")}
+          </GlassButton>
+
           <GlassSeg
             value={viewMode}
             ariaLabel="视图"
@@ -325,16 +336,6 @@ export function NodesPage() {
           })}
         </div>
       )}
-
-      <button
-        type="button"
-        className={`fab-latency ${testing ? "busy" : ""}`}
-        onClick={() => void onTestLatency()}
-        disabled={testing || displayed.length === 0}
-        title={t("nodes.testLatency")}
-      >
-        {testing ? t("nodes.testing") : t("nodes.testLatency")}
-      </button>
     </div>
   );
 }

@@ -339,7 +339,7 @@ const en = {
   "rules.disableSet": "Disable set",
   "rules.enableSet": "Enable set",
   "rules.resetBuiltin": "Reset built-in",
-  "rules.resetFactory": "Reset to factory",
+  "rules.resetFactory": "Reset",
   "rules.resetFactoryHint":
     "Reload this set from the app resource file. Restart keeps your edits; only Reset discards them.",
   "rules.deleteSet": "Delete set",
@@ -764,7 +764,7 @@ const zh: Record<MessageKey, string> = {
   "rules.disableSet": "关闭此集",
   "rules.enableSet": "启用此集",
   "rules.resetBuiltin": "重置内置",
-  "rules.resetFactory": "重置为出厂",
+  "rules.resetFactory": "重置",
   "rules.resetFactoryHint":
     "从应用资源文件重新加载本集。重启会保留你的修改；只有点重置才会丢掉编辑。",
   "rules.deleteSet": "删除集",

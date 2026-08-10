@@ -8,6 +8,7 @@ import {
   restartProxy,
   updateSettings,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { useI18n, type Locale } from "../i18n";
@@ -377,13 +378,15 @@ export function SettingsPage() {
                 <strong>{t("settings.networkOptions")}</strong>
                 <div className="muted">{t("settings.networkSaveNote")}</div>
               </div>
-              <button
-                type="button"
+              <GlassButton
+                variant="primary"
+                icon="↻"
                 disabled={busy}
                 onClick={() => void onSaveNetwork()}
+                title={t("settings.saveRestartCore")}
               >
                 {busy ? t("common.saving") : t("settings.saveRestartCore")}
-              </button>
+              </GlassButton>
             </div>
             <label className="field">
               <span>{t("settings.mixedPort")}</span>
@@ -456,8 +459,9 @@ export function SettingsPage() {
                   <span className="muted mono">{core?.platform ?? "…"}</span>
                 </div>
               </div>
-              <button
-                type="button"
+              <GlassButton
+                variant="primary"
+                icon="⤓"
                 disabled={coreBusy}
                 onClick={() => void onDownloadCore()}
               >
@@ -468,7 +472,7 @@ export function SettingsPage() {
                       ? t("settings.coreUpdate")
                       : t("settings.coreRedownload")
                     : t("settings.coreDownload")}
-              </button>
+              </GlassButton>
             </div>
 
             <div className="core-meta">

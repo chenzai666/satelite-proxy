@@ -1402,38 +1402,7 @@ button.node-card:disabled,
   text-transform: uppercase;
 }
 
-.fab-latency {
-  position: fixed;
-  right: 1.25rem;
-  bottom: 1.25rem;
-  z-index: 40;
-  border: 1px solid var(--primary-border);
-  border-radius: 999px;
-  padding: 0.65rem 1rem;
-  font-weight: 500;
-  font-size: 0.72rem;
-  font-family: var(--mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  background: var(--primary);
-  color: var(--on-primary);
-  box-shadow: 0 0 20px var(--primary-glow), 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-
-.fab-latency:hover:not(:disabled) {
-  background: var(--primary-hover);
-}
-
-.fab-latency:disabled {
-  opacity: 0.75;
-}
-
-.fab-latency.busy {
-  background: var(--border-strong);
-  border-color: var(--border);
-  color: var(--text);
-  box-shadow: none;
-}
+/* (Legacy FAB removed — latency test now lives inline in the nodes toolbar.) */
 
 .status-dot {
   width: 7px;
@@ -2074,7 +2043,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2087,7 +2056,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.switch):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -4242,6 +4211,237 @@ button.check.on {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* —— Glass button (standalone capsule, same material as GlassSeg) ——
+   A frosted pill button that reads as part of the same control family as
+   the segmented control and the navbar. Optional leading icon + label. */
+.glass-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.34rem 0.85rem;
+  border-radius: var(--radius-pill);
+  background: rgba(16, 24, 26, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    0 8px 24px rgba(0, 0, 0, 0.18);
+  /* Lit top surface — same vertical gradient as the GlassSeg indicator so a
+     row of [button] [seg] [button] shares one material language. */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-image 0.18s ease, border-color 0.18s ease,
+    color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.glass-btn .glass-btn-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+.glass-btn:hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.09) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.glass-btn:active:not(:disabled) {
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    0 2px 8px rgba(0, 0, 0, 0.18);
+}
+
+.glass-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Icon-only variant: square-ish capsule. */
+.glass-btn.icon-only {
+  padding: 0.34rem 0.55rem;
+}
+
+/* Tinted variants: primary picks up the accent, danger picks up red. */
+.glass-btn.primary {
+  border-color: var(--primary-border);
+  color: var(--primary);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--primary) 22%, rgba(255, 255, 255, 0.12)) 0%,
+    color-mix(in srgb, var(--primary) 10%, rgba(255, 255, 255, 0.05)) 100%
+  );
+}
+.glass-btn.primary:hover:not(:disabled) {
+  box-shadow: 0 0 14px var(--primary-glow);
+}
+
+.glass-btn.danger {
+  border-color: var(--danger-border);
+  color: var(--danger);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 20%, rgba(255, 255, 255, 0.1)) 0%,
+    color-mix(in srgb, var(--danger) 9%, rgba(255, 255, 255, 0.04)) 100%
+  );
+}
+.glass-btn.danger:hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--danger) 28%, rgba(255, 255, 255, 0.12)) 0%,
+    color-mix(in srgb, var(--danger) 14%, rgba(255, 255, 255, 0.05)) 100%
+  );
+}
+
+/* —— Glass switch (frosted toggle, same family) —— */
+.glass-switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+.glass-switch-row.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.glass-switch-label {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* In a capsule the label sits inside the frosted pill, so it should match the
+   button text color, not the muted caption color. */
+.glass-switch-capsule .glass-switch-label {
+  color: inherit;
+}
+
+/* Frosted capsule track. Sizes via the `.sm` modifier (small variant ≈ 80%
+   of the default md). No transform/scaling — explicit dimensions keep the
+   layout honest next to the capsule label. */
+.glass-switch-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(16, 24, 26, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.glass-switch-track.on {
+  border-color: var(--primary-border);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    0 0 10px var(--primary-glow);
+}
+
+/* Small variant (~80%): 32×18 track, 13px thumb, 14px travel. */
+.glass-switch-track.sm {
+  width: 32px;
+  height: 18px;
+}
+
+.glass-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(255, 255, 255, 0.7) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1),
+    background 0.2s ease;
+}
+.glass-switch-track.on .glass-switch-thumb {
+  transform: translateX(18px);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--primary) 75%, #fff) 0%,
+    var(--primary) 100%
+  );
+}
+.glass-switch-track.sm .glass-switch-thumb {
+  width: 13px;
+  height: 13px;
+}
+.glass-switch-track.sm.on .glass-switch-thumb {
+  transform: translateX(14px);
+}
+
+/* Capsule mode: label + track inside one frosted glass button. The whole
+   pill is the toggle; "on" tints it with the accent like GlassButton.primary. */
+.glass-switch-capsule {
+  cursor: pointer;
+}
+.glass-switch-capsule.on {
+  border-color: var(--primary-border);
+  color: var(--primary);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--primary) 22%, rgba(255, 255, 255, 0.12)) 0%,
+    color-mix(in srgb, var(--primary) 10%, rgba(255, 255, 255, 0.05)) 100%
+  );
+}
+.glass-switch-capsule:hover:not(:disabled) {
+  border-color: var(--primary-border);
+  box-shadow: 0 0 14px var(--primary-glow);
+}
+
+/* Day theme tweaks for the glass controls. */
+[data-theme="day"] .glass-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 4px 14px rgba(0, 0, 0, 0.08);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.85) 0%,
+    rgba(255, 255, 255, 0.45) 100%
+  );
+  color: var(--text);
+}
+[data-theme="day"] .glass-btn:hover:not(:disabled) {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 1) 0%,
+    rgba(255, 255, 255, 0.6) 100%
+  );
+}
+[data-theme="day"] .glass-switch-track {
+  background: rgba(0, 0, 0, 0.08);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+[data-theme="day"] .glass-switch-thumb {
+  background: linear-gradient(180deg, #fff 0%, #f0f0f0 100%);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
 
 [data-theme="day"] .glass-seg {
   background: rgba(0, 0, 0, 0.05);
