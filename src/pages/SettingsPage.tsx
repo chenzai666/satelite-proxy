@@ -388,6 +388,9 @@ export function SettingsPage() {
             <label className="field">
               <span>{t("settings.mixedPort")}</span>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mono"
                 value={mixed}
                 onChange={(e) => setMixed(e.target.value)}
@@ -396,6 +399,9 @@ export function SettingsPage() {
             <label className="field">
               <span>{t("settings.apiPort")}</span>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mono"
                 value={api}
                 onChange={(e) => setApi(e.target.value)}
@@ -404,6 +410,9 @@ export function SettingsPage() {
             <label className="field field-span-2">
               <span>{t("settings.probeUrl")}</span>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 className="mono"
                 value={probe}
                 onChange={(e) => setProbe(e.target.value)}

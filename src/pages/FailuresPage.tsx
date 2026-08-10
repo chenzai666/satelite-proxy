@@ -218,6 +218,9 @@ export function FailuresPage({ embedded = false }: Props) {
       )}
       <div className="header-actions traffic-toolbar-actions">
         <input
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           className="search"
           placeholder={t("fails.filter")}
           value={query}
@@ -355,6 +358,9 @@ export function FailuresPage({ embedded = false }: Props) {
             <div className="fails-set-row">
               <label className="inline">
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   type="radio"
                   checked={!createNewSet}
                   onChange={() => setCreateNewSet(false)}
@@ -371,11 +377,17 @@ export function FailuresPage({ embedded = false }: Props) {
             </div>
             <label className="inline fails-new-set">
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 type="radio"
                 checked={createNewSet}
                 onChange={() => setCreateNewSet(true)}
               />
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 value={newSetName}
                 onChange={(e) => setNewSetName(e.target.value)}
                 placeholder={t("fails.newSetPh")}
@@ -396,6 +408,9 @@ export function FailuresPage({ embedded = false }: Props) {
           <label className="field">
             <span>{t("rules.payload")}</span>
             <input
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
               value={payload}
               onChange={(e) => setPayload(e.target.value)}
               placeholder={t("fails.payloadPh")}

@@ -907,6 +907,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             <label className="field dns-field">
               <span>IPv4 地址池</span>
               <input
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 value={dns.fake_ip.inet4_range}
                 disabled={busy}
                 onChange={(e) =>
@@ -946,6 +949,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             <label className="field dns-field">
               <span>Bypass 后缀（每行一个，不走 FakeIP）</span>
               <textarea
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 rows={4}
                 value={bypassText}
                 disabled={busy}
@@ -967,6 +973,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               <span>域名</span>
               <div className="dns-test-row">
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={testDomain}
                   onChange={(e) => setTestDomain(e.target.value)}
                   onKeyDown={(e) => {
@@ -1049,6 +1058,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               <label className="field">
                 <span>规则集名称</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={newSetName}
                   onChange={(e) => setNewSetName(e.target.value)}
                   placeholder="请输入名称"
@@ -1114,6 +1126,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               <label className="field">
                 <span>域名匹配</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={newRulePayload}
                   onChange={(e) => setNewRulePayload(e.target.value)}
                   placeholder="company.com / git.internal"
@@ -1193,6 +1208,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               <label className="field">
                 <span>域名</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={newHostDomain}
                   onChange={(e) => setNewHostDomain(e.target.value)}
                   placeholder="example.com"
@@ -1202,6 +1220,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               <label className="field">
                 <span>IP 地址</span>
                 <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={newHostAddr}
                   onChange={(e) => setNewHostAddr(e.target.value)}
                   placeholder="10.0.0.1 / ::1"

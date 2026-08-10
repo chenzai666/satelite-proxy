@@ -99,6 +99,9 @@ export function ConnectionsPage({ embedded = false }: Props) {
       )}
       <div className="header-actions traffic-toolbar-actions">
         <input
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           className="search"
           placeholder={t("conn.filter")}
           value={query}
