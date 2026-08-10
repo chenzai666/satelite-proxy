@@ -42,15 +42,10 @@ mod macos {
             let s = CFString::new(scheme);
             // 0 = noErr
             let status = unsafe {
-                LSSetDefaultHandlerForURLScheme(
-                    s.as_concrete_TypeRef(),
-                    bid.as_concrete_TypeRef(),
-                )
+                LSSetDefaultHandlerForURLScheme(s.as_concrete_TypeRef(), bid.as_concrete_TypeRef())
             };
             if status != 0 {
-                eprintln!(
-                    "[satelite] LSSetDefaultHandlerForURLScheme({scheme}) status={status}"
-                );
+                eprintln!("[satelite] LSSetDefaultHandlerForURLScheme({scheme}) status={status}");
             }
         }
     }

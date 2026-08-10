@@ -47,7 +47,9 @@ function ProShell() {
   }, [token, prefill]);
 
   return (
-    <div className="app-shell">
+    <div
+      className={`app-shell ${nav === "dashboard" ? "dashboard-shell" : ""}`}
+    >
       <TopNav active={nav} onChange={setNav} />
       <main className="main">
         {/* key={nav} forces a remount on page switch → triggers the CSS

@@ -100,9 +100,8 @@ fn synthetic_release_info(tag: &str, platform: CorePlatform) -> LatestReleaseInf
     let ver_num = version.trim_start_matches('v').to_string();
     let ext = if platform.is_windows { "zip" } else { "tar.gz" };
     let asset_name = format!("sing-box-{ver_num}-{}.{ext}", platform.asset_suffix);
-    let download_url = format!(
-        "https://github.com/SagerNet/sing-box/releases/download/{version}/{asset_name}"
-    );
+    let download_url =
+        format!("https://github.com/SagerNet/sing-box/releases/download/{version}/{asset_name}");
     LatestReleaseInfo {
         version,
         asset_name,
@@ -183,10 +182,7 @@ async fn download_and_install(
         .await
         .map_err(|e| AppError::Core(format!("download: {e}")))?;
     if !resp.status().is_success() {
-        return Err(AppError::Core(format!(
-            "download status {}",
-            resp.status()
-        )));
+        return Err(AppError::Core(format!("download status {}", resp.status())));
     }
     let bytes = resp
         .bytes()
@@ -274,8 +270,8 @@ fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let mut out = File::create(dest)
-                .map_err(|e| AppError::Core(format!("create binary: {e}")))?;
+            let mut out =
+                File::create(dest).map_err(|e| AppError::Core(format!("create binary: {e}")))?;
             io::copy(&mut entry, &mut out)
                 .map_err(|e| AppError::Core(format!("extract binary: {e}")))?;
             found = true;
@@ -293,8 +289,8 @@ fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
 
 fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open zip: {e}")))?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| AppError::Core(format!("zip open: {e}")))?;
+    let mut zip =
+        zip::ZipArchive::new(file).map_err(|e| AppError::Core(format!("zip open: {e}")))?;
     let want = binary_name();
     let mut target_index = None;
     for i in 0..zip.len() {
@@ -311,17 +307,15 @@ fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
             break;
         }
     }
-    let idx = target_index.ok_or_else(|| {
-        AppError::Core("sing-box binary not found inside zip".into())
-    })?;
+    let idx = target_index
+        .ok_or_else(|| AppError::Core("sing-box binary not found inside zip".into()))?;
     let mut entry = zip
         .by_index(idx)
         .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut out =
-        File::create(dest).map_err(|e| AppError::Core(format!("create binary: {e}")))?;
+    let mut out = File::create(dest).map_err(|e| AppError::Core(format!("create binary: {e}")))?;
     io::copy(&mut entry, &mut out).map_err(|e| AppError::Core(format!("extract binary: {e}")))?;
     Ok(())
 }

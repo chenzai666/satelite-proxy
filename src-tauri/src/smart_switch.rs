@@ -176,8 +176,7 @@ impl Controller {
     }
 }
 
-static CTRL: LazyLock<Mutex<Controller>> =
-    LazyLock::new(|| Mutex::new(Controller::default()));
+static CTRL: LazyLock<Mutex<Controller>> = LazyLock::new(|| Mutex::new(Controller::default()));
 
 fn ctrl() -> std::sync::MutexGuard<'static, Controller> {
     CTRL.lock().unwrap_or_else(|p| p.into_inner())
@@ -222,11 +221,7 @@ fn score_node(latency_ms: Option<u32>, fail_rate: f64, ejected: bool) -> f64 {
         .map(|m| m as f64)
         .unwrap_or(SCORE_UNKNOWN_LATENCY);
     let fail = fail_rate.clamp(0.0, 1.0) * SCORE_FAIL_PENALTY;
-    let ej = if ejected {
-        SCORE_EJECT_PENALTY
-    } else {
-        0.0
-    };
+    let ej = if ejected { SCORE_EJECT_PENALTY } else { 0.0 };
     lat + fail + ej
 }
 
@@ -241,7 +236,6 @@ fn sort_candidates_by_score(nodes: &mut [ProxyNode], ejected: &[String]) {
             .then_with(|| a.name.cmp(&b.name))
     });
 }
-
 
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -345,7 +339,10 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             .unwrap_or(false);
         if !still_on {
             ctrl().set_phase(Phase::Ok);
-            app_log::info("smart_switch", "bootstrap cancelled (auto_select not smart)");
+            app_log::info(
+                "smart_switch",
+                "bootstrap cancelled (auto_select not smart)",
+            );
             return Ok(SmartSwitchNowResult {
                 switched: false,
                 from_id: current_id,
@@ -859,9 +856,11 @@ fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
         .with_store(|store| {
             let mut out = Vec::new();
             for set in store.rule_sets.iter().filter(|s| s.enabled) {
-                for r in set.rules.iter().filter(|r| {
-                    r.enabled && matches!(r.target, RuleTarget::Smart)
-                }) {
+                for r in set
+                    .rules
+                    .iter()
+                    .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
+                {
                     out.push(r.clone());
                 }
             }
@@ -894,10 +893,7 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
 
     for rule in rules {
         if let Err(e) = maintain_smart_rule(state, &rule, &nodes, &probe_url, api.clone()).await {
-            app_log::debug(
-                "smart_switch",
-                format!("smart rule {}: {e}", rule.id),
-            );
+            app_log::debug("smart_switch", format!("smart rule {}: {e}", rule.id));
         }
     }
     Ok(())

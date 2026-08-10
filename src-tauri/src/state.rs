@@ -30,7 +30,9 @@ fn recover_lock<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
         Err(poisoned) => {
             app_log::error(
                 "lock",
-                format!("{name} lock was poisoned — recovering (previous panic left the mutex tainted)"),
+                format!(
+                    "{name} lock was poisoned — recovering (previous panic left the mutex tainted)"
+                ),
             );
             poisoned.into_inner()
         }
@@ -124,8 +126,12 @@ impl AppState {
     ) -> AppResult<ProxyStatus> {
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
-        let status =
-            runtime.start_proxy(&self.app_data_dir, resource_dir, &mut store, enable_system_proxy)?;
+        let status = runtime.start_proxy(
+            &self.app_data_dir,
+            resource_dir,
+            &mut store,
+            enable_system_proxy,
+        )?;
         store.save(&self.store_path)?;
         Ok(status)
     }
@@ -219,7 +225,10 @@ impl AppState {
             store.settings.current_node_id = Some(node_id.clone());
             Ok(())
         }) {
-            app_log::warn("auto_select", format!("persist kernel selection failed: {e}"));
+            app_log::warn(
+                "auto_select",
+                format!("persist kernel selection failed: {e}"),
+            );
             return;
         }
         app_log::info(

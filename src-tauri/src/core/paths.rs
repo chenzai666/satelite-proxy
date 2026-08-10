@@ -36,9 +36,7 @@ pub fn detect_platform() -> AppResult<CorePlatform> {
         ("windows", "x86_64") => ("windows-amd64", true),
         ("windows", "aarch64") => ("windows-arm64", true),
         _ => {
-            return Err(AppError::Core(format!(
-                "unsupported platform: {os}/{arch}"
-            )));
+            return Err(AppError::Core(format!("unsupported platform: {os}/{arch}")));
         }
     };
     Ok(CorePlatform {
@@ -78,12 +76,7 @@ pub fn bundled_core_candidates(resource_dir: Option<&Path>) -> Vec<PathBuf> {
 
     // Dev source tree first: running from target/debug/resources can be SIGKILL'd on macOS.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    out.push(
-        manifest
-            .join("resources/bin")
-            .join(plat)
-            .join(bin),
-    );
+    out.push(manifest.join("resources/bin").join(plat).join(bin));
 
     if let Some(res) = resource_dir {
         // Tauri resource root layouts (varies by OS / config)
@@ -98,7 +91,9 @@ pub fn bundled_core_candidates(resource_dir: Option<&Path>) -> Vec<PathBuf> {
 
 /// Paths under `target/{debug,release}/…` — same bytes can get SIGKILL when executed from there.
 fn is_cargo_target_path(p: &Path) -> bool {
-    let mut comps = p.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
+    let mut comps = p
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned());
     while let Some(c) = comps.next() {
         if c == "target" {
             if let Some(profile) = comps.next() {
@@ -142,21 +137,14 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
         #[cfg(target_os = "macos")]
         {
             if let Err(e) = super::macos_auth::remove_setuid_core_if_needed(&dest) {
-                crate::app_log::warn(
-                    "core",
-                    format!("could not replace setuid sing-box: {e}"),
-                );
+                crate::app_log::warn("core", format!("could not replace setuid sing-box: {e}"));
             }
         }
     }
     let dir = core_dir(app_data_dir);
     std::fs::create_dir_all(&dir)?;
-    std::fs::copy(bundled, &dest).map_err(|e| {
-        AppError::Core(format!(
-            "copy sing-box to {}: {e}",
-            dest.display()
-        ))
-    })?;
+    std::fs::copy(bundled, &dest)
+        .map_err(|e| AppError::Core(format!("copy sing-box to {}: {e}", dest.display())))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -167,10 +155,7 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
     // Best-effort clear quarantine on macOS
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("xattr")
-            .args(["-cr"])
-            .arg(&dest)
-            .output();
+        let _ = Command::new("xattr").args(["-cr"]).arg(&dest).output();
     }
     // Keep version.txt next to staged binary when available
     if let Some(parent) = bundled.parent() {
@@ -247,10 +232,7 @@ pub fn bundled_core_version(resource_dir: Option<&Path>) -> Option<String> {
 }
 
 /// Resolve version for whatever core is active (file metadata only; no `sing-box version`).
-pub fn active_core_version(
-    app_data_dir: &Path,
-    resource_dir: Option<&Path>,
-) -> Option<String> {
+pub fn active_core_version(app_data_dir: &Path, resource_dir: Option<&Path>) -> Option<String> {
     let (_path, source) = resolve_core_bin(app_data_dir, resource_dir);
     match source {
         CoreSource::Downloaded => installed_core_version(app_data_dir),

@@ -45,11 +45,7 @@ pub fn parse_uri_list(content: &str, format: SubscriptionFormat) -> AppResult<Pa
 
 pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
     let line = line.trim();
-    let scheme = line
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let scheme = line.split(':').next().unwrap_or("").to_ascii_lowercase();
 
     match scheme.as_str() {
         "ss" => parse_ss_uri(line),
@@ -66,10 +62,7 @@ pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
 }
 
 fn decode_base64_flexible(input: &str) -> Result<Vec<u8>, String> {
-    let cleaned: String = input
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
+    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
     // URL_SAFE and STANDARD, with/without padding
     general_purpose::STANDARD
         .decode(&cleaned)
@@ -86,9 +79,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 fn fragment_name(url: &Url) -> Option<String> {
-    url.fragment()
-        .map(percent_decode)
-        .filter(|s| !s.is_empty())
+    url.fragment().map(percent_decode).filter(|s| !s.is_empty())
 }
 
 /// ss://method:password@host:port#name
@@ -209,7 +200,10 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("tcp")
         .to_ascii_lowercase();
-    let path = json.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let path = json
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let host_header = json
         .get("host")
         .and_then(|v| v.as_str())
@@ -231,9 +225,7 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
                 max_early_data: None,
             })
         }
-        "grpc" => Some(Transport::Grpc {
-            service_name: path,
-        }),
+        "grpc" => Some(Transport::Grpc { service_name: path }),
         "h2" | "http" => Some(Transport::Http {
             path,
             host: host_header.map(|h| vec![h]),
@@ -290,7 +282,10 @@ fn parse_vless_uri(line: &str) -> Result<ProxyNode, String> {
         .ok_or_else(|| "vless: missing port".to_string())?;
     let name = fragment_name(&url).unwrap_or_else(|| format!("vless-{server}-{port}"));
 
-    let query: BTreeMap<String, String> = url.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
     let security = query.get("security").map(|s| s.as_str()).unwrap_or("none");
     let mut tls = if security == "tls" || security == "reality" {
@@ -310,10 +305,7 @@ fn parse_vless_uri(line: &str) -> Result<ProxyNode, String> {
                     .filter(|p| !p.is_empty())
                     .collect()
             }),
-            utls_fingerprint: query
-                .get("fp")
-                .cloned()
-                .and_then(|s| normalize_utls_fp(&s)),
+            utls_fingerprint: query.get("fp").cloned().and_then(|s| normalize_utls_fp(&s)),
             reality_public_key: query.get("pbk").cloned(),
             reality_short_id: query.get("sid").cloned(),
         })
@@ -394,7 +386,10 @@ fn parse_trojan_uri(line: &str) -> Result<ProxyNode, String> {
         .port()
         .ok_or_else(|| "trojan: missing port".to_string())?;
     let name = fragment_name(&url).unwrap_or_else(|| format!("trojan-{server}-{port}"));
-    let query: BTreeMap<String, String> = url.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
     let tls = Some(TlsConfig {
         enabled: true,
@@ -402,9 +397,7 @@ fn parse_trojan_uri(line: &str) -> Result<ProxyNode, String> {
             .get("sni")
             .cloned()
             .or_else(|| query.get("peer").cloned()),
-        insecure: query
-            .get("allowInsecure")
-            .map(|v| v == "1" || v == "true"),
+        insecure: query.get("allowInsecure").map(|v| v == "1" || v == "true"),
         alpn: query.get("alpn").map(|s| {
             s.split(',')
                 .map(|p| p.trim().to_string())
@@ -490,7 +483,9 @@ fn parse_snell_uri(line: &str) -> Result<ProxyNode, String> {
         .cloned()
         .filter(|s| !s.is_empty());
 
-    let reuse = query.get("reuse").map(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let reuse = query
+        .get("reuse")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
     let obfs_mode = query
         .get("obfs")
@@ -573,10 +568,7 @@ fn parse_anytls_uri(line: &str) -> Result<ProxyNode, String> {
                 .filter(|p| !p.is_empty())
                 .collect()
         }),
-        utls_fingerprint: query
-            .get("fp")
-            .cloned()
-            .and_then(|s| normalize_utls_fp(&s)),
+        utls_fingerprint: query.get("fp").cloned().and_then(|s| normalize_utls_fp(&s)),
         reality_public_key: None,
         reality_short_id: None,
     });
@@ -615,14 +607,15 @@ fn parse_hysteria2_uri(line: &str) -> Result<ProxyNode, String> {
         .to_string();
     let port = url.port().unwrap_or(443);
     let name = fragment_name(&url).unwrap_or_else(|| format!("hy2-{server}-{port}"));
-    let query: BTreeMap<String, String> = url.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
     let tls = Some(TlsConfig {
         enabled: true,
         server_name: query.get("sni").cloned(),
-        insecure: query
-            .get("insecure")
-            .map(|v| v == "1" || v == "true"),
+        insecure: query.get("insecure").map(|v| v == "1" || v == "true"),
         alpn: None,
         utls_fingerprint: None,
         reality_public_key: None,
@@ -664,7 +657,10 @@ fn parse_tuic_uri(line: &str) -> Result<ProxyNode, String> {
         .to_string();
     let port = url.port().unwrap_or(443);
     let name = fragment_name(&url).unwrap_or_else(|| format!("tuic-{server}-{port}"));
-    let query: BTreeMap<String, String> = url.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    let query: BTreeMap<String, String> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
 
     let tls = Some(TlsConfig {
         enabled: true,
@@ -741,10 +737,7 @@ fn parse_socks_uri(line: &str) -> Result<ProxyNode, String> {
         tls: None,
         transport: None,
         udp: None,
-        config: ProtocolConfig::Socks5 {
-            username,
-            password,
-        },
+        config: ProtocolConfig::Socks5 { username, password },
         source: Some("socks5".into()),
         latency_ms: None,
         latency_at: None,
@@ -801,9 +794,7 @@ fn split_host_port(hostport: &str) -> Result<(String, u16), String> {
     let (host, port_s) = hostport
         .rsplit_once(':')
         .ok_or_else(|| "ss: missing port".to_string())?;
-    let port: u16 = port_s
-        .parse()
-        .map_err(|_| "ss: invalid port".to_string())?;
+    let port: u16 = port_s.parse().map_err(|_| "ss: invalid port".to_string())?;
     Ok((host.to_string(), port))
 }
 
@@ -814,10 +805,8 @@ mod tests {
 
     #[test]
     fn parse_ss_plain() {
-        let node = parse_uri_line(
-            "ss://aes-256-gcm:p%40ss@example.com:8388#%E9%A6%99%E6%B8%AF",
-        )
-        .unwrap();
+        let node =
+            parse_uri_line("ss://aes-256-gcm:p%40ss@example.com:8388#%E9%A6%99%E6%B8%AF").unwrap();
         assert_eq!(node.protocol, Protocol::Shadowsocks);
         assert_eq!(node.server, "example.com");
         assert_eq!(node.port, 8388);
@@ -897,10 +886,7 @@ mod tests {
         let tls = node.tls.as_ref().unwrap();
         assert!(tls.enabled);
         assert_eq!(tls.insecure, Some(true));
-        assert_eq!(
-            tls.server_name.as_deref(),
-            Some("ac9b90d0.sdsarsdg.xin")
-        );
+        assert_eq!(tls.server_name.as_deref(), Some("ac9b90d0.sdsarsdg.xin"));
         match node.config {
             ProtocolConfig::AnyTls { password } => {
                 assert_eq!(password, "E98E62DE-B54D-04BA-4ADE-913F610F8EE6");

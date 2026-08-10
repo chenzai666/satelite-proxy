@@ -24,7 +24,6 @@ type LONG = i32;
 type HKEY = *mut CVoid;
 type PHKEY = *mut HKEY;
 type LPCWSTR = *const u16;
-type LPBYTE = *mut u8;
 
 const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
 const KEY_SET_VALUE: DWORD = 0x0002;
@@ -57,12 +56,20 @@ extern "system" {
 
 #[link(name = "wininet")]
 extern "system" {
-    fn InternetSetOptionW(hInternet: *mut CVoid, dwOption: DWORD, lpBuffer: *mut CVoid, dwBufferLength: DWORD) -> BOOL;
+    fn InternetSetOptionW(
+        hInternet: *mut CVoid,
+        dwOption: DWORD,
+        lpBuffer: *mut CVoid,
+        dwBufferLength: DWORD,
+    ) -> BOOL;
 }
 
 /// Encode a Rust string as UTF-16 **with** a trailing NUL, as Win32 expects.
 fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Open HKCU\...\Internet Settings for writing.
@@ -99,7 +106,9 @@ fn set_dword(h: HKEY, name: &str, value: DWORD) -> AppResult<()> {
         )
     };
     if rc != ERROR_SUCCESS {
-        return Err(AppError::Core(format!("RegSetValueExW {name} failed (rc={rc})")));
+        return Err(AppError::Core(format!(
+            "RegSetValueExW {name} failed (rc={rc})"
+        )));
     }
     Ok(())
 }
@@ -108,11 +117,11 @@ fn set_sz(h: HKEY, name: &str, value: &str) -> AppResult<()> {
     let n = wide(name);
     let bytes = wide(value);
     let cb = (bytes.len() * 2) as DWORD; // includes trailing NUL, in bytes
-    let rc = unsafe {
-        RegSetValueExW(h, n.as_ptr(), 0, REG_SZ, bytes.as_ptr().cast::<u8>(), cb)
-    };
+    let rc = unsafe { RegSetValueExW(h, n.as_ptr(), 0, REG_SZ, bytes.as_ptr().cast::<u8>(), cb) };
     if rc != ERROR_SUCCESS {
-        return Err(AppError::Core(format!("RegSetValueExW {name} failed (rc={rc})")));
+        return Err(AppError::Core(format!(
+            "RegSetValueExW {name} failed (rc={rc})"
+        )));
     }
     Ok(())
 }
@@ -122,8 +131,18 @@ fn notify_changed() {
     unsafe {
         // Both options are needed: SETTINGS_CHANGED invalidates the cache,
         // REFRESH forces an immediate reload.
-        InternetSetOptionW(core::ptr::null_mut(), INTERNET_OPTION_SETTINGS_CHANGED, core::ptr::null_mut(), 0);
-        InternetSetOptionW(core::ptr::null_mut(), INTERNET_OPTION_REFRESH, core::ptr::null_mut(), 0);
+        InternetSetOptionW(
+            core::ptr::null_mut(),
+            INTERNET_OPTION_SETTINGS_CHANGED,
+            core::ptr::null_mut(),
+            0,
+        );
+        InternetSetOptionW(
+            core::ptr::null_mut(),
+            INTERNET_OPTION_REFRESH,
+            core::ptr::null_mut(),
+            0,
+        );
     }
 }
 
@@ -139,16 +158,18 @@ impl SystemProxy for WindowsSystemProxy {
         set_dword(h, "ProxyEnable", 1)?;
         set_sz(h, "ProxyServer", &server)?;
         // Local addresses bypass the proxy. Keep it simple + sane.
-        set_sz(h, "ProxyOverride", "localhost;127.*;10.*;172.16.*;192.168.*;<local>")?;
+        set_sz(
+            h,
+            "ProxyOverride",
+            "localhost;127.*;10.*;172.16.*;192.168.*;<local>",
+        )?;
         unsafe { RegCloseKey(h) };
 
         notify_changed();
 
         // detail is opaque to the caller; we record the server we set so
         // disable() has a hint (though disable mainly just clears ProxyEnable).
-        Ok(SystemProxySnapshot {
-            detail: server,
-        })
+        Ok(SystemProxySnapshot { detail: server })
     }
 
     fn disable(&self, _snapshot: Option<&SystemProxySnapshot>) -> AppResult<()> {

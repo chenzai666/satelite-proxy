@@ -1,5 +1,6 @@
 use crate::config::{
-    active_config_path, build_singbox_config, generate_api_secret, write_active_config, BuildOptions,
+    active_config_path, build_singbox_config, generate_api_secret, write_active_config,
+    BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
@@ -49,15 +50,20 @@ pub fn update_settings(
     close_connections_on_switch: Option<bool>,
     locale: Option<String>,
     theme: Option<String>,
+    accent: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
     auto_select: Option<String>, // off | smart | kernel
     route_final: Option<String>, // proxy | direct | block (Rule mode)
+    find_process: Option<bool>,
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
-    let mut auto_select_changed: Option<(crate::domain::AutoSelectMode, crate::domain::AutoSelectMode)> =
-        None;
+    let mut auto_select_changed: Option<(
+        crate::domain::AutoSelectMode,
+        crate::domain::AutoSelectMode,
+    )> = None;
     let mut route_final_changed = false;
+    let mut find_process_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -110,6 +116,15 @@ pub fn update_settings(
                     store.settings.theme = th;
                 }
             }
+            if let Some(ac) = accent {
+                let ac = ac.trim().to_ascii_lowercase();
+                if matches!(
+                    ac.as_str(),
+                    "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
+                ) {
+                    store.settings.accent = ac;
+                }
+            }
             if let Some(v) = unload_ui_on_tray {
                 store.settings.unload_ui_on_tray = v;
             }
@@ -123,6 +138,12 @@ pub fn update_settings(
                 }
             }
             // Prefer explicit auto_select; legacy smart_switch maps to off/smart.
+            if let Some(v) = find_process {
+                if store.settings.find_process != v {
+                    find_process_changed = true;
+                    store.settings.find_process = v;
+                }
+            }
             if let Some(raw) = auto_select {
                 if let Some(mode) = crate::domain::AutoSelectMode::parse(&raw) {
                     let prev = store.settings.auto_select;
@@ -178,6 +199,7 @@ pub fn update_settings(
     // re-applying route.final (file updates, process keeps old final).
     // selector ↔ urltest also needs a full restart (outbound type changes).
     let need_restart = route_final_changed
+        || find_process_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -264,9 +286,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 }
 
 #[tauri::command]
-pub fn generate_singbox_config(
-    state: State<'_, AppState>,
-) -> Result<GenerateConfigResult, String> {
+pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
     let secret = generate_api_secret();
 
     let (nodes, settings, rules, dns) = state
@@ -296,6 +316,7 @@ pub fn generate_singbox_config(
             route_final: settings.route_final.clone(),
             auto_select: settings.auto_select,
             probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
         },
     )
     .map_err(|e| e.to_string())?;
@@ -371,6 +392,7 @@ pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConf
             route_final: settings.route_final.clone(),
             auto_select: settings.auto_select,
             probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
         },
     )
     .map_err(|e| e.to_string())?;

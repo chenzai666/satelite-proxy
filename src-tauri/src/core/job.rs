@@ -16,7 +16,12 @@
 //! a `Send`-only newtype stored behind a `Mutex` (we never send it across
 //! threads after creation, but the wrapper silences the Send/Sync lint).
 
+// Field names mirror the Win32 `IO_COUNTERS` /
+// `JOBOBJECT_*_LIMIT_INFORMATION` layouts exactly (the structs are passed to
+// the OS by pointer), so the snake_case / camel_case lints are intentionally
+// silenced here.
 #![cfg(target_os = "windows")]
+#![allow(non_snake_case, non_camel_case_types)]
 
 use core::ffi::c_void as CVoid;
 
@@ -29,7 +34,6 @@ type BOOL = i32;
 type HANDLE = *mut CVoid;
 type LPVOID = *mut CVoid;
 type DWORD = u32;
-type LPVOID_VOID = *mut CVoid;
 
 #[repr(C)]
 #[derive(Default)]
@@ -78,15 +82,11 @@ extern "system" {
     fn SetInformationJobObject(
         hJob: HANDLE,
         JobObjectInfoClass: DWORD,
-        lpJobObjectInfo: LPVOID_VOID,
+        lpJobObjectInfo: LPVOID,
         cbJobObjectInfoLength: DWORD,
     ) -> BOOL;
     fn AssignProcessToJobObject(hJob: HANDLE, hProcess: HANDLE) -> BOOL;
-    fn OpenProcess(
-        dwDesiredAccess: DWORD,
-        bInheritHandle: BOOL,
-        dwProcessId: DWORD,
-    ) -> HANDLE;
+    fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
 }
 
@@ -131,7 +131,7 @@ fn create_kill_on_close_job() -> io::Result<HANDLE> {
         let ok = SetInformationJobObject(
             h,
             JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-            &info as *const _ as LPVOID_VOID,
+            &info as *const _ as LPVOID,
             core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as DWORD,
         );
         if ok == 0 {

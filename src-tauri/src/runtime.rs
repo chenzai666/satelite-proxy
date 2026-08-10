@@ -1,8 +1,6 @@
 //! Orchestrates core + system proxy.
 
-use crate::api::{
-    ClashApi, ConnectionInfo, RequestRecord, TrafficTotals,
-};
+use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
     build_singbox_config, generate_api_secret, outbound_tag, write_active_config, BuildOptions,
 };
@@ -382,10 +380,10 @@ impl Runtime {
     pub fn live_connections(&mut self, store: &AppStore) -> Vec<ConnectionView> {
         self.core.poll();
         self.refresh_traffic_if_stale();
-        let tag_names = node_tag_name_map(store);
+        let tag_info = node_tag_info_map(store);
         self.live_connections
             .iter()
-            .map(|c| ConnectionView::from_info(c, &tag_names))
+            .map(|c| ConnectionView::from_info(c, &tag_info))
             .collect()
     }
 
@@ -398,21 +396,54 @@ impl Runtime {
         self.core.poll();
         // Journal fills history continuously; only HTTP-refresh if stale.
         self.refresh_traffic_if_stale();
-        let tag_names = node_tag_name_map(store);
+        let tag_info = node_tag_info_map(store);
         let q = query.unwrap_or("").trim();
         let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
         self.request_order
             .iter()
             .filter_map(|id| self.request_by_id.get(id))
+            .filter(|r| r.closed)
             .filter(|r| r.matches_query(q))
             .take(limit)
-            .map(|r| ConnectionView::from_record(r, &tag_names))
+            .map(|r| ConnectionView::from_record(r, &tag_info))
+            .collect()
+    }
+
+    /// Closed requests that look like failures / timeouts: short-lived (≤ 3s)
+    /// with almost no bytes transferred — same heuristic used by the passive
+    /// smart-switch health check (see `passive_node_stats`).
+    pub fn request_failures(
+        &mut self,
+        store: &AppStore,
+        query: Option<&str>,
+        limit: Option<usize>,
+    ) -> Vec<ConnectionView> {
+        self.core.poll();
+        self.refresh_traffic_if_stale();
+        let tag_info = node_tag_info_map(store);
+        let q = query.unwrap_or("").trim();
+        let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
+        self.request_order
+            .iter()
+            .filter_map(|id| self.request_by_id.get(id))
+            .filter(|r| r.closed)
+            .filter(|r| {
+                let closed_at = r.closed_at.unwrap_or(r.last_seen);
+                let dur = closed_at.saturating_sub(r.first_seen);
+                dur <= 3000 && r.download < 1024 && r.upload < 1024
+            })
+            .filter(|r| r.matches_query(q))
+            .take(limit)
+            .map(|r| ConnectionView::from_record(r, &tag_info))
             .collect()
     }
 
     pub fn clear_request_history(&mut self) {
-        self.request_by_id.clear();
-        self.request_order.clear();
+        // Keep active records so they can still transition into the closed
+        // list when they disappear from a later connection snapshot.
+        self.request_by_id.retain(|_, record| !record.closed);
+        let active_ids: HashSet<String> = self.request_by_id.keys().cloned().collect();
+        self.request_order.retain(|id| active_ids.contains(id));
     }
 
     pub fn clash_api_clone(&self) -> Option<ClashApi> {
@@ -459,6 +490,7 @@ impl Runtime {
                 route_final: store.settings.route_final.clone(),
                 auto_select: store.settings.auto_select,
                 probe_url: store.settings.probe_url.clone(),
+                find_process: store.settings.find_process,
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;
@@ -568,9 +600,7 @@ impl Runtime {
             self.proxy_snapshot = Some(snap);
             self.system_proxy_on = true;
         } else {
-            let _ = self
-                .system_proxy
-                .disable(self.proxy_snapshot.as_ref());
+            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
@@ -614,9 +644,7 @@ impl Runtime {
     /// Full cleanup on app exit: system proxy off, kill core, free listen ports.
     pub fn shutdown_with_ports(&mut self, ports: &[u16]) {
         if self.system_proxy_on {
-            let _ = self
-                .system_proxy
-                .disable(self.proxy_snapshot.as_ref());
+            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
@@ -659,11 +687,41 @@ fn connection_history_key(c: &ConnectionInfo) -> String {
     )
 }
 
-fn node_tag_name_map(store: &AppStore) -> HashMap<String, String> {
+/// Resolved node display info for a connection: human node name + owning
+/// subscription name (e.g. "新加坡01" / "机场A").
+struct NodeInfo {
+    name: String,
+    subscription: String,
+}
+
+/// Map outbound tag → resolved display info, using only enabled subscriptions.
+fn node_tag_info_map(store: &AppStore) -> HashMap<String, NodeInfo> {
+    let enabled: std::collections::HashSet<_> = store
+        .subscriptions
+        .iter()
+        .filter(|s| s.enabled)
+        .map(|s| s.id.as_str())
+        .collect();
+    // subscription id → name
+    let sub_name: HashMap<&str, &str> = store
+        .subscriptions
+        .iter()
+        .map(|s| (s.id.as_str(), s.name.as_str()))
+        .collect();
     store
-        .enabled_nodes()
-        .into_iter()
-        .map(|n| (outbound_tag(&n), n.name))
+        .nodes
+        .iter()
+        .filter(|n| enabled.contains(n.subscription_id.as_str()))
+        .map(|n| {
+            let info = NodeInfo {
+                name: n.node.name.clone(),
+                subscription: sub_name
+                    .get(n.subscription_id.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+            };
+            (outbound_tag(&n.node), info)
+        })
         .collect()
 }
 
@@ -679,6 +737,9 @@ pub struct ConnectionView {
     pub node_tag: String,
     /// Human node name when known
     pub node_name: String,
+    /// Owning subscription name (for tooltip: 订阅配置名 + 节点名称)
+    #[serde(default)]
+    pub subscription_name: String,
     pub chains: Vec<String>,
     pub chains_display: String,
     pub rule: String,
@@ -695,11 +756,14 @@ pub struct ConnectionView {
 }
 
 impl ConnectionView {
-    fn from_info(c: &ConnectionInfo, tag_names: &HashMap<String, String>) -> Self {
-        let node_name = tag_names
-            .get(&c.node)
-            .cloned()
+    fn from_info(c: &ConnectionInfo, tag_info: &HashMap<String, NodeInfo>) -> Self {
+        let info = tag_info.get(&c.node);
+        let node_name = info
+            .map(|i| i.name.clone())
             .unwrap_or_else(|| c.node.clone());
+        let subscription_name = info
+            .map(|i| i.subscription.clone())
+            .unwrap_or_default();
         let chains_display = c.chains.join(" → ");
         Self {
             id: c.id.clone(),
@@ -709,6 +773,7 @@ impl ConnectionView {
             conn_type: c.conn_type.clone(),
             node_tag: c.node.clone(),
             node_name,
+            subscription_name,
             chains: c.chains.clone(),
             chains_display,
             rule: format_rule(&c.rule, &c.rule_payload),
@@ -725,11 +790,14 @@ impl ConnectionView {
         }
     }
 
-    fn from_record(r: &RequestRecord, tag_names: &HashMap<String, String>) -> Self {
-        let node_name = tag_names
-            .get(&r.node)
-            .cloned()
+    fn from_record(r: &RequestRecord, tag_info: &HashMap<String, NodeInfo>) -> Self {
+        let info = tag_info.get(&r.node);
+        let node_name = info
+            .map(|i| i.name.clone())
             .unwrap_or_else(|| r.node.clone());
+        let subscription_name = info
+            .map(|i| i.subscription.clone())
+            .unwrap_or_default();
         Self {
             id: r.id.clone(),
             destination: r.destination.clone(),
@@ -738,6 +806,7 @@ impl ConnectionView {
             conn_type: r.conn_type.clone(),
             node_tag: r.node.clone(),
             node_name,
+            subscription_name,
             chains: r.chains.clone(),
             chains_display: r.chains.join(" → "),
             rule: format_rule(&r.rule, &r.rule_payload),
@@ -767,4 +836,3 @@ fn format_rule(rule: &str, payload: &str) -> String {
     }
     format!("{rule}({payload})")
 }
-

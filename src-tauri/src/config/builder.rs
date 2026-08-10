@@ -1,6 +1,6 @@
 //! Build sing-box JSON from normalized [`ProxyNode`]s.
 
-use crate::config::dns_build::build_dns_section;
+use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
 use crate::domain::{
     AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType,
     TlsConfig, Transport,
@@ -31,6 +31,9 @@ pub struct BuildOptions {
     pub auto_select: AutoSelectMode,
     /// URL for kernel urltest (and shared probe default).
     pub probe_url: String,
+    /// Resolve the originating process per connection (sing-box
+    /// `find_process_mode`: on → always, off → off).
+    pub find_process: bool,
 }
 
 impl BuildOptions {
@@ -124,14 +127,6 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
-    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
-
-    let mut route_rules = Vec::new();
-    // Sniff helps domain-based route / DNS on mixed + TUN
-    route_rules.push(json!({ "action": "sniff" }));
-    if built_dns.want_hijack || opts.tun_enabled {
-        route_rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
-    }
     // Clash-style modes:
     // - Rule: user rules + configurable final (proxy|direct|block)
     // - Global: no user rules, final proxy
@@ -141,6 +136,20 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         OutboundMode::Global => (false, "proxy"),
         OutboundMode::Direct => (false, "direct"),
     };
+
+    // DNS `final` is configured independently on the DNS page (local/domestic/
+    // remote) and no longer follows the routing `final`.
+    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
+
+    let mut route_rules = Vec::new();
+    // Sniff helps domain-based route / DNS on mixed + TUN
+    route_rules.push(json!({ "action": "sniff" }));
+    if built_dns.want_hijack || opts.tun_enabled {
+        route_rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
+    }
+    // Hosts must also apply to mixed/system-proxy connections, which can pass a
+    // domain directly to the outbound without performing a DNS query.
+    route_rules.extend(build_hosts_route_rules(&opts.dns.effective_hosts()));
     if apply_user_rules {
         route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
     }
@@ -180,7 +189,11 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "rules": route_rules,
             "final": route_final,
             "auto_detect_interface": true,
-            "default_domain_resolver": built_dns.default_resolver
+            "default_domain_resolver": built_dns.default_resolver,
+            // Resolve the originating process for each connection so the
+            // Clash API connections list (and our traffic page) shows a real
+            // process name. 1.13 uses route.find_process (bool).
+            "find_process": opts.find_process
         },
         "experimental": {
             "clash_api": {
@@ -198,11 +211,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     })
 }
 
-fn resolve_selected_tag(
-    nodes: &[ProxyNode],
-    tags: &[String],
-    current_id: Option<&str>,
-) -> String {
+fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
     if let Some(id) = current_id {
         if let Some(node) = nodes.iter().find(|n| n.id == id) {
             let tag = outbound_tag(node);
@@ -211,9 +220,7 @@ fn resolve_selected_tag(
             }
         }
     }
-    tags.first()
-        .cloned()
-        .unwrap_or_else(|| "direct".into())
+    tags.first().cloned().unwrap_or_else(|| "direct".into())
 }
 
 pub fn outbound_tag(node: &ProxyNode) -> String {
@@ -309,15 +316,14 @@ pub fn smart_pool_nodes(r: &Rule, nodes: &[ProxyNode]) -> Vec<ProxyNode> {
         .collect()
 }
 
-fn build_smart_rule_selectors(
-    rules: &[Rule],
-    nodes: &[ProxyNode],
-    tags: &[String],
-) -> Vec<Value> {
+fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Vec<Value> {
     use crate::domain::RuleTarget;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for r in rules.iter().filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart)) {
+    for r in rules
+        .iter()
+        .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
+    {
         let group = r.smart_outbound_tag();
         if !seen.insert(group.clone()) {
             continue;
@@ -340,12 +346,15 @@ fn build_smart_rule_selectors(
 fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
     let tag = outbound_tag(node);
     let mut ob = match (&node.protocol, &node.config) {
-        (Protocol::Shadowsocks, ProtocolConfig::Shadowsocks {
-            method,
-            password,
-            plugin,
-            plugin_opts,
-        }) => {
+        (
+            Protocol::Shadowsocks,
+            ProtocolConfig::Shadowsocks {
+                method,
+                password,
+                plugin,
+                plugin_opts,
+            },
+        ) => {
             let mut o = json!({
                 "type": "shadowsocks",
                 "tag": tag.clone(),
@@ -362,11 +371,14 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             o
         }
-        (Protocol::Vmess, ProtocolConfig::Vmess {
-            uuid,
-            alter_id,
-            security,
-        }) => {
+        (
+            Protocol::Vmess,
+            ProtocolConfig::Vmess {
+                uuid,
+                alter_id,
+                security,
+            },
+        ) => {
             json!({
                 "type": "vmess",
                 "tag": tag.clone(),
@@ -377,11 +389,14 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
                 "alter_id": alter_id,
             })
         }
-        (Protocol::Vless, ProtocolConfig::Vless {
-            uuid,
-            flow,
-            packet_encoding,
-        }) => {
+        (
+            Protocol::Vless,
+            ProtocolConfig::Vless {
+                uuid,
+                flow,
+                packet_encoding,
+            },
+        ) => {
             let mut o = json!({
                 "type": "vless",
                 "tag": tag.clone(),
@@ -406,13 +421,16 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
                 "password": password,
             })
         }
-        (Protocol::Hysteria2, ProtocolConfig::Hysteria2 {
-            password,
-            up_mbps,
-            down_mbps,
-            obfs,
-            obfs_password,
-        }) => {
+        (
+            Protocol::Hysteria2,
+            ProtocolConfig::Hysteria2 {
+                password,
+                up_mbps,
+                down_mbps,
+                obfs,
+                obfs_password,
+            },
+        ) => {
             let mut o = json!({
                 "type": "hysteria2",
                 "tag": tag.clone(),
@@ -435,13 +453,16 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             o
         }
-        (Protocol::Tuic, ProtocolConfig::Tuic {
-            uuid,
-            password,
-            congestion_control,
-            udp_relay_mode,
-            zero_rtt_handshake,
-        }) => {
+        (
+            Protocol::Tuic,
+            ProtocolConfig::Tuic {
+                uuid,
+                password,
+                congestion_control,
+                udp_relay_mode,
+                zero_rtt_handshake,
+            },
+        ) => {
             let mut o = json!({
                 "type": "tuic",
                 "tag": tag.clone(),
@@ -459,10 +480,7 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             o
         }
-        (Protocol::Socks5, ProtocolConfig::Socks5 {
-            username,
-            password,
-        }) => {
+        (Protocol::Socks5, ProtocolConfig::Socks5 { username, password }) => {
             let mut o = json!({
                 "type": "socks",
                 "tag": tag.clone(),
@@ -488,15 +506,18 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
                 "password": password,
             })
         }
-        (Protocol::Snell, ProtocolConfig::Snell {
-            psk,
-            version,
-            userkey,
-            reuse,
-            obfs_mode,
-            obfs_host,
-            mode,
-        }) => {
+        (
+            Protocol::Snell,
+            ProtocolConfig::Snell {
+                psk,
+                version,
+                userkey,
+                reuse,
+                obfs_mode,
+                obfs_host,
+                mode,
+            },
+        ) => {
             // sing-box ≥ 1.14; accepts version 4 or 6 (v1–3/v5 may fail at core runtime).
             let ver = match *version {
                 6 => 6,
@@ -751,6 +772,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -774,6 +796,54 @@ mod tests {
     }
 
     #[test]
+    fn hosts_override_is_injected_before_user_route_rules() {
+        use crate::domain::{HostsConfig, HostsEntry};
+
+        let nodes = vec![sample_ss()];
+        let dns = DnsSettings {
+            hosts: HostsConfig {
+                enabled: true,
+                include_system: false,
+                entries: vec![HostsEntry {
+                    id: "baidu".into(),
+                    enabled: true,
+                    domain: "baidu.com".into(),
+                    addr: "192.168.1.1".into(),
+                }],
+            },
+            ..DnsSettings::default()
+        };
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns,
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+            },
+        )
+        .unwrap();
+
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        let host_rule = rules
+            .iter()
+            .find(|rule| rule["override_address"] == "192.168.1.1")
+            .expect("hosts route override");
+        assert_eq!(host_rule["domain"], json!(["baidu.com"]));
+        assert_eq!(host_rule["action"], "route-options");
+    }
+
+    #[test]
     fn builds_urltest_when_kernel_auto_select() {
         let nodes = vec![sample_ss()];
         let built = build_singbox_config(
@@ -792,6 +862,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Kernel,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -829,6 +900,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -845,7 +917,9 @@ mod tests {
             .get("default_domain_resolver")
             .is_some());
         let rules = built.value["route"]["rules"].as_array().unwrap();
-        assert!(rules.iter().any(|r| r.get("action") == Some(&json!("sniff"))));
+        assert!(rules
+            .iter()
+            .any(|r| r.get("action") == Some(&json!("sniff"))));
         assert!(rules
             .iter()
             .any(|r| r.get("action") == Some(&json!("hijack-dns"))));
@@ -908,6 +982,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap_err();
@@ -933,6 +1008,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -959,6 +1035,7 @@ mod tests {
                     route_final: rf.into(),
                     auto_select: crate::domain::AutoSelectMode::Off,
                     probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
                 },
             )
             .unwrap();
@@ -991,6 +1068,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1029,6 +1107,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1068,6 +1147,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();
@@ -1111,6 +1191,7 @@ mod tests {
                 route_final: "proxy".into(),
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
             },
         )
         .unwrap();

@@ -1,16 +1,21 @@
 //! System HTTP(S) proxy control.
 
+#[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "windows")]
-mod windows;
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod stub;
+#[cfg(target_os = "windows")]
+mod windows;
 
 use crate::error::AppResult;
 
 #[derive(Debug, Clone)]
 pub struct SystemProxySnapshot {
     /// Platform-specific opaque restore token (e.g. service name + previous flags).
+    ///
+    /// Part of the cross-platform snapshot contract; written by some backends
+    /// and read by others, so on a given platform it may look unused.
+    #[allow(dead_code)]
     pub detail: String,
 }
 

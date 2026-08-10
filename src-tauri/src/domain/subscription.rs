@@ -33,7 +33,9 @@ pub struct SubscriptionTraffic {
 
 impl SubscriptionTraffic {
     pub fn used(&self) -> u64 {
-        self.upload.unwrap_or(0).saturating_add(self.download.unwrap_or(0))
+        self.upload
+            .unwrap_or(0)
+            .saturating_add(self.download.unwrap_or(0))
     }
 
     pub fn remaining(&self) -> Option<u64> {

@@ -17,6 +17,7 @@ import {
 } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { GlassSeg } from "../components/GlassSeg";
 import type {
   AutoSelectMode,
   GenerateConfigResult,
@@ -459,7 +460,11 @@ export function DashboardPage({
   }, [nodes]);
 
   async function onCopyEnv() {
-    const text = `export all_proxy=http://127.0.0.1:${mixedPort}`;
+    const proxyUrl = `http://127.0.0.1:${mixedPort}`;
+    const isWindows = /Windows/i.test(navigator.userAgent);
+    const text = isWindows
+      ? `$env:ALL_PROXY = "${proxyUrl}"`
+      : `export all_proxy=${proxyUrl}`;
     try {
       await navigator.clipboard.writeText(text);
       setEnvCopied(true);
@@ -636,39 +641,17 @@ export function DashboardPage({
           <div className="dash-rail-title mono">{t("dashboard.quickControls")}</div>
           <div className="dash-inline-row dash-rail-block">
             <span className="dash-inline-label">{t("dashboard.routing")}</span>
-            <div
-              className="segmented compact mode-seg dash-inline-seg"
-              role="group"
-              aria-label={t("dashboard.routing")}
-            >
-              {/* Sliding indicator: width = 1/3 of the track, translateX follows active index. */}
-              <span
-                className="seg-indicator"
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${
-                    outboundMode === "rule" ? 0 : outboundMode === "global" ? 100 : 200
-                  }%)`,
-                }}
-              />
-              {(
-                [
-                  ["rule", t("dashboard.modeRule")],
-                  ["global", t("dashboard.modeGlobal")],
-                  ["direct", t("dashboard.modeDirect")],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`seg ${outboundMode === key ? "active" : ""}`}
-                  disabled={controlsBusy}
-                  onClick={() => void onSetMode(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <GlassSeg
+              value={outboundMode}
+              ariaLabel={t("dashboard.routing")}
+              disabled={controlsBusy}
+              onChange={(v) => void onSetMode(v as OutboundMode)}
+              options={[
+                { value: "rule", label: t("dashboard.modeRule") },
+                { value: "global", label: t("dashboard.modeGlobal") },
+                { value: "direct", label: t("dashboard.modeDirect") },
+              ]}
+            />
           </div>
           <div className="dash-inline-row dash-auto-select">
             <span
@@ -688,58 +671,39 @@ export function DashboardPage({
                 t("dashboard.autoSelect")
               )}
             </span>
-            <div
-              className="segmented compact mode-seg dash-inline-seg dash-auto-seg"
-              role="group"
-              aria-label={t("dashboard.autoSelect")}
-              aria-busy={smartProbing}
-            >
-              <span
-                className="seg-indicator"
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${
-                    autoSelectMode === "off"
-                      ? 0
-                      : autoSelectMode === "kernel"
-                        ? 100
-                        : 200
-                  }%)`,
-                }}
-              />
-              {(
-                [
-                  ["off", t("dashboard.autoSelectOff")],
-                  ["kernel", t("dashboard.autoSelectKernel")],
-                  ["smart", t("dashboard.autoSelectSmart")],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`seg ${autoSelectMode === key ? "active" : ""}`}
-                  disabled={
-                    modeBusy ||
-                    // While probing: allow Off / Kernel to cancel; only block re-tapping Smart.
-                    (smartProbing && key === "smart") ||
-                    (nodeCount === 0 &&
-                      key !== "off" &&
-                      autoSelectMode === "off" &&
-                      !smartProbing)
-                  }
-                  title={
-                    key === "kernel"
-                      ? t("dashboard.autoSelectKernelHint")
-                      : key === "smart"
-                        ? t("dashboard.smartSwitchDesc")
-                        : t("dashboard.autoSelectDesc")
-                  }
-                  onClick={() => void onSetAutoSelect(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <GlassSeg
+              value={autoSelectMode}
+              ariaLabel={t("dashboard.autoSelect")}
+              disabled={modeBusy}
+              disabledValues={
+                new Set(
+                  [
+                    smartProbing ? "smart" : null,
+                    nodeCount === 0 &&
+                    autoSelectMode === "off" &&
+                    !smartProbing
+                      ? "kernel"
+                      : null,
+                    nodeCount === 0 &&
+                    autoSelectMode === "off" &&
+                    !smartProbing
+                      ? "smart"
+                      : null,
+                  ].filter((v): v is string => v != null),
+                )
+              }
+              titles={{
+                kernel: t("dashboard.autoSelectKernelHint"),
+                smart: t("dashboard.smartSwitchDesc"),
+                off: t("dashboard.autoSelectDesc"),
+              }}
+              onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}
+              options={[
+                { value: "off", label: t("dashboard.autoSelectOff") },
+                { value: "kernel", label: t("dashboard.autoSelectKernel") },
+                { value: "smart", label: t("dashboard.autoSelectSmart") },
+              ]}
+            />
           </div>
           <div className="dash-inline-row dash-auto-select dash-capture">
             <span
@@ -759,53 +723,31 @@ export function DashboardPage({
                 t("dashboard.capture")
               )}
             </span>
-            <div
-              className="segmented compact mode-seg dash-inline-seg dash-auto-seg"
-              role="group"
-              aria-label={t("dashboard.capture")}
-              aria-busy={captureBusy}
-            >
-              <span
-                className="seg-indicator"
-                aria-hidden="true"
-                style={{
-                  transform: `translateX(${
-                    captureMode === "off"
-                      ? 0
-                      : captureMode === "system"
-                        ? 100
-                        : 200
-                  }%)`,
-                }}
-              />
-              {(
-                [
-                  ["off", t("dashboard.captureOff")],
-                  ["system", t("dashboard.captureSystem")],
-                  ["tun", t("dashboard.captureTun")],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`seg ${captureMode === key ? "active" : ""}`}
-                  disabled={
-                    (captureBusy && key !== captureMode) ||
-                    (key === "tun" && nodeCount === 0 && captureMode !== "tun")
-                  }
-                  title={
-                    key === "tun"
-                      ? t("dashboard.captureTunHint")
-                      : key === "system"
-                        ? t("dashboard.captureSystemHint")
-                        : t("dashboard.captureDesc")
-                  }
-                  onClick={() => onSetCaptureMode(key)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <GlassSeg
+              value={captureMode}
+              ariaLabel={t("dashboard.capture")}
+              disabledValues={
+                new Set(
+                  [
+                    captureBusy && captureMode !== "off" ? "off" : null,
+                    captureBusy && captureMode !== "system" ? "system" : null,
+                    captureBusy && captureMode !== "tun" ? "tun" : null,
+                    nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
+                  ].filter((v): v is string => v != null),
+                )
+              }
+              titles={{
+                tun: t("dashboard.captureTunHint"),
+                system: t("dashboard.captureSystemHint"),
+                off: t("dashboard.captureDesc"),
+              }}
+              onChange={(v) => onSetCaptureMode(v as "off" | "system" | "tun")}
+              options={[
+                { value: "off", label: t("dashboard.captureOff") },
+                { value: "system", label: t("dashboard.captureSystem") },
+                { value: "tun", label: t("dashboard.captureTun") },
+              ]}
+            />
           </div>
         </aside>
       </section>

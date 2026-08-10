@@ -13,7 +13,27 @@ use tauri::{
 
 /// Same shell line as Dashboard “复制环境变量”.
 fn proxy_env_export(mixed_port: u16) -> String {
-    format!("export all_proxy=http://127.0.0.1:{mixed_port}")
+    let proxy_url = format!("http://127.0.0.1:{mixed_port}");
+    if cfg!(target_os = "windows") {
+        format!(r#"$env:ALL_PROXY = "{proxy_url}""#)
+    } else {
+        format!("export all_proxy={proxy_url}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_env_export;
+
+    #[test]
+    fn proxy_env_matches_current_platform_shell() {
+        let text = proxy_env_export(2080);
+        if cfg!(target_os = "windows") {
+            assert_eq!(text, r#"$env:ALL_PROXY = "http://127.0.0.1:2080""#);
+        } else {
+            assert_eq!(text, "export all_proxy=http://127.0.0.1:2080");
+        }
+    }
 }
 
 fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
@@ -56,7 +76,10 @@ fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        for (bin, args) in [("wl-copy", &[][..]), ("xclip", &["-selection", "clipboard"][..])] {
+        for (bin, args) in [
+            ("wl-copy", &[][..]),
+            ("xclip", &["-selection", "clipboard"][..]),
+        ] {
             let Ok(mut child) = Command::new(bin).args(args).stdin(Stdio::piped()).spawn() else {
                 continue;
             };

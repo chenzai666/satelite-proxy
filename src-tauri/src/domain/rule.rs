@@ -68,34 +68,6 @@ impl RuleTarget {
     }
 }
 
-/// Per-rule DNS override. Built-in / missing = inherit DNS page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DnsPolicy {
-    /// Follow global DNS settings (DNS page). Default for built-in & old data.
-    #[default]
-    Inherit,
-    /// Resolve via system / local DNS (rule page wins over DNS page).
-    System,
-}
-
-impl DnsPolicy {
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "inherit" | "default" | "" => Some(Self::Inherit),
-            "system" | "local" => Some(Self::System),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Inherit => "inherit",
-            Self::System => "system",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rule {
     pub id: String,
@@ -118,13 +90,6 @@ pub struct Rule {
     /// When `target == Smart`: blacklist — name containing any keyword is skipped (OR).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_exclude: Vec<String>,
-    /// DNS override for this rule (user rules only; built-in always inherit).
-    #[serde(default, skip_serializing_if = "is_dns_inherit")]
-    pub dns_policy: DnsPolicy,
-}
-
-fn is_dns_inherit(p: &DnsPolicy) -> bool {
-    matches!(p, DnsPolicy::Inherit)
 }
 
 impl Rule {
@@ -142,7 +107,6 @@ impl Rule {
             node_name: None,
             smart_include: Vec::new(),
             smart_exclude: Vec::new(),
-            dns_policy: DnsPolicy::Inherit,
         }
     }
 
@@ -151,14 +115,6 @@ impl Rule {
             self.rule_type,
             RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword
         )
-    }
-
-    /// Whether this rule should project a system-DNS entry into the DNS sidecar / sing-box.
-    pub fn wants_system_dns(&self) -> bool {
-        self.enabled
-            && self.is_domain_like()
-            && matches!(self.dns_policy, DnsPolicy::System)
-            && !self.payload.trim().is_empty()
     }
 
     pub fn clash_type_token(&self) -> &'static str {
@@ -212,10 +168,7 @@ impl Rule {
                 continue;
             }
             let lower = t.to_lowercase();
-            if out
-                .iter()
-                .any(|x: &String| x.to_lowercase() == lower)
-            {
+            if out.iter().any(|x: &String| x.to_lowercase() == lower) {
                 continue;
             }
             out.push(t.to_string());
@@ -237,11 +190,7 @@ impl Rule {
 /// Whitelist (`include`): empty = allow all; otherwise name must contain **any** keyword (OR).
 /// Blacklist (`exclude`): name must contain **none** of the keywords (any hit skips).
 /// Matching is case-insensitive substring on the display name.
-pub fn name_matches_keywords(
-    node_name: &str,
-    include: &[String],
-    exclude: &[String],
-) -> bool {
+pub fn name_matches_keywords(node_name: &str, include: &[String], exclude: &[String]) -> bool {
     let name = node_name.to_lowercase();
 
     // Blacklist first: any hit → skip
@@ -360,12 +309,42 @@ pub fn is_deletable_rule_set(id: &str, builtin: bool) -> bool {
 /// Minimal fallback when `general-rules.list` is missing from resources.
 pub fn default_rules() -> Vec<Rule> {
     vec![
-        Rule::new(RuleType::DomainSuffix, "local".into(), RuleTarget::Direct, 10),
-        Rule::new(RuleType::DomainSuffix, "localhost".into(), RuleTarget::Direct, 20),
-        Rule::new(RuleType::IpCidr, "10.0.0.0/8".into(), RuleTarget::Direct, 30),
-        Rule::new(RuleType::IpCidr, "172.16.0.0/12".into(), RuleTarget::Direct, 31),
-        Rule::new(RuleType::IpCidr, "192.168.0.0/16".into(), RuleTarget::Direct, 32),
-        Rule::new(RuleType::IpCidr, "127.0.0.0/8".into(), RuleTarget::Direct, 33),
+        Rule::new(
+            RuleType::DomainSuffix,
+            "local".into(),
+            RuleTarget::Direct,
+            10,
+        ),
+        Rule::new(
+            RuleType::DomainSuffix,
+            "localhost".into(),
+            RuleTarget::Direct,
+            20,
+        ),
+        Rule::new(
+            RuleType::IpCidr,
+            "10.0.0.0/8".into(),
+            RuleTarget::Direct,
+            30,
+        ),
+        Rule::new(
+            RuleType::IpCidr,
+            "172.16.0.0/12".into(),
+            RuleTarget::Direct,
+            31,
+        ),
+        Rule::new(
+            RuleType::IpCidr,
+            "192.168.0.0/16".into(),
+            RuleTarget::Direct,
+            32,
+        ),
+        Rule::new(
+            RuleType::IpCidr,
+            "127.0.0.0/8".into(),
+            RuleTarget::Direct,
+            33,
+        ),
         Rule::new(RuleType::DomainSuffix, "cn".into(), RuleTarget::Direct, 50),
     ]
 }
@@ -481,64 +460,6 @@ pub fn format_clash_rules_list(set_name: &str, rules: &[Rule]) -> String {
     lines.join("\n")
 }
 
-/// Serialize SYSTEM-DNS projections for a rule set (sidecar `.dns.list`).
-/// Empty string means caller should remove the file (no system-DNS rules).
-pub fn format_dns_sidecar_list(set_name: &str, rules: &[Rule]) -> String {
-    let mut sorted: Vec<&Rule> = rules.iter().filter(|r| r.wants_system_dns()).collect();
-    if sorted.is_empty() {
-        return String::new();
-    }
-    sorted.sort_by_key(|r| r.ord);
-    let mut lines = Vec::new();
-    lines.push(format!("# name: {set_name} DNS"));
-    lines.push("# source: projected-from-rules".into());
-    lines.push("# policy: SYSTEM = resolve via system/local DNS (rule page wins)".into());
-    lines.push(String::new());
-    for r in sorted {
-        // wants_system_dns() ⇒ policy is System; token matches parse_dns_sidecar_list.
-        lines.push(format!(
-            "{},{},{}",
-            r.clash_type_token(),
-            r.payload.trim(),
-            r.dns_policy.as_str().to_ascii_uppercase()
-        ));
-    }
-    lines.push(String::new());
-    lines.join("\n")
-}
-
-/// Parse DNS sidecar lines: `DOMAIN-SUFFIX,host,SYSTEM`.
-pub fn parse_dns_sidecar_list(text: &str) -> Vec<(RuleType, String)> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let kind = parts[0].to_ascii_uppercase();
-        let action = parts[2].to_ascii_uppercase();
-        if action != "SYSTEM" && action != "LOCAL" {
-            continue;
-        }
-        let rtype = match kind.as_str() {
-            "DOMAIN" => RuleType::Domain,
-            "DOMAIN-SUFFIX" => RuleType::DomainSuffix,
-            "DOMAIN-KEYWORD" => RuleType::DomainKeyword,
-            _ => continue,
-        };
-        let payload = parts[1].trim();
-        if payload.is_empty() {
-            continue;
-        }
-        out.push((rtype, payload.to_string()));
-    }
-    out
-}
-
 /// Parse leading comment metadata (`# name: …`).
 pub fn parse_list_meta(text: &str) -> RuleListMeta {
     let mut meta = RuleListMeta::default();
@@ -580,36 +501,15 @@ pub fn find_rules_dir(resource_dir: Option<&std::path::Path>) -> Option<std::pat
         .find(|p| p.is_dir())
 }
 
-/// True for routing lists (`foo.list`), false for DNS sidecars (`foo.dns.list`).
+/// True for routing lists (`foo.list`).
 fn is_routing_list_path(path: &std::path::Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".list") && !lower.ends_with(".dns.list")
-}
-
-/// Apply SYSTEM DNS sidecar entries onto matching domain rules (`dns_policy = system`).
-fn apply_dns_sidecar_to_rules(rules: &mut [Rule], sidecar_text: &str) {
-    let entries = parse_dns_sidecar_list(sidecar_text);
-    if entries.is_empty() {
-        return;
-    }
-    for r in rules.iter_mut() {
-        if !r.is_domain_like() {
-            continue;
-        }
-        let hit = entries.iter().any(|(rtype, payload)| {
-            *rtype == r.rule_type && payload.eq_ignore_ascii_case(r.payload.trim())
-        });
-        if hit {
-            r.dns_policy = DnsPolicy::System;
-        }
-    }
+    name.to_ascii_lowercase().ends_with(".list")
 }
 
 /// Scan `resources/rules/*.list` (sorted by filename) as **factory templates**.
-/// Optional sidecar: same stem + `.dns.list` (e.g. `builtin-ruleset.dns.list`).
 ///
 /// - `builtin-*.list` → `factory_builtin = true` (label 内置, cannot delete)
 /// - `general-rules.list` → factory seed, not builtin flag (label 通用, cannot delete, can reset)
@@ -639,14 +539,9 @@ pub fn load_builtin_rule_files(resource_dir: Option<&std::path::Path>) -> Vec<Bu
             continue;
         };
         let meta = parse_list_meta(&text);
-        let mut rules = parse_shadowrocket_rules(&text);
+        let rules = parse_shadowrocket_rules(&text);
         if rules.is_empty() {
             continue;
-        }
-        // Sidecar: resources/rules/{stem}.dns.list
-        let dns_path = dir.join(format!("{stem}.dns.list"));
-        if let Ok(dns_text) = std::fs::read_to_string(&dns_path) {
-            apply_dns_sidecar_to_rules(&mut rules, &dns_text);
         }
         let factory_builtin = stem.starts_with("builtin-");
         let name = meta.name.unwrap_or_else(|| humanize_list_stem(stem));
@@ -754,33 +649,22 @@ FINAL,PROXY
     }
 
     #[test]
-    fn format_clash_and_dns_sidecar() {
-        let mut direct = Rule::new(
+    fn format_clash_rules_list_basic() {
+        let direct = Rule::new(
             RuleType::DomainSuffix,
             "corp.internal".into(),
             RuleTarget::Direct,
             10,
         );
-        direct.dns_policy = DnsPolicy::System;
         let proxy = Rule::new(
             RuleType::DomainSuffix,
             "openai.com".into(),
             RuleTarget::Proxy,
             20,
         );
-        let clash = format_clash_rules_list("通用", &[direct.clone(), proxy.clone()]);
+        let clash = format_clash_rules_list("通用", &[direct, proxy]);
         assert!(clash.contains("DOMAIN-SUFFIX,corp.internal,DIRECT"));
         assert!(clash.contains("DOMAIN-SUFFIX,openai.com,PROXY"));
-        assert!(!clash.contains("SYSTEM"));
-
-        let dns = format_dns_sidecar_list("通用", &[direct, proxy]);
-        assert!(dns.contains("DOMAIN-SUFFIX,corp.internal,SYSTEM"));
-        assert!(!dns.contains("openai.com"));
-
-        let parsed = parse_dns_sidecar_list(&dns);
-        assert_eq!(parsed.len(), 1);
-        assert!(matches!(parsed[0].0, RuleType::DomainSuffix));
-        assert_eq!(parsed[0].1, "corp.internal");
     }
 
     #[test]
@@ -803,22 +687,15 @@ FINAL,PROXY
         let general = general.unwrap();
         assert!(!general.factory_builtin);
         assert!(general.rules.iter().any(|r| r.payload == "local"));
-        // sidecar marks local as system DNS
-        assert!(general
-            .rules
-            .iter()
-            .any(|r| r.payload == "local" && matches!(r.dns_policy, DnsPolicy::System)));
 
         let large = files.iter().find(|f| f.id == BUILTIN_SET_ID);
         assert!(large.is_some());
         assert!(large.unwrap().factory_builtin);
         assert!(large.unwrap().rules.len() > 100);
-        assert!(
-            !large
-                .unwrap()
-                .rules
-                .iter()
-                .any(|r| matches!(r.rule_type, RuleType::Geoip))
-        );
+        assert!(!large
+            .unwrap()
+            .rules
+            .iter()
+            .any(|r| matches!(r.rule_type, RuleType::Geoip)));
     }
 }

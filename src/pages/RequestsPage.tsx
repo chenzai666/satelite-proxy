@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { clearRequestHistory, listRequests } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
+import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -30,6 +32,7 @@ export function RequestsPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<TrafficScope>("proxy");
 
   const reload = useCallback(async () => {
     try {
@@ -62,6 +65,16 @@ export function RequestsPage({ embedded = false }: Props) {
     }
   }
 
+  const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  const scopeOpts = useMemo(
+    () => [
+      { value: "all", label: t("traffic.scopeAll") },
+      { value: "direct", label: t("traffic.scopeDirect") },
+      { value: "proxy", label: t("traffic.scopeProxy") },
+    ],
+    [t],
+  );
+
   const toolbar = (
     <div className={`traffic-toolbar ${embedded ? "" : "page-header"}`}>
       {!embedded && (
@@ -76,6 +89,12 @@ export function RequestsPage({ embedded = false }: Props) {
           placeholder={t("req.filter")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+        />
+        <GlassSeg
+          value={scope}
+          ariaLabel={t("traffic.scopeLabel")}
+          onChange={(v) => setScope(v as TrafficScope)}
+          options={scopeOpts}
         />
         <button type="button" className="secondary" onClick={() => void reload()}>
           {t("common.refresh")}
@@ -92,71 +111,76 @@ export function RequestsPage({ embedded = false }: Props) {
       {error && <div className="banner error">{error}</div>}
 
       <div className="muted mono traffic-meta">
-        {t("req.count", { n: rows.length })}
+        {t("req.count", { n: scoped.length })}
         {query.trim() ? t("req.filterLabel", { q: query.trim() }) : ""}
       </div>
 
       {loading ? (
         <div className="empty">{t("common.loading")}</div>
-      ) : rows.length === 0 ? (
+      ) : scoped.length === 0 ? (
         <div className="empty card muted">{t("req.empty")}</div>
       ) : (
         <div className="card table-wrap">
           <table className="conn-table">
             <thead>
               <tr>
-                <th>{t("req.time")}</th>
+                <th className="conn-th-time">{t("req.time")}</th>
                 <th>{t("conn.dest")}</th>
-                <th>{t("conn.node")}</th>
-                <th>{t("conn.chain")}</th>
-                <th>{t("conn.rule")}</th>
-                <th>{t("conn.process")}</th>
-                <th>{t("req.type")}</th>
-                <th>{t("conn.traffic")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {scoped.map((r) => (
                 <tr key={`${r.id}-${r.last_seen ?? 0}`}>
                   <td className="conn-time">
-                    <div>{fmtTime(r.closed_at ?? r.last_seen)}</div>
-                    {r.first_seen &&
-                    r.first_seen !== (r.closed_at ?? r.last_seen) ? (
-                      <div className="muted conn-sub">
-                        {t("req.first", { t: fmtTime(r.first_seen) })}
-                      </div>
-                    ) : null}
-                    <div className="muted conn-sub">
-                      {r.closed ? t("req.closed") : t("req.live")}
+                    <div
+                      className="conn-cell"
+                      title={`${fmtTime(r.closed_at ?? r.last_seen)}${
+                        r.first_seen && r.first_seen !== (r.closed_at ?? r.last_seen)
+                          ? ` · ${t("req.first", { t: fmtTime(r.first_seen) })}`
+                          : ""
+                      }`}
+                    >
+                      {fmtTime(r.closed_at ?? r.last_seen)}
                     </div>
                   </td>
                   <td>
-                    <div className="conn-dest" title={r.destination}>
+                    <div
+                      className="conn-cell conn-dest"
+                      title={`${r.destination}${r.host || r.source ? ` · ${r.host || r.source}` : ""}`}
+                    >
                       {r.destination}
                     </div>
-                    <div className="muted conn-sub">{r.host || r.source}</div>
                   </td>
                   <td>
-                    <strong title={r.node_tag}>
+                    <div
+                      className="conn-cell conn-node"
+                      title={
+                        r.subscription_name
+                          ? `${r.subscription_name} · ${r.node_name}`
+                          : r.node_name
+                      }
+                    >
                       {r.node_name || r.node_tag || "—"}
-                    </strong>
+                    </div>
                   </td>
-                  <td className="conn-chains" title={r.chains_display}>
-                    {r.chains_display || "—"}
-                  </td>
-                  <td className="conn-rule" title={r.rule}>
-                    {r.rule || "—"}
-                  </td>
-                  <td>{r.process || "—"}</td>
                   <td>
-                    <code>
-                      {r.network}
-                      {r.conn_type ? `/${r.conn_type}` : ""}
-                    </code>
+                    <div className="conn-cell conn-rule" title={r.rule}>
+                      {r.rule || "—"}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="conn-cell" title={r.process}>
+                      {r.process || "—"}
+                    </div>
                   </td>
                   <td className="conn-traffic">
-                    ↑{fmtBytes(r.upload)}
-                    <br />↓{fmtBytes(r.download)}
+                    <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                    </span>
                   </td>
                 </tr>
               ))}

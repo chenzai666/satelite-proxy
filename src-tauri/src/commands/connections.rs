@@ -21,6 +21,17 @@ pub fn list_requests(
 }
 
 #[tauri::command]
+pub fn list_request_failures(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<ConnectionView>, String> {
+    let mut runtime = state.lock_runtime();
+    let store = state.lock_store();
+    Ok(runtime.request_failures(&store, query.as_deref(), limit))
+}
+
+#[tauri::command]
 pub fn clear_request_history(state: State<'_, AppState>) -> Result<(), String> {
     let mut runtime = state.lock_runtime();
     runtime.clear_request_history();

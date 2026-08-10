@@ -1,8 +1,7 @@
-//! Dump user rule sets to dual on-disk lists under app data:
-//! - `{set_id}.list`      Clash-style routing rules
-//! - `{set_id}.dns.list`  SYSTEM DNS projections (optional)
+//! Dump user rule sets to on-disk Clash-style lists under app data:
+//! - `{set_id}.list`  Clash-style routing rules
 
-use crate::domain::{format_clash_rules_list, format_dns_sidecar_list, RuleSet};
+use crate::domain::{format_clash_rules_list, RuleSet};
 use crate::error::{AppError, AppResult};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,11 +27,7 @@ pub fn clash_list_path(app_data_dir: &Path, set_id: &str) -> PathBuf {
     rules_export_dir(app_data_dir).join(format!("{}.list", safe_stem(set_id)))
 }
 
-pub fn dns_sidecar_path(app_data_dir: &Path, set_id: &str) -> PathBuf {
-    rules_export_dir(app_data_dir).join(format!("{}.dns.list", safe_stem(set_id)))
-}
-
-/// Write Clash + DNS sidecar for one set. Built-in sets: routing list only (no DNS file).
+/// Write the Clash-style routing list for one set.
 pub fn dump_rule_set_files(app_data_dir: &Path, set: &RuleSet) -> AppResult<()> {
     let dir = rules_export_dir(app_data_dir);
     fs::create_dir_all(&dir).map_err(|e| {
@@ -41,24 +36,11 @@ pub fn dump_rule_set_files(app_data_dir: &Path, set: &RuleSet) -> AppResult<()> 
 
     let clash_path = clash_list_path(app_data_dir, &set.id);
     let clash_body = format_clash_rules_list(&set.name, &set.rules);
-    fs::write(&clash_path, clash_body).map_err(|e| {
-        AppError::Storage(format!("write {}: {e}", clash_path.display()))
-    })?;
-
-    // Sidecar only when some rules request system DNS (user overrides, any set).
-    let dns_path = dns_sidecar_path(app_data_dir, &set.id);
-    let dns_body = format_dns_sidecar_list(&set.name, &set.rules);
-    if dns_body.trim().is_empty() {
-        let _ = fs::remove_file(&dns_path);
-    } else {
-        fs::write(&dns_path, dns_body).map_err(|e| {
-            AppError::Storage(format!("write {}: {e}", dns_path.display()))
-        })?;
-    }
+    fs::write(&clash_path, clash_body)
+        .map_err(|e| AppError::Storage(format!("write {}: {e}", clash_path.display())))?;
     Ok(())
 }
 
 pub fn remove_rule_set_files(app_data_dir: &Path, set_id: &str) {
     let _ = fs::remove_file(clash_list_path(app_data_dir, set_id));
-    let _ = fs::remove_file(dns_sidecar_path(app_data_dir, set_id));
 }

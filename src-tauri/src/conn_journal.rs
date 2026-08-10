@@ -55,15 +55,13 @@ fn journal_loop(app: AppHandle) {
 
         let interval = journal_interval_ms(&state);
 
-        match stream_ws_snapshots(&api, interval, |text| {
-            match parse_connections_json(text) {
-                Ok(snap) => {
-                    let mut rt = state.lock_runtime();
-                    rt.apply_snapshot(snap);
-                }
-                Err(e) => {
-                    crate::app_log::debug("journal", format!("parse: {e}"));
-                }
+        match stream_ws_snapshots(&api, interval, |text| match parse_connections_json(text) {
+            Ok(snap) => {
+                let mut rt = state.lock_runtime();
+                rt.apply_snapshot(snap);
+            }
+            Err(e) => {
+                crate::app_log::debug("journal", format!("parse: {e}"));
             }
         }) {
             Ok(()) => {}
@@ -115,8 +113,7 @@ fn stream_ws_snapshots(
         .next()
         .unwrap_or("127.0.0.1:19090");
 
-    let stream =
-        TcpStream::connect(host_port).map_err(|e| format!("tcp {host_port}: {e}"))?;
+    let stream = TcpStream::connect(host_port).map_err(|e| format!("tcp {host_port}: {e}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_nodelay(true);
 

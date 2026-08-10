@@ -18,6 +18,7 @@ import type {
   SubscriptionView,
   DnsSettings,
   DnsTestResult,
+  HostsEntry,
 } from "./types";
 
 export function listSubscriptions() {
@@ -125,6 +126,7 @@ export function updateSettings(payload: {
   closeConnectionsOnSwitch?: boolean | null;
   locale?: string | null;
   theme?: string | null;
+  accent?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
   smartSwitch?: boolean | null;
@@ -132,6 +134,8 @@ export function updateSettings(payload: {
   autoSelect?: string | null;
   /** proxy | direct | block — route.final in Rule mode */
   routeFinal?: string | null;
+  /** Resolve originating process per connection (find_process_mode). */
+  findProcess?: boolean | null;
 }) {
   return invoke<AppSettings>("update_settings", {
     mixedPort: payload.mixedPort ?? null,
@@ -146,10 +150,12 @@ export function updateSettings(payload: {
     closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
     locale: payload.locale ?? null,
     theme: payload.theme ?? null,
+    accent: payload.accent ?? null,
     unloadUiOnTray: payload.unloadUiOnTray ?? null,
     smartSwitch: payload.smartSwitch ?? null,
     autoSelect: payload.autoSelect ?? null,
     routeFinal: payload.routeFinal ?? null,
+    findProcess: payload.findProcess ?? null,
   });
 }
 
@@ -302,6 +308,11 @@ export function testDnsLookup(domain: string) {
   return invoke<DnsTestResult>("test_dns_lookup", { domain });
 }
 
+/** Read the OS hosts file as a read-only entry list (for the Hosts UI). */
+export function readSystemHosts() {
+  return invoke<HostsEntry[]>("read_system_hosts");
+}
+
 export function listRuleSets() {
   return invoke<RuleSetSummary[]>("list_rule_sets");
 }
@@ -356,8 +367,6 @@ export function saveRule(input: {
   nodeId?: string | null;
   smartInclude?: string[] | null;
   smartExclude?: string[] | null;
-  /** inherit | system */
-  dnsPolicy?: string | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -371,7 +380,6 @@ export function saveRule(input: {
       node_id: input.nodeId ?? null,
       smart_include: input.smartInclude ?? null,
       smart_exclude: input.smartExclude ?? null,
-      dns_policy: input.dnsPolicy ?? null,
     },
   });
 }
@@ -394,6 +402,14 @@ export function listConnections() {
 
 export function listRequests(query?: string | null, limit?: number | null) {
   return invoke<ConnectionView[]>("list_requests", {
+    query: query ?? null,
+    limit: limit ?? null,
+  });
+}
+
+/** Suspicious closed requests: short-lived & near-zero bytes (failure/timeout). */
+export function listRequestFailures(query?: string | null, limit?: number | null) {
+  return invoke<ConnectionView[]>("list_request_failures", {
     query: query ?? null,
     limit: limit ?? null,
   });

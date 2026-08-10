@@ -40,10 +40,7 @@ async fn run_due_updates(state: &AppState) {
     for id in due_ids {
         match refresh_subscription_by_id(state, &id).await {
             Ok(r) => {
-                eprintln!(
-                    "[satelite] auto-update ok: {} ({} nodes)",
-                    id, r.node_count
-                );
+                eprintln!("[satelite] auto-update ok: {} ({} nodes)", id, r.node_count);
             }
             Err(e) => {
                 eprintln!("[satelite] auto-update failed {id}: {e}");

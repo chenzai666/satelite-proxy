@@ -303,8 +303,7 @@ impl CoreManager {
             }
         }
 
-        fs::create_dir_all(log_dir)
-            .map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
+        fs::create_dir_all(log_dir).map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
         let log_path = log_dir.join("sing-box.log");
         // truncate previous run log
         let _ = OpenOptions::new()
@@ -396,9 +395,7 @@ impl CoreManager {
         let bin_s = binary.display().to_string();
         let cfg_s = config.display().to_string();
         let log_s = log_path.display().to_string();
-        let args = format!(
-            "run -c \"{cfg_s}\" >>\"{log_s}\" 2>&1"
-        );
+        let args = format!("run -c \"{cfg_s}\" >>\"{log_s}\" 2>&1");
 
         let _elevated = match super::elevate::run_elevated(Path::new(&bin_s), &args, None) {
             Ok(c) => c,
@@ -480,9 +477,7 @@ impl CoreManager {
                 self.last_error = Some(format!(
                     "无法结束 elevated sing-box (pid {pid})；可能需要管理员权限"
                 ));
-                return Err(AppError::Core(
-                    self.last_error.clone().unwrap_or_default(),
-                ));
+                return Err(AppError::Core(self.last_error.clone().unwrap_or_default()));
             }
             self.elevated_pid = None;
             self.run_mode = RunMode::None;
@@ -649,10 +644,7 @@ fn listener_pids_on_port(port: u16) -> Vec<u32> {
             return Vec::new();
         };
         let text = String::from_utf8_lossy(&out.stdout);
-        let mut pids: Vec<u32> = text
-            .lines()
-            .filter_map(|l| l.trim().parse().ok())
-            .collect();
+        let mut pids: Vec<u32> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
         pids.sort_unstable();
         pids.dedup();
         let self_pid = std::process::id();

@@ -9,17 +9,19 @@ import {
   updateSettings,
 } from "../api";
 import { SolidSelect } from "../components/SolidSelect";
+import { GlassSeg } from "../components/GlassSeg";
 import { useI18n, type Locale } from "../i18n";
+import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 
-type SettingsTab = "app" | "rules" | "dns" | "network" | "core";
+type SettingsTab = "app" | "rules" | "dns" | "dns_rules" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme } = useTheme();
+  const { theme, setTheme, accent, setAccent } = useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [mixed, setMixed] = useState("2080");
@@ -52,9 +54,9 @@ export function SettingsPage() {
           hint: t("settings.hintDns"),
         },
         {
-          id: "network" as const,
-          label: t("settings.tabNetwork"),
-          hint: t("settings.hintNetwork"),
+          id: "dns_rules" as const,
+          label: t("settings.tabDnsRules"),
+          hint: t("settings.hintDnsRules"),
         },
         {
           id: "core" as const,
@@ -115,9 +117,6 @@ export function SettingsPage() {
       if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
         throw new Error(t("settings.invalidApi"));
       }
-      const portsChanged =
-        settings != null &&
-        (settings.mixed_port !== mixedPort || settings.api_port !== apiPort);
       const s = await updateSettings({
         mixedPort,
         apiPort,
@@ -125,12 +124,10 @@ export function SettingsPage() {
         tunStack: tunStack.trim() || "mixed",
       });
       setSettings(s);
-      // Port binds at core start — restart running core so new ports take effect.
-      if (portsChanged) {
-        const status = await getProxyStatus().catch(() => null);
-        if (status?.running) {
-          await restartProxy();
-        }
+      // These options are consumed when sing-box starts; apply them together.
+      const status = await getProxyStatus().catch(() => null);
+      if (status?.running) {
+        await restartProxy();
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -201,7 +198,7 @@ export function SettingsPage() {
     }
   }
 
-  const needsSettings = tab === "app" || tab === "network" || tab === "core";
+  const needsSettings = tab === "app" || tab === "core";
   if (needsSettings && !settings && !error) {
     return <div className="page empty">{t("common.loading")}</div>;
   }
@@ -215,44 +212,32 @@ export function SettingsPage() {
           <h1>{t("settings.title")}</h1>
           <p className="page-desc">{activeTab.hint}</p>
         </div>
-        {tab === "network" && (
-          <button type="button" disabled={busy} onClick={() => void onSaveNetwork()}>
-            {busy ? t("common.saving") : t("common.save")}
-          </button>
-        )}
       </header>
 
-      <div
-        className="settings-tabs segmented compact"
-        role="tablist"
-        aria-label="Settings sections"
-      >
-        {tabs.map((x) => (
-          <button
-            key={x.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === x.id}
-            className={`seg ${tab === x.id ? "active" : ""}`}
-            onClick={() => {
-              setTab(x.id);
-              setError(null);
-            }}
-          >
-            {x.label}
-          </button>
-        ))}
-      </div>
+      <GlassSeg
+        value={tab}
+        ariaLabel="Settings sections"
+        onChange={(v) => {
+          setTab(v as SettingsTab);
+          setError(null);
+        }}
+        options={tabs.map((x) => ({ value: x.id, label: x.label }))}
+      />
 
-      {error && tab !== "rules" && tab !== "dns" && (
+      {error && tab !== "rules" && tab !== "dns" && tab !== "dns_rules" && (
         <div className="banner error">{error}</div>
       )}
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
-      <div className="page-enter" key={tab}>
+      <div
+        className={`page-enter${tab === "app" ? " settings-app-network-page" : ""}`}
+        key={tab}
+      >
         {tab === "rules" && <RulesPage embedded />}
 
-        {tab === "dns" && <DnsPage embedded />}
+        {tab === "dns" && <DnsPage embedded section="settings" />}
+
+        {tab === "dns_rules" && <DnsPage embedded section="rules" />}
 
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
@@ -265,28 +250,16 @@ export function SettingsPage() {
                     {t("settings.languageDesc")}
                   </div>
                 </div>
-                <div
-                  className="segmented compact"
-                  role="group"
-                  aria-label={t("settings.language")}
-                >
-                  <button
-                    type="button"
-                    className={`seg ${locale === "zh" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeLocale("zh")}
-                  >
-                    {t("settings.langZh")}
-                  </button>
-                  <button
-                    type="button"
-                    className={`seg ${locale === "en" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeLocale("en")}
-                  >
-                    {t("settings.langEn")}
-                  </button>
-                </div>
+                <GlassSeg
+                  value={locale}
+                  ariaLabel={t("settings.language")}
+                  disabled={busy}
+                  onChange={(v) => void onChangeLocale(v as Locale)}
+                  options={[
+                    { value: "zh", label: t("settings.langZh") },
+                    { value: "en", label: t("settings.langEn") },
+                  ]}
+                />
               </div>
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
@@ -295,27 +268,48 @@ export function SettingsPage() {
                     {t("settings.themeDesc")}
                   </div>
                 </div>
+                <GlassSeg
+                  value={theme}
+                  ariaLabel={t("settings.theme")}
+                  disabled={busy}
+                  onChange={(v) => void onChangeTheme(v as ThemeId)}
+                  options={[
+                    { value: "aerospace", label: t("settings.themeAerospace") },
+                    { value: "day", label: t("settings.themeDay") },
+                  ]}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-accent-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.accent")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.accentDesc")}
+                  </div>
+                </div>
                 <div
-                  className="segmented compact"
+                  className="settings-accent-swatches"
                   role="group"
-                  aria-label={t("settings.theme")}
+                  aria-label={t("settings.accent")}
                 >
-                  <button
-                    type="button"
-                    className={`seg ${theme === "aerospace" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeTheme("aerospace")}
-                  >
-                    {t("settings.themeAerospace")}
-                  </button>
-                  <button
-                    type="button"
-                    className={`seg ${theme === "day" ? "active" : ""}`}
-                    disabled={busy}
-                    onClick={() => void onChangeTheme("day")}
-                  >
-                    {t("settings.themeDay")}
-                  </button>
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`settings-accent-dot ${accent === a.id ? "active" : ""}`}
+                      style={{ background: a[theme], color: a[theme] }}
+                      title={a.name}
+                      aria-label={a.name}
+                      aria-pressed={accent === a.id}
+                      disabled={busy}
+                      onClick={() => void setAccent(a.id)}
+                    >
+                      {accent === a.id ? (
+                        <span className="settings-accent-check">✓</span>
+                      ) : (
+                        ""
+                      )}
+                    </button>
+                  ))}
                 </div>
               </div>
             </div>
@@ -358,9 +352,16 @@ export function SettingsPage() {
               <AppToggle
                 title={t("settings.closeOnSwitch")}
                 desc={t("settings.closeOnSwitchDesc")}
-                checked={!!settings?.close_connections_on_switch}
+                checked={settings?.close_connections_on_switch !== false}
                 disabled={busy}
                 onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
+              />
+              <AppToggle
+                title={t("settings.findProcess")}
+                desc={t("settings.findProcessDesc")}
+                checked={settings?.find_process !== false}
+                disabled={busy}
+                onChange={(v) => void patchApp({ findProcess: v })}
               />
             </div>
           </div>
@@ -368,9 +369,22 @@ export function SettingsPage() {
         </section>
       )}
 
-      {tab === "network" && settings && (
+      {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Network">
           <div className="card settings-form settings-form-grid">
+            <div className="settings-network-card-head field-span-2">
+              <div>
+                <strong>{t("settings.networkOptions")}</strong>
+                <div className="muted">{t("settings.networkSaveNote")}</div>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void onSaveNetwork()}
+              >
+                {busy ? t("common.saving") : t("settings.saveRestartCore")}
+              </button>
+            </div>
             <label className="field">
               <span>{t("settings.mixedPort")}</span>
               <input
@@ -418,9 +432,6 @@ export function SettingsPage() {
               </span>
             </div>
           </div>
-          <p className="settings-panel-note muted">
-            {t("settings.networkSaveNote")}
-          </p>
         </section>
       )}
 

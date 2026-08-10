@@ -126,6 +126,9 @@ pub struct AppSettings {
     /// UI theme: `day` (light default) | `aerospace` (dark).
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
+    #[serde(default = "default_accent")]
+    pub accent: String,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
     /// memory. Default false — hide only so reopen is instant. When true, next
     /// wake recreates the WebView (brief black screen).
@@ -134,6 +137,11 @@ pub struct AppSettings {
     /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
     pub auto_select: AutoSelectMode,
+    /// Resolve the originating process for each connection (sing-box
+    /// `find_process_mode`): on = always, off = off. Lets the traffic page
+    /// show a real process name. Off saves some CPU.
+    #[serde(default = "default_true")]
+    pub find_process: bool,
     /// Legacy bool (pre auto_select). Migrated on store load; not re-written.
     #[serde(default, skip_serializing)]
     pub smart_switch: bool,
@@ -163,6 +171,10 @@ fn default_theme() -> String {
     "day".into()
 }
 
+fn default_accent() -> String {
+    "green".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -183,8 +195,10 @@ impl Default for AppSettings {
             close_connections_on_switch: true,
             locale: default_locale(),
             theme: default_theme(),
+            accent: default_accent(),
             unload_ui_on_tray: false,
             auto_select: AutoSelectMode::Off,
+            find_process: true,
             smart_switch: false,
         }
     }

@@ -1,6 +1,5 @@
 use crate::domain::{
-    default_rules, ensure_bundled_dns_whitelist, is_deletable_rule_set, is_factory_set_id,
-    load_builtin_rule_sets,
+    default_rules, is_deletable_rule_set, is_factory_set_id, load_builtin_rule_sets,
     load_factory_rule_set, sanitize_rules, AppSettings, DnsSettings, ProxyNode, Rule, RuleSet,
     RuleSetSummary, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
     GENERAL_SET_NAME,
@@ -48,24 +47,19 @@ impl AppStore {
         let mut store: Self = serde_json::from_str(&raw)
             .map_err(|e| AppError::Storage(format!("invalid store json: {e}")))?;
         store.settings.migrate_auto_select();
+        store.dns.ensure_rule_sets();
         store.ensure_rule_sets(resource_dir);
-        store.ensure_dns_defaults(resource_dir);
         store.ensure_subscription_enable_policy();
-        // Persist migrations (new rule files / DNS whitelist) so they survive read-only sessions.
+        // Persist migrations (new rule files) so they survive read-only sessions.
         let _ = store.save(path);
         Ok(store)
     }
 
     fn with_builtin_sets(resource_dir: Option<&Path>) -> Self {
         let mut s = Self::default();
+        s.dns.ensure_rule_sets();
         s.ensure_rule_sets(resource_dir);
-        s.ensure_dns_defaults(resource_dir);
         s
-    }
-
-    /// Inject bundled DNS whitelist from `resources/dns/*.list`.
-    pub fn ensure_dns_defaults(&mut self, resource_dir: Option<&Path>) {
-        ensure_bundled_dns_whitelist(&mut self.dns, resource_dir);
     }
 
     /// Ensure factory rule sets from `resources/rules/*.list`.
@@ -89,9 +83,7 @@ impl AppStore {
 
         // Rename migrated-legacy / 自定义 → 通用规则 (before factory insert)
         for set in self.rule_sets.iter_mut() {
-            if set.id == "migrated-legacy"
-                || set.name == "我的规则（迁移）"
-                || set.name == "自定义"
+            if set.id == "migrated-legacy" || set.name == "我的规则（迁移）" || set.name == "自定义"
             {
                 set.id = GENERAL_SET_ID.into();
                 set.name = GENERAL_SET_NAME.into();
@@ -131,7 +123,9 @@ impl AppStore {
                 .rule_sets
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| is_factory_set_id(&s.id) && factory_ids.iter().any(|id| id == &s.id))
+                .filter(|(_, s)| {
+                    is_factory_set_id(&s.id) && factory_ids.iter().any(|id| id == &s.id)
+                })
                 .map(|(i, _)| i + 1)
                 .last()
                 .unwrap_or(0);
@@ -161,8 +155,8 @@ impl AppStore {
 
         // Ensure 通用规则 exists (file seed, or hardcoded fallback).
         if !self.rule_sets.iter().any(|s| s.id == GENERAL_SET_ID) {
-            let mut general = load_factory_rule_set(resource_dir, GENERAL_SET_ID)
-                .unwrap_or_else(|| {
+            let mut general =
+                load_factory_rule_set(resource_dir, GENERAL_SET_ID).unwrap_or_else(|| {
                     let mut g = RuleSet::new_user(GENERAL_SET_NAME, default_rules());
                     g.id = GENERAL_SET_ID.into();
                     g
@@ -337,24 +331,25 @@ impl AppStore {
     /// Drop current_node if it is not in any enabled subscription.
     pub fn ensure_current_node_valid(&mut self) {
         if let Some(ref cur) = self.settings.current_node_id {
-            let still = self
-                .nodes
-                .iter()
-                .any(|n| &n.node.id == cur && {
+            let still = self.nodes.iter().any(|n| {
+                &n.node.id == cur && {
                     self.subscriptions
                         .iter()
                         .any(|s| s.enabled && s.id == n.subscription_id)
-                });
+                }
+            });
             if !still {
-                self.settings.current_node_id =
-                    self.enabled_nodes().first().map(|n| n.id.clone());
+                self.settings.current_node_id = self.enabled_nodes().first().map(|n| n.id.clone());
             }
         }
     }
 
     /// New subscription: enable only when no other is enabled (or none exist).
     pub fn prepare_new_subscription_enabled(&self, sub: &mut Subscription) {
-        let any_enabled = self.subscriptions.iter().any(|s| s.enabled && s.id != sub.id);
+        let any_enabled = self
+            .subscriptions
+            .iter()
+            .any(|s| s.enabled && s.id != sub.id);
         if any_enabled {
             sub.enabled = false;
         } else {
@@ -517,13 +512,10 @@ impl AppStore {
         set_id: &str,
     ) -> AppResult<RuleSet> {
         if !is_factory_set_id(set_id) {
-            return Err(AppError::Config(
-                "只能重置出厂规则集（内置/通用）".into(),
-            ));
+            return Err(AppError::Config("只能重置出厂规则集（内置/通用）".into()));
         }
-        let template = load_factory_rule_set(resource_dir, set_id).ok_or_else(|| {
-            AppError::NotFound(format!("factory template missing: {set_id}"))
-        })?;
+        let template = load_factory_rule_set(resource_dir, set_id)
+            .ok_or_else(|| AppError::NotFound(format!("factory template missing: {set_id}")))?;
         if let Some(s) = self.rule_sets.iter_mut().find(|x| x.id == set_id) {
             let was_enabled = s.enabled;
             *s = template;
@@ -555,7 +547,6 @@ impl AppStore {
         for id in ids {
             let _ = self.reset_rule_set(resource_dir, &id);
         }
-        self.ensure_dns_defaults(resource_dir);
     }
 }
 

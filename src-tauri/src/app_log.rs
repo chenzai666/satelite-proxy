@@ -116,12 +116,7 @@ pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<Strin
     let target = target.into();
     let message = message.into();
     // Mirror to stderr for dev / Console.app
-    eprintln!(
-        "[satelite][{}][{}] {}",
-        level.as_str(),
-        target,
-        message
-    );
+    eprintln!("[satelite][{}][{}] {}", level.as_str(), target, message);
     lock_ring().push(level, target, message);
 }
 

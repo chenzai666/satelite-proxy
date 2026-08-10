@@ -10,10 +10,10 @@ mod error;
 mod proxy;
 mod runtime;
 mod services;
+mod smart_switch;
 mod state;
 mod storage;
 mod subscription;
-mod smart_switch;
 mod subscription_auto;
 mod tray;
 mod url_scheme;
@@ -132,8 +132,7 @@ pub fn run() {
                 }
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
-                    let urls: Vec<String> =
-                        event.urls().iter().map(|u| u.to_string()).collect();
+                    let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
                     queue_import(&handle, urls);
                 });
                 // Dev / Linux / Windows: register schemes for the current executable.
@@ -235,6 +234,7 @@ pub fn run() {
             commands::update_dns_settings,
             commands::reset_dns_defaults,
             commands::test_dns_lookup,
+            commands::read_system_hosts,
             commands::set_current_node_live,
             commands::smart_switch_now,
             commands::list_rule_sets,
@@ -252,6 +252,7 @@ pub fn run() {
             commands::set_rule_enabled,
             commands::list_connections,
             commands::list_requests,
+            commands::list_request_failures,
             commands::clear_request_history,
             commands::list_app_logs,
             commands::clear_app_logs,
@@ -291,7 +292,8 @@ pub fn run() {
                 // Reopen is a macOS-only RunEvent variant.
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen {
-                    has_visible_windows, ..
+                    has_visible_windows,
+                    ..
                 } => {
                     if !has_visible_windows {
                         window_ctrl::show_main(app_handle);
@@ -313,10 +315,7 @@ fn parse_subscription_text(content: String) -> Result<domain::ParseResult, Strin
 /// Persist UI shell preference (pro | simple) for correct window size on recreate.
 #[tauri::command]
 fn set_ui_mode_pref(app: tauri::AppHandle, mode: String) -> Result<(), String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     window_ctrl::write_ui_mode(&dir, &mode);
     Ok(())
 }

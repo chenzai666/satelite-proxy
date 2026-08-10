@@ -29,7 +29,9 @@ pub async fn import_from_url_with_id(
         return Err(AppError::Fetch("url is empty".into()));
     }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(AppError::Fetch("url must start with http:// or https://".into()));
+        return Err(AppError::Fetch(
+            "url must start with http:// or https://".into(),
+        ));
     }
 
     // Many panels only attach `subscription-userinfo` when UA looks like Clash.
@@ -128,9 +130,7 @@ fn subscription_user_agent() -> String {
 /// Parse `Content-Disposition` for a display name.
 /// Supports `filename*=UTF-8''%E8%89%AF%E5%BF%83%E4%BA%91` (percent-encoded) and
 /// plain `filename="foo.yaml"`. Matches FlClash `getFileNameForDisposition`.
-pub fn parse_content_disposition_filename(
-    headers: &reqwest::header::HeaderMap,
-) -> Option<String> {
+pub fn parse_content_disposition_filename(headers: &reqwest::header::HeaderMap) -> Option<String> {
     let raw = headers
         .get(reqwest::header::CONTENT_DISPOSITION)
         .or_else(|| headers.get("content-disposition"))
@@ -259,7 +259,9 @@ fn clean_disposition_name(name: &str) -> String {
 
 /// Parse Clash-style `subscription-userinfo` header:
 /// `upload=…; download=…; total=…; expire=…` (values in bytes / unix seconds).
-pub fn parse_subscription_userinfo(headers: &reqwest::header::HeaderMap) -> Option<SubscriptionTraffic> {
+pub fn parse_subscription_userinfo(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<SubscriptionTraffic> {
     // 1) Standard name (HeaderMap is case-insensitive).
     if let Some(raw) = header_values_joined(headers, "subscription-userinfo") {
         if let Some(t) = parse_userinfo_str(&raw) {
@@ -462,7 +464,8 @@ fn apply_remark_name(name: &str, traffic: &mut SubscriptionTraffic) -> bool {
     }
 
     // 已用流量 / 已使用
-    if let Some(rest) = strip_label(name, &["已用流量", "已使用流量", "已用", "已使用"]) {
+    if let Some(rest) = strip_label(name, &["已用流量", "已使用流量", "已用", "已使用"])
+    {
         if let Some(bytes) = parse_size_to_bytes(rest) {
             if traffic.download.is_none() && traffic.upload.is_none() {
                 traffic.download = Some(bytes);
@@ -472,7 +475,8 @@ fn apply_remark_name(name: &str, traffic: &mut SubscriptionTraffic) -> bool {
     }
 
     // 总流量 / 套餐流量
-    if let Some(rest) = strip_label(name, &["总流量", "套餐流量", "流量总量", "总量"]) {
+    if let Some(rest) = strip_label(name, &["总流量", "套餐流量", "流量总量", "总量"])
+    {
         if let Some(bytes) = parse_size_to_bytes(rest) {
             if traffic.total.is_none() {
                 traffic.total = Some(bytes);
@@ -697,10 +701,7 @@ mod tests {
     #[test]
     fn subscription_ua_contains_clash_verge() {
         let ua = subscription_user_agent();
-        assert!(
-            ua.to_ascii_lowercase().contains("clash-verge"),
-            "ua={ua}"
-        );
+        assert!(ua.to_ascii_lowercase().contains("clash-verge"), "ua={ua}");
     }
 
     #[test]

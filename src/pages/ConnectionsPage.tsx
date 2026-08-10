@@ -1,13 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getProxyStatus, listConnections } from "../api";
+import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
+import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/** Format a Clash-API ISO start time (e.g. 2024-01-01T00:00:00Z) to local. */
+function fmtIso(iso: string) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
 }
 
 interface Props {
@@ -21,6 +33,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState<TrafficScope>("proxy");
 
   const reload = useCallback(async () => {
     try {
@@ -46,8 +59,9 @@ export function ConnectionsPage({ embedded = false }: Props) {
   }, 1500);
 
   const q = query.trim().toLowerCase();
+  const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
   const filtered = q
-    ? rows.filter((r) => {
+    ? scoped.filter((r) => {
         const hay = [
           r.destination,
           r.host,
@@ -64,7 +78,16 @@ export function ConnectionsPage({ embedded = false }: Props) {
           .toLowerCase();
         return hay.includes(q);
       })
-    : rows;
+    : scoped;
+
+  const scopeOpts = useMemo(
+    () => [
+      { value: "all", label: t("traffic.scopeAll") },
+      { value: "direct", label: t("traffic.scopeDirect") },
+      { value: "proxy", label: t("traffic.scopeProxy") },
+    ],
+    [t],
+  );
 
   const toolbar = (
     <div className={`traffic-toolbar ${embedded ? "" : "page-header"}`}>
@@ -80,6 +103,12 @@ export function ConnectionsPage({ embedded = false }: Props) {
           placeholder={t("conn.filter")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+        />
+        <GlassSeg
+          value={scope}
+          ariaLabel={t("traffic.scopeLabel")}
+          onChange={(v) => setScope(v as TrafficScope)}
+          options={scopeOpts}
         />
         <span className={`pill ${running ? "ok" : "warn"}`}>
           {running
@@ -103,45 +132,56 @@ export function ConnectionsPage({ embedded = false }: Props) {
           <table className="conn-table">
             <thead>
               <tr>
+                <th className="conn-th-time">{t("conn.time")}</th>
                 <th>{t("conn.dest")}</th>
-                <th>{t("conn.node")}</th>
-                <th>{t("conn.chain")}</th>
-                <th>{t("conn.net")}</th>
-                <th>{t("conn.rule")}</th>
-                <th>{t("conn.process")}</th>
-                <th>{t("conn.traffic")}</th>
+                <th className="conn-th-node">{t("conn.node")}</th>
+                <th className="conn-th-rule">{t("conn.rule")}</th>
+                <th className="conn-th-process">{t("conn.process")}</th>
+                <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
                 <tr key={r.id}>
+                  <td className="conn-time">
+                    <div className="conn-cell" title={fmtIso(r.start)}>
+                      {fmtIso(r.start)}
+                    </div>
+                  </td>
                   <td>
-                    <div className="conn-dest" title={r.destination}>
+                    <div
+                      className="conn-cell conn-dest"
+                      title={`${r.destination}${r.source ? ` · ${r.source}` : ""}`}
+                    >
                       {r.destination}
                     </div>
-                    <div className="muted conn-sub">
-                      {r.conn_type || r.network}
-                      {r.source ? ` · ${r.source}` : ""}
+                  </td>
+                  <td>
+                    <div
+                      className="conn-cell conn-node"
+                      title={
+                        r.subscription_name
+                          ? `${r.subscription_name} · ${r.node_name}`
+                          : r.node_name
+                      }
+                    >
+                      {r.node_name || r.node_tag || "—"}
                     </div>
                   </td>
                   <td>
-                    <strong title={r.node_tag}>
-                      {r.node_name || r.node_tag || "—"}
-                    </strong>
-                  </td>
-                  <td className="conn-chains" title={r.chains_display}>
-                    {r.chains_display || "—"}
+                    <div className="conn-cell conn-rule" title={r.rule}>
+                      {r.rule || "—"}
+                    </div>
                   </td>
                   <td>
-                    <code>{r.network || "—"}</code>
+                    <div className="conn-cell" title={r.process}>
+                      {r.process || "—"}
+                    </div>
                   </td>
-                  <td className="conn-rule" title={r.rule}>
-                    {r.rule || "—"}
-                  </td>
-                  <td>{r.process || "—"}</td>
                   <td className="conn-traffic">
-                    ↑{fmtBytes(r.upload)}
-                    <br />↓{fmtBytes(r.download)}
+                    <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
+                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                    </span>
                   </td>
                 </tr>
               ))}
