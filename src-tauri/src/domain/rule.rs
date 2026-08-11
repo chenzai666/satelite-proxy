@@ -234,7 +234,7 @@ pub fn keyword_list_overlap(include: &[String], exclude: &[String]) -> Vec<Strin
 pub struct RuleSet {
     pub id: String,
     pub name: String,
-    /// Built-in sets cannot be deleted.
+    /// Marks sets bundled with the application.
     pub builtin: bool,
     /// When true, rules in this set are merged into the active routing config.
     #[serde(default = "default_true")]
@@ -442,11 +442,6 @@ pub const BUILTIN_SET_NAME: &str = "内置规则集";
 /// - **Reset**: reloads that set from the resource file.
 pub fn is_factory_set_id(id: &str) -> bool {
     id.starts_with("builtin-")
-}
-
-/// Whether the set may be deleted by the user (pure custom sets only).
-pub fn is_deletable_rule_set(id: &str, builtin: bool) -> bool {
-    !builtin && !is_factory_set_id(id)
 }
 
 /// Minimal direct fallback when no rule set is enabled.

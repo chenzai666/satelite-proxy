@@ -1,9 +1,9 @@
 use crate::domain::{
-    default_rules, is_deletable_rule_set, is_factory_set_id, load_builtin_rule_sets,
-    load_factory_rule_set, sanitize_rules, AppSettings, DnsAction, DnsRuleSetKind, DnsSettings,
-    DomainMatcher, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy,
-    RuleSetSummary, RuleTarget, RuleType, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME,
-    GENERAL_SET_ID, GENERAL_SET_NAME,
+    default_rules, is_factory_set_id, load_builtin_rule_sets, load_factory_rule_set,
+    sanitize_rules, AppSettings, DnsAction, DnsRuleSetKind, DnsSettings, DomainMatcher, ProxyNode,
+    Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy, RuleSetSummary,
+    RuleTarget, RuleType, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
+    GENERAL_SET_NAME,
 };
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -767,17 +767,11 @@ impl AppStore {
     }
 
     pub fn delete_rule_set(&mut self, id: &str) -> AppResult<()> {
-        let set = self
-            .rule_sets
-            .iter()
-            .find(|s| s.id == id)
-            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        if !is_deletable_rule_set(id, set.builtin) {
-            return Err(AppError::Config(
-                "不能删除内置规则集；可重置为资源文件默认".into(),
-            ));
+        let before = self.rule_sets.len();
+        self.rule_sets.retain(|set| set.id != id);
+        if self.rule_sets.len() == before {
+            return Err(AppError::NotFound(id.to_string()));
         }
-        self.rule_sets.retain(|s| s.id != id);
         Ok(())
     }
 
@@ -968,7 +962,31 @@ mod tests {
             .expect("preserved general");
         assert_eq!(preserved.ownership, RuleSetOwnership::User);
         assert!(!preserved.builtin);
-        assert!(is_deletable_rule_set(&preserved.id, preserved.builtin));
+        store.delete_rule_set(GENERAL_SET_ID).unwrap();
+        assert!(store.get_rule_set(GENERAL_SET_ID).is_none());
+    }
+
+    #[test]
+    fn deleted_builtin_is_restored_only_when_still_bundled() {
+        let mut store = AppStore::default();
+        let bundled = load_builtin_rule_sets(None)
+            .into_iter()
+            .next()
+            .expect("bundled rule set");
+        let bundled_id = bundled.id.clone();
+        store.rule_sets.push(bundled);
+        let mut obsolete = RuleSet::new_user("过时内置", Vec::new());
+        obsolete.id = "builtin-obsolete".into();
+        obsolete.builtin = true;
+        obsolete.ownership = RuleSetOwnership::Builtin;
+        store.rule_sets.push(obsolete);
+
+        store.delete_rule_set(&bundled_id).unwrap();
+        store.delete_rule_set("builtin-obsolete").unwrap();
+        store.ensure_rule_sets(None);
+
+        assert!(store.get_rule_set(&bundled_id).is_some());
+        assert!(store.get_rule_set("builtin-obsolete").is_none());
     }
 
     #[test]

@@ -620,7 +620,7 @@ export function RulesPage({ embedded = false }: Props) {
   }
 
   async function onDeleteSet(target: RuleSetSummary | null | undefined = viewSet) {
-    if (!target || target.builtin || busy) return;
+    if (!target || busy) return;
     if (!confirm(`删除规则集「${target.name}」？`)) return;
     setBusy(true);
     setError(null);
@@ -930,7 +930,7 @@ export function RulesPage({ embedded = false }: Props) {
                       >
                         重命名
                       </button>
-                      {isFactorySet(s) ? (
+                      {isFactorySet(s) && (
                         <button
                           type="button"
                           role="menuitem"
@@ -943,42 +943,39 @@ export function RulesPage({ embedded = false }: Props) {
                         >
                           重置
                         </button>
-                      ) : (
-                        <>
-                          {s.remote && (
-                            <button
-                              type="button"
-                              role="menuitem"
-                              className="rule-menu-item"
-                              disabled={remoteBusyIds.has(s.id)}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMenuSetId(null);
-                                void onRefreshRemoteSet(s.id);
-                              }}
-                            >
-                              更新
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="rule-menu-item danger"
-                            disabled={
-                              !!s.remote &&
-                              (remoteBusyIds.has(s.id) ||
-                                s.remote.download_status === "downloading")
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMenuSetId(null);
-                              void onDeleteSet(s);
-                            }}
-                          >
-                            删除
-                          </button>
-                        </>
                       )}
+                      {s.remote && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="rule-menu-item"
+                          disabled={remoteBusyIds.has(s.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuSetId(null);
+                            void onRefreshRemoteSet(s.id);
+                          }}
+                        >
+                          更新
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="rule-menu-item danger"
+                        disabled={
+                          !!s.remote &&
+                          (remoteBusyIds.has(s.id) ||
+                            s.remote.download_status === "downloading")
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuSetId(null);
+                          void onDeleteSet(s);
+                        }}
+                      >
+                        删除
+                      </button>
                     </div>
                   )}
                 </div>
