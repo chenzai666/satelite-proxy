@@ -114,13 +114,17 @@ fn stream_ws_snapshots(
         .unwrap_or("127.0.0.1:19090");
 
     let stream = TcpStream::connect(host_port).map_err(|e| format!("tcp {host_port}: {e}"))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
     let _ = stream.set_nodelay(true);
 
     let (mut socket, _resp) =
         ws_client(request, stream).map_err(|e| format!("ws handshake: {e}"))?;
 
     loop {
+        if !api.is_active() {
+            let _ = socket.close(None);
+            return Ok(());
+        }
         match socket.read() {
             Ok(Message::Text(text)) => on_text(text.as_str()),
             Ok(Message::Binary(bin)) => {

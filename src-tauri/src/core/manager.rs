@@ -197,6 +197,10 @@ impl CoreManager {
         TcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
+    pub fn has_port_listener(port: u16) -> bool {
+        port_has_listener(port)
+    }
+
     /// Force-free a TCP listen port: kill listeners + short wait.
     ///
     /// Important: if nothing is in LISTEN, return immediately (or after one short

@@ -8,6 +8,8 @@ use crate::error::{AppError, AppResult};
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -57,12 +59,14 @@ where
 pub struct ClashApi {
     pub base: String,
     pub secret: String,
+    active: Arc<AtomicBool>,
 }
 
 fn shared_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
+            .max_idle_connections(0)
             .timeout_connect(Duration::from_secs(3))
             .timeout(Duration::from_secs(30))
             .build()
@@ -87,7 +91,16 @@ impl ClashApi {
         Self {
             base: format!("http://{host}:{port}"),
             secret: secret.to_string(),
+            active: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    pub fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
     }
 
     /// Fast readiness probe (short timeout). Used while waiting for core start.

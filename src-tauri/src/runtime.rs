@@ -621,8 +621,11 @@ impl Runtime {
 
     pub fn stop_proxy(&mut self, store: &AppStore) -> AppResult<ProxyStatus> {
         // System proxy is independent — do not turn it off when stopping core.
+        if let Some(api) = self.api.take() {
+            api.deactivate();
+        }
         self.core.stop()?;
-        self.api = None;
+        CoreManager::ensure_ports_free(&[store.settings.mixed_port, store.settings.api_port])?;
         self.core_started_at = None;
         self.live_connections.clear();
         // keep request_history across stop so user can review
@@ -660,28 +663,29 @@ impl Runtime {
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
+        if let Some(api) = self.api.take() {
+            api.deactivate();
+        }
         self.core.force_shutdown(ports);
-        self.api = None;
         self.live_connections.clear();
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
     }
 }
 
-fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
-    std::net::TcpListener::bind(("127.0.0.1", port))
-        .map(|listener| drop(listener))
-        .map_err(|e| {
-            AppError::Core(format!(
-                "{label} 端口 127.0.0.1:{port} 已被其他程序占用，请关闭冲突程序或修改端口：{e}"
-            ))
-        })
-}
-
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
+    if CoreManager::has_port_listener(port) {
+        return Err(AppError::Core(format!(
+            "{label} 端口 127.0.0.1:{port} 已被其他程序占用，请关闭冲突程序或修改端口"
+        )));
+    }
+    Ok(())
 }
 
 fn now_unix_ms() -> i64 {
@@ -857,4 +861,41 @@ fn format_rule(rule: &str, payload: &str) -> String {
         return payload.to_string();
     }
     format!("{rule}({payload})")
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_then_start_accepts_the_same_ports() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut holder = std::process::Command::new("/usr/bin/nc")
+            .args(["-l", "127.0.0.1", &port.to_string()])
+            .spawn()
+            .unwrap();
+        for _ in 0..20 {
+            if CoreManager::has_port_listener(port) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(ensure_listen_port_available(port, "test").is_err());
+
+        let mut store = AppStore::default();
+        store.settings.mixed_port = port;
+        store.settings.api_port = 0;
+        let mut runtime = Runtime::new();
+        let api = ClashApi::new("127.0.0.1", port, "test");
+        runtime.api = Some(api.clone());
+        runtime.stop_proxy(&store).unwrap();
+        let restart_allowed = ensure_listen_port_available(port, "test").is_ok();
+        let _ = holder.kill();
+        let _ = holder.wait();
+
+        assert!(restart_allowed, "stop must allow an immediate restart");
+        assert!(!api.is_active(), "stop must cancel Clash API clients");
+    }
 }
