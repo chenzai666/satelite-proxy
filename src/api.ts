@@ -351,6 +351,28 @@ export function createRuleSet(
   });
 }
 
+export function refreshRemoteRuleSet(id: string) {
+  return invoke<RuleSet>("refresh_remote_rule_set", { id });
+}
+
+export function renameRuleSet(id: string, name: string) {
+  return invoke<RuleSet>("rename_rule_set", { id, name });
+}
+
+export function listRemoteRuleItems(
+  id: string,
+  offset: number,
+  limit: number,
+  query?: string,
+) {
+  return invoke<import("./types").RemoteRulePage>("list_remote_rule_items", {
+    id,
+    offset,
+    limit,
+    query: query?.trim() || null,
+  });
+}
+
 /** First id = highest match priority. Restarts core when running. */
 export function reorderRuleSets(ids: string[]) {
   return invoke<RuleSetSummary[]>("reorder_rule_sets", { ids });

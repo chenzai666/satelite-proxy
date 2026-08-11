@@ -269,17 +269,22 @@ fn build_grouped_rule_sets(
 
     for set in sets.iter().filter(|set| set.enabled) {
         if let Some(remote) = &set.remote {
-            let url = remote.url.trim();
-            if url.is_empty() {
+            let Some(path) = remote
+                .local_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
+                continue;
+            };
+            if !std::path::Path::new(path).is_file() {
                 continue;
             }
             definitions.push(json!({
                 "tag": set.id,
-                "type": "remote",
+                "type": "local",
                 "format": remote.format,
-                "url": url,
-                "update_interval": remote.update_interval,
-                "download_detour": "proxy",
+                "path": path,
             }));
         } else {
             definitions.push(build_inline_rule_set(&set.id, &set.rules));
@@ -940,14 +945,20 @@ mod tests {
             "https://example.com/adblock.json",
             RuleTarget::Block,
         );
+        let mut set = set;
+        let local_path = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        set.remote.as_mut().unwrap().local_path = Some(local_path.clone());
         let tag = set.id.clone();
         let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
 
         assert_eq!(definitions[0]["tag"], tag);
-        assert_eq!(definitions[0]["type"], "remote");
+        assert_eq!(definitions[0]["type"], "local");
         assert_eq!(definitions[0]["format"], "source");
-        assert_eq!(definitions[0]["update_interval"], "1h");
-        assert_eq!(definitions[0]["download_detour"], "proxy");
+        assert_eq!(definitions[0]["path"], local_path);
+        assert!(definitions[0].get("url").is_none());
         assert_eq!(
             routes[0],
             json!({ "rule_set": [tag.clone()], "action": "reject" })
@@ -972,6 +983,12 @@ mod tests {
             ),
         ] {
             let mut set = RuleSet::new_remote("Remote", "https://example.com/rules.json", target);
+            set.remote.as_mut().unwrap().local_path = Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+            );
             set.dns_strategy = dns_strategy;
             let tag = set.id.clone();
             let (_, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);

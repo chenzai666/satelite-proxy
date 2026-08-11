@@ -8,6 +8,7 @@ mod core;
 mod domain;
 mod error;
 mod proxy;
+mod remote_rule_auto;
 mod runtime;
 mod services;
 mod smart_switch;
@@ -93,6 +94,10 @@ pub fn run() {
 
             // Profile auto-update (per-subscription interval, default 1440 min).
             subscription_auto::spawn(app.handle().clone());
+
+            // Remote rule sets are fetched by the app and cached locally so
+            // sing-box startup never blocks on remote downloads.
+            remote_rule_auto::spawn(app.handle().clone());
 
             // Smart node switch (docs/auto.md): passive + on-demand probe.
             smart_switch::spawn(app.handle().clone());
@@ -239,11 +244,14 @@ pub fn run() {
             commands::smart_switch_now,
             commands::list_rule_sets,
             commands::get_rule_set,
+            commands::list_remote_rule_items,
             commands::set_active_rule_set,
             commands::set_rule_set_enabled,
             commands::set_rule_set_strategy,
             commands::set_rule_set_dns_strategy,
             commands::create_rule_set,
+            commands::rename_rule_set,
+            commands::refresh_remote_rule_set,
             commands::reorder_rule_sets,
             commands::delete_rule_set,
             commands::reset_rule_set,

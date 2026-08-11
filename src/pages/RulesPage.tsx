@@ -7,14 +7,18 @@ import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   createRuleSet,
   deleteRuleSet,
   getRuleSet,
   getSettings,
   listAllNodes,
+  listRemoteRuleItems,
   listRuleSets,
   removeRule,
+  refreshRemoteRuleSet,
+  renameRuleSet,
   reorderRuleSets,
   resetRuleSet,
   resetBuiltinRuleSet,
@@ -36,6 +40,7 @@ import type {
   RuleSetDnsStrategy,
   RuleSetStrategy,
   RuleSetSummary,
+  RemoteRulePage,
   RuleTarget,
   RuleType,
 } from "../types";
@@ -49,6 +54,8 @@ const TYPE_OPTS: { value: RuleType; label: string }[] = [
   { value: "ip_cidr", label: "IP-CIDR" },
   { value: "process", label: "PROCESS" },
 ];
+
+const REMOTE_PAGE_SIZE = 100;
 
 interface Props {
   /** Hide page chrome when embedded under Settings. */
@@ -86,10 +93,18 @@ export function RulesPage({ embedded = false }: Props) {
   const [newSetUrl, setNewSetUrl] = useState("");
   const [newSetTarget, setNewSetTarget] = useState<RouteFinal>("proxy");
   const [newSetBusy, setNewSetBusy] = useState(false);
+  const [renameSetTarget, setRenameSetTarget] = useState<RuleSetSummary | null>(null);
+  const [renameSetName, setRenameSetName] = useState("");
+  const [renameSetBusy, setRenameSetBusy] = useState(false);
   /** Row ⋮ menu open for this rule id */
   const [menuRuleId, setMenuRuleId] = useState<string | null>(null);
   /** Rule-set card ⋮ menu open for this set id. */
   const [menuSetId, setMenuSetId] = useState<string | null>(null);
+  const [remoteBusyIds, setRemoteBusyIds] = useState<Set<string>>(new Set());
+  const [remotePage, setRemotePage] = useState<RemoteRulePage | null>(null);
+  const [remotePageIndex, setRemotePageIndex] = useState(0);
+  const [remoteRulesLoading, setRemoteRulesLoading] = useState(false);
+  const [remoteRulesError, setRemoteRulesError] = useState<string | null>(null);
 
   /** Pointer drag (HTML5 DnD is unreliable in Tauri WebView). */
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -204,6 +219,27 @@ export function RulesPage({ embedded = false }: Props) {
     };
   }, [menuRuleId, menuSetId]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ id: string; status: string; error?: string | null }>(
+      "remote-rule-set-status",
+      (event) => {
+        const { id, status, error: downloadError } = event.payload;
+        setRemoteBusyIds((current) => {
+          const next = new Set(current);
+          if (status === "downloading") next.add(id);
+          else next.delete(id);
+          return next;
+        });
+        if (status === "error" && downloadError) setError(downloadError);
+        void reloadSets();
+      },
+    ).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, [reloadSets]);
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return rules;
@@ -272,6 +308,55 @@ export function RulesPage({ embedded = false }: Props) {
   }, [target, smartInclude, smartExclude, nodes]);
 
   const viewSet = sets.find((s) => s.id === viewSetId);
+
+  useEffect(() => {
+    setRemotePageIndex(0);
+  }, [viewSetId]);
+
+  useEffect(() => {
+    if (!viewSet?.remote?.local_path) {
+      setRemotePage(null);
+      setRemoteRulesError(null);
+      setRemoteRulesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setRemoteRulesLoading(true);
+      setRemoteRulesError(null);
+      void listRemoteRuleItems(
+        viewSet.id,
+        remotePageIndex * REMOTE_PAGE_SIZE,
+        REMOTE_PAGE_SIZE,
+        filter,
+      )
+        .then((page) => {
+          if (cancelled) return;
+          if (page.total > 0 && page.items.length === 0 && remotePageIndex > 0) {
+            setRemotePageIndex(0);
+            return;
+          }
+          setRemotePage(page);
+          if (!filter.trim()) {
+            setSets((current) =>
+              current.map((set) =>
+                set.id === viewSet.id ? { ...set, rule_count: page.total } : set,
+              ),
+            );
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setRemoteRulesError(String(err));
+        })
+        .finally(() => {
+          if (!cancelled) setRemoteRulesLoading(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [filter, remotePageIndex, viewSet?.id, viewSet?.remote?.local_path]);
 
   const targetOpts: { value: RuleTarget; label: string }[] = useMemo(
     () => [
@@ -486,10 +571,51 @@ export function RulesPage({ embedded = false }: Props) {
       setViewSetId(set.id);
       setRules([]);
       setNewSetOpen(false);
+      if (newSetKind === "remote") void onRefreshRemoteSet(set.id);
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
     } finally {
       setNewSetBusy(false);
+    }
+  }
+
+  async function onRefreshRemoteSet(id: string) {
+    setRemoteBusyIds((current) => new Set(current).add(id));
+    setError(null);
+    try {
+      await refreshRemoteRuleSet(id);
+      await reloadSets();
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+      await reloadSets().catch(() => undefined);
+    } finally {
+      setRemoteBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  function openRenameSet(target: RuleSetSummary) {
+    setMenuSetId(null);
+    setRenameSetTarget(target);
+    setRenameSetName(target.name);
+  }
+
+  async function onRenameSet(e: FormEvent) {
+    e.preventDefault();
+    if (!renameSetTarget || !renameSetName.trim() || renameSetBusy) return;
+    setRenameSetBusy(true);
+    setError(null);
+    try {
+      await renameRuleSet(renameSetTarget.id, renameSetName.trim());
+      await reloadSets();
+      setRenameSetTarget(null);
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+    } finally {
+      setRenameSetBusy(false);
     }
   }
 
@@ -753,6 +879,15 @@ export function RulesPage({ embedded = false }: Props) {
                 </span>
                 <span className="ruleset-prio muted">{index + 1}</span>
                 <span className="ruleset-name">{s.name}</span>
+                {s.remote &&
+                  (remoteBusyIds.has(s.id) ||
+                    s.remote.download_status === "downloading") && (
+                    <span
+                      className="lat-spinner ruleset-download-spinner"
+                      title="正在下载远程规则集"
+                      aria-label="正在下载远程规则集"
+                    />
+                  )}
                 <GlassSwitchControl
                   checked={s.enabled}
                   size="sm"
@@ -778,7 +913,23 @@ export function RulesPage({ embedded = false }: Props) {
                     ⋮
                   </button>
                   {menuSetId === s.id && (
-                    <div className="rule-menu-pop ruleset-menu-pop" role="menu">
+                    <div
+                      className={`rule-menu-pop ruleset-menu-pop${
+                        index < Math.ceil(sets.length / 2) ? " open-down" : ""
+                      }`}
+                      role="menu"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="rule-menu-item"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openRenameSet(s);
+                        }}
+                      >
+                        重命名
+                      </button>
                       {isFactorySet(s) ? (
                         <button
                           type="button"
@@ -793,18 +944,40 @@ export function RulesPage({ embedded = false }: Props) {
                           重置
                         </button>
                       ) : (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="rule-menu-item danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMenuSetId(null);
-                            void onDeleteSet(s);
-                          }}
-                        >
-                          删除
-                        </button>
+                        <>
+                          {s.remote && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="rule-menu-item"
+                              disabled={remoteBusyIds.has(s.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMenuSetId(null);
+                                void onRefreshRemoteSet(s.id);
+                              }}
+                            >
+                              更新
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="rule-menu-item danger"
+                            disabled={
+                              !!s.remote &&
+                              (remoteBusyIds.has(s.id) ||
+                                s.remote.download_status === "downloading")
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuSetId(null);
+                              void onDeleteSet(s);
+                            }}
+                          >
+                            删除
+                          </button>
+                        </>
                       )}
                     </div>
                   )}
@@ -820,8 +993,8 @@ export function RulesPage({ embedded = false }: Props) {
         <section className="rules-main">
           <div className="rules-toolbar card">
             <div className="header-actions rules-main-actions">
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="muted" style={{ fontSize: 12 }}>路由</span>
+              <div className="rules-policy-control">
+                <span className="muted rules-policy-label">路由</span>
                 <GlassSeg
                   value={viewSet?.strategy ?? "proxy"}
                   ariaLabel="整组路由策略"
@@ -835,8 +1008,8 @@ export function RulesPage({ embedded = false }: Props) {
                   ]}
                 />
               </div>
-              {viewSet?.strategy !== "block" && <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="muted" style={{ fontSize: 12 }}>DNS</span>
+              {viewSet?.strategy !== "block" && <div className="rules-policy-control">
+                <span className="muted rules-policy-label">DNS</span>
                 <GlassSeg
                   value={viewSet?.dns_strategy ?? "remote"}
                   ariaLabel="整组 DNS 策略"
@@ -857,7 +1030,10 @@ export function RulesPage({ embedded = false }: Props) {
                   className="search rules-filter"
                   placeholder="过滤规则…"
                   value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
+                  onChange={(e) => {
+                    setFilter(e.target.value);
+                    setRemotePageIndex(0);
+                  }}
                 />
                 <GlassButton
                   variant="primary"
@@ -866,7 +1042,7 @@ export function RulesPage({ embedded = false }: Props) {
                   disabled={!viewSetId || !!viewSet?.remote}
                   title={t("rules.addRuleTitle")}
                 >
-                  添加规则
+                  添加
                 </GlassButton>
               </div>
             </div>
@@ -875,15 +1051,90 @@ export function RulesPage({ embedded = false }: Props) {
           {loading ? (
             <div className="empty">加载中…</div>
           ) : viewSet?.remote ? (
-            <div className="empty card">
-              <strong>远程规则集</strong>
-              <div className="muted" style={{ marginTop: 8, overflowWrap: "anywhere" }}>
-                {viewSet.remote.url}
+            <>
+              <div className="card remote-rule-status">
+                <div className="muted remote-rule-url">{viewSet.remote.url}</div>
+                <div className="muted">
+                  {viewSet.remote.download_status === "downloading"
+                    ? "正在由 Satelite 下载并校验，完成后自动加载。"
+                    : viewSet.remote.download_status === "error"
+                      ? `下载失败：${viewSet.remote.download_error ?? "未知错误"}`
+                      : viewSet.remote.local_path
+                        ? `已解析 ${viewSet.rule_count} 条规则，内核仅加载本地缓存。`
+                        : "等待下载远程规则集。"}
+                </div>
               </div>
-              <div className="muted" style={{ marginTop: 6 }}>
-                此规则集由 sing-box 整组下载和匹配，无需添加单条规则。
-              </div>
-            </div>
+              {remoteRulesLoading && !remotePage ? (
+                <div className="empty muted">正在解析规则…</div>
+              ) : remoteRulesError ? (
+                <div className="empty card error">解析失败：{remoteRulesError}</div>
+              ) : remotePage && remotePage.items.length > 0 ? (
+                <div className="card table-wrap remote-rules-wrap">
+                  <table className="remote-rules-table">
+                    <colgroup>
+                      <col className="col-index" />
+                      <col className="col-kind" />
+                      <col />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>类型</th>
+                        <th>匹配条件</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {remotePage.items.map((item) => (
+                        <tr key={item.index}>
+                          <td className="rule-ord">{item.index}</td>
+                          <td className="rule-type"><code>{item.kind}</code></td>
+                          <td>
+                            {item.complex ? (
+                              <details className="remote-rule-details">
+                                <summary title={item.summary}>
+                                  {item.summary || "查看原始规则"}
+                                </summary>
+                                <pre>{item.raw}</pre>
+                                {item.raw_truncated && (
+                                  <div className="muted remote-rule-truncated">
+                                    内容过长，仅显示前 4,000 个字符
+                                  </div>
+                                )}
+                              </details>
+                            ) : (
+                              <div className="remote-rule-summary" title={item.summary}>
+                                {item.summary}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="remote-rule-pagination">
+                    <span className="muted">
+                      {remotePage.offset + 1}–{remotePage.offset + remotePage.items.length} / {remotePage.total}
+                    </span>
+                    <GlassButton
+                      onClick={() => setRemotePageIndex((page) => Math.max(0, page - 1))}
+                      disabled={remotePageIndex === 0 || remoteRulesLoading}
+                    >
+                      上一页
+                    </GlassButton>
+                    <GlassButton
+                      onClick={() => setRemotePageIndex((page) => page + 1)}
+                      disabled={remotePage.offset + remotePage.items.length >= remotePage.total || remoteRulesLoading}
+                    >
+                      下一页
+                    </GlassButton>
+                  </div>
+                </div>
+              ) : viewSet.remote.local_path ? (
+                <div className="empty card muted">
+                  {filter.trim() ? "没有匹配的远程规则" : "远程规则集为空"}
+                </div>
+              ) : null}
+            </>
           ) : filtered.length === 0 ? (
             <div className="empty card muted">暂无规则</div>
           ) : (
@@ -1282,6 +1533,57 @@ export function RulesPage({ embedded = false }: Props) {
                   }
                 >
                   {newSetBusy ? "创建中…" : "创建"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {renameSetTarget && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !renameSetBusy && setRenameSetTarget(null)}
+        >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h2>重命名规则集</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                disabled={renameSetBusy}
+                onClick={() => setRenameSetTarget(null)}
+              >
+                ×
+              </button>
+            </header>
+            <form className="modal-body" onSubmit={(e) => void onRenameSet(e)}>
+              <label className="field">
+                <span>名称</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={renameSetName}
+                  onChange={(e) => setRenameSetName(e.target.value)}
+                  autoFocus
+                  maxLength={64}
+                />
+              </label>
+              <footer className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={renameSetBusy}
+                  onClick={() => setRenameSetTarget(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={renameSetBusy || !renameSetName.trim()}
+                >
+                  {renameSetBusy ? "保存中…" : "保存"}
                 </button>
               </footer>
             </form>

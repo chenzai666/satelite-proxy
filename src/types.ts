@@ -314,6 +314,28 @@ export interface RemoteRuleSetConfig {
   format: "source" | string;
   update_interval: string;
   target: "proxy" | "direct" | "block";
+  local_path?: string | null;
+  download_status?: "idle" | "downloading" | "ready" | "error" | string;
+  download_error?: string | null;
+  last_update?: number | null;
+  last_attempt?: number | null;
+  rule_count?: number | null;
+}
+
+export interface RemoteRuleItem {
+  index: number;
+  kind: string;
+  summary: string;
+  raw: string;
+  raw_truncated: boolean;
+  complex: boolean;
+}
+
+export interface RemoteRulePage {
+  total: number;
+  offset: number;
+  limit: number;
+  items: RemoteRuleItem[];
 }
 
 export interface RuleSet {

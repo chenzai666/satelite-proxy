@@ -336,6 +336,21 @@ pub struct RemoteRuleSetConfig {
     pub update_interval: String,
     /// Whole-set route strategy. Remote sets intentionally do not support node/smart.
     pub target: RuleTarget,
+    /// Rust-managed downloaded source file. sing-box only sees this local path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+    /// idle | downloading | ready | error
+    #[serde(default = "default_download_status")]
+    pub download_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt: Option<i64>,
+    /// Number of top-level source rules in the latest validated cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_count: Option<u32>,
 }
 
 fn default_remote_format() -> String {
@@ -343,6 +358,9 @@ fn default_remote_format() -> String {
 }
 fn default_update_interval() -> String {
     "1h".into()
+}
+fn default_download_status() -> String {
+    "idle".into()
 }
 
 fn default_true() -> bool {
@@ -385,6 +403,12 @@ impl RuleSet {
             format: default_remote_format(),
             update_interval: default_update_interval(),
             target,
+            local_path: None,
+            download_status: default_download_status(),
+            download_error: None,
+            last_update: None,
+            last_attempt: None,
+            rule_count: None,
         });
         set.strategy = RuleSetStrategy::from_target(target);
         set

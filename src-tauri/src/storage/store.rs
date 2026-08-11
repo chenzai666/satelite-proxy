@@ -656,7 +656,11 @@ impl AppStore {
                 id: s.id.clone(),
                 name: s.name.clone(),
                 builtin: s.builtin,
-                rule_count: s.rules.len() as u32,
+                rule_count: s
+                    .remote
+                    .as_ref()
+                    .and_then(|remote| remote.rule_count)
+                    .unwrap_or(s.rules.len() as u32),
                 enabled: s.enabled,
                 ownership: s.ownership,
                 strategy: s.strategy,
