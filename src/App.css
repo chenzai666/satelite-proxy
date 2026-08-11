@@ -1957,6 +1957,10 @@ tr.rule-row:hover {
   width: 100%;
 }
 
+.rules-main th {
+  position: static;
+}
+
 .rules-table .col-ord {
   width: 3rem;
 }
