@@ -32,6 +32,7 @@ fn action_token(a: DnsAction) -> &'static str {
         DnsAction::Local => "LOCAL",
         DnsAction::Domestic => "DOMESTIC",
         DnsAction::Remote => "REMOTE",
+        DnsAction::Block => "BLOCK",
     }
 }
 

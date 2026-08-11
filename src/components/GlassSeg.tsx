@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface Option {
   value: string;
@@ -16,6 +16,8 @@ interface Props {
   disabledValues?: Set<string>;
   /** Per-option title tooltip. */
   titles?: Record<string, string>;
+  /** False while the parent is still loading the initial persisted value. */
+  ready?: boolean;
 }
 
 /**
@@ -31,22 +33,56 @@ export function GlassSeg({
   disabled,
   disabledValues,
   titles,
+  ready = true,
 }: Props) {
   const index = Math.max(
     0,
     options.findIndex((o) => o.value === value),
   );
 
-  // Suppress the slide transition on the very first paint after mount —
-  // otherwise the indicator animates from option 0 to the active one every
-  // time a page is re-rendered (e.g. navigating back to the dashboard shows
-  // the capsule sliding from "Manual" to "Smart"). We lift the gate one
-  // frame after mount so later user-driven changes still animate.
-  const [mounted, setMounted] = useState(false);
+  // A GlassSeg is controlled, so its value can change for two very different
+  // reasons: the user clicked this control, or its parent loaded/refreshed
+  // state. Only the former should slide. Persisted state, polling updates and
+  // option-list changes must paint their target position directly.
+  const committedValueRef = useRef(value);
+  const committedIndexRef = useRef(index);
+  const pendingUserValueRef = useRef<string | null>(null);
+  const positionChanged =
+    committedValueRef.current !== value || committedIndexRef.current !== index;
+  const isUserChange = pendingUserValueRef.current === value;
+
+  // Suppress transitions through the first paint of the persisted value — it
+  // can arrive well after mount. Otherwise returning to a page makes the
+  // capsule slide from the fallback option to the actual saved option.
+  const [canAnimate, setCanAnimate] = useState(false);
   useEffect(() => {
-    const raf = requestAnimationFrame(() => setMounted(true));
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    if (!ready) {
+      setCanAnimate(false);
+      return;
+    }
+
+    // Two frames guarantee that the no-transition target state has actually
+    // painted before transitions are enabled for later user changes.
+    let nextRaf = 0;
+    const paintRaf = requestAnimationFrame(() => {
+      nextRaf = requestAnimationFrame(() => setCanAnimate(true));
+    });
+    return () => {
+      cancelAnimationFrame(paintRaf);
+      cancelAnimationFrame(nextRaf);
+    };
+  }, [ready]);
+
+  useEffect(() => {
+    committedValueRef.current = value;
+    committedIndexRef.current = index;
+    if (pendingUserValueRef.current === value) {
+      pendingUserValueRef.current = null;
+    }
+  }, [index, value]);
+
+  const animateIndicator =
+    canAnimate && (!positionChanged || isUserChange);
 
   return (
     <div
@@ -56,7 +92,7 @@ export function GlassSeg({
       style={{ "--count": options.length } as CSSProperties}
     >
       <span
-        className={`glass-seg-indicator${mounted ? "" : " no-anim"}`}
+        className={`glass-seg-indicator${animateIndicator ? "" : " no-anim"}`}
         aria-hidden="true"
         style={{ transform: `translateX(${index * 100}%)` }}
       />
@@ -69,7 +105,10 @@ export function GlassSeg({
             className={`glass-seg-btn ${value === o.value ? "active" : ""}`}
             disabled={isDisabled}
             title={titles?.[o.value]}
-            onClick={() => onChange(o.value)}
+            onClick={() => {
+              pendingUserValueRef.current = o.value;
+              onChange(o.value);
+            }}
           >
             {o.label}
           </button>

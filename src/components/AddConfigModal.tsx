@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GlassSeg } from "./GlassSeg";
+import { GlassSwitchControl } from "./GlassSwitchControl";
 import type { AddSourceKind } from "../types";
 
 export interface ConfigFormValues {
@@ -199,16 +200,12 @@ export function AddConfigModal({
                     经本地 mixed 端口拉取（需先启动代理核心）
                   </div>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={viaProxy}
-                  className={`switch ${viaProxy ? "on" : ""}`}
+                <GlassSwitchControl
+                  checked={viaProxy}
+                  title="走代理添加"
                   disabled={busy}
-                  onClick={() => setViaProxy((v) => !v)}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={setViaProxy}
+                />
               </div>
             </>
           ) : (
@@ -238,16 +235,12 @@ export function AddConfigModal({
                 按间隔自动重新拉取/读取此配置
               </div>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoUpdate}
-              className={`switch ${autoUpdate ? "on" : ""}`}
+            <GlassSwitchControl
+              checked={autoUpdate}
+              title="自动更新"
               disabled={busy}
-              onClick={() => setAutoUpdate((v) => !v)}
-            >
-              <span className="switch-thumb" />
-            </button>
+              onChange={setAutoUpdate}
+            />
           </div>
 
           {autoUpdate && (

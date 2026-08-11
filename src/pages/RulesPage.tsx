@@ -7,28 +7,40 @@ import {
   type FormEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   createRuleSet,
   deleteRuleSet,
+  getRuleSet,
   getSettings,
   listAllNodes,
+  listRemoteRuleItems,
   listRuleSets,
-  listRules,
   removeRule,
+  refreshRemoteRuleSet,
+  renameRuleSet,
   reorderRuleSets,
   resetRuleSet,
+  resetBuiltinRuleSet,
   saveRule,
   setRuleEnabled,
   setRuleSetEnabled,
+  setRuleSetDnsStrategy,
+  setRuleSetStrategy,
   updateSettings,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n } from "../i18n";
 import type {
   ProxyNode,
   Rule,
+  RuleSetDnsStrategy,
+  RuleSetStrategy,
   RuleSetSummary,
+  RemoteRulePage,
   RuleTarget,
   RuleType,
 } from "../types";
@@ -42,6 +54,8 @@ const TYPE_OPTS: { value: RuleType; label: string }[] = [
   { value: "ip_cidr", label: "IP-CIDR" },
   { value: "process", label: "PROCESS" },
 ];
+
+const REMOTE_PAGE_SIZE = 100;
 
 interface Props {
   /** Hide page chrome when embedded under Settings. */
@@ -75,9 +89,22 @@ export function RulesPage({ embedded = false }: Props) {
   /** New rule-set modal (window.prompt is unreliable in Tauri WebView). */
   const [newSetOpen, setNewSetOpen] = useState(false);
   const [newSetName, setNewSetName] = useState("自定义规则集");
+  const [newSetKind, setNewSetKind] = useState<"local" | "remote">("local");
+  const [newSetUrl, setNewSetUrl] = useState("");
+  const [newSetTarget, setNewSetTarget] = useState<RouteFinal>("proxy");
   const [newSetBusy, setNewSetBusy] = useState(false);
+  const [renameSetTarget, setRenameSetTarget] = useState<RuleSetSummary | null>(null);
+  const [renameSetName, setRenameSetName] = useState("");
+  const [renameSetBusy, setRenameSetBusy] = useState(false);
   /** Row ⋮ menu open for this rule id */
   const [menuRuleId, setMenuRuleId] = useState<string | null>(null);
+  /** Rule-set card ⋮ menu open for this set id. */
+  const [menuSetId, setMenuSetId] = useState<string | null>(null);
+  const [remoteBusyIds, setRemoteBusyIds] = useState<Set<string>>(new Set());
+  const [remotePage, setRemotePage] = useState<RemoteRulePage | null>(null);
+  const [remotePageIndex, setRemotePageIndex] = useState(0);
+  const [remoteRulesLoading, setRemoteRulesLoading] = useState(false);
+  const [remoteRulesError, setRemoteRulesError] = useState<string | null>(null);
 
   /** Pointer drag (HTML5 DnD is unreliable in Tauri WebView). */
   const [draggingId, setDraggingId] = useState<string | null>(null);
@@ -97,7 +124,9 @@ export function RulesPage({ embedded = false }: Props) {
     setSets(list);
     const preferred =
       list.find((s) => s.enabled)?.id ?? list[0]?.id ?? null;
-    setViewSetId((prev) => prev ?? preferred);
+    setViewSetId((prev) =>
+      prev && list.some((set) => set.id === prev) ? prev : preferred,
+    );
     return { list, preferred };
   }, []);
 
@@ -135,16 +164,18 @@ export function RulesPage({ embedded = false }: Props) {
       setRules([]);
       return;
     }
-    const list = await listRules(setId);
-    setRules(list);
+    const set = await getRuleSet(setId);
+    setRules([...set.rules].sort((a, b) => a.ord - b.ord));
   }, []);
 
   const reload = useCallback(async () => {
     setError(null);
     try {
       await reloadRouteFinal();
-      const { preferred } = await reloadSets();
-      const sid = viewSetId ?? preferred;
+      const { list, preferred } = await reloadSets();
+      const sid = viewSetId && list.some((set) => set.id === viewSetId)
+        ? viewSetId
+        : preferred;
       if (sid) {
         setViewSetId(sid);
         await reloadRules(sid);
@@ -167,14 +198,18 @@ export function RulesPage({ embedded = false }: Props) {
   }, [viewSetId, reloadRules]);
 
   useEffect(() => {
-    if (!menuRuleId) return;
+    if (!menuRuleId && !menuSetId) return;
     function onDocPointerDown(e: PointerEvent) {
       const t = e.target as HTMLElement | null;
-      if (t?.closest?.("[data-rule-menu]")) return;
+      if (t?.closest?.("[data-rule-menu], [data-ruleset-menu]")) return;
       setMenuRuleId(null);
+      setMenuSetId(null);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setMenuRuleId(null);
+      if (e.key === "Escape") {
+        setMenuRuleId(null);
+        setMenuSetId(null);
+      }
     }
     document.addEventListener("pointerdown", onDocPointerDown, true);
     document.addEventListener("keydown", onKey);
@@ -182,7 +217,28 @@ export function RulesPage({ embedded = false }: Props) {
       document.removeEventListener("pointerdown", onDocPointerDown, true);
       document.removeEventListener("keydown", onKey);
     };
-  }, [menuRuleId]);
+  }, [menuRuleId, menuSetId]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ id: string; status: string; error?: string | null }>(
+      "remote-rule-set-status",
+      (event) => {
+        const { id, status, error: downloadError } = event.payload;
+        setRemoteBusyIds((current) => {
+          const next = new Set(current);
+          if (status === "downloading") next.add(id);
+          else next.delete(id);
+          return next;
+        });
+        if (status === "error" && downloadError) setError(downloadError);
+        void reloadSets();
+      },
+    ).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, [reloadSets]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -253,6 +309,55 @@ export function RulesPage({ embedded = false }: Props) {
 
   const viewSet = sets.find((s) => s.id === viewSetId);
 
+  useEffect(() => {
+    setRemotePageIndex(0);
+  }, [viewSetId]);
+
+  useEffect(() => {
+    if (!viewSet?.remote?.local_path) {
+      setRemotePage(null);
+      setRemoteRulesError(null);
+      setRemoteRulesLoading(false);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setRemoteRulesLoading(true);
+      setRemoteRulesError(null);
+      void listRemoteRuleItems(
+        viewSet.id,
+        remotePageIndex * REMOTE_PAGE_SIZE,
+        REMOTE_PAGE_SIZE,
+        filter,
+      )
+        .then((page) => {
+          if (cancelled) return;
+          if (page.total > 0 && page.items.length === 0 && remotePageIndex > 0) {
+            setRemotePageIndex(0);
+            return;
+          }
+          setRemotePage(page);
+          if (!filter.trim()) {
+            setSets((current) =>
+              current.map((set) =>
+                set.id === viewSet.id ? { ...set, rule_count: page.total } : set,
+              ),
+            );
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setRemoteRulesError(String(err));
+        })
+        .finally(() => {
+          if (!cancelled) setRemoteRulesLoading(false);
+        });
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [filter, remotePageIndex, viewSet?.id, viewSet?.remote?.local_path]);
+
   const targetOpts: { value: RuleTarget; label: string }[] = useMemo(
     () => [
       { value: "proxy", label: t("rules.targetProxy") },
@@ -306,7 +411,11 @@ export function RulesPage({ embedded = false }: Props) {
     setEditRule(null);
     setRuleType("domain_suffix");
     setPayload("");
-    setTarget("proxy");
+    setTarget(
+      viewSet?.strategy === "smart"
+        ? "proxy"
+        : (viewSet?.strategy ?? "proxy") as RuleTarget,
+    );
     setPinNodeId("");
     setNodeQuery("");
     setSmartInclude("");
@@ -333,11 +442,14 @@ export function RulesPage({ embedded = false }: Props) {
   async function onSave(e: FormEvent) {
     e.preventDefault();
     if (!viewSetId || !payload.trim()) return;
-    if (target === "node" && !pinNodeId.trim()) {
+    const effectiveTarget = viewSet?.strategy === "smart"
+      ? target
+      : (viewSet?.strategy ?? "proxy") as RuleTarget;
+    if (effectiveTarget === "node" && !pinNodeId.trim()) {
       setError(t("rules.needNode"));
       return;
     }
-    if (target === "smart" && smartKeywordOverlap.length > 0) {
+    if (effectiveTarget === "smart" && smartKeywordOverlap.length > 0) {
       setError(
         t("rules.smartKeywordConflict", { k: smartKeywordOverlap.join("、") }),
       );
@@ -351,12 +463,12 @@ export function RulesPage({ embedded = false }: Props) {
         id: editRule?.id ?? null,
         ruleType,
         payload: payload.trim(),
-        target,
+        target: effectiveTarget,
         ord: editRule?.ord ?? null,
         enabled,
-        nodeId: target === "node" ? pinNodeId : null,
-        smartInclude: target === "smart" ? parseKeywords(smartInclude) : null,
-        smartExclude: target === "smart" ? parseKeywords(smartExclude) : null,
+        nodeId: effectiveTarget === "node" ? pinNodeId : null,
+        smartInclude: effectiveTarget === "smart" ? parseKeywords(smartInclude) : null,
+        smartExclude: effectiveTarget === "smart" ? parseKeywords(smartExclude) : null,
       });
       setEditOpen(false);
       await reloadRules(viewSetId);
@@ -378,8 +490,59 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
+  async function onStrategyChange(strategy: RuleSetStrategy) {
+    if (!viewSetId || !viewSet || strategy === viewSet.strategy || busy) return;
+    if (
+      viewSet.strategy === "smart" &&
+      strategy !== "smart" &&
+      !confirm("切换为整组策略后，所有单项将统一使用该策略。继续吗？")
+    ) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setRuleSetStrategy(viewSetId, strategy);
+      await Promise.all([reloadSets(), reloadRules(viewSetId)]);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDnsStrategyChange(strategy: RuleSetDnsStrategy) {
+    if (!viewSetId || !viewSet || strategy === viewSet.dns_strategy || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setRuleSetDnsStrategy(viewSetId, strategy);
+      await Promise.all([reloadSets(), reloadRules(viewSetId)]);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onResetAllBuiltin() {
+    if (!confirm("完全恢复所有内置规则集？\n用户创建和导入的规则集不会被删除。")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await resetBuiltinRuleSet();
+      setViewSetId(null);
+      await reload();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function openNewSet() {
     setNewSetName("自定义规则集");
+    setNewSetKind("local");
+    setNewSetUrl("");
+    setNewSetTarget("proxy");
     setNewSetOpen(true);
     setError(null);
   }
@@ -394,12 +557,21 @@ export function RulesPage({ embedded = false }: Props) {
     setNewSetBusy(true);
     setError(null);
     try {
-      const set = await createRuleSet(name);
+      if (newSetKind === "remote" && !/^https?:\/\//i.test(newSetUrl.trim())) {
+        setError("请输入以 http:// 或 https:// 开头的远程规则集 URL");
+        return;
+      }
+      const set = await createRuleSet(
+        name,
+        newSetKind === "remote" ? newSetUrl.trim() : null,
+        newSetKind === "remote" ? newSetTarget : null,
+      );
       const list = await listRuleSets();
       setSets(list);
       setViewSetId(set.id);
       setRules([]);
       setNewSetOpen(false);
+      if (newSetKind === "remote") void onRefreshRemoteSet(set.id);
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
     } finally {
@@ -407,26 +579,70 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onDeleteSet() {
-    if (!viewSetId || viewSet?.builtin) return;
-    if (!confirm(`删除规则集「${viewSet?.name}」？`)) return;
+  async function onRefreshRemoteSet(id: string) {
+    setRemoteBusyIds((current) => new Set(current).add(id));
+    setError(null);
     try {
-      await deleteRuleSet(viewSetId);
-      setViewSetId(null);
+      await refreshRemoteRuleSet(id);
+      await reloadSets();
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+      await reloadSets().catch(() => undefined);
+    } finally {
+      setRemoteBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  function openRenameSet(target: RuleSetSummary) {
+    setMenuSetId(null);
+    setRenameSetTarget(target);
+    setRenameSetName(target.name);
+  }
+
+  async function onRenameSet(e: FormEvent) {
+    e.preventDefault();
+    if (!renameSetTarget || !renameSetName.trim() || renameSetBusy) return;
+    setRenameSetBusy(true);
+    setError(null);
+    try {
+      await renameRuleSet(renameSetTarget.id, renameSetName.trim());
+      await reloadSets();
+      setRenameSetTarget(null);
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+    } finally {
+      setRenameSetBusy(false);
+    }
+  }
+
+  async function onDeleteSet(target: RuleSetSummary | null | undefined = viewSet) {
+    if (!target || target.builtin || busy) return;
+    if (!confirm(`删除规则集「${target.name}」？`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteRuleSet(target.id);
+      if (viewSetId === target.id) setViewSetId(null);
       await reload();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
+    } finally {
+      setBusy(false);
     }
   }
 
   function isFactorySet(s: RuleSetSummary | undefined | null) {
     if (!s) return false;
-    return s.builtin || s.id === "general-rules" || s.id.startsWith("builtin-");
+    return s.id.startsWith("builtin-");
   }
 
-  async function onResetFactory() {
-    if (!viewSetId || !viewSet || !isFactorySet(viewSet)) return;
-    const name = viewSet.name;
+  async function onResetFactory(target: RuleSetSummary | null | undefined = viewSet) {
+    if (!target || !isFactorySet(target)) return;
+    const name = target.name;
     if (
       !confirm(
         `将「${name}」恢复为出厂配置文件？\n当前对该集的编辑会丢失。\n（重启程序不会自动重置，只会保留你的修改。）`,
@@ -435,8 +651,8 @@ export function RulesPage({ embedded = false }: Props) {
       return;
     }
     try {
-      await resetRuleSet(viewSetId);
-      await reloadRules(viewSetId);
+      await resetRuleSet(target.id);
+      if (viewSetId === target.id) await reloadRules(target.id);
       await reloadSets();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
@@ -594,10 +810,24 @@ export function RulesPage({ embedded = false }: Props) {
       </div>
 
       <div className="rules-layout">
-        <aside className="card ruleset-list">
-          <button type="button" className="secondary" onClick={openNewSet}>
-            {t("rules.newSet")}
-          </button>
+        <aside className="card ruleset-list rules-route-list">
+          <div className="ruleset-list-actions">
+            <GlassButton
+              icon="+"
+              onClick={openNewSet}
+              title={t("rules.newSetTitle")}
+            >
+              {t("rules.newSet")}
+            </GlassButton>
+            <GlassButton
+              icon="↺"
+              onClick={() => void onResetAllBuiltin()}
+              disabled={busy}
+              title="删除并重新加载所有内置规则，不影响用户规则"
+            >
+              重置
+            </GlassButton>
+          </div>
           <div className="ruleset-list-title">
             {t("rules.sets")}
             <span className="ruleset-list-hint">{t("rules.dragHint")}</span>
@@ -621,7 +851,9 @@ export function RulesPage({ embedded = false }: Props) {
               role="listitem"
               tabIndex={0}
               onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") setViewSetId(s.id);
+                if (e.key === "Enter" || e.key === " ") {
+                  setViewSetId(s.id);
+                }
                 if (e.key === "ArrowUp") {
                   e.preventDefault();
                   void moveSet(s.id, -1);
@@ -647,26 +879,112 @@ export function RulesPage({ embedded = false }: Props) {
                 </span>
                 <span className="ruleset-prio muted">{index + 1}</span>
                 <span className="ruleset-name">{s.name}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={s.enabled}
-                  className={`switch small ${s.enabled ? "on" : ""}`}
+                {s.remote &&
+                  (remoteBusyIds.has(s.id) ||
+                    s.remote.download_status === "downloading") && (
+                    <span
+                      className="lat-spinner ruleset-download-spinner"
+                      title="正在下载远程规则集"
+                      aria-label="正在下载远程规则集"
+                    />
+                  )}
+                <GlassSwitchControl
+                  checked={s.enabled}
+                  size="sm"
                   title={s.enabled ? "关闭规则集" : "启用规则集"}
                   onClick={(e) => {
                     e.stopPropagation();
-                    void onToggleSet(s.id, !s.enabled);
                   }}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                  onChange={(checked) => void onToggleSet(s.id, checked)}
+                />
+                <div className="rule-menu" data-ruleset-menu>
+                  <button
+                    type="button"
+                    className="rule-menu-trigger"
+                    aria-label={`${s.name} 操作`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuSetId === s.id}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuRuleId(null);
+                      setMenuSetId((id) => (id === s.id ? null : s.id));
+                    }}
+                  >
+                    ⋮
+                  </button>
+                  {menuSetId === s.id && (
+                    <div
+                      className={`rule-menu-pop ruleset-menu-pop${
+                        index < Math.ceil(sets.length / 2) ? " open-down" : ""
+                      }`}
+                      role="menu"
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="rule-menu-item"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openRenameSet(s);
+                        }}
+                      >
+                        重命名
+                      </button>
+                      {isFactorySet(s) ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="rule-menu-item"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMenuSetId(null);
+                            void onResetFactory(s);
+                          }}
+                        >
+                          重置
+                        </button>
+                      ) : (
+                        <>
+                          {s.remote && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              className="rule-menu-item"
+                              disabled={remoteBusyIds.has(s.id)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMenuSetId(null);
+                                void onRefreshRemoteSet(s.id);
+                              }}
+                            >
+                              更新
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="rule-menu-item danger"
+                            disabled={
+                              !!s.remote &&
+                              (remoteBusyIds.has(s.id) ||
+                                s.remote.download_status === "downloading")
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuSetId(null);
+                              void onDeleteSet(s);
+                            }}
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
-                {t("rules.rulesCount", { n: s.rule_count })}
-                {s.builtin ? ` · ${t("rules.builtin")}` : ""}
-                {s.enabled
-                  ? ` · ${t("rules.setOn")}`
-                  : ` · ${t("rules.setOff")}`}
+                {s.rule_count} 条 · {s.strategy} · dns {s.strategy === "block" ? "reject" : s.dns_strategy}
               </div>
             </div>
           ))}
@@ -674,50 +992,149 @@ export function RulesPage({ embedded = false }: Props) {
 
         <section className="rules-main">
           <div className="rules-toolbar card">
-            <div>
-              <strong>{viewSet?.name ?? "—"}</strong>
-              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
-                {viewSet?.enabled
-                  ? "已启用：合并进路由（保存规则时自动重启内核）"
-                  : "未启用：打开左侧开关即可参与路由（可多选）"}
+            <div className="header-actions rules-main-actions">
+              <div className="rules-policy-control">
+                <span className="muted rules-policy-label">路由</span>
+                <GlassSeg
+                  value={viewSet?.strategy ?? "proxy"}
+                  ariaLabel="整组路由策略"
+                  disabled={!viewSet || busy}
+                  onChange={(value) => void onStrategyChange(value as RuleSetStrategy)}
+                  options={[
+                    { value: "proxy", label: "Proxy" },
+                    { value: "direct", label: "Direct" },
+                    { value: "block", label: "Block" },
+                    ...(!viewSet?.remote ? [{ value: "smart", label: "智能" }] : []),
+                  ]}
+                />
               </div>
-            </div>
-            <div className="header-actions">
-              <button type="button" onClick={openCreate} disabled={!viewSetId}>
-                {t("rules.addRule")}
-              </button>
-              {isFactorySet(viewSet) && (
-                <button
-                  type="button"
-                  className="secondary"
-                  onClick={() => void onResetFactory()}
-                  title={t("rules.resetFactoryHint")}
+              {viewSet?.strategy !== "block" && <div className="rules-policy-control">
+                <span className="muted rules-policy-label">DNS</span>
+                <GlassSeg
+                  value={viewSet?.dns_strategy ?? "remote"}
+                  ariaLabel="整组 DNS 策略"
+                  disabled={!viewSet || busy}
+                  onChange={(value) => void onDnsStrategyChange(value as RuleSetDnsStrategy)}
+                  options={[
+                    { value: "local", label: "Local" },
+                    { value: "domestic", label: "国内" },
+                    { value: "remote", label: "远程" },
+                  ]}
+                />
+              </div>}
+              <div className="rules-toolbar-tail">
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="search rules-filter"
+                  placeholder="过滤规则…"
+                  value={filter}
+                  onChange={(e) => {
+                    setFilter(e.target.value);
+                    setRemotePageIndex(0);
+                  }}
+                />
+                <GlassButton
+                  variant="primary"
+                  icon="+"
+                  onClick={openCreate}
+                  disabled={!viewSetId || !!viewSet?.remote}
+                  title={t("rules.addRuleTitle")}
                 >
-                  {t("rules.resetFactory")}
-                </button>
-              )}
-              {viewSet &&
-                !viewSet.builtin &&
-                viewSet.id !== "general-rules" &&
-                !viewSet.id.startsWith("builtin-") && (
-                <button type="button" className="danger" onClick={() => void onDeleteSet()}>
-                  删除集
-                </button>
-              )}
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="search"
-                placeholder="过滤规则…"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-              />
+                  添加
+                </GlassButton>
+              </div>
             </div>
           </div>
 
           {loading ? (
             <div className="empty">加载中…</div>
+          ) : viewSet?.remote ? (
+            <>
+              <div className="card remote-rule-status">
+                <div className="muted remote-rule-url">{viewSet.remote.url}</div>
+                <div className="muted">
+                  {viewSet.remote.download_status === "downloading"
+                    ? "正在由 Satelite 下载并校验，完成后自动加载。"
+                    : viewSet.remote.download_status === "error"
+                      ? `下载失败：${viewSet.remote.download_error ?? "未知错误"}`
+                      : viewSet.remote.local_path
+                        ? `已解析 ${viewSet.rule_count} 条规则，内核仅加载本地缓存。`
+                        : "等待下载远程规则集。"}
+                </div>
+              </div>
+              {remoteRulesLoading && !remotePage ? (
+                <div className="empty muted">正在解析规则…</div>
+              ) : remoteRulesError ? (
+                <div className="empty card error">解析失败：{remoteRulesError}</div>
+              ) : remotePage && remotePage.items.length > 0 ? (
+                <div className="card table-wrap remote-rules-wrap">
+                  <table className="remote-rules-table">
+                    <colgroup>
+                      <col className="col-index" />
+                      <col className="col-kind" />
+                      <col />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>类型</th>
+                        <th>匹配条件</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {remotePage.items.map((item) => (
+                        <tr key={item.index}>
+                          <td className="rule-ord">{item.index}</td>
+                          <td className="rule-type"><code>{item.kind}</code></td>
+                          <td>
+                            {item.complex ? (
+                              <details className="remote-rule-details">
+                                <summary title={item.summary}>
+                                  {item.summary || "查看原始规则"}
+                                </summary>
+                                <pre>{item.raw}</pre>
+                                {item.raw_truncated && (
+                                  <div className="muted remote-rule-truncated">
+                                    内容过长，仅显示前 4,000 个字符
+                                  </div>
+                                )}
+                              </details>
+                            ) : (
+                              <div className="remote-rule-summary" title={item.summary}>
+                                {item.summary}
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div className="remote-rule-pagination">
+                    <span className="muted">
+                      {remotePage.offset + 1}–{remotePage.offset + remotePage.items.length} / {remotePage.total}
+                    </span>
+                    <GlassButton
+                      onClick={() => setRemotePageIndex((page) => Math.max(0, page - 1))}
+                      disabled={remotePageIndex === 0 || remoteRulesLoading}
+                    >
+                      上一页
+                    </GlassButton>
+                    <GlassButton
+                      onClick={() => setRemotePageIndex((page) => page + 1)}
+                      disabled={remotePage.offset + remotePage.items.length >= remotePage.total || remoteRulesLoading}
+                    >
+                      下一页
+                    </GlassButton>
+                  </div>
+                </div>
+              ) : viewSet.remote.local_path ? (
+                <div className="empty card muted">
+                  {filter.trim() ? "没有匹配的远程规则" : "远程规则集为空"}
+                </div>
+              ) : null}
+            </>
           ) : filtered.length === 0 ? (
             <div className="empty card muted">暂无规则</div>
           ) : (
@@ -757,6 +1174,13 @@ export function RulesPage({ embedded = false }: Props) {
                       </td>
                       <td className="rule-target">
                         {(() => {
+                          if (viewSet?.strategy !== "smart") {
+                            return (
+                              <span className={`pill target-${viewSet?.strategy ?? "proxy"}`}>
+                                {viewSet?.strategy ?? "proxy"}
+                              </span>
+                            );
+                          }
                           const lab = targetLabel(r);
                           return (
                             <span
@@ -778,15 +1202,12 @@ export function RulesPage({ embedded = false }: Props) {
                         className="rule-enabled-cell"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={r.enabled}
-                          className={`switch small ${r.enabled ? "on" : ""}`}
-                          onClick={() => void onToggle(r)}
-                        >
-                          <span className="switch-thumb" />
-                        </button>
+                        <GlassSwitchControl
+                          checked={r.enabled}
+                          size="sm"
+                          title={r.enabled ? "关闭规则" : "启用规则"}
+                          onChange={() => void onToggle(r)}
+                        />
                       </td>
                       <td
                         className="rule-actions-cell"
@@ -876,7 +1297,7 @@ export function RulesPage({ embedded = false }: Props) {
                   autoFocus
                 />
               </label>
-              <div className="field">
+              {viewSet?.strategy === "smart" && <div className="field">
                 <span>{t("rules.outbound")}</span>
                 <SolidSelect
                   value={target}
@@ -884,8 +1305,8 @@ export function RulesPage({ embedded = false }: Props) {
                   onChange={(v) => setTarget(v as RuleTarget)}
                   aria-label={t("rules.outbound")}
                 />
-              </div>
-              {target === "node" && (
+              </div>}
+              {viewSet?.strategy === "smart" && target === "node" && (
                 <div className="field rule-node-pick">
                   <span>{t("rules.pickNode")}</span>
                   {nodes.length === 0 ? (
@@ -936,7 +1357,7 @@ export function RulesPage({ embedded = false }: Props) {
                   )}
                 </div>
               )}
-              {target === "smart" && (
+              {viewSet?.strategy === "smart" && target === "smart" && (
                 <div className="field rule-smart-filters">
                   <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
                     {t("rules.smartHint")}
@@ -991,14 +1412,11 @@ export function RulesPage({ embedded = false }: Props) {
               )}
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>{t("rules.enabled")}</span>
-                <button
-                  type="button"
-                  role="switch"
-                  className={`switch ${enabled ? "on" : ""}`}
-                  onClick={() => setEnabled((v) => !v)}
-                >
-                  <span className="switch-thumb" />
-                </button>
+                <GlassSwitchControl
+                  checked={enabled}
+                  title={t("rules.enabled")}
+                  onChange={setEnabled}
+                />
               </label>
               <footer className="modal-footer">
                 <button type="button" className="secondary" onClick={() => setEditOpen(false)}>
@@ -1009,8 +1427,8 @@ export function RulesPage({ embedded = false }: Props) {
                   disabled={
                     busy ||
                     !payload.trim() ||
-                    (target === "node" && !pinNodeId.trim()) ||
-                    (target === "smart" &&
+                    (viewSet?.strategy === "smart" && target === "node" && !pinNodeId.trim()) ||
+                    (viewSet?.strategy === "smart" && target === "smart" &&
                       (nodes.length === 0 || smartKeywordOverlap.length > 0))
                   }
                 >
@@ -1040,6 +1458,18 @@ export function RulesPage({ embedded = false }: Props) {
             </header>
             <form className="modal-body" onSubmit={(e) => void onCreateSet(e)}>
               <label className="field">
+                <span>添加方式</span>
+                <GlassSeg
+                  value={newSetKind}
+                  ariaLabel="规则集添加方式"
+                  onChange={(value) => setNewSetKind(value as "local" | "remote")}
+                  options={[
+                    { value: "local", label: "本地规则" },
+                    { value: "remote", label: "远程 URL" },
+                  ]}
+                />
+              </label>
+              <label className="field">
                 <span>名称</span>
                 <input
                   autoCapitalize="off"
@@ -1052,8 +1482,38 @@ export function RulesPage({ embedded = false }: Props) {
                   maxLength={64}
                 />
               </label>
+              {newSetKind === "remote" && (
+                <>
+                  <label className="field">
+                    <span>远程 URL</span>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={newSetUrl}
+                      onChange={(e) => setNewSetUrl(e.target.value)}
+                      placeholder="https://example.com/rules.json"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>整组路由策略</span>
+                    <GlassSeg
+                      value={newSetTarget}
+                      ariaLabel="整组路由策略"
+                      onChange={(value) => setNewSetTarget(value as RouteFinal)}
+                      options={[
+                        { value: "proxy", label: "Proxy" },
+                        { value: "direct", label: "Direct" },
+                        { value: "block", label: "Block" },
+                      ]}
+                    />
+                  </label>
+                </>
+              )}
               <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                创建后默认为启用；可在左侧开关控制是否参与路由。
+                {newSetKind === "remote"
+                  ? "以 sing-box source 格式加载，每 1 小时更新；路由与 DNS 均按整组策略生成。"
+                  : "创建后默认为启用；可在左侧开关控制是否参与路由。"}
               </p>
               <footer className="modal-footer">
                 <button
@@ -1064,8 +1524,66 @@ export function RulesPage({ embedded = false }: Props) {
                 >
                   取消
                 </button>
-                <button type="submit" disabled={newSetBusy || !newSetName.trim()}>
+                <button
+                  type="submit"
+                  disabled={
+                    newSetBusy ||
+                    !newSetName.trim() ||
+                    (newSetKind === "remote" && !newSetUrl.trim())
+                  }
+                >
                   {newSetBusy ? "创建中…" : "创建"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {renameSetTarget && (
+        <div
+          className="modal-backdrop"
+          onClick={() => !renameSetBusy && setRenameSetTarget(null)}
+        >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h2>重命名规则集</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                disabled={renameSetBusy}
+                onClick={() => setRenameSetTarget(null)}
+              >
+                ×
+              </button>
+            </header>
+            <form className="modal-body" onSubmit={(e) => void onRenameSet(e)}>
+              <label className="field">
+                <span>名称</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={renameSetName}
+                  onChange={(e) => setRenameSetName(e.target.value)}
+                  autoFocus
+                  maxLength={64}
+                />
+              </label>
+              <footer className="modal-footer">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={renameSetBusy}
+                  onClick={() => setRenameSetTarget(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={renameSetBusy || !renameSetName.trim()}
+                >
+                  {renameSetBusy ? "保存中…" : "保存"}
                 </button>
               </footer>
             </form>

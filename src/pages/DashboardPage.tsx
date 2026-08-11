@@ -193,6 +193,9 @@ export function DashboardPage({
   type CaptureMode = "off" | "system" | "tun";
 
   function resolveCaptureMode(p: ProxyStatus | null): CaptureMode {
+    if (p?.capture_mode === "system" || p?.capture_mode === "tun") {
+      return p.capture_mode;
+    }
     if (p?.tun_enabled) return "tun";
     if (p?.system_proxy) return "system";
     return "off";
@@ -220,6 +223,7 @@ export function DashboardPage({
           ...prevProxy,
           system_proxy: mode === "system",
           tun_enabled: mode === "tun",
+          capture_mode: mode,
         });
       }
     });
@@ -643,8 +647,9 @@ export function DashboardPage({
             <span className="dash-inline-label">{t("dashboard.routing")}</span>
             <GlassSeg
               value={outboundMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.routing")}
-              disabled={controlsBusy}
+              disabled={controlsBusy || !statusReady}
               onChange={(v) => void onSetMode(v as OutboundMode)}
               options={[
                 { value: "rule", label: t("dashboard.modeRule") },
@@ -673,8 +678,9 @@ export function DashboardPage({
             </span>
             <GlassSeg
               value={autoSelectMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.autoSelect")}
-              disabled={modeBusy}
+              disabled={modeBusy || !statusReady}
               disabledValues={
                 new Set(
                   [
@@ -725,7 +731,9 @@ export function DashboardPage({
             </span>
             <GlassSeg
               value={captureMode}
+              ready={statusReady}
               ariaLabel={t("dashboard.capture")}
+              disabled={!statusReady}
               disabledValues={
                 new Set(
                   [
@@ -810,23 +818,23 @@ export function DashboardPage({
           </header>
           <div className="instrument-traffic">
             <div>
-              <span className="tr-dir">↓</span>{" "}
+              <span className="tr-dir down">↓</span>{" "}
               {fmtSpeed(proxy?.download_speed ?? 0)}
             </div>
             <div>
-              <span className="tr-dir">↑</span>{" "}
+              <span className="tr-dir up">↑</span>{" "}
               {fmtSpeed(proxy?.upload_speed ?? 0)}
             </div>
           </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">Σ ↓</span>
+              <span className="kv-k down">Σ ↓</span>
               <span className="kv-v">
                 {fmtBytes(proxy?.download_total ?? 0)}
               </span>
             </div>
             <div>
-              <span className="kv-k">Σ ↑</span>
+              <span className="kv-k up">Σ ↑</span>
               <span className="kv-v">{fmtBytes(proxy?.upload_total ?? 0)}</span>
             </div>
           </div>

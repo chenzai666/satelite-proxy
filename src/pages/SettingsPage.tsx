@@ -8,16 +8,19 @@ import {
   restartProxy,
   updateSettings,
 } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n, type Locale } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
+import { HostsPage } from "./HostsPage";
 
-type SettingsTab = "app" | "rules" | "dns" | "dns_rules" | "core";
+type SettingsTab = "app" | "rules" | "dns" | "hosts" | "core";
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
@@ -54,9 +57,9 @@ export function SettingsPage() {
           hint: t("settings.hintDns"),
         },
         {
-          id: "dns_rules" as const,
-          label: t("settings.tabDnsRules"),
-          hint: t("settings.hintDnsRules"),
+          id: "hosts" as const,
+          label: t("settings.tabHosts"),
+          hint: t("settings.hintHosts"),
         },
         {
           id: "core" as const,
@@ -224,7 +227,7 @@ export function SettingsPage() {
         options={tabs.map((x) => ({ value: x.id, label: x.label }))}
       />
 
-      {error && tab !== "rules" && tab !== "dns" && tab !== "dns_rules" && (
+      {error && tab !== "rules" && tab !== "dns" && tab !== "hosts" && (
         <div className="banner error">{error}</div>
       )}
 
@@ -236,9 +239,7 @@ export function SettingsPage() {
         {tab === "rules" && <RulesPage embedded />}
 
         {tab === "dns" && <DnsPage embedded section="settings" />}
-
-        {tab === "dns_rules" && <DnsPage embedded section="rules" />}
-
+        {tab === "hosts" && <HostsPage embedded />}
       {tab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">
@@ -377,13 +378,15 @@ export function SettingsPage() {
                 <strong>{t("settings.networkOptions")}</strong>
                 <div className="muted">{t("settings.networkSaveNote")}</div>
               </div>
-              <button
-                type="button"
+              <GlassButton
+                variant="primary"
+                icon="↻"
                 disabled={busy}
                 onClick={() => void onSaveNetwork()}
+                title={t("settings.saveRestartCore")}
               >
                 {busy ? t("common.saving") : t("settings.saveRestartCore")}
-              </button>
+              </GlassButton>
             </div>
             <label className="field">
               <span>{t("settings.mixedPort")}</span>
@@ -465,8 +468,9 @@ export function SettingsPage() {
                   <span className="muted mono">{core?.platform ?? "…"}</span>
                 </div>
               </div>
-              <button
-                type="button"
+              <GlassButton
+                variant="primary"
+                icon="⤓"
                 disabled={coreBusy}
                 onClick={() => void onDownloadCore()}
               >
@@ -477,7 +481,7 @@ export function SettingsPage() {
                       ? t("settings.coreUpdate")
                       : t("settings.coreRedownload")
                     : t("settings.coreDownload")}
-              </button>
+              </GlassButton>
             </div>
 
             <div className="core-meta">
@@ -547,16 +551,12 @@ function AppToggle({
         <div className="settings-app-title">{title}</div>
         <div className="settings-app-desc muted">{desc}</div>
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        className={`switch ${checked ? "on" : ""}`}
+      <GlassSwitchControl
+        checked={checked}
+        title={title}
         disabled={disabled}
-        onClick={() => onChange(!checked)}
-      >
-        <span className="switch-thumb" />
-      </button>
+        onChange={onChange}
+      />
     </div>
   );
 }

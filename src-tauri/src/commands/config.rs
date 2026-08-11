@@ -79,6 +79,11 @@ pub fn update_settings(
             }
             if let Some(t) = tun_enabled {
                 store.settings.tun_enabled = t;
+                if t {
+                    store.settings.capture_mode = crate::domain::CaptureMode::Tun;
+                } else if store.settings.capture_mode == crate::domain::CaptureMode::Tun {
+                    store.settings.capture_mode = crate::domain::CaptureMode::Off;
+                }
             }
             if let Some(s) = tun_stack {
                 let s = s.trim().to_ascii_lowercase();
@@ -289,12 +294,13 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
     let secret = generate_api_secret();
 
-    let (nodes, settings, rules, dns) = state
+    let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
                 store.settings.clone(),
                 store.enabled_rules_sorted(),
+                store.enabled_rule_sets(),
                 store.dns.clone(),
             ))
         })
@@ -309,6 +315,7 @@ pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateCon
             current_node_id: settings.current_node_id.clone(),
             log_level: "info".into(),
             rules,
+            rule_sets: remote_rule_sets,
             tun_enabled: settings.tun_enabled,
             tun_stack: settings.tun_stack.clone(),
             dns,
@@ -360,12 +367,13 @@ pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<Strin
 
 #[tauri::command]
 pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
-    let (nodes, settings, rules, dns) = state
+    let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
                 store.settings.clone(),
                 store.enabled_rules_sorted(),
+                store.enabled_rule_sets(),
                 store.dns.clone(),
             ))
         })
@@ -385,6 +393,7 @@ pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConf
             current_node_id: settings.current_node_id.clone(),
             log_level: "info".into(),
             rules,
+            rule_sets: remote_rule_sets,
             tun_enabled: settings.tun_enabled,
             tun_stack: settings.tun_stack.clone(),
             dns,

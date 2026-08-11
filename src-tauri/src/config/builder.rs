@@ -2,8 +2,8 @@
 
 use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
 use crate::domain::{
-    AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType,
-    TlsConfig, Transport,
+    AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet,
+    RuleSetStrategy, RuleTarget, RuleType, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -17,6 +17,8 @@ pub struct BuildOptions {
     pub current_node_id: Option<String>,
     pub log_level: String,
     pub rules: Vec<Rule>,
+    /// Enabled unified sets in match-priority order.
+    pub rule_sets: Vec<RuleSet>,
     /// Enable TUN inbound (global capture).
     pub tun_enabled: bool,
     /// system | gvisor | mixed
@@ -91,6 +93,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     }
 
     let selected_tag = resolve_selected_tag(nodes, &tags, opts.current_node_id.as_deref());
+    let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
 
     let mut outbounds = Vec::new();
     // Main group: selector (manual / app smart) vs urltest (kernel auto).
@@ -122,7 +125,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         }));
     }
     // Per-rule smart selectors (keyword-filtered node pools).
-    outbounds.extend(build_smart_rule_selectors(&opts.rules, nodes, &tags));
+    outbounds.extend(build_smart_rule_selectors(&effective_rules, nodes, &tags));
     outbounds.extend(node_outbounds);
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
@@ -139,7 +142,14 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
 
     // DNS `final` is configured independently on the DNS page (local/domestic/
     // remote) and no longer follows the routing `final`.
-    let built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &opts.rules);
+    let mut built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &effective_rules);
+    let (rule_set_defs, grouped_route_rules, grouped_dns_rules) =
+        build_grouped_rule_sets(&opts.rule_sets, nodes, &tags);
+    if let Some(dns_rules) = built_dns.dns.get_mut("rules").and_then(Value::as_array_mut) {
+        for rule in grouped_dns_rules.into_iter().rev() {
+            dns_rules.insert(0, rule);
+        }
+    }
 
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
@@ -151,7 +161,11 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     // domain directly to the outbound without performing a DNS query.
     route_rules.extend(build_hosts_route_rules(&opts.dns.effective_hosts()));
     if apply_user_rules {
-        route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
+        if opts.rule_sets.is_empty() {
+            route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
+        } else {
+            route_rules.extend(grouped_route_rules);
+        }
     }
 
     let mut inbounds = vec![json!({
@@ -186,6 +200,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         "inbounds": inbounds,
         "outbounds": outbounds,
         "route": {
+            "rule_set": rule_set_defs,
             "rules": route_rules,
             "final": route_final,
             "auto_detect_interface": true,
@@ -209,6 +224,169 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         outbound_tags: tags,
         selected_tag,
     })
+}
+
+fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
+    if sets.is_empty() {
+        return fallback.to_vec();
+    }
+    let mut out = Vec::new();
+    let mut global_ord = 10;
+    for set in sets
+        .iter()
+        .filter(|set| set.enabled && set.remote.is_none())
+    {
+        let mut rules = set.rules.clone();
+        rules.sort_by_key(|rule| rule.ord);
+        for mut rule in rules {
+            if let Some(target) = set.strategy.route_target() {
+                rule.target = target;
+                rule.node_id = None;
+                rule.node_name = None;
+                rule.smart_include.clear();
+                rule.smart_exclude.clear();
+            }
+            rule.ord = global_ord;
+            global_ord += 10;
+            out.push(rule);
+        }
+    }
+    out
+}
+
+/// Register every enabled logical set as a sing-box rule-set, then reference
+/// its tag once from route and once from DNS. Smart route sets are the only
+/// exception: their per-item destinations are partitioned into internal child
+/// rule-sets, while DNS still references the single logical parent tag.
+fn build_grouped_rule_sets(
+    sets: &[RuleSet],
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    let mut definitions = Vec::new();
+    let mut route_rules = Vec::new();
+    let mut dns_rules = Vec::new();
+
+    for set in sets.iter().filter(|set| set.enabled) {
+        if let Some(remote) = &set.remote {
+            let Some(path) = remote
+                .local_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
+                continue;
+            };
+            if !std::path::Path::new(path).is_file() {
+                continue;
+            }
+            definitions.push(json!({
+                "tag": set.id,
+                "type": "local",
+                "format": remote.format,
+                "path": path,
+            }));
+        } else {
+            definitions.push(build_inline_rule_set(&set.id, &set.rules));
+        }
+
+        match set.strategy {
+            RuleSetStrategy::Block => {
+                route_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
+            }
+            RuleSetStrategy::Direct | RuleSetStrategy::Proxy => {
+                route_rules.push(json!({
+                    "rule_set": [set.id],
+                    "action": "route",
+                    "outbound": if set.strategy == RuleSetStrategy::Direct { "direct" } else { "proxy" },
+                }));
+            }
+            RuleSetStrategy::Smart if set.remote.is_none() => {
+                let mut groups: Vec<(String, Vec<Rule>)> = Vec::new();
+                let mut sorted: Vec<Rule> = set
+                    .rules
+                    .iter()
+                    .filter(|rule| rule.enabled)
+                    .cloned()
+                    .collect();
+                sorted.sort_by_key(|rule| rule.ord);
+                for rule in sorted {
+                    let key = if rule.target == RuleTarget::Block {
+                        "reject".to_string()
+                    } else {
+                        format!("route:{}", resolve_rule_outbound(&rule, nodes, tags))
+                    };
+                    if let Some((_, rules)) = groups.iter_mut().find(|(group, _)| group == &key) {
+                        rules.push(rule);
+                    } else {
+                        groups.push((key, vec![rule]));
+                    }
+                }
+                for (index, (key, rules)) in groups.into_iter().enumerate() {
+                    let tag = format!("{}-route-{index}", set.id);
+                    definitions.push(build_inline_rule_set(&tag, &rules));
+                    if key == "reject" {
+                        route_rules.push(json!({ "rule_set": [tag], "action": "reject" }));
+                    } else {
+                        route_rules.push(json!({
+                            "rule_set": [tag],
+                            "action": "route",
+                            "outbound": key.trim_start_matches("route:"),
+                        }));
+                    }
+                }
+            }
+            RuleSetStrategy::Smart => {}
+        }
+
+        if set.strategy == RuleSetStrategy::Block {
+            dns_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
+        } else {
+            dns_rules.push(json!({
+                "rule_set": [set.id],
+                "action": "route",
+                "server": set.dns_strategy.server_tag(),
+            }));
+        }
+    }
+
+    (definitions, route_rules, dns_rules)
+}
+
+fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
+    let mut buckets: [Vec<String>; 5] = Default::default();
+    for rule in rules.iter().filter(|rule| rule.enabled) {
+        let payload = rule.payload.trim();
+        if payload.is_empty() || rule.rule_type == RuleType::Geoip {
+            continue;
+        }
+        let index = match rule.rule_type {
+            RuleType::Domain => 0,
+            RuleType::DomainSuffix => 1,
+            RuleType::DomainKeyword => 2,
+            RuleType::IpCidr => 3,
+            RuleType::Process => 4,
+            RuleType::Geoip => continue,
+        };
+        let normalized = match rule.rule_type {
+            RuleType::Domain | RuleType::DomainSuffix => payload.trim_start_matches(['*', '.']),
+            _ => payload,
+        };
+        buckets[index].push(normalized.to_string());
+    }
+    let keys = [
+        "domain",
+        "domain_suffix",
+        "domain_keyword",
+        "ip_cidr",
+        "process_name",
+    ];
+    let headless: Vec<Value> = keys
+        .iter()
+        .zip(buckets)
+        .filter_map(|(key, values)| (!values.is_empty()).then(|| json!({ (*key): values })))
+        .collect();
+    json!({ "type": "inline", "tag": tag, "rules": headless })
 }
 
 fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
@@ -251,8 +429,15 @@ fn build_route_rules(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Ve
                 RuleType::Process => json!({ "process_name": [payload] }),
                 RuleType::Geoip => return None,
             };
-            rule.as_object_mut()?
-                .insert("outbound".into(), json!(outbound));
+            if r.target == RuleTarget::Block {
+                rule.as_object_mut()?
+                    .insert("action".into(), json!("reject"));
+            } else {
+                rule.as_object_mut()?
+                    .insert("action".into(), json!("route"));
+                rule.as_object_mut()?
+                    .insert("outbound".into(), json!(outbound));
+            }
             Some(rule)
         })
         .collect()
@@ -754,6 +939,117 @@ mod tests {
     }
 
     #[test]
+    fn remote_block_rejects_route_and_dns_as_a_whole_set() {
+        let set = RuleSet::new_remote(
+            "AdBlock",
+            "https://example.com/adblock.json",
+            RuleTarget::Block,
+        );
+        let mut set = set;
+        let local_path = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        set.remote.as_mut().unwrap().local_path = Some(local_path.clone());
+        let tag = set.id.clone();
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+
+        assert_eq!(definitions[0]["tag"], tag);
+        assert_eq!(definitions[0]["type"], "local");
+        assert_eq!(definitions[0]["format"], "source");
+        assert_eq!(definitions[0]["path"], local_path);
+        assert!(definitions[0].get("url").is_none());
+        assert_eq!(
+            routes[0],
+            json!({ "rule_set": [tag.clone()], "action": "reject" })
+        );
+        assert_eq!(dns[0], json!({ "rule_set": [tag], "action": "reject" }));
+    }
+
+    #[test]
+    fn remote_proxy_and_direct_sets_generate_group_route_and_dns_rules() {
+        for (target, outbound, dns_strategy, dns_server) in [
+            (
+                RuleTarget::Proxy,
+                "proxy",
+                crate::domain::RuleSetDnsStrategy::Local,
+                "dns-local",
+            ),
+            (
+                RuleTarget::Direct,
+                "direct",
+                crate::domain::RuleSetDnsStrategy::Domestic,
+                "dns-cn",
+            ),
+        ] {
+            let mut set = RuleSet::new_remote("Remote", "https://example.com/rules.json", target);
+            set.remote.as_mut().unwrap().local_path = Some(
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            set.dns_strategy = dns_strategy;
+            let tag = set.id.clone();
+            let (_, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+            assert_eq!(
+                routes[0],
+                json!({ "rule_set": [tag.clone()], "action": "route", "outbound": outbound })
+            );
+            assert_eq!(
+                dns[0],
+                json!({ "rule_set": [tag], "action": "route", "server": dns_server })
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_set_strategy_overrides_legacy_item_targets_for_route_and_dns() {
+        let mut set = RuleSet::new_user(
+            "整组代理",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "example.com".into(),
+                    RuleTarget::Direct,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "example.org".into(),
+                    RuleTarget::Block,
+                    20,
+                ),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        set.dns_strategy = crate::domain::RuleSetDnsStrategy::Local;
+
+        let effective = effective_route_rules(&[set.clone()], &[]);
+        assert_eq!(effective[0].target, RuleTarget::Proxy);
+        assert!(effective
+            .iter()
+            .all(|rule| rule.target == RuleTarget::Proxy));
+
+        let tag = set.id.clone();
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0]["type"], "inline");
+        assert_eq!(
+            definitions[0]["rules"][0]["domain_suffix"],
+            json!(["example.com", "example.org"])
+        );
+        assert_eq!(
+            routes,
+            vec![json!({ "rule_set": [tag.clone()], "action": "route", "outbound": "proxy" })]
+        );
+        assert_eq!(
+            dns,
+            vec![json!({ "rule_set": [tag], "action": "route", "server": "dns-local" })]
+        );
+    }
+
+    #[test]
     fn builds_selector() {
         let nodes = vec![sample_ss()];
         let built = build_singbox_config(
@@ -765,6 +1061,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -822,6 +1119,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns,
@@ -855,6 +1153,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -893,6 +1192,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: true,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -975,6 +1275,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -1001,6 +1302,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -1028,6 +1330,7 @@ mod tests {
                     current_node_id: None,
                     log_level: "info".into(),
                     rules: vec![],
+                    rule_sets: vec![],
                     tun_enabled: false,
                     tun_stack: "mixed".into(),
                     dns: DnsSettings::default(),
@@ -1035,7 +1338,7 @@ mod tests {
                     route_final: rf.into(),
                     auto_select: crate::domain::AutoSelectMode::Off,
                     probe_url: "https://www.gstatic.com/generate_204".into(),
-                find_process: true,
+                    find_process: true,
                 },
             )
             .unwrap();
@@ -1061,6 +1364,7 @@ mod tests {
                     RuleTarget::Direct,
                     10,
                 )],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -1100,6 +1404,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![rule],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -1140,6 +1445,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![rule],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),
@@ -1184,6 +1490,7 @@ mod tests {
                 current_node_id: None,
                 log_level: "info".into(),
                 rules: vec![rule.clone()],
+                rule_sets: vec![],
                 tun_enabled: false,
                 tun_stack: "mixed".into(),
                 dns: DnsSettings::default(),

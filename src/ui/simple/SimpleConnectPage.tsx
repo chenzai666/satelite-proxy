@@ -271,11 +271,11 @@ export function SimpleConnectPage({ onGoServers }: Props) {
 
       <div className="simple-glass-bar simple-info-traffic">
         <span className="simple-info-traffic-cell">
-          <span className="muted">↑</span>
+          <span className="tr-dir up">↑</span>
           <strong className="mono">{fmtSpeed(up)}</strong>
         </span>
         <span className="simple-info-traffic-cell">
-          <span className="muted">↓</span>
+          <span className="tr-dir down">↓</span>
           <strong className="mono">{fmtSpeed(down)}</strong>
         </span>
         <span className="simple-info-traffic-cell">

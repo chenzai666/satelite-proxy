@@ -11,6 +11,8 @@ import type {
   ProxyStatus,
   Rule,
   RuleSet,
+  RuleSetStrategy,
+  RuleSetDnsStrategy,
   RuleSetSummary,
   RuleTarget,
   RuleType,
@@ -329,8 +331,46 @@ export function setRuleSetEnabled(id: string, enabled: boolean) {
   return invoke<void>("set_rule_set_enabled", { id, enabled });
 }
 
-export function createRuleSet(name: string) {
-  return invoke<RuleSet>("create_rule_set", { name });
+export function setRuleSetStrategy(id: string, strategy: RuleSetStrategy) {
+  return invoke<RuleSet>("set_rule_set_strategy", { id, strategy });
+}
+
+export function setRuleSetDnsStrategy(id: string, strategy: RuleSetDnsStrategy) {
+  return invoke<RuleSet>("set_rule_set_dns_strategy", { id, strategy });
+}
+
+export function createRuleSet(
+  name: string,
+  remoteUrl?: string | null,
+  target?: "proxy" | "direct" | "block" | null,
+) {
+  return invoke<RuleSet>("create_rule_set", {
+    name,
+    remoteUrl: remoteUrl ?? null,
+    target: target ?? null,
+  });
+}
+
+export function refreshRemoteRuleSet(id: string) {
+  return invoke<RuleSet>("refresh_remote_rule_set", { id });
+}
+
+export function renameRuleSet(id: string, name: string) {
+  return invoke<RuleSet>("rename_rule_set", { id, name });
+}
+
+export function listRemoteRuleItems(
+  id: string,
+  offset: number,
+  limit: number,
+  query?: string,
+) {
+  return invoke<import("./types").RemoteRulePage>("list_remote_rule_items", {
+    id,
+    offset,
+    limit,
+    query: query?.trim() || null,
+  });
 }
 
 /** First id = highest match priority. Restarts core when running. */
@@ -342,7 +382,7 @@ export function deleteRuleSet(id: string) {
   return invoke<void>("delete_rule_set", { id });
 }
 
-/** Reset one factory set (builtin-* or general-rules) from resources. */
+/** Reset one builtin factory set from resources. */
 export function resetRuleSet(id: string) {
   return invoke<RuleSet>("reset_rule_set", { id });
 }

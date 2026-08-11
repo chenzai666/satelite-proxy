@@ -23,7 +23,7 @@ pub enum AppError {
     #[error("io error: {0}")]
     Io(String),
 
-    #[error("subscription not found: {0}")]
+    #[error("item not found: {0}")]
     NotFound(String),
 
     #[error("storage error: {0}")]

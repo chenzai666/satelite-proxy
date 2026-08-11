@@ -21,6 +21,8 @@ pub struct ProxyStatus {
     pub system_proxy: bool,
     /// Whether TUN is enabled in settings (applied on next start / restart).
     pub tun_enabled: bool,
+    /// Persisted desired capture mode: off | system | tun.
+    pub capture_mode: String,
     /// rule | global | direct
     pub outbound_mode: String,
     pub mixed_port: u16,
@@ -159,6 +161,7 @@ impl Runtime {
             core_state: self.core.state(),
             system_proxy: self.system_proxy_on,
             tun_enabled: store.settings.tun_enabled,
+            capture_mode: store.settings.capture_mode.as_str().to_string(),
             outbound_mode: store.settings.outbound_mode.as_str().to_string(),
             mixed_port: store.settings.mixed_port,
             api_port: store.settings.api_port,
@@ -470,6 +473,9 @@ impl Runtime {
             ));
         }
 
+        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available(store.settings.api_port, "Clash API")?;
+
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
@@ -483,6 +489,7 @@ impl Runtime {
                 current_node_id: store.settings.current_node_id.clone(),
                 log_level: "info".into(),
                 rules: store.enabled_rules_sorted(),
+                rule_sets: store.enabled_rule_sets(),
                 tun_enabled: store.settings.tun_enabled,
                 tun_stack: store.settings.tun_stack.clone(),
                 dns: store.dns.clone(),
@@ -519,9 +526,14 @@ impl Runtime {
         let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
         // TUN start can take a few seconds (utun + routes). Health uses a short
         // per-try timeout so we do not block the runtime lock for minutes.
-        let attempts = if elevated { 50 } else { 30 }; // ~10s / ~6s
+        let max_wait = if elevated {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(6)
+        };
+        let wait_started = Instant::now();
         let mut ok = false;
-        for _ in 0..attempts {
+        while wait_started.elapsed() < max_wait {
             if api.health_ok() {
                 ok = true;
                 break;
@@ -654,6 +666,16 @@ impl Runtime {
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
     }
+}
+
+fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
+    std::net::TcpListener::bind(("127.0.0.1", port))
+        .map(|listener| drop(listener))
+        .map_err(|e| {
+            AppError::Core(format!(
+                "{label} 端口 127.0.0.1:{port} 已被其他程序占用，请关闭冲突程序或修改端口：{e}"
+            ))
+        })
 }
 
 impl Default for Runtime {

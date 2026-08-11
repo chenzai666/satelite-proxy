@@ -6,14 +6,14 @@ export type NavKey =
   | "logs"
   | "settings";
 
-export type DnsMode = "local" | "smart_local" | "smart_cn";
 export type DnsFinalStrategy = "local" | "domestic" | "remote";
 export type DomainMatcher = "domain" | "domain_suffix" | "domain_keyword";
 
 export type DnsAction =
   | { kind: "local" }
   | { kind: "domestic" }
-  | { kind: "remote" };
+  | { kind: "remote" }
+  | { kind: "block" };
 
 export interface DnsRule {
   id: string;
@@ -59,16 +59,16 @@ export interface DnsRuleSet {
 
 export interface DnsSettings {
   enabled: boolean;
-  mode: DnsMode;
   rules_enabled: boolean;
   rules: DnsRule[];
   fake_ip: FakeIpConfig;
   hosts: HostsConfig;
   rule_sets: DnsRuleSet[];
+  unified_rules: boolean;
   hijack: boolean;
   cache: boolean;
   leak_protect: boolean;
-  /** DNS final (兜底解析): local | domestic | remote */
+  /** Default resolver for domains unmatched by a rule set. */
   dns_final: DnsFinalStrategy;
 }
 
@@ -182,6 +182,8 @@ export interface AppSettings {
   mix_mode?: boolean;
   /** sing-box TUN inbound (global capture). */
   tun_enabled?: boolean;
+  /** Persisted traffic capture preference. */
+  capture_mode?: "off" | "system" | "tun";
   /** system | gvisor | mixed */
   tun_stack?: string;
   /** rule | global | direct */
@@ -260,6 +262,8 @@ export interface ProxyStatus {
   core_state: CoreState;
   system_proxy: boolean;
   tun_enabled: boolean;
+  /** Persisted desired traffic capture mode. */
+  capture_mode?: "off" | "system" | "tun";
   /** rule | global | direct */
   outbound_mode: string;
   mixed_port: number;
@@ -296,6 +300,42 @@ export interface RuleSetSummary {
   rule_count: number;
   /** Multiple sets can be enabled and merged for routing. */
   enabled: boolean;
+  ownership: "builtin" | "user" | "system";
+  strategy: RuleSetStrategy;
+  dns_strategy: RuleSetDnsStrategy;
+  remote?: RemoteRuleSetConfig | null;
+}
+
+export type RuleSetStrategy = "proxy" | "direct" | "block" | "smart";
+export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
+
+export interface RemoteRuleSetConfig {
+  url: string;
+  format: "source" | string;
+  update_interval: string;
+  target: "proxy" | "direct" | "block";
+  local_path?: string | null;
+  download_status?: "idle" | "downloading" | "ready" | "error" | string;
+  download_error?: string | null;
+  last_update?: number | null;
+  last_attempt?: number | null;
+  rule_count?: number | null;
+}
+
+export interface RemoteRuleItem {
+  index: number;
+  kind: string;
+  summary: string;
+  raw: string;
+  raw_truncated: boolean;
+  complex: boolean;
+}
+
+export interface RemoteRulePage {
+  total: number;
+  offset: number;
+  limit: number;
+  items: RemoteRuleItem[];
 }
 
 export interface RuleSet {
@@ -303,6 +343,11 @@ export interface RuleSet {
   name: string;
   builtin: boolean;
   enabled: boolean;
+  ownership: "builtin" | "user" | "system";
+  strategy: RuleSetStrategy;
+  dns_strategy: RuleSetDnsStrategy;
+  remote?: RemoteRuleSetConfig | null;
+  dns_rules: DnsRule[];
   rules: Rule[];
 }
 

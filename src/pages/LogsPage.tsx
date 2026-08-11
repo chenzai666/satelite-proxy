@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearAppLogs, listAppLogs, type AppLogEntry, type AppLogLevel } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
+import { GlassSwitch } from "../components/GlassSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 
@@ -94,20 +96,29 @@ export function LogsPage() {
           <span className="muted mono" style={{ fontSize: 12 }}>
             {countLabel}
           </span>
-          <button
-            type="button"
-            className={`secondary ${autoScroll ? "active-soft" : ""}`}
-            onClick={() => setAutoScroll((v) => !v)}
+          <GlassSwitch
+            checked={autoScroll}
+            onChange={setAutoScroll}
+            label={t("logs.autoScroll")}
             title={t("logs.autoScroll")}
+            capsule
+            size="sm"
+          />
+          <GlassButton
+            icon="↻"
+            onClick={() => void reload()}
+            title={t("common.refresh")}
           >
-            {t("logs.autoScroll")}
-          </button>
-          <button type="button" className="secondary" onClick={() => void reload()}>
             {t("common.refresh")}
-          </button>
-          <button type="button" className="secondary" onClick={() => void onClear()}>
+          </GlassButton>
+          <GlassButton
+            variant="danger"
+            icon="⌫"
+            onClick={() => void onClear()}
+            title={t("common.clear")}
+          >
             {t("common.clear")}
-          </button>
+          </GlassButton>
         </div>
       </div>
 

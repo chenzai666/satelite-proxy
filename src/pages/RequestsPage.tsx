@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { clearRequestHistory, listRequests } from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
@@ -32,7 +33,7 @@ export function RequestsPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [scope, setScope] = useState<TrafficScope>("proxy");
+  const [scope, setScope] = useState<TrafficScope>("all");
 
   const reload = useCallback(async () => {
     try {
@@ -99,12 +100,21 @@ export function RequestsPage({ embedded = false }: Props) {
           onChange={(v) => setScope(v as TrafficScope)}
           options={scopeOpts}
         />
-        <button type="button" className="secondary" onClick={() => void reload()}>
+        <GlassButton
+          icon="↻"
+          onClick={() => void reload()}
+          title={t("common.refresh")}
+        >
           {t("common.refresh")}
-        </button>
-        <button type="button" className="danger" onClick={() => void onClear()}>
+        </GlassButton>
+        <GlassButton
+          variant="danger"
+          icon="⌫"
+          onClick={() => void onClear()}
+          title={t("common.clear")}
+        >
           {t("common.clear")}
-        </button>
+        </GlassButton>
       </div>
     </div>
   );
@@ -182,7 +192,8 @@ export function RequestsPage({ embedded = false }: Props) {
                   </td>
                   <td className="conn-traffic">
                     <span title={`↑${fmtBytes(r.upload)} ↓${fmtBytes(r.download)}`}>
-                      ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                      <span className="tr-dir up">↑</span>{fmtBytes(r.upload)}{" "}
+                      <span className="tr-dir down">↓</span>{fmtBytes(r.download)}
                     </span>
                   </td>
                 </tr>

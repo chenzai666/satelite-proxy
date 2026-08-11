@@ -13,6 +13,36 @@ pub enum OutboundMode {
     Direct,
 }
 
+/// Persisted traffic-capture preference. Runtime system proxy state is still
+/// cleaned up on exit, then restored when the proxy starts again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    #[default]
+    Off,
+    System,
+    Tun,
+}
+
+impl CaptureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::System => "system",
+            Self::Tun => "tun",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "system" => Some(Self::System),
+            "tun" => Some(Self::Tun),
+            _ => None,
+        }
+    }
+}
+
 impl OutboundMode {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -93,6 +123,9 @@ pub struct AppSettings {
     /// Enable sing-box TUN inbound (system-wide capture). Requires privileges on macOS.
     #[serde(default)]
     pub tun_enabled: bool,
+    /// Last selected traffic-capture mode: off | system | tun.
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
     /// TUN TCP/IP stack: `system` | `gvisor` | `mixed` (default mixed).
     #[serde(default = "default_tun_stack")]
     pub tun_stack: String,
@@ -185,6 +218,7 @@ impl Default for AppSettings {
             probe_url: default_probe_url(),
             mix_mode: false,
             tun_enabled: false,
+            capture_mode: CaptureMode::Off,
             tun_stack: default_tun_stack(),
             outbound_mode: OutboundMode::Rule,
             route_final: default_route_final(),
@@ -205,6 +239,14 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Infer the new capture preference from the legacy persisted TUN flag.
+    pub fn migrate_capture_mode(&mut self) {
+        if self.tun_enabled && self.capture_mode == CaptureMode::Off {
+            self.capture_mode = CaptureMode::Tun;
+        }
+        self.tun_enabled = self.capture_mode == CaptureMode::Tun;
+    }
+
     /// Apply legacy `smart_switch: true` → `auto_select: smart` once.
     pub fn migrate_auto_select(&mut self) {
         if self.auto_select == AutoSelectMode::Off && self.smart_switch {
@@ -221,5 +263,34 @@ impl AppSettings {
             "block" => "block",
             _ => "proxy",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_tun_flag_migrates_to_capture_mode() {
+        let mut settings = AppSettings {
+            tun_enabled: true,
+            capture_mode: CaptureMode::Off,
+            ..AppSettings::default()
+        };
+        settings.migrate_capture_mode();
+        assert_eq!(settings.capture_mode, CaptureMode::Tun);
+        assert!(settings.tun_enabled);
+    }
+
+    #[test]
+    fn system_capture_clears_stale_tun_flag() {
+        let mut settings = AppSettings {
+            tun_enabled: true,
+            capture_mode: CaptureMode::System,
+            ..AppSettings::default()
+        };
+        settings.migrate_capture_mode();
+        assert_eq!(settings.capture_mode, CaptureMode::System);
+        assert!(!settings.tun_enabled);
     }
 }

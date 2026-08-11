@@ -1,3 +1,4 @@
+use super::dns::DnsRule;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -108,13 +109,6 @@ impl Rule {
             smart_include: Vec::new(),
             smart_exclude: Vec::new(),
         }
-    }
-
-    pub fn is_domain_like(&self) -> bool {
-        matches!(
-            self.rule_type,
-            RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword
-        )
     }
 
     pub fn clash_type_token(&self) -> &'static str {
@@ -245,7 +239,128 @@ pub struct RuleSet {
     /// When true, rules in this set are merged into the active routing config.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub ownership: RuleSetOwnership,
+    /// Ordinary groups apply one strategy to every item. Smart groups preserve
+    /// the legacy per-item target / node-pool settings.
+    #[serde(default)]
+    pub strategy: RuleSetStrategy,
+    /// Whole-set DNS resolver policy, independent from the route strategy.
+    #[serde(default)]
+    pub dns_strategy: RuleSetDnsStrategy,
+    /// Remote sing-box rule-set source. `None` means an editable local set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteRuleSetConfig>,
+    /// Transitional v2 field. v3 folds these matchers into `rules` and no
+    /// longer exposes a second per-set DNS rule list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_rules: Vec<DnsRule>,
     pub rules: Vec<Rule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSetOwnership {
+    Builtin,
+    #[default]
+    User,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSetStrategy {
+    #[default]
+    Proxy,
+    Direct,
+    Block,
+    /// Per-item route/DNS decisions.
+    Smart,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleSetDnsStrategy {
+    Local,
+    Domestic,
+    #[default]
+    Remote,
+}
+
+impl RuleSetDnsStrategy {
+    pub fn server_tag(self) -> &'static str {
+        match self {
+            Self::Local => "dns-local",
+            Self::Domestic => "dns-cn",
+            Self::Remote => "dns-remote",
+        }
+    }
+}
+
+impl RuleSetStrategy {
+    pub fn from_target(target: RuleTarget) -> Self {
+        match target {
+            RuleTarget::Proxy => Self::Proxy,
+            RuleTarget::Direct => Self::Direct,
+            RuleTarget::Block => Self::Block,
+            RuleTarget::Node | RuleTarget::Smart => Self::Smart,
+        }
+    }
+
+    pub fn route_target(self) -> Option<RuleTarget> {
+        match self {
+            Self::Proxy => Some(RuleTarget::Proxy),
+            Self::Direct => Some(RuleTarget::Direct),
+            Self::Block => Some(RuleTarget::Block),
+            Self::Smart => None,
+        }
+    }
+
+    /// Recommended whole-set DNS policy when the route strategy changes.
+    /// Block has no editable DNS policy because it always emits DNS reject.
+    pub fn recommended_dns_strategy(self) -> Option<RuleSetDnsStrategy> {
+        match self {
+            Self::Proxy | Self::Smart => Some(RuleSetDnsStrategy::Remote),
+            Self::Direct => Some(RuleSetDnsStrategy::Local),
+            Self::Block => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteRuleSetConfig {
+    pub url: String,
+    #[serde(default = "default_remote_format")]
+    pub format: String,
+    #[serde(default = "default_update_interval")]
+    pub update_interval: String,
+    /// Whole-set route strategy. Remote sets intentionally do not support node/smart.
+    pub target: RuleTarget,
+    /// Rust-managed downloaded source file. sing-box only sees this local path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+    /// idle | downloading | ready | error
+    #[serde(default = "default_download_status")]
+    pub download_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_update: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt: Option<i64>,
+    /// Number of top-level source rules in the latest validated cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_count: Option<u32>,
+}
+
+fn default_remote_format() -> String {
+    "source".into()
+}
+fn default_update_interval() -> String {
+    "1h".into()
+}
+fn default_download_status() -> String {
+    "idle".into()
 }
 
 fn default_true() -> bool {
@@ -272,8 +387,31 @@ impl RuleSet {
             name: name.trim().to_string(),
             builtin: false,
             enabled: true,
+            ownership: RuleSetOwnership::User,
+            strategy: RuleSetStrategy::Proxy,
+            dns_strategy: RuleSetDnsStrategy::Remote,
+            remote: None,
+            dns_rules: Vec::new(),
             rules,
         }
+    }
+
+    pub fn new_remote(name: &str, url: &str, target: RuleTarget) -> Self {
+        let mut set = Self::new_user(name, vec![]);
+        set.remote = Some(RemoteRuleSetConfig {
+            url: url.trim().to_string(),
+            format: default_remote_format(),
+            update_interval: default_update_interval(),
+            target,
+            local_path: None,
+            download_status: default_download_status(),
+            download_error: None,
+            last_update: None,
+            last_attempt: None,
+            rule_count: None,
+        });
+        set.strategy = RuleSetStrategy::from_target(target);
+        set
     }
 }
 
@@ -285,6 +423,11 @@ pub struct RuleSetSummary {
     pub rule_count: u32,
     /// Enabled for routing (multiple sets can be true).
     pub enabled: bool,
+    pub ownership: RuleSetOwnership,
+    pub strategy: RuleSetStrategy,
+    pub dns_strategy: RuleSetDnsStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteRuleSetConfig>,
 }
 
 pub const GENERAL_SET_ID: &str = "general-rules";
@@ -298,7 +441,7 @@ pub const BUILTIN_SET_NAME: &str = "内置规则集";
 /// - **Restart**: store edits are kept (templates only fill missing sets).
 /// - **Reset**: reloads that set from the resource file.
 pub fn is_factory_set_id(id: &str) -> bool {
-    id == GENERAL_SET_ID || id.starts_with("builtin-")
+    id.starts_with("builtin-")
 }
 
 /// Whether the set may be deleted by the user (pure custom sets only).
@@ -306,7 +449,7 @@ pub fn is_deletable_rule_set(id: &str, builtin: bool) -> bool {
     !builtin && !is_factory_set_id(id)
 }
 
-/// Minimal fallback when `general-rules.list` is missing from resources.
+/// Minimal direct fallback when no rule set is enabled.
 pub fn default_rules() -> Vec<Rule> {
     vec![
         Rule::new(
@@ -369,19 +512,68 @@ pub struct BuiltinRuleFile {
     pub id: String,
     pub name: String,
     pub rules: Vec<Rule>,
-    /// `true` for `builtin-*.list`; `false` for `general-rules.list` (still factory / resettable).
+    /// `true` for `builtin-*.list`.
     pub factory_builtin: bool,
 }
 
 impl BuiltinRuleFile {
-    pub fn into_rule_set(self) -> RuleSet {
-        RuleSet {
-            id: self.id,
-            name: self.name,
-            builtin: self.factory_builtin,
-            enabled: true,
-            rules: self.rules,
+    pub fn into_rule_sets(self) -> Vec<RuleSet> {
+        let mut buckets: Vec<(&'static str, Vec<Rule>)> = Vec::new();
+        for rule in self.rules {
+            let key = match rule.target {
+                RuleTarget::Proxy => "proxy",
+                RuleTarget::Direct => "direct",
+                RuleTarget::Block => "block",
+                RuleTarget::Node | RuleTarget::Smart => "smart",
+            };
+            if let Some((_, rules)) = buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
+                rules.push(rule);
+            } else {
+                buckets.push((key, vec![rule]));
+            }
         }
+        let mixed = buckets.len() > 1;
+        buckets
+            .into_iter()
+            .map(|(key, rules)| {
+                let strategy = match key {
+                    "proxy" => RuleSetStrategy::Proxy,
+                    "direct" => RuleSetStrategy::Direct,
+                    "block" => RuleSetStrategy::Block,
+                    _ => RuleSetStrategy::Smart,
+                };
+                let suffix = match strategy {
+                    RuleSetStrategy::Proxy => "代理",
+                    RuleSetStrategy::Direct => "直连",
+                    RuleSetStrategy::Block => "拦截",
+                    RuleSetStrategy::Smart => "智能",
+                };
+                RuleSet {
+                    id: if mixed {
+                        format!("{}-{key}", self.id)
+                    } else {
+                        self.id.clone()
+                    },
+                    name: if mixed {
+                        format!("{} · {suffix}", self.name)
+                    } else {
+                        self.name.clone()
+                    },
+                    builtin: self.factory_builtin,
+                    enabled: true,
+                    ownership: RuleSetOwnership::Builtin,
+                    strategy,
+                    dns_strategy: if strategy == RuleSetStrategy::Direct {
+                        RuleSetDnsStrategy::Local
+                    } else {
+                        RuleSetDnsStrategy::Remote
+                    },
+                    remote: None,
+                    dns_rules: Vec::new(),
+                    rules,
+                }
+            })
+            .collect()
     }
 }
 
@@ -512,7 +704,6 @@ fn is_routing_list_path(path: &std::path::Path) -> bool {
 /// Scan `resources/rules/*.list` (sorted by filename) as **factory templates**.
 ///
 /// - `builtin-*.list` → `factory_builtin = true` (label 内置, cannot delete)
-/// - `general-rules.list` → factory seed, not builtin flag (label 通用, cannot delete, can reset)
 pub fn load_builtin_rule_files(resource_dir: Option<&std::path::Path>) -> Vec<BuiltinRuleFile> {
     let Some(dir) = find_rules_dir(resource_dir) else {
         return Vec::new();
@@ -576,29 +767,15 @@ pub fn load_factory_rule_set(
 ) -> Option<RuleSet> {
     load_builtin_rule_files(resource_dir)
         .into_iter()
-        .find(|f| f.id == set_id)
-        .map(BuiltinRuleFile::into_rule_set)
-        .or_else(|| {
-            // Fallback only for general-rules if file missing.
-            if set_id == GENERAL_SET_ID {
-                Some(RuleSet {
-                    id: GENERAL_SET_ID.into(),
-                    name: GENERAL_SET_NAME.into(),
-                    builtin: false,
-                    enabled: true,
-                    rules: default_rules(),
-                })
-            } else {
-                None
-            }
-        })
+        .flat_map(BuiltinRuleFile::into_rule_sets)
+        .find(|set| set.id == set_id)
 }
 
 /// Factory rule sets from disk (filename order). Empty if directory missing.
 pub fn load_builtin_rule_sets(resource_dir: Option<&std::path::Path>) -> Vec<RuleSet> {
     load_builtin_rule_files(resource_dir)
         .into_iter()
-        .map(BuiltinRuleFile::into_rule_set)
+        .flat_map(BuiltinRuleFile::into_rule_sets)
         .collect()
 }
 
@@ -668,6 +845,23 @@ FINAL,PROXY
     }
 
     #[test]
+    fn route_strategy_recommends_dns_policy() {
+        assert_eq!(
+            RuleSetStrategy::Proxy.recommended_dns_strategy(),
+            Some(RuleSetDnsStrategy::Remote)
+        );
+        assert_eq!(
+            RuleSetStrategy::Direct.recommended_dns_strategy(),
+            Some(RuleSetDnsStrategy::Local)
+        );
+        assert_eq!(
+            RuleSetStrategy::Smart.recommended_dns_strategy(),
+            Some(RuleSetDnsStrategy::Remote)
+        );
+        assert_eq!(RuleSetStrategy::Block.recommended_dns_strategy(), None);
+    }
+
+    #[test]
     fn parse_meta_headers() {
         let text = "# name: DIDI\n\nDOMAIN-SUFFIX,a.com,DIRECT\n";
         let meta = parse_list_meta(text);
@@ -682,12 +876,6 @@ FINAL,PROXY
             "expected resources/rules under CARGO_MANIFEST_DIR"
         );
 
-        let general = files.iter().find(|f| f.id == GENERAL_SET_ID);
-        assert!(general.is_some(), "missing general-rules.list");
-        let general = general.unwrap();
-        assert!(!general.factory_builtin);
-        assert!(general.rules.iter().any(|r| r.payload == "local"));
-
         let large = files.iter().find(|f| f.id == BUILTIN_SET_ID);
         assert!(large.is_some());
         assert!(large.unwrap().factory_builtin);
@@ -697,5 +885,21 @@ FINAL,PROXY
             .rules
             .iter()
             .any(|r| matches!(r.rule_type, RuleType::Geoip)));
+
+        let sets = load_builtin_rule_sets(None);
+        let proxy = sets
+            .iter()
+            .find(|set| set.id == "builtin-ruleset-proxy")
+            .expect("mixed builtin proxy split");
+        let direct = sets
+            .iter()
+            .find(|set| set.id == "builtin-ruleset-direct")
+            .expect("mixed builtin direct split");
+        assert_eq!(proxy.strategy, RuleSetStrategy::Proxy);
+        assert_eq!(direct.strategy, RuleSetStrategy::Direct);
+        assert_eq!(
+            proxy.rules.len() + direct.rules.len(),
+            large.unwrap().rules.len()
+        );
     }
 }
