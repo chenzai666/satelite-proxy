@@ -55,17 +55,3 @@ pnpm tauri dev
 # 打包构建
 pnpm tauri build
 ```
-
-> 构建需要 Rust 工具链与 Node.js（推荐使用 [pnpm](https://pnpm.io/)）。
-
-## 📄 开源协议
-
-本项目基于 [Apache License 2.0](./LICENSE) 开源。
-
-## 💖 赞助商
-
-<summary>支持本项目的服务提供商</summary>
-
-###  低价直连  〢  [良心云](https://xn--9kqz23b19z.com/#/register?code=SUpAMRXL)  〢  [一分机场](https://xn--4gqx1hgtfdmt.com/#/register?code=qiRqViZ8)  〢  [赔钱机场](https://xn--cp3a08l.com/register?code=lzWSCUqr&cover=sfw)
-
-**简评**：量大管饱，1000G 流量不限时，最具性价比

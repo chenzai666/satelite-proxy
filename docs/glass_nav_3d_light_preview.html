@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>3D Glass Navbar Preview</title>
+<style>
+  :root {
+    --page-bg: #090b0f;
+    --text: rgba(255,255,255,.94);
+    --muted: rgba(255,255,255,.56);
+  }
+
+  * { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    background: var(--page-bg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 220vh;
+    font-family:
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+      "Segoe UI", sans-serif;
+    color: var(--text);
+
+    background:
+      radial-gradient(circle at 14% 2%, rgba(255,255,255,.065), transparent 15%),
+      radial-gradient(circle at 20% 5%, rgba(105,120,255,.28), transparent 26%),
+      radial-gradient(circle at 78% 12%, rgba(40,205,175,.14), transparent 25%),
+      radial-gradient(circle at 52% 35%, rgba(255,255,255,.025), transparent 32%),
+      linear-gradient(180deg, #0e1118 0%, #090b0f 52%, #07080b 100%);
+  }
+
+  .nav-wrap {
+    position: fixed;
+    z-index: 1000;
+    top: 18px;
+    left: 0;
+    right: 0;
+
+    display: flex;
+    justify-content: center;
+    padding: 0 20px;
+    pointer-events: none;
+  }
+
+  .glass-nav {
+    position: relative;
+    width: min(980px, 100%);
+    height: 64px;
+    padding: 0 10px 0 20px;
+
+    display: flex;
+    align-items: center;
+    gap: 28px;
+
+    overflow: hidden;
+    pointer-events: auto;
+
+    border-radius: 19px;
+
+    /* glass body */
+    background:
+      linear-gradient(
+        180deg,
+        rgba(31,33,39,.62) 0%,
+        rgba(18,19,23,.56) 48%,
+        rgba(13,14,18,.58) 100%
+      );
+
+    -webkit-backdrop-filter:
+      blur(20px)
+      saturate(142%)
+      brightness(.96);
+
+    backdrop-filter:
+      blur(20px)
+      saturate(142%)
+      brightness(.96);
+
+    /* base rim */
+    border: 1px solid rgba(255,255,255,.075);
+
+    /* volume + top reflection */
+    box-shadow:
+      0 18px 52px rgba(0,0,0,.30),
+      0 4px 14px rgba(0,0,0,.16),
+      inset 0 1px 0 rgba(255,255,255,.10),
+      inset 0 -1px 0 rgba(255,255,255,.018);
+
+    transition:
+      transform .28s ease,
+      background .28s ease,
+      box-shadow .28s ease,
+      border-color .28s ease,
+      backdrop-filter .28s ease,
+      -webkit-backdrop-filter .28s ease;
+  }
+
+  /* localized upper-left rim highlight */
+  .glass-nav::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 0;
+
+    background:
+      /* white edge concentrated in upper-left */
+      linear-gradient(
+        135deg,
+        rgba(255,255,255,.26) 0%,
+        rgba(255,255,255,.13) 5%,
+        rgba(255,255,255,.055) 13%,
+        rgba(255,255,255,.018) 23%,
+        rgba(255,255,255,0) 39%
+      ),
+      /* long top reflection */
+      linear-gradient(
+        180deg,
+        rgba(255,255,255,.065) 0%,
+        rgba(255,255,255,.018) 28%,
+        rgba(255,255,255,0) 62%
+      );
+  }
+
+  /* soft light source */
+  .glass-nav::after {
+    content: "";
+    position: absolute;
+    width: 260px;
+    height: 116px;
+    top: -56px;
+    left: -6px;
+    z-index: 0;
+    pointer-events: none;
+
+    border-radius: 50%;
+
+    background:
+      radial-gradient(
+        ellipse at center,
+        rgba(255,255,255,.24) 0%,
+        rgba(255,255,255,.13) 28%,
+        rgba(255,255,255,.055) 48%,
+        rgba(255,255,255,0) 73%
+      );
+
+    filter: blur(13px);
+    opacity: .90;
+  }
+
+  /* Extra mask that creates a more physical rim */
+  .rim {
+    position: absolute;
+    inset: 1px;
+    z-index: 1;
+    border-radius: 18px;
+    pointer-events: none;
+
+    box-shadow:
+      inset 1px 1px 0 rgba(255,255,255,.07),
+      inset -1px -1px 0 rgba(0,0,0,.16);
+  }
+
+  .glass-nav.scrolled {
+    background:
+      linear-gradient(
+        180deg,
+        rgba(32,34,39,.70) 0%,
+        rgba(17,18,22,.66) 52%,
+        rgba(12,13,16,.69) 100%
+      );
+
+    border-color: rgba(255,255,255,.09);
+
+    -webkit-backdrop-filter:
+      blur(24px)
+      saturate(148%)
+      brightness(.94);
+
+    backdrop-filter:
+      blur(24px)
+      saturate(148%)
+      brightness(.94);
+
+    box-shadow:
+      0 22px 60px rgba(0,0,0,.34),
+      0 5px 16px rgba(0,0,0,.18),
+      inset 0 1px 0 rgba(255,255,255,.11),
+      inset 0 -1px 0 rgba(255,255,255,.018);
+
+    transform: translateY(-1px);
+  }
+
+  .brand,
+  .nav-links,
+  .cta {
+    position: relative;
+    z-index: 2;
+  }
+
+  .brand {
+    font-weight: 730;
+    letter-spacing: -.025em;
+    white-space: nowrap;
+  }
+
+  .brand-mark {
+    width: 22px;
+    height: 22px;
+    margin-right: 9px;
+    display: inline-block;
+    vertical-align: -5px;
+    border-radius: 7px;
+    background:
+      linear-gradient(145deg, rgba(255,255,255,.95), rgba(255,255,255,.52));
+    box-shadow:
+      0 3px 9px rgba(0,0,0,.18),
+      inset 0 1px rgba(255,255,255,.7);
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 25px;
+    margin-left: auto;
+  }
+
+  .nav-links a {
+    color: rgba(255,255,255,.62);
+    text-decoration: none;
+    font-size: 14px;
+    transition: color .18s ease;
+  }
+
+  .nav-links a:hover {
+    color: rgba(255,255,255,.96);
+  }
+
+  .cta {
+    height: 42px;
+    padding: 0 18px;
+    margin-left: 6px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 13px;
+    border: 1px solid rgba(255,255,255,.18);
+
+    color: #0c0d10;
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 680;
+
+    background:
+      linear-gradient(
+        180deg,
+        rgba(255,255,255,.98),
+        rgba(238,240,244,.88)
+      );
+
+    box-shadow:
+      0 5px 16px rgba(0,0,0,.21),
+      inset 0 1px rgba(255,255,255,.85);
+  }
+
+  .hero {
+    min-height: 100vh;
+    position: relative;
+    overflow: hidden;
+
+    display: grid;
+    place-items: center;
+
+    padding: 130px 24px 90px;
+  }
+
+  .hero-panel {
+    position: absolute;
+    top: 112px;
+    left: 50%;
+    transform: translateX(-50%);
+
+    width: min(960px, 90vw);
+    height: min(620px, 68vw);
+
+    border-radius: 46px;
+
+    background:
+      radial-gradient(circle at 20% 20%, rgba(113,122,255,.52), transparent 28%),
+      radial-gradient(circle at 82% 66%, rgba(44,216,178,.32), transparent 26%),
+      radial-gradient(circle at 55% 43%, rgba(255,255,255,.055), transparent 22%),
+      linear-gradient(145deg, #151b2b 0%, #0e131c 52%, #12141a 100%);
+
+    box-shadow:
+      inset 0 1px rgba(255,255,255,.08),
+      0 42px 120px rgba(0,0,0,.42);
+  }
+
+  .hero-panel::before {
+    content: "";
+    position: absolute;
+    width: 420px;
+    height: 240px;
+    left: 4%;
+    top: -6%;
+
+    border-radius: 50%;
+
+    background:
+      radial-gradient(
+        ellipse at center,
+        rgba(255,255,255,.13),
+        rgba(255,255,255,.03) 45%,
+        transparent 72%
+      );
+
+    filter: blur(28px);
+  }
+
+  .hero-inner {
+    position: relative;
+    z-index: 3;
+    width: min(760px, 100%);
+    text-align: center;
+  }
+
+  .eyebrow {
+    margin-bottom: 18px;
+
+    color: rgba(255,255,255,.55);
+    font-size: 12px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 0;
+
+    font-size: clamp(46px, 7vw, 84px);
+    line-height: .98;
+    letter-spacing: -.06em;
+    font-weight: 760;
+  }
+
+  .lead {
+    max-width: 650px;
+    margin: 26px auto 0;
+
+    color: rgba(255,255,255,.58);
+    font-size: 17px;
+    line-height: 1.75;
+  }
+
+  .chips {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 32px;
+  }
+
+  .chip {
+    padding: 9px 13px;
+
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 999px;
+
+    background: rgba(255,255,255,.035);
+    color: rgba(255,255,255,.62);
+
+    font-size: 13px;
+  }
+
+  .content {
+    width: min(980px, calc(100% - 40px));
+    margin: 0 auto;
+    padding: 80px 0 180px;
+  }
+
+  .section {
+    position: relative;
+    min-height: 420px;
+
+    margin-bottom: 28px;
+    padding: 48px;
+
+    overflow: hidden;
+
+    border: 1px solid rgba(255,255,255,.055);
+    border-radius: 30px;
+
+    background:
+      linear-gradient(145deg, rgba(255,255,255,.045), rgba(255,255,255,.014));
+  }
+
+  .section::after {
+    content: "";
+    position: absolute;
+    width: 360px;
+    height: 240px;
+    right: -80px;
+    top: -50px;
+
+    border-radius: 50%;
+
+    background: rgba(105, 115, 255, .12);
+    filter: blur(55px);
+  }
+
+  .section h2 {
+    position: relative;
+    z-index: 1;
+
+    margin: 0 0 12px;
+
+    font-size: 30px;
+    letter-spacing: -.035em;
+  }
+
+  .section p {
+    position: relative;
+    z-index: 1;
+
+    max-width: 660px;
+    margin: 0;
+
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  .gradient-bar {
+    position: relative;
+    z-index: 1;
+
+    height: 130px;
+    margin-top: 34px;
+
+    border-radius: 20px;
+
+    background:
+      linear-gradient(
+        90deg,
+        rgba(100,110,255,.84),
+        rgba(51,216,174,.72),
+        rgba(255,172,88,.78)
+      );
+  }
+
+  .hint {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 30;
+
+    padding: 10px 13px;
+
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 12px;
+
+    background: rgba(18,18,20,.54);
+
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+
+    color: rgba(255,255,255,.56);
+    font-size: 12px;
+  }
+
+  @media (max-width: 760px) {
+    .nav-links { display: none; }
+    .glass-nav { gap: 12px; }
+    .cta { margin-left: auto; }
+    .section { padding: 30px; }
+  }
+</style>
+</head>
+
+<body>
+  <div class="nav-wrap">
+    <nav class="glass-nav" id="glassNav">
+      <div class="rim"></div>
+
+      <div class="brand">
+        <span class="brand-mark"></span>
+        Swift Glass
+      </div>
+
+      <div class="nav-links">
+        <a href="#material">Material</a>
+        <a href="#lighting">Lighting</a>
+        <a href="#depth">Depth</a>
+        <a href="#reuse">Reuse</a>
+      </div>
+
+      <a class="cta" href="#material">Download</a>
+    </nav>
+  </div>
+
+  <main>
+    <section class="hero">
+      <div class="hero-panel"></div>
+
+      <div class="hero-inner">
+        <div class="eyebrow">3D Glass Navbar Preview</div>
+
+        <h1>
+          Glass with<br>
+          directional light.
+        </h1>
+
+        <p class="lead">
+          这一版重点强化左上角白色高光、局部光源、玻璃边缘和投影层次。
+          向下滚动时可以观察内容穿过导航后的实时模糊和立体变化。
+        </p>
+
+        <div class="chips">
+          <span class="chip">Upper-left rim</span>
+          <span class="chip">Directional light</span>
+          <span class="chip">24px backdrop blur</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="content">
+      <section class="section" id="material">
+        <h2>Glass body</h2>
+        <p>
+          主体使用半透明深色渐变，让玻璃内部具有轻微的上下明暗差，
+          配合 backdrop-filter 保留后方背景的色彩信息。
+        </p>
+
+        <div class="gradient-bar"></div>
+      </section>
+
+      <section class="section" id="lighting">
+        <h2>Upper-left light</h2>
+        <p>
+          左上角使用局部渐变高光与柔光斑，只让受光区域明显变亮，
+          其余边缘保持克制，因此会更接近真实玻璃的反射。
+        </p>
+      </section>
+
+      <section class="section" id="depth">
+        <h2>Depth</h2>
+        <p>
+          外部大范围软阴影、内部顶部高光、底部暗边共同建立厚度。
+          滚动后背景透明度、Blur 和阴影都会略微加强。
+        </p>
+      </section>
+
+      <section class="section" id="reuse">
+        <h2>Reusable structure</h2>
+        <p>
+          关键结构集中在 glass-nav、::before、::after 和 rim 四部分，
+          可以单独复制到你的实际项目中。
+        </p>
+      </section>
+    </div>
+  </main>
+
+  <div class="hint">Scroll to inspect lighting</div>
+
+<script>
+  const nav = document.getElementById("glassNav");
+
+  function updateNav() {
+    nav.classList.toggle("scrolled", window.scrollY > 20);
+  }
+
+  updateNav();
+  window.addEventListener("scroll", updateNav, { passive: true });
+</script>
+</body>
+</html>
