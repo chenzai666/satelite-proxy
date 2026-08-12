@@ -656,8 +656,8 @@ impl Runtime {
         api.select_proxy(group, node_tag)
     }
 
-    /// Full cleanup on app exit: system proxy off, kill core, free listen ports.
-    pub fn shutdown_with_ports(&mut self, ports: &[u16]) {
+    /// Full cleanup on app exit: system proxy off and stop the managed core.
+    pub fn shutdown(&mut self) {
         if self.system_proxy_on {
             let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
             self.system_proxy_on = false;
@@ -666,7 +666,7 @@ impl Runtime {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
-        self.core.force_shutdown(ports);
+        self.core.force_shutdown();
         self.live_connections.clear();
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
