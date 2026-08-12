@@ -55,3 +55,7 @@ pnpm tauri dev
 # 打包构建
 pnpm tauri build
 ```
+
+## 友情链接
+
+- **佬友聚集地** [linux.do](https://linux.do/)
