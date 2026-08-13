@@ -3322,6 +3322,7 @@ dependencies = [
  "core-foundation-sys",
  "flate2",
  "hex",
+ "idna",
  "libc",
  "reqwest 0.12.28",
  "serde",

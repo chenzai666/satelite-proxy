@@ -1,6 +1,7 @@
 //! Build sing-box JSON from normalized [`ProxyNode`]s.
 
 use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
+use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
     AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet,
     RuleSetStrategy, RuleTarget, RuleType, TlsConfig, Transport,
@@ -372,7 +373,14 @@ fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
             RuleType::Domain | RuleType::DomainSuffix => payload.trim_start_matches(['*', '.']),
             _ => payload,
         };
-        buckets[index].push(normalized.to_string());
+        let value = match rule.rule_type {
+            // sing-box matches wire-format QNAME/SNI, which is always ASCII.
+            // domain_keyword is a substring match — Punycode-encoding it
+            // would break that semantic, so it's left as-is.
+            RuleType::Domain | RuleType::DomainSuffix => to_ascii_domain(normalized),
+            _ => normalized.to_string(),
+        };
+        buckets[index].push(value);
     }
     let keys = [
         "domain",
@@ -421,9 +429,12 @@ fn build_route_rules(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Ve
                 return None;
             }
             let outbound = resolve_rule_outbound(r, nodes, tags);
+            // sing-box matches wire-format QNAME/SNI, which is always ASCII.
+            // domain_keyword is a substring match — Punycode-encoding it
+            // would break that semantic, so it's left as-is.
             let mut rule = match r.rule_type {
-                RuleType::Domain => json!({ "domain": [payload] }),
-                RuleType::DomainSuffix => json!({ "domain_suffix": [payload] }),
+                RuleType::Domain => json!({ "domain": [to_ascii_domain(payload)] }),
+                RuleType::DomainSuffix => json!({ "domain_suffix": [to_ascii_domain(payload)] }),
                 RuleType::DomainKeyword => json!({ "domain_keyword": [payload] }),
                 RuleType::IpCidr => json!({ "ip_cidr": [payload] }),
                 RuleType::Process => json!({ "process_name": [payload] }),
@@ -1517,5 +1528,42 @@ mod tests {
             .find(|r| r.get("domain_suffix").is_some())
             .expect("smart route");
         assert_eq!(routed["outbound"], group);
+    }
+
+    #[test]
+    fn inline_rule_set_converts_domain_and_suffix_to_punycode_but_not_keyword() {
+        let rules = vec![
+            Rule::new(RuleType::Domain, "中文.com".into(), RuleTarget::Proxy, 0),
+            Rule::new(RuleType::DomainSuffix, "中国.com".into(), RuleTarget::Proxy, 1),
+            Rule::new(RuleType::DomainKeyword, "中文".into(), RuleTarget::Proxy, 2),
+        ];
+        let built = build_inline_rule_set("test-set", &rules);
+        let headless = built["rules"].as_array().unwrap();
+        let domain = headless
+            .iter()
+            .find(|r| r.get("domain").is_some())
+            .expect("domain bucket");
+        assert_eq!(domain["domain"], json!(["xn--fiq228c.com"]));
+        let suffix = headless
+            .iter()
+            .find(|r| r.get("domain_suffix").is_some())
+            .expect("domain_suffix bucket");
+        assert_eq!(suffix["domain_suffix"], json!(["xn--fiqs8s.com"]));
+        let keyword = headless
+            .iter()
+            .find(|r| r.get("domain_keyword").is_some())
+            .expect("domain_keyword bucket");
+        assert_eq!(keyword["domain_keyword"], json!(["中文"]));
+    }
+
+    #[test]
+    fn legacy_route_rules_convert_domain_and_suffix_to_punycode_but_not_keyword() {
+        let rules = vec![
+            Rule::new(RuleType::Domain, "中文.com".into(), RuleTarget::Proxy, 0),
+            Rule::new(RuleType::DomainKeyword, "中文".into(), RuleTarget::Proxy, 1),
+        ];
+        let out = build_route_rules(&rules, &[], &["direct".into()]);
+        assert_eq!(out[0]["domain"], json!(["xn--fiq228c.com"]));
+        assert_eq!(out[1]["domain_keyword"], json!(["中文"]));
     }
 }

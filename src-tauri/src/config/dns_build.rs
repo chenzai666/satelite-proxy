@@ -3,6 +3,7 @@
 //! Each unified rule set chooses its own resolver. This module defines the
 //! resolver pool, unmatched-query default, Hosts, and FakeIP behavior.
 
+use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
     read_system_hosts_pairs, DnsAction, DnsRule, DnsSettings, DomainMatcher, FakeIpConfig,
     HostsConfig, Rule,
@@ -110,11 +111,17 @@ fn fakeip_rules(fake_ip: &FakeIpConfig, tag_local: &str) -> Vec<Value> {
 fn collect_hosts(hosts: &HostsConfig) -> Vec<(String, String)> {
     let mut map: Vec<(String, String)> = Vec::new();
     for entry in hosts.entries.iter().filter(|e| e.enabled) {
-        let domain = entry
-            .domain
-            .trim()
-            .trim_end_matches('.')
-            .to_ascii_lowercase();
+        // Hosts entries are always exact matches (no keyword semantics), so
+        // Punycode-encoding is safe and necessary — sing-box's `predefined`
+        // map and route-options overrides match against wire-format ASCII.
+        let domain = to_ascii_domain(
+            entry
+                .domain
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase()
+                .as_str(),
+        );
         let addr = entry.addr.trim();
         if domain.is_empty()
             || addr.parse::<std::net::IpAddr>().is_err()
@@ -246,9 +253,11 @@ fn user_rule_to_json(r: &DnsRule) -> Option<Value> {
         return None;
     }
 
+    // sing-box matches wire-format QNAME, which is always ASCII. Keyword is a
+    // substring match — Punycode-encoding it would break that semantic.
     let mut rule = match r.matcher {
-        DomainMatcher::Domain => json!({ "domain": [payload] }),
-        DomainMatcher::DomainSuffix => json!({ "domain_suffix": [payload] }),
+        DomainMatcher::Domain => json!({ "domain": [to_ascii_domain(&payload)] }),
+        DomainMatcher::DomainSuffix => json!({ "domain_suffix": [to_ascii_domain(&payload)] }),
         DomainMatcher::DomainKeyword => json!({ "domain_keyword": [payload] }),
     };
     if r.action == DnsAction::Block {
@@ -509,5 +518,81 @@ mod tests {
         let rules = b.dns["rules"].as_array().unwrap();
         assert!(!rules.is_empty());
         assert_eq!(rules[0]["server"].as_str().unwrap(), "dns-hosts");
+    }
+
+    #[test]
+    fn user_dns_rule_converts_domain_and_suffix_to_punycode_but_not_keyword() {
+        use crate::domain::{DnsAction, DnsRule, DomainMatcher};
+        let domain_rule = DnsRule {
+            id: "d1".into(),
+            enabled: true,
+            matcher: DomainMatcher::Domain,
+            payload: "中文.com".into(),
+            action: DnsAction::Remote,
+        };
+        let suffix_rule = DnsRule {
+            id: "d2".into(),
+            enabled: true,
+            matcher: DomainMatcher::DomainSuffix,
+            payload: "中国.com".into(),
+            action: DnsAction::Remote,
+        };
+        let keyword_rule = DnsRule {
+            id: "d3".into(),
+            enabled: true,
+            matcher: DomainMatcher::DomainKeyword,
+            payload: "中文".into(),
+            action: DnsAction::Remote,
+        };
+        assert_eq!(
+            user_rule_to_json(&domain_rule).unwrap()["domain"],
+            json!(["xn--fiq228c.com"])
+        );
+        assert_eq!(
+            user_rule_to_json(&suffix_rule).unwrap()["domain_suffix"],
+            json!(["xn--fiqs8s.com"])
+        );
+        assert_eq!(
+            user_rule_to_json(&keyword_rule).unwrap()["domain_keyword"],
+            json!(["中文"])
+        );
+    }
+
+    #[test]
+    fn hosts_domain_is_converted_to_punycode_in_predefined_and_dns_rule() {
+        use crate::domain::{HostsConfig, HostsEntry};
+        let s = DnsSettings {
+            hosts: HostsConfig {
+                enabled: true,
+                include_system: false,
+                entries: vec![HostsEntry {
+                    id: "h1".into(),
+                    enabled: true,
+                    domain: "中文.com".into(),
+                    addr: "10.0.0.5".into(),
+                }],
+            },
+            fake_ip: FakeIpConfig {
+                enabled: false,
+                ..FakeIpConfig::default()
+            },
+            ..DnsSettings::default()
+        };
+        let b = build_dns_section(&s, false, &[]);
+        let servers = b.dns["servers"].as_array().unwrap();
+        let host_srv = servers
+            .iter()
+            .find(|x| x["type"] == "hosts")
+            .expect("hosts server emitted");
+        assert_eq!(
+            host_srv["predefined"]["xn--fiq228c.com"],
+            json!(["10.0.0.5"])
+        );
+        let rules = b.dns["rules"].as_array().unwrap();
+        assert_eq!(rules[0]["domain"], json!(["xn--fiq228c.com"]));
+
+        let route_rules = build_hosts_route_rules(&s.hosts);
+        assert_eq!(route_rules[0]["domain"], json!(["xn--fiq228c.com"]));
+        assert_eq!(route_rules[0]["override_address"], json!("10.0.0.5"));
     }
 }

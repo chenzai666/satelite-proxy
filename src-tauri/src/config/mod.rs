@@ -1,6 +1,7 @@
 mod builder;
 mod dns_build;
 mod dns_files;
+mod punycode;
 mod rule_files;
 mod write;
 
