@@ -172,6 +172,7 @@ pub fn run() {
                             app_log::error("app", format!("auto_start_proxy failed: {e}"));
                         } else {
                             app_log::info("app", "auto_start_proxy ok");
+                            tray::refresh_icon(&handle);
                         }
                     }
                 });

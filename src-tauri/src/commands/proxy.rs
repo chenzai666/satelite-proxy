@@ -17,12 +17,12 @@ pub fn start_proxy(
 ) -> Result<ProxyStatus, String> {
     let resource_dir = app.path().resource_dir().ok();
     // Default: start core only; system proxy controlled by independent switch.
-    state
-        .start_proxy(
-            resource_dir.as_deref(),
-            enable_system_proxy.unwrap_or(false),
-        )
-        .map_err(|e| e.to_string())
+    let result = state.start_proxy(
+        resource_dir.as_deref(),
+        enable_system_proxy.unwrap_or(false),
+    );
+    crate::tray::refresh_icon(&app);
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -86,8 +86,10 @@ pub fn set_outbound_mode(
 }
 
 #[tauri::command]
-pub fn stop_proxy(state: State<'_, AppState>) -> Result<ProxyStatus, String> {
-    state.stop_proxy().map_err(|e| e.to_string())
+pub fn stop_proxy(app: AppHandle, state: State<'_, AppState>) -> Result<ProxyStatus, String> {
+    let result = state.stop_proxy();
+    crate::tray::refresh_icon(&app);
+    result.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

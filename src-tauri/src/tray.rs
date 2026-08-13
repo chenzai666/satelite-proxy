@@ -112,6 +112,32 @@ fn copy_proxy_env(app: &AppHandle<impl TauriRuntime>) {
     }
 }
 
+const TRAY_ID: &str = "main";
+
+/// Re-select and apply the tray icon based on current core run state.
+/// Safe to call frequently; `is_core_running()` is a short-lived lock.
+pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let running = app
+        .try_state::<AppState>()
+        .map(|s| s.is_core_running())
+        .unwrap_or(false);
+
+    let bytes: &[u8] = if running {
+        include_bytes!("../icons/tray-icon-running.png")
+    } else {
+        include_bytes!("../icons/tray-icon-template.png")
+    };
+    let Ok(icon) = Image::from_bytes(bytes) else {
+        return;
+    };
+    // Running icon is colored (must NOT be template-recolored); stopped icon
+    // stays the monochrome template that macOS auto-tints for light/dark menu bars.
+    let _ = tray.set_icon_with_as_template(Some(icon), !running);
+}
+
 pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let show_i = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
     let start_i = MenuItem::with_id(app, "start", "启动代理", true, None::<&str>)?;
@@ -126,7 +152,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     )?;
 
     // Prefer app icon; fall back to default tray without custom image if load fails.
-    let mut builder = TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Satelite")
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -138,11 +164,13 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     let res = app.path().resource_dir().ok();
                     let _ = state.start_proxy(res.as_deref(), true);
                 }
+                refresh_icon(app);
             }
             "stop" => {
                 if let Some(state) = app.try_state::<AppState>() {
                     let _ = state.stop_proxy();
                 }
+                refresh_icon(app);
             }
             "copy_env" => {
                 copy_proxy_env(app);
@@ -174,5 +202,6 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
 
     builder.build(app)?;
+    refresh_icon(app);
     Ok(())
 }
