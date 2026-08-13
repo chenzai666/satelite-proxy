@@ -3,6 +3,7 @@ import { getDnsSettings, readSystemHosts, updateDnsSettings } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import type { DnsRuleSet, DnsSettings, HostsEntry } from "../types";
+import { useI18n } from "../i18n";
 
 const SYSTEM_HOSTS_ID = "system-hosts";
 
@@ -20,6 +21,7 @@ function isIpLiteral(value: string) {
 }
 
 export function HostsPage({ embedded = false }: { embedded?: boolean }) {
+  const { t } = useI18n();
   const [dns, setDns] = useState<DnsSettings | null>(null);
   const [viewSetId, setViewSetId] = useState<string | null>(null);
   const [systemHosts, setSystemHosts] = useState<HostsEntry[]>([]);
@@ -28,7 +30,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
   const [error, setError] = useState<string | null>(null);
 
   const [newSetOpen, setNewSetOpen] = useState(false);
-  const [newSetName, setNewSetName] = useState("自定义 Hosts");
+  const [newSetName, setNewSetName] = useState(t("hosts.setNamePh"));
   const [entryOpen, setEntryOpen] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [domain, setDomain] = useState("");
@@ -118,9 +120,9 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
     e.preventDefault();
     if (!dns || busy) return;
     const name = newSetName.trim();
-    if (!name) return setError("请输入 Hosts 集名称");
+    if (!name) return setError(t("hosts.needSetName"));
     if (hostSets.some((set) => set.name.toLowerCase() === name.toLowerCase())) {
-      return setError(`已存在同名 Hosts 集「${name}」`);
+      return setError(t("hosts.dupSetName", { name }));
     }
     const set: DnsRuleSet = {
       id: newId("hosts-set"),
@@ -140,7 +142,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
 
   async function deleteSet() {
     if (!dns || !viewSet || viewSet.builtin || busy) return;
-    if (!confirm(`删除 Hosts 集「${viewSet.name}」？`)) return;
+    if (!confirm(t("hosts.deleteSetConfirm", { name: viewSet.name }))) return;
     const remaining = dns.rule_sets.filter((set) => set.id !== viewSet.id);
     if (await save({ ...dns, rule_sets: remaining })) {
       const next = remaining.find((set) => set.kind === "hosts");
@@ -182,15 +184,15 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
     if (!dns || !viewSet || viewSet.read_only || busy) return;
     const normalizedDomain = domain.trim().toLowerCase().replace(/\.$/, "");
     const normalizedAddr = addr.trim();
-    if (!normalizedDomain) return setError("请输入域名");
-    if (!isIpLiteral(normalizedAddr)) return setError("请输入有效的 IPv4 或 IPv6 地址");
+    if (!normalizedDomain) return setError(t("hosts.needDomain"));
+    if (!isIpLiteral(normalizedAddr)) return setError(t("hosts.needIp"));
     if (
       viewSet.hosts.some(
         (entry) =>
           entry.id !== editEntryId &&
           entry.domain.toLowerCase() === normalizedDomain,
       )
-    ) return setError(`该集合已存在域名「${normalizedDomain}」`);
+    ) return setError(t("hosts.dupDomain", { domain: normalizedDomain }));
 
     const entry: HostsEntry = {
       id: editEntryId ?? newId("host"),
@@ -219,7 +221,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
   }
 
   function removeEntry(id: string) {
-    if (!viewSet || !confirm("删除该 Hosts 映射？")) return;
+    if (!viewSet || !confirm(t("hosts.deleteEntryConfirm"))) return;
     const next = updateSet(viewSet.id, (set) => ({
       ...set,
       hosts: set.hosts.filter((entry) => entry.id !== id),
@@ -227,7 +229,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
     if (next) void save(next);
   }
 
-  if (!dns && !error) return <div className="settings-embed empty">加载中…</div>;
+  if (!dns && !error) return <div className="settings-embed empty">{t("common.loading")}</div>;
 
   return (
     <div className={embedded ? "settings-embed dns-page" : "page dns-page"}>
@@ -237,17 +239,17 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
           <GlassButton
             icon="+"
             onClick={() => {
-              setNewSetName("自定义 Hosts");
+              setNewSetName(t("hosts.setNamePh"));
               setNewSetOpen(true);
               setError(null);
             }}
             disabled={busy}
           >
-            新建 Hosts 集
+            {t("hosts.newSetBtn")}
           </GlassButton>
           <div className="ruleset-list-title">
-            Hosts 集
-            <span className="ruleset-list-hint">顺序即优先级</span>
+            {t("hosts.listTitle")}
+            <span className="ruleset-list-hint">{t("hosts.listHint")}</span>
           </div>
           {hostSets.map((set) => (
             <div
@@ -265,7 +267,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
                 <GlassSwitchControl
                   checked={set.enabled}
                   size="sm"
-                  title={set.enabled ? "关闭 Hosts 集" : "启用 Hosts 集"}
+                  title={set.enabled ? t("hosts.disableSetTooltip") : t("hosts.enableSetTooltip")}
                   disabled={busy}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -274,8 +276,8 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
                 />
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
-                {set.read_only ? "系统文件 · 只读" : `${set.hosts.length} 条映射`}
-                {set.enabled ? " · 已启用" : " · 未启用"}
+                {set.read_only ? t("hosts.systemReadonlyMeta") : t("hosts.mappingCount", { n: set.hosts.length })}
+                {set.enabled ? ` · ${t("common.enabled")}` : ` · ${t("common.disabled")}`}
               </div>
             </div>
           ))}
@@ -287,8 +289,8 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
               <strong>{viewSet?.name ?? "—"}</strong>
               <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
                 {viewSet?.read_only
-                  ? "读取操作系统 Hosts 文件，内容只读"
-                  : "域名 → IP 静态映射，按 Hosts 集顺序匹配"}
+                  ? t("hosts.readDesc")
+                  : t("hosts.mapDesc")}
               </div>
             </div>
             {viewSet && <div className="header-actions">
@@ -297,59 +299,59 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
                 className="ghost small"
                 disabled={busy || hostSets[0]?.id === viewSet.id}
                 onClick={() => void moveSet(-1)}
-                title="提高优先级"
+                title={t("dns.raisePrio")}
               >↑</button>
               <button
                 type="button"
                 className="ghost small"
                 disabled={busy || hostSets[hostSets.length - 1]?.id === viewSet.id}
                 onClick={() => void moveSet(1)}
-                title="降低优先级"
+                title={t("dns.lowerPrio")}
               >↓</button>
               {!viewSet.read_only && <GlassButton
                 variant="primary"
                 icon="+"
                 disabled={busy}
                 onClick={openAddEntry}
-              >添加映射</GlassButton>}
+              >{t("hosts.addMappingBtn")}</GlassButton>}
               {!viewSet.builtin && <GlassButton
                 variant="danger"
                 icon="⌫"
                 disabled={busy}
                 onClick={() => void deleteSet()}
-              >删除集</GlassButton>}
+              >{t("rules.deleteSet")}</GlassButton>}
             </div>}
           </div>
 
           {!viewSet ? (
-            <div className="empty card muted">暂无 Hosts 集</div>
+            <div className="empty card muted">{t("hosts.emptySets")}</div>
           ) : viewSet.read_only ? (
-            systemBusy ? <div className="empty card muted">正在读取系统 Hosts…</div>
-            : systemHosts.length === 0 ? <div className="empty card muted">系统 Hosts 中没有可用映射</div>
+            systemBusy ? <div className="empty card muted">{t("dns.loadingSystemHosts")}</div>
+            : systemHosts.length === 0 ? <div className="empty card muted">{t("dns.emptySystemHosts")}</div>
             : <div className="card dns-rule-set-body"><ul className="dns-list">
               {systemHosts.map((entry) => <li key={entry.id} className="dns-list-item">
                 <div className="dns-list-body">
-                  <div className="dns-list-title"><span className="pill matcher-pill">只读</span><span className="dns-list-name">{entry.domain}</span></div>
+                  <div className="dns-list-title"><span className="pill matcher-pill">{t("dns.readonlyBadge")}</span><span className="dns-list-name">{entry.domain}</span></div>
                   <div className="dns-list-addr muted mono">→ {entry.addr}</div>
                 </div>
               </li>)}
             </ul></div>
           ) : viewSet.hosts.length === 0 ? (
-            <div className="empty card muted">暂无 Hosts 映射</div>
+            <div className="empty card muted">{t("hosts.emptyMappings")}</div>
           ) : <div className="card dns-rule-set-body"><ul className="dns-list">
             {viewSet.hosts.map((entry) => <li
               key={entry.id}
               className={`dns-list-item${entry.enabled ? "" : " off"}`}
               onClick={() => openEditEntry(entry)}
-              title="点击编辑映射"
+              title={t("hosts.clickEditMapping")}
             >
               <div className="dns-list-body">
                 <div className="dns-list-title"><span className="dns-list-name">{entry.domain}</span></div>
                 <div className="dns-list-addr muted mono">→ {entry.addr}</div>
               </div>
               <div className="dns-list-actions" onClick={(e) => e.stopPropagation()}>
-                <GlassSwitchControl checked={entry.enabled} size="sm" title="启用映射" disabled={busy} onChange={() => toggleEntry(entry.id)} />
-                <button type="button" className="rule-menu-trigger" disabled={busy} aria-label="删除映射" onClick={() => removeEntry(entry.id)}>×</button>
+                <GlassSwitchControl checked={entry.enabled} size="sm" title={t("hosts.enableMappingTooltip")} disabled={busy} onChange={() => toggleEntry(entry.id)} />
+                <button type="button" className="rule-menu-trigger" disabled={busy} aria-label={t("hosts.deleteMappingAria")} onClick={() => removeEntry(entry.id)}>×</button>
               </div>
             </li>)}
           </ul></div>}
@@ -358,22 +360,22 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
 
       {newSetOpen && <div className="modal-backdrop" onClick={() => !busy && setNewSetOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <header className="modal-header"><h2>新建 Hosts 集</h2><button type="button" className="icon-btn" onClick={() => setNewSetOpen(false)}>×</button></header>
+          <header className="modal-header"><h2>{t("hosts.newSetModalTitle")}</h2><button type="button" className="icon-btn" onClick={() => setNewSetOpen(false)}>×</button></header>
           <form className="modal-body" onSubmit={(e) => void createSet(e)}>
-            <label className="field"><span>名称</span><input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} autoFocus /></label>
-            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setNewSetOpen(false)}>取消</button><button type="submit" disabled={busy || !newSetName.trim()}>{busy ? "保存中…" : "创建"}</button></footer>
+            <label className="field"><span>{t("rules.setName")}</span><input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} autoFocus /></label>
+            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setNewSetOpen(false)}>{t("common.cancel")}</button><button type="submit" disabled={busy || !newSetName.trim()}>{busy ? t("common.saving") : t("rules.create")}</button></footer>
           </form>
         </div>
       </div>}
 
       {entryOpen && <div className="modal-backdrop" onClick={() => !busy && setEntryOpen(false)}>
         <div className="modal" onClick={(e) => e.stopPropagation()}>
-          <header className="modal-header"><h2>{editEntryId ? "编辑 Hosts 映射" : "添加 Hosts 映射"}</h2><button type="button" className="icon-btn" onClick={() => setEntryOpen(false)}>×</button></header>
+          <header className="modal-header"><h2>{editEntryId ? t("hosts.editMappingTitle") : t("hosts.addMappingTitle")}</h2><button type="button" className="icon-btn" onClick={() => setEntryOpen(false)}>×</button></header>
           <form className="modal-body" onSubmit={(e) => void saveEntry(e)}>
-            <label className="field"><span>域名</span><input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus /></label>
-            <label className="field"><span>IP 地址</span><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder="127.0.0.1 或 ::1" /></label>
-            <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}><span>启用</span><GlassSwitchControl checked={entryEnabled} title="启用" onChange={setEntryEnabled} /></label>
-            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setEntryOpen(false)}>取消</button><button type="submit" disabled={busy || !domain.trim() || !addr.trim()}>{busy ? "保存中…" : "保存"}</button></footer>
+            <label className="field"><span>{t("dns.domainLabel")}</span><input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus /></label>
+            <label className="field"><span>{t("dns.ipLabel")}</span><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder={t("hosts.ipPlaceholder")} /></label>
+            <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}><span>{t("rules.enabled")}</span><GlassSwitchControl checked={entryEnabled} title={t("rules.enabled")} onChange={setEntryEnabled} /></label>
+            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setEntryOpen(false)}>{t("common.cancel")}</button><button type="submit" disabled={busy || !domain.trim() || !addr.trim()}>{busy ? t("common.saving") : t("common.save")}</button></footer>
           </form>
         </div>
       </div>}

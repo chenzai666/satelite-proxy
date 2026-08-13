@@ -17,6 +17,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { SolidSelect } from "../components/SolidSelect";
 import { useI18n } from "../i18n";
+import type { MessageKey } from "../i18n/messages";
 import type {
   DnsAction,
   DnsFinalStrategy,
@@ -33,27 +34,33 @@ function newId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function actionLabel(a: DnsAction): string {
+function actionLabel(
+  a: DnsAction,
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
+): string {
   switch (a.kind) {
     case "local":
-      return "本地 DNS";
+      return t("dns.actionLocal");
     case "domestic":
-      return "国内 DNS";
+      return t("dns.actionDomestic");
     case "remote":
-      return "远程 DNS";
+      return t("dns.actionRemote");
     case "block":
-      return "拦截";
+      return t("dns.actionBlock");
   }
 }
 
-function matcherLabel(m: DomainMatcher) {
+function matcherLabel(
+  m: DomainMatcher,
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
+) {
   switch (m) {
     case "domain":
-      return "精确";
+      return t("dns.matcherExact");
     case "domain_suffix":
-      return "后缀";
+      return t("dns.matcherSuffix");
     case "domain_keyword":
-      return "关键字";
+      return t("dns.matcherKeyword");
   }
 }
 
@@ -112,7 +119,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
   const [hostFormOpen, setHostFormOpen] = useState(false);
   const [viewSetId, setViewSetId] = useState<string | null>(null);
   const [newSetOpen, setNewSetOpen] = useState(false);
-  const [newSetName, setNewSetName] = useState("自定义 DNS 规则");
+  const [newSetName, setNewSetName] = useState(t("dns.setNamePhDns"));
   const [newSetKind, setNewSetKind] = useState<DnsRuleSetKind>("dns");
   const [systemHosts, setSystemHosts] = useState<HostsEntry[]>([]);
   const [systemHostsBusy, setSystemHostsBusy] = useState(false);
@@ -217,7 +224,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
   function removeRule(id: string) {
     if (!viewSetId) return;
-    if (!window.confirm("删除该 DNS 规则？")) return;
+    if (!window.confirm(t("dns.deleteRuleConfirm"))) return;
     if (editRuleId === id) resetRuleForm();
     const next = withUpdatedSet(viewSetId, (set) => ({
       ...set,
@@ -261,7 +268,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
       .replace(/^\*\./, "")
       .replace(/^\./, "");
     if (!payload) {
-      setError("请填写域名匹配");
+      setError(t("dns.needMatch"));
       return;
     }
     const action: DnsAction =
@@ -318,7 +325,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
   function removeHost(id: string) {
     if (!viewSetId) return;
-    if (!window.confirm("删除该 Host 条目？")) return;
+    if (!window.confirm(t("hosts.deleteEntryConfirm"))) return;
     if (editHostId === id) resetHostForm();
     const next = withUpdatedSet(viewSetId, (set) => ({
       ...set,
@@ -355,11 +362,11 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
     const domain = newHostDomain.trim().toLowerCase();
     const addr = newHostAddr.trim();
     if (!domain) {
-      setError("请填写域名");
+      setError(t("hosts.needDomain"));
       return;
     }
     if (!addr) {
-      setError("请填写 IP 地址");
+      setError(t("hosts.needIp"));
       return;
     }
     if (editHostId) {
@@ -391,7 +398,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
   function openNewSet() {
     setNewSetKind("dns");
-    setNewSetName("自定义 DNS 规则");
+    setNewSetName(t("dns.setNamePhDns"));
     setNewSetOpen(true);
     setError(null);
   }
@@ -401,11 +408,11 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
     if (!dns) return;
     const name = newSetName.trim();
     if (!name) {
-      setError("请输入规则集名称");
+      setError(t("rules.needName"));
       return;
     }
     if (dns.rule_sets.some((set) => set.name.toLowerCase() === name.toLowerCase())) {
-      setError(`已存在同名规则集「${name}」`);
+      setError(t("dns.dupSetName", { name }));
       return;
     }
     const set: DnsRuleSet = {
@@ -429,7 +436,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
     if (!dns || !viewSetId) return;
     const set = dns.rule_sets.find((item) => item.id === viewSetId);
     if (!set || set.builtin) return;
-    if (!window.confirm(`删除规则集「${set.name}」？`)) return;
+    if (!window.confirm(t("rules.deleteSetConfirm", { name: set.name }))) return;
     const nextSets = dns.rule_sets.filter((item) => item.id !== viewSetId);
     const saved = await save({ ...dns, rule_sets: nextSets });
     if (saved) setViewSetId(nextSets[0]?.id ?? null);
@@ -459,11 +466,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
   }
 
   async function onResetRules() {
-    if (
-      !window.confirm(
-        `将「内置 DNS 规则」恢复为出厂内容？\n当前对该规则集的修改会丢失，其它规则集不受影响。`,
-      )
-    ) {
+    if (!window.confirm(t("dns.resetBuiltinConfirm"))) {
       return;
     }
     setBusy(true);
@@ -496,7 +499,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
   if (!dns && !error) {
     return (
       <div className={embedded ? "settings-embed empty" : "page empty"}>
-        加载中…
+        {t("common.loading")}
       </div>
     );
   }
@@ -529,58 +532,58 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         {/* —— General —— */}
         {section !== "rules" && <section className="card dns-panel dns-cell dns-cell-general">
           <header className="dns-panel-head">
-            <h2>常规</h2>
-            <p>默认解析与全局行为</p>
+            <h2>{t("dns.general")}</h2>
+            <p>{t("dns.generalDesc")}</p>
           </header>
 
           <div className="dns-panel-body dns-general-body">
             <div className="dns-general-primary">
               <SettingRow
-                title="DNS 劫持"
-                desc="拦截系统 DNS 流量进入 sing-box（TUN 建议开）"
+                title={t("dns.hijack")}
+                desc={t("dns.hijackDesc")}
               >
                 <GlassSwitchControl
                   checked={dns.hijack}
-                  title="DNS 劫持"
+                  title={t("dns.hijack")}
                   disabled={busy}
                   onChange={(checked) => patch({ hijack: checked })}
                 />
               </SettingRow>
 
               <SettingRow
-                title="默认解析"
-                desc="未命中任何规则集时使用的解析器"
+                title={t("dns.defaultResolve")}
+                desc={t("dns.defaultResolveDesc")}
               >
                 <GlassSeg
                   value={dns.dns_final}
-                  ariaLabel="默认解析"
+                  ariaLabel={t("dns.defaultResolve")}
                   disabled={busy}
                   onChange={(v) => patch({ dns_final: v as DnsFinalStrategy })}
                   options={[
-                    { value: "local", label: "本地" },
-                    { value: "domestic", label: "国内" },
-                    { value: "remote", label: "远程" },
+                    { value: "local", label: t("dns.finalLocal") },
+                    { value: "domestic", label: t("dns.finalDomestic") },
+                    { value: "remote", label: t("dns.finalRemote") },
                   ]}
                 />
               </SettingRow>
             </div>
 
             <div className="dns-general-toggles">
-              <SettingRow title="DNS 缓存" desc="independent_cache，减少重复查询">
+              <SettingRow title={t("dns.cache")} desc={t("dns.cacheDesc")}>
                 <GlassSwitchControl
                   checked={dns.cache}
-                  title="DNS 缓存"
+                  title={t("dns.cache")}
                   disabled={busy}
                   onChange={(checked) => patch({ cache: checked })}
                 />
               </SettingRow>
               <SettingRow
-                title="防泄漏"
-                desc="优先按规则与 final 解析，避免静默回落"
+                title={t("dns.leak")}
+                desc={t("dns.leakDesc")}
               >
                 <GlassSwitchControl
                   checked={dns.leak_protect}
-                  title="防泄漏"
+                  title={t("dns.leak")}
                   disabled={busy}
                   onChange={(checked) => patch({ leak_protect: checked })}
                 />
@@ -590,17 +593,17 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         </section>}
 
         {section !== "settings" && <aside className="card ruleset-list dns-ruleset-nav dns-cell-ruleset-nav">
-          <GlassButton icon="+" onClick={openNewSet} title="新建规则集">
-            新建规则集
+          <GlassButton icon="+" onClick={openNewSet} title={t("rules.newSetTitle")}>
+            {t("rules.newSetTitle")}
           </GlassButton>
           <div className="ruleset-list-title">
-            DNS 规则集
-            <span className="ruleset-list-hint">顺序即匹配优先级</span>
+            {t("dns.setListTitle")}
+            <span className="ruleset-list-hint">{t("dns.setListHint")}</span>
           </div>
           {dns.rule_sets.map((set) => {
             const count =
               set.id === "system-hosts"
-                ? "系统"
+                ? t("dns.systemBadge")
                 : set.kind === "dns"
                   ? set.dns_rules.length
                   : set.hosts.length;
@@ -622,7 +625,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                     checked={set.enabled}
                     size="sm"
                     disabled={busy}
-                    title={`启用 / 禁用 ${set.name}`}
+                    title={t("dns.toggleSetTooltip", { name: set.name })}
                     onClick={(e) => {
                       e.stopPropagation();
                     }}
@@ -632,10 +635,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 <div className="dns-ruleset-footer">
                   <span className="muted dns-ruleset-meta">
                     {set.read_only
-                      ? `${set.enabled ? "已启用" : "未启用"} · 系统只读`
+                      ? `${set.enabled ? t("common.enabled") : t("common.disabled")} · ${t("dns.systemReadonlySuffix")}`
                       : set.enabled
-                        ? `已启用 · ${set.kind === "dns" ? "兼容旧 DNS 规则" : "静态映射"}`
-                        : "未启用"}
+                        ? `${t("common.enabled")} · ${set.kind === "dns" ? t("dns.legacyCompatSuffix") : t("dns.staticMapSuffix")}`
+                        : t("common.disabled")}
                   </span>
                   <span className="pill matcher-pill dns-ruleset-type">
                     {set.kind === "dns" ? "DNS" : "HOSTS"} · {count}
@@ -654,10 +657,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   <h2>{viewSet.name}</h2>
                   <p>
                     {viewSet.read_only
-                      ? "读取操作系统 Hosts 文件，仅供查看"
+                      ? t("dns.hostsReadonlyDesc")
                       : viewSet.kind === "dns"
-                        ? "域名匹配后指定本地、国内或远程解析"
-                        : "域名 → IP 静态映射，优先级高于 DNS 规则"}
+                        ? t("dns.dnsSetDesc")
+                        : t("dns.hostsSetDesc")}
                   </p>
                 </div>
                 <div className="header-actions">
@@ -668,7 +671,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                       disabled={busy}
                       onClick={viewSet.kind === "dns" ? openAddRule : openAddHost}
                     >
-                      {viewSet.kind === "dns" ? "添加规则" : "添加 Host"}
+                      {viewSet.kind === "dns" ? t("rules.addRule") : t("dns.addHostBtn")}
                     </GlassButton>
                   )}
                   {viewSet.id === "builtin-dns" && (
@@ -676,9 +679,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                       icon="↺"
                       disabled={busy}
                       onClick={() => void onResetRules()}
-                      title="恢复出厂"
+                      title={t("dns.resetFactoryBtn")}
                     >
-                      恢复出厂
+                      {t("dns.resetFactoryBtn")}
                     </GlassButton>
                   )}
                   <button
@@ -686,7 +689,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                     className="ghost small"
                     disabled={busy || dns.rule_sets[0]?.id === viewSet.id}
                     onClick={() => void moveCurrentSet(-1)}
-                    title="提高优先级"
+                    title={t("dns.raisePrio")}
                   >
                     ↑
                   </button>
@@ -698,7 +701,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                       dns.rule_sets[dns.rule_sets.length - 1]?.id === viewSet.id
                     }
                     onClick={() => void moveCurrentSet(1)}
-                    title="降低优先级"
+                    title={t("dns.lowerPrio")}
                   >
                     ↓
                   </button>
@@ -708,9 +711,9 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                       icon="⌫"
                       disabled={busy}
                       onClick={() => void deleteCurrentSet()}
-                      title="删除集"
+                      title={t("rules.deleteSet")}
                     >
-                      删除集
+                      {t("rules.deleteSet")}
                     </GlassButton>
                   )}
                 </div>
@@ -720,16 +723,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             <div className="dns-panel-body dns-panel-body--flush dns-rule-set-body">
               {viewSet.read_only ? (
                 systemHostsBusy ? (
-                  <div className="dns-empty soft">正在读取系统 Hosts…</div>
+                  <div className="dns-empty soft">{t("dns.loadingSystemHosts")}</div>
                 ) : systemHosts.length === 0 ? (
-                  <div className="dns-empty soft">系统 Hosts 中没有可用条目</div>
+                  <div className="dns-empty soft">{t("dns.emptySystemHosts")}</div>
                 ) : (
                   <ul className="dns-list">
                     {systemHosts.map((host) => (
                       <li key={host.id} className="dns-list-item">
                         <div className="dns-list-body">
                           <div className="dns-list-title">
-                            <span className="pill matcher-pill">只读</span>
+                            <span className="pill matcher-pill">{t("dns.readonlyBadge")}</span>
                             <span className="dns-list-name">{host.domain}</span>
                           </div>
                           <div className="dns-list-addr muted mono">→ {host.addr}</div>
@@ -740,7 +743,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 )
               ) : viewSet.kind === "dns" ? (
                 viewSet.dns_rules.length === 0 ? (
-                  <div className="dns-empty">暂无 DNS 规则</div>
+                  <div className="dns-empty">{t("dns.emptyRules")}</div>
                 ) : (
                   <ul className="dns-list">
                     {viewSet.dns_rules.map((rule) => (
@@ -748,20 +751,20 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                         key={rule.id}
                         className={`dns-list-item${rule.enabled ? "" : " off"}`}
                         onClick={() => openEditRule(rule)}
-                        title="点击编辑规则"
+                        title={t("dns.clickEditRule")}
                       >
                         <div className="dns-list-body">
                           <div className="dns-list-title">
-                            <span className="pill matcher-pill">{matcherLabel(rule.matcher)}</span>
+                            <span className="pill matcher-pill">{matcherLabel(rule.matcher, t)}</span>
                             <span className="dns-list-name">{rule.payload}</span>
                           </div>
-                          <div className="dns-list-addr muted">→ {actionLabel(rule.action)}</div>
+                          <div className="dns-list-addr muted">→ {actionLabel(rule.action, t)}</div>
                         </div>
                         <div className="dns-list-actions" onClick={(e) => e.stopPropagation()}>
                           <GlassSwitchControl
                             checked={rule.enabled}
                             size="sm"
-                            title="启用规则"
+                            title={t("dns.enableRuleTooltip")}
                             disabled={busy}
                             onChange={() => toggleRule(rule.id)}
                           />
@@ -769,7 +772,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                             type="button"
                             className="rule-menu-trigger"
                             disabled={busy}
-                            aria-label="删除规则"
+                            aria-label={t("dns.deleteRuleAria")}
                             onClick={() => removeRule(rule.id)}
                           >
                             ×
@@ -780,7 +783,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   </ul>
                 )
               ) : viewSet.hosts.length === 0 ? (
-                <div className="dns-empty">暂无 Hosts 条目</div>
+                <div className="dns-empty">{t("dns.emptyHostEntries")}</div>
               ) : (
                 <ul className="dns-list">
                   {viewSet.hosts.map((host) => (
@@ -788,7 +791,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                       key={host.id}
                       className={`dns-list-item${host.enabled ? "" : " off"}`}
                       onClick={() => openEditHost(host)}
-                      title="点击编辑 Host"
+                      title={t("dns.clickEditHost")}
                     >
                       <div className="dns-list-body">
                         <div className="dns-list-title">
@@ -800,7 +803,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                         <GlassSwitchControl
                           checked={host.enabled}
                           size="sm"
-                          title="启用 Host"
+                          title={t("dns.enableHostTooltip")}
                           disabled={busy}
                           onChange={() => toggleHost(host.id)}
                         />
@@ -808,7 +811,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                           type="button"
                           className="rule-menu-trigger"
                           disabled={busy}
-                          aria-label="删除 Host"
+                          aria-label={t("dns.deleteHostAria")}
                           onClick={() => removeHost(host.id)}
                         >
                           ×
@@ -826,16 +829,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         {section !== "rules" && <section className="card dns-panel dns-cell dns-cell-fakeip">
           <header className="dns-panel-head">
             <h2>FakeIP</h2>
-            <p>虚拟 IP，加速域名路由</p>
+            <p>{t("dns.fakeipDesc")}</p>
           </header>
           <div className="dns-panel-body">
             <SettingRow
-              title="启用 FakeIP"
-              desc="使用虚拟 IP 加速域名路由"
+              title={t("dns.enableFakeip")}
+              desc={t("dns.enableFakeipDesc")}
             >
               <GlassSwitchControl
                 checked={dns.fake_ip.enabled}
-                title="启用 FakeIP"
+                title={t("dns.enableFakeip")}
                 disabled={busy}
                 onChange={(checked) =>
                   void save({
@@ -850,7 +853,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             </SettingRow>
 
             <label className="field dns-field">
-              <span>IPv4 地址池</span>
+              <span>{t("dns.ipv4Pool")}</span>
               <input
                 autoCapitalize="off"
                 autoCorrect="off"
@@ -870,10 +873,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               />
             </label>
 
-            <SettingRow title="IPv6 FakeIP" desc="需要时再开启">
+            <SettingRow title={t("dns.ipv6Fakeip")} desc={t("dns.ipv6FakeipDesc")}>
               <GlassSwitchControl
                 checked={dns.fake_ip.inet6_enabled}
-                title="IPv6 FakeIP"
+                title={t("dns.ipv6Fakeip")}
                 disabled={busy}
                 onChange={(checked) =>
                   void save({
@@ -888,7 +891,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             </SettingRow>
 
             <label className="field dns-field">
-              <span>Bypass 后缀（每行一个，不走 FakeIP）</span>
+              <span>{t("dns.bypassSuffix")}</span>
               <textarea
                 autoCapitalize="off"
                 autoCorrect="off"
@@ -906,12 +909,12 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
 
         {section !== "rules" && <section className="card dns-panel dns-cell dns-cell-diag">
           <header className="dns-panel-head">
-            <h2>诊断</h2>
-            <p>系统 DNS 解析测试</p>
+            <h2>{t("dns.diagTitle")}</h2>
+            <p>{t("dns.diagDesc")}</p>
           </header>
           <div className="dns-panel-body">
             <label className="field dns-field">
-              <span>域名</span>
+              <span>{t("dns.domainLabel")}</span>
               <div className="dns-test-row">
                 <input
                   autoCapitalize="off"
@@ -929,7 +932,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   disabled={testBusy}
                   onClick={() => void onTest()}
                 >
-                  {testBusy ? "查询中…" : "测试"}
+                  {testBusy ? t("dns.testing") : t("dns.test")}
                 </GlassButton>
               </div>
             </label>
@@ -941,7 +944,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 <div className="dns-test-top">
                   <strong>{testResult.domain}</strong>
                   <span className="dns-test-badge">
-                    {testResult.ok ? "成功" : "失败"}
+                    {testResult.ok ? t("dns.testSuccess") : t("dns.testFail")}
                   </span>
                   <span className="muted">{testResult.elapsed_ms} ms</span>
                 </div>
@@ -956,7 +959,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 <div className="dns-test-note">{testResult.note}</div>
               </div>
             ) : (
-              <div className="dns-empty soft">输入域名后点击测试</div>
+              <div className="dns-empty soft">{t("dns.diagEmptyHint")}</div>
             )}
           </div>
         </section>}
@@ -969,12 +972,12 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         >
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-header">
-              <h2>新建 DNS 规则集</h2>
+              <h2>{t("dns.newSetModalTitle")}</h2>
               <button
                 type="button"
                 className="icon-btn"
                 disabled={busy}
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={() => setNewSetOpen(false)}
               >
                 ×
@@ -982,30 +985,30 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
             </header>
             <form className="modal-body" onSubmit={(e) => void createSet(e)}>
               <div className="field">
-                <span>规则集类型</span>
+                <span>{t("dns.setKindLabel")}</span>
                 <SolidSelect
                   value={newSetKind}
-                  aria-label="规则集类型"
+                  aria-label={t("dns.setKindLabel")}
                   options={[
-                    { value: "dns", label: "DNS 规则" },
-                    { value: "hosts", label: "Hosts 映射" },
+                    { value: "dns", label: t("dns.setKindDns") },
+                    { value: "hosts", label: t("dns.setKindHosts") },
                   ]}
                   onChange={(value) => {
                     const kind = value as DnsRuleSetKind;
                     setNewSetKind(kind);
-                    setNewSetName(kind === "dns" ? "自定义 DNS 规则" : "自定义 Hosts");
+                    setNewSetName(kind === "dns" ? t("dns.setNamePhDns") : t("dns.setNamePhHosts"));
                   }}
                 />
               </div>
               <label className="field">
-                <span>规则集名称</span>
+                <span>{t("dns.setNameFieldLabel")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
                   value={newSetName}
                   onChange={(e) => setNewSetName(e.target.value)}
-                  placeholder="请输入名称"
+                  placeholder={t("dns.setNamePlaceholder")}
                   autoFocus
                 />
               </label>
@@ -1016,10 +1019,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   disabled={busy}
                   onClick={() => setNewSetOpen(false)}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button type="submit" disabled={busy || !newSetName.trim()}>
-                  {busy ? "创建中…" : "创建"}
+                  {busy ? t("rules.creating") : t("rules.create")}
                 </button>
               </footer>
             </form>
@@ -1034,12 +1037,12 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         >
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-header">
-              <h2>{editRuleId ? "编辑 DNS 规则" : "添加 DNS 规则"}</h2>
+              <h2>{editRuleId ? t("dns.editRuleTitle") : t("dns.addRuleModalTitle")}</h2>
               <button
                 type="button"
                 className="icon-btn"
                 disabled={busy}
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={resetRuleForm}
               >
                 ×
@@ -1053,20 +1056,20 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               }}
             >
               <div className="field">
-                <span>匹配类型</span>
+                <span>{t("dns.matchTypeLabel")}</span>
                 <SolidSelect
                   value={newRuleMatcher}
                   onChange={(v) => setNewRuleMatcher(v as DomainMatcher)}
-                  aria-label="匹配类型"
+                  aria-label={t("dns.matchTypeLabel")}
                   options={[
-                    { value: "domain_suffix", label: "后缀" },
-                    { value: "domain", label: "精确" },
-                    { value: "domain_keyword", label: "关键字" },
+                    { value: "domain_suffix", label: t("dns.matcherSuffix") },
+                    { value: "domain", label: t("dns.matcherExact") },
+                    { value: "domain_keyword", label: t("dns.matcherKeyword") },
                   ]}
                 />
               </div>
               <label className="field">
-                <span>域名匹配</span>
+                <span>{t("dns.domainMatchLabel")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -1078,25 +1081,25 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <div className="field">
-                <span>解析动作</span>
+                <span>{t("dns.resolveActionLabel")}</span>
                 <SolidSelect
                   value={newRuleAction}
                   onChange={(v) =>
                     setNewRuleAction(v as "local" | "domestic" | "remote")
                   }
-                  aria-label="解析动作"
+                  aria-label={t("dns.resolveActionLabel")}
                   options={[
-                    { value: "local", label: "本地 DNS" },
-                    { value: "domestic", label: "国内 DNS" },
-                    { value: "remote", label: "远程 DNS" },
+                    { value: "local", label: t("dns.actionLocal") },
+                    { value: "domestic", label: t("dns.actionDomestic") },
+                    { value: "remote", label: t("dns.actionRemote") },
                   ]}
                 />
               </div>
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
-                <span>启用</span>
+                <span>{t("rules.enabled")}</span>
                 <GlassSwitchControl
                   checked={editRuleEnabled}
-                  title="启用"
+                  title={t("rules.enabled")}
                   onChange={setEditRuleEnabled}
                 />
               </label>
@@ -1107,10 +1110,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   disabled={busy}
                   onClick={resetRuleForm}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button type="submit" disabled={busy || !newRulePayload.trim()}>
-                  {busy ? "保存中…" : editRuleId ? "保存" : "添加"}
+                  {busy ? t("common.saving") : editRuleId ? t("common.save") : t("common.add")}
                 </button>
               </footer>
             </form>
@@ -1125,12 +1128,12 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
         >
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-header">
-              <h2>{editHostId ? "编辑 Hosts" : "添加 Hosts"}</h2>
+              <h2>{editHostId ? t("dns.editHostsTitle") : t("dns.addHostsTitle")}</h2>
               <button
                 type="button"
                 className="icon-btn"
                 disabled={busy}
-                aria-label="关闭"
+                aria-label={t("common.close")}
                 onClick={resetHostForm}
               >
                 ×
@@ -1144,7 +1147,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
               }}
             >
               <label className="field">
-                <span>域名</span>
+                <span>{t("dns.domainLabel")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -1156,7 +1159,7 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <label className="field">
-                <span>IP 地址</span>
+                <span>{t("dns.ipLabel")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -1167,10 +1170,10 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
-                <span>启用</span>
+                <span>{t("rules.enabled")}</span>
                 <GlassSwitchControl
                   checked={editHostEnabled}
-                  title="启用"
+                  title={t("rules.enabled")}
                   onChange={setEditHostEnabled}
                 />
               </label>
@@ -1181,13 +1184,13 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                   disabled={busy}
                   onClick={resetHostForm}
                 >
-                  取消
+                  {t("common.cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={busy || !newHostDomain.trim() || !newHostAddr.trim()}
                 >
-                  {busy ? "保存中…" : editHostId ? "保存" : "添加"}
+                  {busy ? t("common.saving") : editHostId ? t("common.save") : t("common.add")}
                 </button>
               </footer>
             </form>

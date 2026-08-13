@@ -12,7 +12,7 @@ import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
-import { useI18n, type Locale } from "../i18n";
+import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
 import type { AppSettings, CoreInfo, ThemeId } from "../types";
@@ -21,6 +21,18 @@ import { DnsPage } from "./DnsPage";
 import { HostsPage } from "./HostsPage";
 
 type SettingsTab = "app" | "rules" | "dns" | "hosts" | "core";
+
+// Accent preset names are picked from the i18n catalog rather than
+// AccentPreset.name (theme/accents.ts), which is display data only and not
+// locale-aware.
+const ACCENT_LABEL_KEY: Record<string, MessageKey> = {
+  green: "accent.green",
+  blue: "accent.blue",
+  purple: "accent.purple",
+  pink: "accent.pink",
+  orange: "accent.orange",
+  cyan: "accent.cyan",
+};
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
@@ -298,8 +310,8 @@ export function SettingsPage() {
                       type="button"
                       className={`settings-accent-dot ${accent === a.id ? "active" : ""}`}
                       style={{ background: a[theme], color: a[theme] }}
-                      title={a.name}
-                      aria-label={a.name}
+                      title={t(ACCENT_LABEL_KEY[a.id] ?? "settings.accent")}
+                      aria-label={t(ACCENT_LABEL_KEY[a.id] ?? "settings.accent")}
                       aria-pressed={accent === a.id}
                       disabled={busy}
                       onClick={() => void setAccent(a.id)}
