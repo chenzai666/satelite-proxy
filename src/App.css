@@ -5,7 +5,11 @@
   --radius-xs: 5px;
   --radius-pill: 999px;
   --mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "SF Mono", ui-monospace, Consolas, Menlo, monospace;
-  --font: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
+  /* Latin UI font per platform, each followed by its matching CJK companion
+     so Chinese falls through to the right system font per-glyph (browsers
+     resolve each character against the first font in the stack that has a
+     glyph for it, not just the first font overall). */
+  --font: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Inter", sans-serif;
   font-family: var(--font);
   line-height: 1.45;
   font-weight: 400;
