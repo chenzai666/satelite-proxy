@@ -29,6 +29,9 @@ const en = {
   "common.daysAgo": "{n} d ago",
   "common.remaining": "Left {n}",
 
+  // nav (simple mode)
+  "nav.connect": "Connect",
+
   // dashboard
   "dashboard.title": "Overview",
   "dashboard.desc": "Start the proxy to connect through your selected node",
@@ -471,6 +474,8 @@ const zh: Record<MessageKey, string> = {
   "common.hoursAgo": "{n} 小时前",
   "common.daysAgo": "{n} 天前",
   "common.remaining": "剩余 {n}",
+
+  "nav.connect": "连接",
 
   "dashboard.title": "概览",
   "dashboard.desc": "启动代理后通过所选节点转发流量",

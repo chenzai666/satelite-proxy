@@ -2,20 +2,22 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { CSSProperties } from "react";
 import { getProxyStatus } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { useI18n } from "../i18n";
+import type { MessageKey } from "../i18n";
 import type { NavKey } from "../types";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { UiModeMenu } from "../ui/UiModeMenu";
 
-type NavItem = { key: NavKey; label: string };
+type NavItem = { key: NavKey; labelKey: MessageKey };
 
-/** Compact capsule order — style3 horizontal nav (labels stay English). */
+/** Compact capsule order — style3 horizontal nav. */
 const ITEMS: NavItem[] = [
-  { key: "dashboard", label: "Overview" },
-  { key: "nodes", label: "Nodes" },
-  { key: "config", label: "Profiles" },
-  { key: "traffic", label: "Traffic" },
-  { key: "logs", label: "Logs" },
-  { key: "settings", label: "Settings" },
+  { key: "dashboard", labelKey: "dashboard.title" },
+  { key: "nodes", labelKey: "nodes.title" },
+  { key: "config", labelKey: "config.title" },
+  { key: "traffic", labelKey: "traffic.title" },
+  { key: "logs", labelKey: "logs.title" },
+  { key: "settings", labelKey: "settings.title" },
 ];
 
 interface Props {
@@ -24,6 +26,7 @@ interface Props {
 }
 
 export function TopNav({ active, onChange }: Props) {
+  const { t } = useI18n();
   const [running, setRunning] = useState(false);
   const [coreState, setCoreState] = useState("stopped");
 
@@ -103,7 +106,7 @@ export function TopNav({ active, onChange }: Props) {
               className={`topnav-item ${active === item.key ? "active" : ""}`}
               onClick={() => onChange(item.key)}
             >
-              {item.label}
+              {t(item.labelKey)}
             </button>
           ))}
         </nav>

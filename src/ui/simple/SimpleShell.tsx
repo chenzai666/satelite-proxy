@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ThemeSwitch } from "../../components/ThemeSwitch";
 import { useImportIntent } from "../../ImportIntentContext";
+import { useI18n } from "../../i18n";
+import type { MessageKey } from "../../i18n";
 import { UiModeMenu } from "../UiModeMenu";
 import { SimpleConnectPage } from "./SimpleConnectPage";
 
@@ -18,11 +20,11 @@ const SimpleSettingsPage = lazy(() =>
   })),
 );
 
-const TABS: { key: SimpleNavKey; label: string }[] = [
-  { key: "connect", label: "Connect" },
-  { key: "servers", label: "Nodes" },
-  { key: "traffic", label: "Traffic" },
-  { key: "settings", label: "Settings" },
+const TABS: { key: SimpleNavKey; labelKey: MessageKey }[] = [
+  { key: "connect", labelKey: "nav.connect" },
+  { key: "servers", labelKey: "nodes.title" },
+  { key: "traffic", labelKey: "traffic.title" },
+  { key: "settings", labelKey: "settings.title" },
 ];
 
 function SimplePageFallback() {
@@ -36,6 +38,7 @@ function SimplePageFallback() {
 }
 
 export function SimpleShell() {
+  const { t } = useI18n();
   const [nav, setNav] = useState<SimpleNavKey>("connect");
   const { token, prefill } = useImportIntent();
 
@@ -60,7 +63,7 @@ export function SimpleShell() {
                 className={`topnav-item ${nav === item.key ? "active" : ""}`}
                 onClick={() => setNav(item.key)}
               >
-                {item.label}
+                {t(item.labelKey)}
               </button>
             ))}
           </nav>
