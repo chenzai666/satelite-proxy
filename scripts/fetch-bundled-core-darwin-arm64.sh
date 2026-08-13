@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VER="${1:-1.13.15}"
+VER="${1:-1.13.18}"
 OUT_DIR="$ROOT/src-tauri/resources/bin/darwin-arm64"
 ASSET="sing-box-${VER}-darwin-arm64.tar.gz"
 URL="https://github.com/SagerNet/sing-box/releases/download/v${VER}/${ASSET}"
