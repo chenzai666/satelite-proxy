@@ -267,12 +267,8 @@ impl AppState {
     }
 
     pub fn shutdown_runtime(&self) {
-        let ports: Vec<u16> = {
-            let s = self.lock_store();
-            vec![s.settings.mixed_port, s.settings.api_port]
-        };
         let mut runtime = self.lock_runtime();
-        runtime.shutdown_with_ports(&ports);
+        runtime.shutdown();
     }
 
     pub fn is_core_running(&self) -> bool {

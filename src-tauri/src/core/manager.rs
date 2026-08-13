@@ -531,14 +531,15 @@ impl CoreManager {
         Ok(())
     }
 
-    /// Hard-stop managed child and anything still holding our ports (orphans).
-    pub fn force_shutdown(&mut self, ports: &[u16]) {
+    /// Hard-stop the managed core process during application exit.
+    ///
+    /// Do not run the port-orphan sweep here. On Windows, the OS rejects new
+    /// process creation once shutdown is in progress, so spawning `netstat`
+    /// from the exit callback produces a visible "netstat failed to start"
+    /// error. The managed sidecar/elevated PID is stopped directly above; any
+    /// stale listener is handled by `ensure_ports_free` on the next startup.
+    pub fn force_shutdown(&mut self) {
         let _ = self.stop();
-        for &p in ports {
-            if p != 0 {
-                let _ = kill_listeners_on_port(p);
-            }
-        }
         self.state = CoreState::Stopped;
         self.child = None;
         self.elevated_pid = None;
