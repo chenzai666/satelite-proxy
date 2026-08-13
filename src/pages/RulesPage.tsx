@@ -101,6 +101,10 @@ export function RulesPage({ embedded = false }: Props) {
   /** Rule-set card ⋮ menu open for this set id. */
   const [menuSetId, setMenuSetId] = useState<string | null>(null);
   const [remoteBusyIds, setRemoteBusyIds] = useState<Set<string>>(new Set());
+  /** Rule-set ids with a background enable/disable restart in flight. */
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
+  const toggleGenRef = useRef<Map<string, number>>(new Map());
+  const togglePrevRef = useRef<Map<string, boolean>>(new Map());
   const [remotePage, setRemotePage] = useState<RemoteRulePage | null>(null);
   const [remotePageIndex, setRemotePageIndex] = useState(0);
   const [remoteRulesLoading, setRemoteRulesLoading] = useState(false);
@@ -235,6 +239,47 @@ export function RulesPage({ embedded = false }: Props) {
         void reloadSets();
       },
     ).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, [reloadSets]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{
+      id: string;
+      enabled: boolean;
+      status: "restarting" | "ready" | "error";
+      error?: string | null;
+    }>("rule-set-apply-status", (event) => {
+      const { id, status, error: applyError } = event.payload;
+
+      if (status === "restarting") {
+        setTogglingIds((cur) => new Set(cur).add(id));
+        return;
+      }
+
+      setTogglingIds((cur) => {
+        const next = new Set(cur);
+        next.delete(id);
+        return next;
+      });
+
+      if (status === "ready") {
+        void reloadSets();
+        return;
+      }
+
+      // status === "error": roll back the switch to its pre-click value.
+      // The store write already succeeded — only the visual state reverts.
+      const prev = togglePrevRef.current.get(id);
+      if (prev !== undefined) {
+        setSets((list) =>
+          list.map((s) => (s.id === id ? { ...s, enabled: prev } : s)),
+        );
+      }
+      setError(applyError ?? "重启内核失败");
+    }).then((dispose) => {
       unlisten = dispose;
     });
     return () => unlisten?.();
@@ -481,12 +526,43 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onToggleSet(id: string, enabled: boolean) {
+  function nextToggleGen(id: string) {
+    const g = (toggleGenRef.current.get(id) ?? 0) + 1;
+    toggleGenRef.current.set(id, g);
+    return g;
+  }
+
+  async function onToggleSet(id: string, nextEnabled: boolean) {
+    const current = sets.find((s) => s.id === id);
+    if (!current || current.enabled === nextEnabled) return;
+
+    const prevEnabled = current.enabled;
+    const gen = nextToggleGen(id);
+    togglePrevRef.current.set(id, prevEnabled);
+
+    // Optimistic: flip the switch immediately, restart happens in the
+    // background (see the `rule-set-apply-status` listener below).
+    setSets((list) =>
+      list.map((s) => (s.id === id ? { ...s, enabled: nextEnabled } : s)),
+    );
+    setTogglingIds((cur) => new Set(cur).add(id));
+    setError(null);
+
     try {
-      await setRuleSetEnabled(id, enabled);
-      await reloadSets();
+      await setRuleSetEnabled(id, nextEnabled); // resolves once persisted, not once restarted
     } catch (err) {
-      setError(typeof err === "string" ? err : String(err));
+      // Only the latest click for this id should roll back / clear pending.
+      if (toggleGenRef.current.get(id) === gen) {
+        setSets((list) =>
+          list.map((s) => (s.id === id ? { ...s, enabled: prevEnabled } : s)),
+        );
+        setTogglingIds((cur) => {
+          const next = new Set(cur);
+          next.delete(id);
+          return next;
+        });
+        setError(typeof err === "string" ? err : String(err));
+      }
     }
   }
 
@@ -888,6 +964,13 @@ export function RulesPage({ embedded = false }: Props) {
                       aria-label="正在下载远程规则集"
                     />
                   )}
+                {togglingIds.has(s.id) && (
+                  <span
+                    className="lat-spinner ruleset-toggle-spinner"
+                    title="正在应用"
+                    aria-label="正在应用"
+                  />
+                )}
                 <GlassSwitchControl
                   checked={s.enabled}
                   size="sm"

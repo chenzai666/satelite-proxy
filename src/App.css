@@ -1844,7 +1844,8 @@ button.node-card:disabled,
   font-size: 0.72rem;
 }
 
-.ruleset-download-spinner {
+.ruleset-download-spinner,
+.ruleset-toggle-spinner {
   width: 12px;
   height: 12px;
   flex: 0 0 12px;

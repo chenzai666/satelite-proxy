@@ -2,6 +2,7 @@ use crate::app_log;
 use crate::error::AppResult;
 use crate::runtime::{ProxyStatus, Runtime};
 use crate::storage::{default_store_path, AppStore};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -21,6 +22,9 @@ pub struct AppState {
     /// One-click subscribe deep links waiting for the add-subscription UI.
     /// Cleared when the user closes the modal (not sticky across intentional dismiss).
     pending_import_urls: Mutex<Option<Vec<String>>>,
+    /// Rule-set id -> latest requested `enabled` value not yet confirmed applied.
+    /// Lets `rule_apply` coalesce rapid repeated toggles into one restart cycle.
+    pub pending_rule_set_toggle: Mutex<HashMap<String, bool>>,
 }
 
 /// Recover from a poisoned mutex so one panic cannot brick the whole app.
@@ -52,6 +56,7 @@ impl AppState {
             ui_visible: AtomicBool::new(true),
             exit_allowed: AtomicBool::new(false),
             pending_import_urls: Mutex::new(None),
+            pending_rule_set_toggle: Mutex::new(HashMap::new()),
         })
     }
 
@@ -78,6 +83,11 @@ impl AppState {
 
     pub fn lock_store(&self) -> MutexGuard<'_, AppStore> {
         recover_lock(&self.store, "store")
+    }
+
+    /// Short-lived bookkeeping lock; unrelated to the runtime/store lock order.
+    pub fn lock_pending_rule_set_toggle(&self) -> MutexGuard<'_, HashMap<String, bool>> {
+        recover_lock(&self.pending_rule_set_toggle, "pending_rule_set_toggle")
     }
 
     pub fn set_ui_visible(&self, visible: bool) {

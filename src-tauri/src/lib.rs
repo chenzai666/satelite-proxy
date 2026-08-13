@@ -9,6 +9,7 @@ mod domain;
 mod error;
 mod proxy;
 mod remote_rule_auto;
+mod rule_apply;
 mod runtime;
 mod services;
 mod smart_switch;

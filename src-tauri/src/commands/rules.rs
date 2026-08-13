@@ -396,7 +396,10 @@ pub fn set_rule_set_enabled(
     state
         .with_store_mut(|store| store.set_rule_set_enabled(&id, enabled))
         .map_err(|e| e.to_string())?;
-    apply_running(&app, &state)
+    // Persist resolves immediately; restart runs in the background and
+    // reports via the `rule-set-apply-status` event (see `rule_apply`).
+    crate::rule_apply::request_apply(app, id, enabled);
+    Ok(())
 }
 
 #[tauri::command]
