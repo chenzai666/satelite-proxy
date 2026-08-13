@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import { getProxyStatus } from "../api";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
-import type { MessageKey } from "../i18n";
+import type { MessageKey } from "../i18n/messages";
 import type { NavKey } from "../types";
 import { ThemeSwitch } from "./ThemeSwitch";
 import { UiModeMenu } from "../ui/UiModeMenu";
@@ -19,6 +19,12 @@ const ITEMS: NavItem[] = [
   { key: "logs", labelKey: "logs.title" },
   { key: "settings", labelKey: "settings.title" },
 ];
+
+// Fixed slot width (sized for the longest English label, "Overview"/"Profiles"/
+// "Settings" = 8 chars) plus the button's own left/right padding (0.5rem
+// 0.75rem, App.css:434). Every item shares this width so switching locale
+// only swaps the text — the pill never resizes.
+const ITEM_WIDTH = "calc(8ch + 1.5rem)";
 
 interface Props {
   active: NavKey;
@@ -104,6 +110,7 @@ export function TopNav({ active, onChange }: Props) {
                 if (el) itemRefs.current[item.key] = el;
               }}
               className={`topnav-item ${active === item.key ? "active" : ""}`}
+              style={{ width: ITEM_WIDTH }}
               onClick={() => onChange(item.key)}
             >
               {t(item.labelKey)}
