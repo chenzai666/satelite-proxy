@@ -34,6 +34,7 @@ import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n } from "../i18n";
+import { extractDomainSuffix } from "./FailuresPage";
 import type {
   ProxyNode,
   Rule,
@@ -54,6 +55,30 @@ const TYPE_OPTS: { value: RuleType; label: string }[] = [
   { value: "ip_cidr", label: "IP-CIDR" },
   { value: "process", label: "PROCESS" },
 ];
+
+/**
+ * If `payload` is a pasted http(s) URL, suggest what it would actually
+ * resolve to for the given rule type — DOMAIN keeps the full hostname,
+ * DOMAIN-SUFFIX collapses to the last two labels (via `extractDomainSuffix`,
+ * shared with the failures quick-add-rule flow). Returns null when the input
+ * isn't a URL, fails to parse, or the rule type has no sensible suggestion
+ * (KEYWORD/IP-CIDR/PROCESS — matching a keyword or literal against a full
+ * URL isn't meaningful).
+ */
+function suggestPayloadFromUrl(payload: string, ruleType: RuleType): string | null {
+  if (!/^https?:\/\//i.test(payload.trim())) return null;
+  if (ruleType !== "domain" && ruleType !== "domain_suffix") return null;
+  let hostname: string;
+  try {
+    hostname = new URL(payload.trim()).hostname;
+  } catch {
+    return null;
+  }
+  if (!hostname) return null;
+  const suggestion =
+    ruleType === "domain" ? hostname : extractDomainSuffix(hostname);
+  return suggestion || null;
+}
 
 const REMOTE_PAGE_SIZE = 100;
 
@@ -337,6 +362,11 @@ export function RulesPage({ embedded = false }: Props) {
     }
     return out;
   }, [target, smartInclude, smartExclude]);
+
+  const payloadSuggestion = useMemo(
+    () => suggestPayloadFromUrl(payload, ruleType),
+    [payload, ruleType],
+  );
 
   const smartMatchCount = useMemo(() => {
     if (target !== "smart") return 0;
@@ -1378,6 +1408,17 @@ export function RulesPage({ embedded = false }: Props) {
                   placeholder="google.com / youtube / 10.0.0.0/8"
                   autoFocus
                 />
+                {payloadSuggestion && (
+                  <GlassButton
+                    variant="primary"
+                    className="payload-suggestion-btn"
+                    title={t("rules.clickToReplace")}
+                    onClick={() => setPayload(payloadSuggestion)}
+                  >
+                    {t("rules.urlDetectedHint")}{" "}
+                    <span className="mono">{payloadSuggestion}</span>
+                  </GlassButton>
+                )}
               </label>
               {viewSet?.strategy === "smart" && <div className="field">
                 <span>{t("rules.outbound")}</span>
@@ -1501,11 +1542,12 @@ export function RulesPage({ embedded = false }: Props) {
                 />
               </label>
               <footer className="modal-footer">
-                <button type="button" className="secondary" onClick={() => setEditOpen(false)}>
+                <GlassButton onClick={() => setEditOpen(false)}>
                   {t("common.cancel")}
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
                   type="submit"
+                  variant="primary"
                   disabled={
                     busy ||
                     !payload.trim() ||
@@ -1515,7 +1557,7 @@ export function RulesPage({ embedded = false }: Props) {
                   }
                 >
                   {busy ? t("common.saving") : t("common.save")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>
@@ -1598,16 +1640,12 @@ export function RulesPage({ embedded = false }: Props) {
                   : t("rules.newSetLocalHint")}
               </p>
               <footer className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={newSetBusy}
-                  onClick={() => setNewSetOpen(false)}
-                >
+                <GlassButton disabled={newSetBusy} onClick={() => setNewSetOpen(false)}>
                   {t("common.cancel")}
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
                   type="submit"
+                  variant="primary"
                   disabled={
                     newSetBusy ||
                     !newSetName.trim() ||
@@ -1615,7 +1653,7 @@ export function RulesPage({ embedded = false }: Props) {
                   }
                 >
                   {newSetBusy ? t("rules.creating") : t("rules.create")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>
@@ -1653,20 +1691,16 @@ export function RulesPage({ embedded = false }: Props) {
                 />
               </label>
               <footer className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={renameSetBusy}
-                  onClick={() => setRenameSetTarget(null)}
-                >
+                <GlassButton disabled={renameSetBusy} onClick={() => setRenameSetTarget(null)}>
                   {t("common.cancel")}
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
                   type="submit"
+                  variant="primary"
                   disabled={renameSetBusy || !renameSetName.trim()}
                 >
                   {renameSetBusy ? t("common.saving") : t("common.save")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>

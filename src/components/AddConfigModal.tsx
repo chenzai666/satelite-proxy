@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { GlassButton } from "./GlassButton";
 import { GlassSeg } from "./GlassSeg";
 import { GlassSwitchControl } from "./GlassSwitchControl";
 import type { AddSourceKind } from "../types";
@@ -271,16 +272,16 @@ export function AddConfigModal({
           {error && <div className="form-error">{error}</div>}
 
           <footer className="modal-footer">
-            <button type="button" className="secondary" onClick={onClose} disabled={busy}>
+            <GlassButton onClick={onClose} disabled={busy}>
               取消
-            </button>
-            <button type="submit" disabled={!canSubmit}>
+            </GlassButton>
+            <GlassButton type="submit" variant="primary" disabled={!canSubmit}>
               {busy
                 ? isEdit
                   ? "保存中…"
                   : "导入中…"
                 : (submitLabel ?? (isEdit ? "保存" : "添加"))}
-            </button>
+            </GlassButton>
           </footer>
         </form>
       </div>

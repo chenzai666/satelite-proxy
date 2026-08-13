@@ -363,7 +363,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
           <header className="modal-header"><h2>{t("hosts.newSetModalTitle")}</h2><button type="button" className="icon-btn" onClick={() => setNewSetOpen(false)}>×</button></header>
           <form className="modal-body" onSubmit={(e) => void createSet(e)}>
             <label className="field"><span>{t("rules.setName")}</span><input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} autoFocus /></label>
-            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setNewSetOpen(false)}>{t("common.cancel")}</button><button type="submit" disabled={busy || !newSetName.trim()}>{busy ? t("common.saving") : t("rules.create")}</button></footer>
+            <footer className="modal-footer"><GlassButton onClick={() => setNewSetOpen(false)}>{t("common.cancel")}</GlassButton><GlassButton type="submit" variant="primary" disabled={busy || !newSetName.trim()}>{busy ? t("common.saving") : t("rules.create")}</GlassButton></footer>
           </form>
         </div>
       </div>}
@@ -375,7 +375,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
             <label className="field"><span>{t("dns.domainLabel")}</span><input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus /></label>
             <label className="field"><span>{t("dns.ipLabel")}</span><input value={addr} onChange={(e) => setAddr(e.target.value)} placeholder={t("hosts.ipPlaceholder")} /></label>
             <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}><span>{t("rules.enabled")}</span><GlassSwitchControl checked={entryEnabled} title={t("rules.enabled")} onChange={setEntryEnabled} /></label>
-            <footer className="modal-footer"><button type="button" className="secondary" onClick={() => setEntryOpen(false)}>{t("common.cancel")}</button><button type="submit" disabled={busy || !domain.trim() || !addr.trim()}>{busy ? t("common.saving") : t("common.save")}</button></footer>
+            <footer className="modal-footer"><GlassButton onClick={() => setEntryOpen(false)}>{t("common.cancel")}</GlassButton><GlassButton type="submit" variant="primary" disabled={busy || !domain.trim() || !addr.trim()}>{busy ? t("common.saving") : t("common.save")}</GlassButton></footer>
           </form>
         </div>
       </div>}

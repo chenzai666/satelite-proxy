@@ -3470,6 +3470,14 @@ button.check.on {
   margin-top: 0.25rem;
 }
 
+/* Payload URL-suggestion button (RulesPage): a GlassButton sized to its
+   content, left-aligned under the input rather than stretched by .field's
+   flex-column layout. */
+.payload-suggestion-btn {
+  align-self: flex-start;
+  font-size: 0.72rem;
+}
+
 .modal-body {
   padding: 1rem;
   display: flex;

@@ -432,16 +432,15 @@ export function FailuresPage({ embedded = false }: Props) {
           </div>
 
           <footer className="modal-footer">
-            <button
-              type="button"
-              className="secondary"
+            <GlassButton
               disabled={addBusy}
               onClick={() => setAddOpen(false)}
             >
               {t("common.cancel")}
-            </button>
-            <button
+            </GlassButton>
+            <GlassButton
               type="submit"
+              variant="primary"
               disabled={
                 addBusy ||
                 !payload.trim() ||
@@ -449,7 +448,7 @@ export function FailuresPage({ embedded = false }: Props) {
               }
             >
               {addBusy ? t("common.saving") : t("common.save")}
-            </button>
+            </GlassButton>
           </footer>
         </form>
       </div>

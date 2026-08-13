@@ -455,6 +455,8 @@ const en = {
   "rules.creating": "Creating…",
   "rules.create": "Create",
   "rules.renameSetTitle": "Rename rule set",
+  "rules.urlDetectedHint": "Detected a URL — click to replace with",
+  "rules.clickToReplace": "Click to replace",
 
   // dns
   "dns.title": "DNS",
@@ -1039,6 +1041,8 @@ const zh: Record<MessageKey, string> = {
   "rules.creating": "创建中…",
   "rules.create": "创建",
   "rules.renameSetTitle": "重命名规则集",
+  "rules.urlDetectedHint": "检测到 URL，点击替换为",
+  "rules.clickToReplace": "点击替换",
 
 
   "dns.title": "DNS",

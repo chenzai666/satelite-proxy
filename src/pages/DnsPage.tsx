@@ -1013,17 +1013,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <footer className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={() => setNewSetOpen(false)}
-                >
+                <GlassButton disabled={busy} onClick={() => setNewSetOpen(false)}>
                   {t("common.cancel")}
-                </button>
-                <button type="submit" disabled={busy || !newSetName.trim()}>
+                </GlassButton>
+                <GlassButton
+                  type="submit"
+                  variant="primary"
+                  disabled={busy || !newSetName.trim()}
+                >
                   {busy ? t("rules.creating") : t("rules.create")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>
@@ -1104,17 +1103,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <footer className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={resetRuleForm}
-                >
+                <GlassButton disabled={busy} onClick={resetRuleForm}>
                   {t("common.cancel")}
-                </button>
-                <button type="submit" disabled={busy || !newRulePayload.trim()}>
+                </GlassButton>
+                <GlassButton
+                  type="submit"
+                  variant="primary"
+                  disabled={busy || !newRulePayload.trim()}
+                >
                   {busy ? t("common.saving") : editRuleId ? t("common.save") : t("common.add")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>
@@ -1178,20 +1176,16 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
                 />
               </label>
               <footer className="modal-footer">
-                <button
-                  type="button"
-                  className="secondary"
-                  disabled={busy}
-                  onClick={resetHostForm}
-                >
+                <GlassButton disabled={busy} onClick={resetHostForm}>
                   {t("common.cancel")}
-                </button>
-                <button
+                </GlassButton>
+                <GlassButton
                   type="submit"
+                  variant="primary"
                   disabled={busy || !newHostDomain.trim() || !newHostAddr.trim()}
                 >
                   {busy ? t("common.saving") : editHostId ? t("common.save") : t("common.add")}
-                </button>
+                </GlassButton>
               </footer>
             </form>
           </div>
