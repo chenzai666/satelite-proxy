@@ -8,6 +8,7 @@ import {
   updateSettings,
 } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
+import { SolidSelect } from "../../components/SolidSelect";
 import { GlassSwitchControl } from "../../components/GlassSwitchControl";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useI18n, type Locale } from "../../i18n";
@@ -18,6 +19,7 @@ import type {
   OutboundMode,
   ProxyStatus,
   ThemeId,
+  TrayIconStyle,
 } from "../../types";
 import { useUiMode } from "../UiModeContext";
 
@@ -337,6 +339,22 @@ export function SimpleSettingsPage() {
               options={[
                 { value: "day", label: "Day" },
                 { value: "aerospace", label: "Mission" },
+              ]}
+            />
+          </div>
+          <div className="simple-setting-row simple-setting-col">
+            <div className="simple-setting-title">{t("settings.trayIcon")}</div>
+            <SolidSelect
+              className="solid-select-compact"
+              aria-label={t("settings.trayIcon")}
+              value={settings?.tray_icon ?? "badge"}
+              disabled={busy || !settings}
+              onChange={(v) => void patchSettings({ trayIcon: v as TrayIconStyle })}
+              options={[
+                { value: "badge", label: t("settings.trayIconBadge") },
+                { value: "mark", label: t("settings.trayIconMark") },
+                { value: "ghost", label: t("settings.trayIconGhost") },
+                { value: "buddy", label: t("settings.trayIconBuddy") },
               ]}
             />
           </div>

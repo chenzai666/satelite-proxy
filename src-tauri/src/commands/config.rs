@@ -52,6 +52,7 @@ pub fn update_settings(
     locale: Option<String>,
     theme: Option<String>,
     accent: Option<String>,
+    tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
     auto_select: Option<String>, // off | smart | kernel
@@ -131,6 +132,11 @@ pub fn update_settings(
                     store.settings.accent = ac;
                 }
             }
+            if let Some(raw) = tray_icon {
+                if let Some(style) = crate::domain::TrayIconStyle::parse(&raw) {
+                    store.settings.tray_icon = style;
+                }
+            }
             if let Some(v) = unload_ui_on_tray {
                 store.settings.unload_ui_on_tray = v;
             }
@@ -200,6 +206,7 @@ pub fn update_settings(
     if let Some(enabled) = launch_changed {
         crate::autostart::set_launch_at_login(enabled).map_err(|e| e.to_string())?;
     }
+    crate::tray::refresh_icon(&app);
 
     // route.final must restart: sing-box Clash PUT /configs often returns OK without
     // re-applying route.final (file updates, process keeps old final).

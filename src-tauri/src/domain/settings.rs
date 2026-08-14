@@ -102,6 +102,42 @@ impl AutoSelectMode {
     }
 }
 
+/// Which tray / menu-bar mark to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayIconStyle {
+    /// Black rounded tile + white / mint satellite.
+    #[default]
+    Badge,
+    /// Flat satellite on transparent; stopped is a macOS template.
+    Mark,
+    /// Pac-Man sheet ghost; white eyes stopped, mint eyes running.
+    Ghost,
+    /// head.jpg buddy; black shades off, green shades on.
+    Buddy,
+}
+
+impl TrayIconStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Badge => "badge",
+            Self::Mark => "mark",
+            Self::Ghost => "ghost",
+            Self::Buddy => "buddy",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "badge" | "tile" | "black" => Some(Self::Badge),
+            "mark" | "white" | "flat" | "legacy" | "transparent" => Some(Self::Mark),
+            "ghost" => Some(Self::Ghost),
+            "buddy" | "cool" | "laoyou" | "head" => Some(Self::Buddy),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// mixed inbound listen port
@@ -162,6 +198,9 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// Menu-bar / tray mark: badge | mark | ghost | buddy.
+    #[serde(default)]
+    pub tray_icon: TrayIconStyle,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
     /// memory. Default false — hide only so reopen is instant. When true, next
     /// wake recreates the WebView (brief black screen).
@@ -230,6 +269,7 @@ impl Default for AppSettings {
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
+            tray_icon: TrayIconStyle::default(),
             unload_ui_on_tray: false,
             auto_select: AutoSelectMode::Off,
             find_process: true,
@@ -292,5 +332,14 @@ mod tests {
         settings.migrate_capture_mode();
         assert_eq!(settings.capture_mode, CaptureMode::System);
         assert!(!settings.tun_enabled);
+    }
+
+    #[test]
+    fn tray_icon_style_parses_and_defaults_to_badge() {
+        assert_eq!(AppSettings::default().tray_icon, TrayIconStyle::Badge);
+        assert_eq!(TrayIconStyle::parse("ghost"), Some(TrayIconStyle::Ghost));
+        assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
+        assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
+        assert_eq!(TrayIconStyle::parse("nope"), None);
     }
 }

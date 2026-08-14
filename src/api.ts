@@ -130,6 +130,7 @@ export function updateSettings(payload: {
   locale?: string | null;
   theme?: string | null;
   accent?: string | null;
+  trayIcon?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
   smartSwitch?: boolean | null;
@@ -154,6 +155,7 @@ export function updateSettings(payload: {
     locale: payload.locale ?? null,
     theme: payload.theme ?? null,
     accent: payload.accent ?? null,
+    trayIcon: payload.trayIcon ?? null,
     unloadUiOnTray: payload.unloadUiOnTray ?? null,
     smartSwitch: payload.smartSwitch ?? null,
     autoSelect: payload.autoSelect ?? null,

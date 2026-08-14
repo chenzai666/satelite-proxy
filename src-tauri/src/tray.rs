@@ -1,5 +1,6 @@
 //! System tray: open window, start/stop, quit (with cleanup).
 
+use crate::domain::TrayIconStyle;
 use crate::state::AppState;
 use crate::window_ctrl;
 use std::io::Write;
@@ -114,6 +115,38 @@ fn copy_proxy_env(app: &AppHandle<impl TauriRuntime>) {
 
 const TRAY_ID: &str = "main";
 
+fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
+    match (style, running) {
+        (TrayIconStyle::Badge, true) => {
+            (include_bytes!("../icons/tray/badge-on.png"), false)
+        }
+        (TrayIconStyle::Badge, false) => {
+            (include_bytes!("../icons/tray/badge-off.png"), false)
+        }
+        (TrayIconStyle::Mark, true) => (include_bytes!("../icons/tray/mark-on.png"), false),
+        // Transparent flat mark: black silhouette, macOS tints for the menu bar.
+        (TrayIconStyle::Mark, false) => (include_bytes!("../icons/tray/mark-off.png"), true),
+        (TrayIconStyle::Ghost, true) => {
+            (include_bytes!("../icons/tray/ghost-on.png"), false)
+        }
+        (TrayIconStyle::Ghost, false) => {
+            (include_bytes!("../icons/tray/ghost-off.png"), false)
+        }
+        (TrayIconStyle::Buddy, true) => {
+            (include_bytes!("../icons/tray/buddy-on.png"), false)
+        }
+        (TrayIconStyle::Buddy, false) => {
+            (include_bytes!("../icons/tray/buddy-off.png"), false)
+        }
+    }
+}
+
+fn current_style(app: &AppHandle<impl TauriRuntime>) -> TrayIconStyle {
+    app.try_state::<AppState>()
+        .and_then(|s| s.with_store(|st| Ok(st.settings.tray_icon)).ok())
+        .unwrap_or_default()
+}
+
 /// Re-select and apply the tray icon based on current core run state.
 /// Safe to call frequently; `is_core_running()` is a short-lived lock.
 pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
@@ -124,18 +157,11 @@ pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
         .try_state::<AppState>()
         .map(|s| s.is_core_running())
         .unwrap_or(false);
-
-    let bytes: &[u8] = if running {
-        include_bytes!("../icons/tray-icon-running.png")
-    } else {
-        include_bytes!("../icons/tray-icon-template.png")
-    };
+    let (bytes, as_template) = tray_png(current_style(app), running);
     let Ok(icon) = Image::from_bytes(bytes) else {
         return;
     };
-    // Running icon is colored (must NOT be template-recolored); stopped icon
-    // stays the monochrome template that macOS auto-tints for light/dark menu bars.
-    let _ = tray.set_icon_with_as_template(Some(icon), !running);
+    let _ = tray.set_icon_with_as_template(Some(icon), as_template);
 }
 
 pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -191,10 +217,10 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
             }
         });
 
-    // Monochrome satellite mark for menu bar (black silhouette = macOS template).
-    // Template mode lets the system recolor for light/dark menu bars.
-    if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray-icon-template.png")) {
-        builder = builder.icon(icon).icon_as_template(true);
+    // Placeholder; refresh_icon applies the user's chosen set + run state.
+    let (bytes, as_template) = tray_png(current_style(app), false);
+    if let Ok(icon) = Image::from_bytes(bytes) {
+        builder = builder.icon(icon).icon_as_template(as_template);
     } else if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray-icon.png")) {
         builder = builder.icon(icon);
     } else if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/32x32.png")) {

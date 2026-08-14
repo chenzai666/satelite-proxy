@@ -15,7 +15,7 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
-import type { AppSettings, CoreInfo, ThemeId } from "../types";
+import type { AppSettings, CoreInfo, ThemeId, TrayIconStyle } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 import { HostsPage } from "./HostsPage";
@@ -324,6 +324,27 @@ export function SettingsPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+              <div className="settings-app-row settings-app-pref settings-tray-icon-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.trayIcon")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.trayIconDesc")}
+                  </div>
+                </div>
+                <SolidSelect
+                  className="solid-select-compact"
+                  aria-label={t("settings.trayIcon")}
+                  value={settings?.tray_icon ?? "badge"}
+                  disabled={busy}
+                  onChange={(v) => void patchApp({ trayIcon: v as TrayIconStyle })}
+                  options={[
+                    { value: "badge", label: t("settings.trayIconBadge") },
+                    { value: "mark", label: t("settings.trayIconMark") },
+                    { value: "ghost", label: t("settings.trayIconGhost") },
+                    { value: "buddy", label: t("settings.trayIconBuddy") },
+                  ]}
+                />
               </div>
             </div>
             <div className="settings-app-toggles">

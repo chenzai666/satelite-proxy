@@ -1097,6 +1097,17 @@ tr.row-active {
   cursor: default;
 }
 
+.settings-tray-icon-row {
+  grid-column: 1 / -1;
+  border-left: none !important;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.settings-tray-icon-row .settings-app-text {
+  flex: 1 1 auto;
+  min-width: 10rem;
+}
+
 .settings-app-title {
   font-size: 0.88rem;
   font-weight: 600;
@@ -4852,6 +4863,13 @@ select:not([size]),
   position: relative;
   width: 100%;
   min-width: 0;
+}
+
+.solid-select.solid-select-compact {
+  width: 6.75rem;
+  max-width: 6.75rem;
+  flex: 0 0 6.75rem;
+  align-self: center;
 }
 
 .solid-select.open {
