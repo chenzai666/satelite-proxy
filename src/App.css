@@ -2016,10 +2016,6 @@ tr.rule-row:hover {
   padding: 12px 14px;
 }
 
-.remote-rule-url {
-  overflow-wrap: anywhere;
-}
-
 .remote-rules-wrap.table-wrap {
   overflow: hidden;
 }
@@ -5976,4 +5972,14 @@ button.simple-sub-row,
 button.simple-link-row,
 button.simple-section-toggle {
   text-transform: none;
+}
+.global-apply-error {
+  position: fixed;
+  z-index: 10000;
+  top: 12px;
+  left: 50%;
+  width: min(680px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  cursor: pointer;
+  text-align: left;
 }

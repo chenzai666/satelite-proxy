@@ -88,7 +88,6 @@ impl PassiveNodeStats {
     }
 }
 /// Skip redundant HTTP refresh when journal pushed a snapshot this recently.
-const FRESH_SAMPLE: Duration = Duration::from_millis(250);
 
 pub struct Runtime {
     pub core: CoreManager,
@@ -140,12 +139,6 @@ impl Runtime {
         self.api.clone()
     }
 
-    pub fn sample_is_fresh(&self) -> bool {
-        self.last_sample_at
-            .map(|t| t.elapsed() < FRESH_SAMPLE)
-            .unwrap_or(false)
-    }
-
     pub fn status(&mut self, store: &AppStore) -> ProxyStatus {
         self.core.poll();
         // Core may have exited outside stop_proxy — keep uptime field consistent.
@@ -155,7 +148,6 @@ impl Runtime {
             // Recover if we missed setting it (e.g. process still up after soft restart path).
             self.core_started_at = Some(now_unix_secs());
         }
-        self.refresh_traffic_if_stale();
         ProxyStatus {
             running: self.core.is_running(),
             core_state: self.core.state(),
@@ -286,36 +278,6 @@ impl Runtime {
         self.last_sample_at = Some(now);
     }
 
-    /// HTTP sample when WebSocket journal is down (I/O happens inside — prefer journal).
-    pub fn sample_connections_http(&mut self) {
-        self.core.poll();
-        let Some(api) = self.api.clone() else {
-            self.traffic_prev = None;
-            self.traffic_speed = (0, 0);
-            self.live_connections.clear();
-            return;
-        };
-        match api.list_connections() {
-            Ok(s) => self.apply_snapshot(s),
-            Err(e) => {
-                eprintln!("[satelite] connections sample failed: {e}");
-            }
-        }
-    }
-
-    fn refresh_traffic_if_stale(&mut self) {
-        if self.api.is_none() {
-            self.traffic_prev = None;
-            self.traffic_speed = (0, 0);
-            self.live_connections.clear();
-            return;
-        }
-        if self.sample_is_fresh() {
-            return;
-        }
-        self.sample_connections_http();
-    }
-
     /// Diff-based journal: upsert live, mark disappeared as closed.
     fn ingest_connections(&mut self, connections: Vec<ConnectionInfo>) {
         let now_ms = now_unix_ms();
@@ -382,7 +344,6 @@ impl Runtime {
 
     pub fn live_connections(&mut self, store: &AppStore) -> Vec<ConnectionView> {
         self.core.poll();
-        self.refresh_traffic_if_stale();
         let tag_info = node_tag_info_map(store);
         self.live_connections
             .iter()
@@ -397,8 +358,6 @@ impl Runtime {
         limit: Option<usize>,
     ) -> Vec<ConnectionView> {
         self.core.poll();
-        // Journal fills history continuously; only HTTP-refresh if stale.
-        self.refresh_traffic_if_stale();
         let tag_info = node_tag_info_map(store);
         let q = query.unwrap_or("").trim();
         let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
@@ -422,7 +381,6 @@ impl Runtime {
         limit: Option<usize>,
     ) -> Vec<ConnectionView> {
         self.core.poll();
-        self.refresh_traffic_if_stale();
         let tag_info = node_tag_info_map(store);
         let q = query.unwrap_or("").trim();
         let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
@@ -550,24 +508,26 @@ impl Runtime {
                 .last_error()
                 .map(|s| s.to_string())
                 .or_else(|| {
-                    let log = log_dir.join("sing-box.log");
-                    std::fs::read(&log).ok().and_then(|b| {
-                        let s = String::from_utf8_lossy(&b);
-                        let tail: String = s
-                            .chars()
-                            .rev()
-                            .take(1200)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect();
-                        let cleaned = tail.replace('\0', "");
-                        if cleaned.trim().is_empty() {
-                            None
-                        } else {
-                            Some(cleaned)
-                        }
-                    })
+                    self.core
+                        .log_path()
+                        .and_then(|log| std::fs::read(log).ok())
+                        .and_then(|b| {
+                            let s = String::from_utf8_lossy(&b);
+                            let tail: String = s
+                                .chars()
+                                .rev()
+                                .take(1200)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect();
+                            let cleaned = tail.replace('\0', "");
+                            if cleaned.trim().is_empty() {
+                                None
+                            } else {
+                                Some(cleaned)
+                            }
+                        })
                 })
                 .unwrap_or_default();
             let _ = self.core.stop();
@@ -612,22 +572,45 @@ impl Runtime {
             self.proxy_snapshot = Some(snap);
             self.system_proxy_on = true;
         } else {
-            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
+            // Only clear the in-memory state after the operating-system proxy
+            // was actually restored. Otherwise the UI would report success
+            // while the machine can still be pointing at our local port.
+            self.system_proxy.disable(self.proxy_snapshot.as_ref())?;
             self.system_proxy_on = false;
             self.proxy_snapshot = None;
         }
         Ok(self.status(store))
     }
 
-    pub fn stop_proxy(&mut self, store: &AppStore) -> AppResult<ProxyStatus> {
-        // System proxy is independent — do not turn it off when stopping core.
+    /// Stop only the managed sing-box process.
+    ///
+    /// Internal restarts deliberately use this path so the saved/effective
+    /// system-proxy state survives the short process replacement. A user
+    /// initiated stop must use `stop_proxy`, which restores the OS first.
+    fn stop_core(&mut self, _store: &AppStore) -> AppResult<()> {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
         self.core.stop()?;
-        CoreManager::ensure_ports_free(&[store.settings.mixed_port, store.settings.api_port])?;
+        // `CoreManager::stop` waits for the process we actually own. Never
+        // force-kill arbitrary listeners here: an empty/test runtime has no
+        // ownership proof and could otherwise terminate another running app
+        // instance (or an unrelated process using the configured ports).
         self.core_started_at = None;
         self.live_connections.clear();
+        Ok(())
+    }
+
+    pub fn stop_proxy(&mut self, store: &AppStore) -> AppResult<ProxyStatus> {
+        // Restore the OS proxy before releasing the local listener. If this
+        // fails, keep the core alive: stopping it would strand the machine on
+        // a dead 127.0.0.1 proxy and appear as a system-wide network outage.
+        if self.system_proxy_on {
+            self.system_proxy.disable(self.proxy_snapshot.as_ref())?;
+            self.system_proxy_on = false;
+            self.proxy_snapshot = None;
+        }
+        self.stop_core(store)?;
         // keep request_history across stop so user can review
         Ok(self.status(store))
     }
@@ -639,7 +622,7 @@ impl Runtime {
         store: &mut AppStore,
     ) -> AppResult<ProxyStatus> {
         let sys = self.system_proxy_on;
-        let _ = self.stop_proxy(store);
+        self.stop_core(store)?;
         self.start_proxy(app_data_dir, resource_dir, store, sys)
     }
 
@@ -787,9 +770,7 @@ impl ConnectionView {
         let node_name = info
             .map(|i| i.name.clone())
             .unwrap_or_else(|| c.node.clone());
-        let subscription_name = info
-            .map(|i| i.subscription.clone())
-            .unwrap_or_default();
+        let subscription_name = info.map(|i| i.subscription.clone()).unwrap_or_default();
         let chains_display = c.chains.join(" → ");
         Self {
             id: c.id.clone(),
@@ -821,9 +802,7 @@ impl ConnectionView {
         let node_name = info
             .map(|i| i.name.clone())
             .unwrap_or_else(|| r.node.clone());
-        let subscription_name = info
-            .map(|i| i.subscription.clone())
-            .unwrap_or_default();
+        let subscription_name = info.map(|i| i.subscription.clone()).unwrap_or_default();
         Self {
             id: r.id.clone(),
             destination: r.destination.clone(),
@@ -861,6 +840,91 @@ fn format_rule(rule: &str, payload: &str) -> String {
         return payload.to_string();
     }
     format!("{rule}({payload})")
+}
+
+#[cfg(test)]
+mod stop_behavior_tests {
+    use super::*;
+    use crate::proxy::{SystemProxy, SystemProxySnapshot};
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingSystemProxy {
+        disabled: Arc<Mutex<usize>>,
+        fail_disable: bool,
+    }
+
+    impl SystemProxy for RecordingSystemProxy {
+        fn enable(&self, _host: &str, _port: u16) -> AppResult<SystemProxySnapshot> {
+            Ok(SystemProxySnapshot {
+                detail: "test".into(),
+            })
+        }
+
+        fn disable(&self, _snapshot: Option<&SystemProxySnapshot>) -> AppResult<()> {
+            *self.disabled.lock().expect("disabled counter") += 1;
+            if self.fail_disable {
+                Err(AppError::Core("restore failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn runtime_with_system_proxy(fail_disable: bool) -> (Runtime, Arc<Mutex<usize>>) {
+        let disabled = Arc::new(Mutex::new(0));
+        let mut runtime = Runtime::new();
+        runtime.system_proxy = Box::new(RecordingSystemProxy {
+            disabled: Arc::clone(&disabled),
+            fail_disable,
+        });
+        runtime.system_proxy_on = true;
+        runtime.proxy_snapshot = Some(SystemProxySnapshot {
+            detail: "previous system proxy".into(),
+        });
+        (runtime, disabled)
+    }
+
+    #[test]
+    fn user_stop_restores_system_proxy_before_reporting_stopped() {
+        let store = AppStore::default();
+        let (mut runtime, disabled) = runtime_with_system_proxy(false);
+
+        let status = runtime.stop_proxy(&store).expect("stop proxy");
+
+        assert_eq!(*disabled.lock().expect("disabled counter"), 1);
+        assert!(!runtime.system_proxy_on);
+        assert!(runtime.proxy_snapshot.is_none());
+        assert!(!status.system_proxy);
+        assert!(!status.running);
+    }
+
+    #[test]
+    fn user_stop_does_not_clear_state_when_system_proxy_restore_fails() {
+        let store = AppStore::default();
+        let (mut runtime, disabled) = runtime_with_system_proxy(true);
+
+        let error = runtime.stop_proxy(&store).expect_err("restore must fail");
+
+        assert!(error.to_string().contains("restore failed"));
+        assert_eq!(*disabled.lock().expect("disabled counter"), 1);
+        assert!(runtime.system_proxy_on);
+        assert!(runtime.proxy_snapshot.is_some());
+    }
+
+    #[test]
+    fn status_never_waits_for_clash_api_network_io() {
+        let store = AppStore::default();
+        let mut runtime = Runtime::new();
+        runtime.api = Some(ClashApi::new("192.0.2.1", 9, "unreachable"));
+
+        let started = Instant::now();
+        let _ = runtime.status(&store);
+
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "status must remain a memory-only operation"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

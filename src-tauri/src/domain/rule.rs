@@ -357,7 +357,26 @@ fn default_remote_format() -> String {
     "source".into()
 }
 fn default_update_interval() -> String {
-    "1h".into()
+    "disabled".into()
+}
+
+pub fn normalize_remote_update_interval(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "disabled" => Some("disabled"),
+        "1h" => Some("1h"),
+        "12h" => Some("12h"),
+        "24h" => Some("24h"),
+        _ => None,
+    }
+}
+
+pub fn remote_update_interval_secs(value: &str) -> Option<i64> {
+    match normalize_remote_update_interval(value)? {
+        "1h" => Some(60 * 60),
+        "12h" => Some(12 * 60 * 60),
+        "24h" => Some(24 * 60 * 60),
+        _ => None,
+    }
 }
 fn default_download_status() -> String {
     "idle".into()
@@ -412,6 +431,38 @@ impl RuleSet {
         });
         set.strategy = RuleSetStrategy::from_target(target);
         set
+    }
+}
+
+#[cfg(test)]
+mod remote_update_interval_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_supported_remote_update_intervals() {
+        assert_eq!(
+            normalize_remote_update_interval("disabled"),
+            Some("disabled")
+        );
+        assert_eq!(normalize_remote_update_interval("1H"), Some("1h"));
+        assert_eq!(normalize_remote_update_interval("12h"), Some("12h"));
+        assert_eq!(normalize_remote_update_interval("24h"), Some("24h"));
+        assert_eq!(normalize_remote_update_interval("6h"), None);
+    }
+
+    #[test]
+    fn disabled_has_no_schedule_and_legacy_default_is_disabled() {
+        assert_eq!(remote_update_interval_secs("disabled"), None);
+        assert_eq!(remote_update_interval_secs("1h"), Some(3_600));
+        assert_eq!(remote_update_interval_secs("12h"), Some(43_200));
+        assert_eq!(remote_update_interval_secs("24h"), Some(86_400));
+
+        let value = serde_json::json!({
+            "url": "https://example.com/rules.json",
+            "target": "proxy"
+        });
+        let remote: RemoteRuleSetConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(remote.update_interval, "disabled");
     }
 }
 

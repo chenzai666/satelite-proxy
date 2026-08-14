@@ -150,12 +150,16 @@ impl ClashApi {
     }
 
     /// Current selected outbound tag of a proxy group (`GET /proxies/{group}` → `now`).
-    pub fn proxy_group_now(&self, group: &str) -> AppResult<Option<String>> {
+    pub fn proxy_group_now_with_timeout(
+        &self,
+        group: &str,
+        timeout: Duration,
+    ) -> AppResult<Option<String>> {
         let encoded = urlencoding::encode(group);
         let resp = shared_agent()
             .get(&format!("{}/proxies/{encoded}", self.base))
             .set("Authorization", &auth(&self.secret))
-            .timeout(Duration::from_secs(3))
+            .timeout(timeout)
             .call()
             .map_err(map_ureq)?;
         if !(200..300).contains(&resp.status()) {

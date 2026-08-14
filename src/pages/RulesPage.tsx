@@ -18,7 +18,7 @@ import {
   listRuleSets,
   removeRule,
   refreshRemoteRuleSet,
-  renameRuleSet,
+  updateRuleSet,
   reorderRuleSets,
   resetRuleSet,
   resetBuiltinRuleSet,
@@ -117,10 +117,17 @@ export function RulesPage({ embedded = false }: Props) {
   const [newSetKind, setNewSetKind] = useState<"local" | "remote">("local");
   const [newSetUrl, setNewSetUrl] = useState("");
   const [newSetTarget, setNewSetTarget] = useState<RouteFinal>("proxy");
+  const [newSetUpdateInterval, setNewSetUpdateInterval] = useState<
+    "disabled" | "1h" | "12h" | "24h"
+  >("disabled");
   const [newSetBusy, setNewSetBusy] = useState(false);
-  const [renameSetTarget, setRenameSetTarget] = useState<RuleSetSummary | null>(null);
-  const [renameSetName, setRenameSetName] = useState("");
-  const [renameSetBusy, setRenameSetBusy] = useState(false);
+  const [editSetTarget, setEditSetTarget] = useState<RuleSetSummary | null>(null);
+  const [editSetName, setEditSetName] = useState("");
+  const [editSetUrl, setEditSetUrl] = useState("");
+  const [editSetUpdateInterval, setEditSetUpdateInterval] = useState<
+    "disabled" | "1h" | "12h" | "24h"
+  >("disabled");
+  const [editSetBusy, setEditSetBusy] = useState(false);
   /** Row ⋮ menu open for this rule id */
   const [menuRuleId, setMenuRuleId] = useState<string | null>(null);
   /** Rule-set card ⋮ menu open for this set id. */
@@ -649,6 +656,7 @@ export function RulesPage({ embedded = false }: Props) {
     setNewSetKind("local");
     setNewSetUrl("");
     setNewSetTarget("proxy");
+    setNewSetUpdateInterval("disabled");
     setNewSetOpen(true);
     setError(null);
   }
@@ -671,6 +679,7 @@ export function RulesPage({ embedded = false }: Props) {
         name,
         newSetKind === "remote" ? newSetUrl.trim() : null,
         newSetKind === "remote" ? newSetTarget : null,
+        newSetKind === "remote" ? newSetUpdateInterval : null,
       );
       const list = await listRuleSets();
       setSets(list);
@@ -703,25 +712,42 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  function openRenameSet(target: RuleSetSummary) {
+  function openEditSet(target: RuleSetSummary) {
     setMenuSetId(null);
-    setRenameSetTarget(target);
-    setRenameSetName(target.name);
+    setEditSetTarget(target);
+    setEditSetName(target.name);
+    setEditSetUrl(target.remote?.url ?? "");
+    const interval = target.remote?.update_interval;
+    setEditSetUpdateInterval(
+      interval === "1h" || interval === "12h" || interval === "24h"
+        ? interval
+        : "disabled",
+    );
   }
 
-  async function onRenameSet(e: FormEvent) {
+  async function onEditSet(e: FormEvent) {
     e.preventDefault();
-    if (!renameSetTarget || !renameSetName.trim() || renameSetBusy) return;
-    setRenameSetBusy(true);
+    if (!editSetTarget || !editSetName.trim() || editSetBusy) return;
+    const id = editSetTarget.id;
+    const remote = editSetTarget.remote;
+    const nextUrl = editSetUrl.trim();
+    const urlChanged = !!remote && remote.url !== nextUrl;
+    setEditSetBusy(true);
     setError(null);
     try {
-      await renameRuleSet(renameSetTarget.id, renameSetName.trim());
+      await updateRuleSet(
+        id,
+        editSetName.trim(),
+        remote ? nextUrl : null,
+        remote ? editSetUpdateInterval : null,
+      );
       await reloadSets();
-      setRenameSetTarget(null);
+      setEditSetTarget(null);
+      if (urlChanged) void onRefreshRemoteSet(id);
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
     } finally {
-      setRenameSetBusy(false);
+      setEditSetBusy(false);
     }
   }
 
@@ -1038,10 +1064,10 @@ export function RulesPage({ embedded = false }: Props) {
                         className="rule-menu-item"
                         onClick={(e) => {
                           e.stopPropagation();
-                          openRenameSet(s);
+                          openEditSet(s);
                         }}
                       >
-                        {t("rules.rename")}
+                        {t("rules.editSet")}
                       </button>
                       {isFactorySet(s) && (
                         <button
@@ -1095,6 +1121,19 @@ export function RulesPage({ embedded = false }: Props) {
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
                 {t("rules.rulesCount", { n: s.rule_count })} · {s.strategy} · dns {s.strategy === "block" ? "reject" : s.dns_strategy}
+                {s.remote && (
+                  <> · {t("rules.autoUpdateShort", {
+                    interval: t(
+                      s.remote.update_interval === "1h"
+                        ? "rules.autoUpdate1h"
+                        : s.remote.update_interval === "12h"
+                          ? "rules.autoUpdate12h"
+                          : s.remote.update_interval === "24h"
+                            ? "rules.autoUpdate24h"
+                            : "rules.autoUpdateDisabled",
+                    ),
+                  })}</>
+                )}
               </div>
             </div>
           ))}
@@ -1163,7 +1202,6 @@ export function RulesPage({ embedded = false }: Props) {
           ) : viewSet?.remote ? (
             <>
               <div className="card remote-rule-status">
-                <div className="muted remote-rule-url">{viewSet.remote.url}</div>
                 <div className="muted">
                   {viewSet.remote.download_status === "downloading"
                     ? t("rules.remoteDownloadingHint")
@@ -1632,6 +1670,24 @@ export function RulesPage({ embedded = false }: Props) {
                       ]}
                     />
                   </label>
+                  <label className="field">
+                    <span>{t("rules.autoUpdate")}</span>
+                    <GlassSeg
+                      value={newSetUpdateInterval}
+                      ariaLabel={t("rules.autoUpdate")}
+                      onChange={(value) =>
+                        setNewSetUpdateInterval(
+                          value as "disabled" | "1h" | "12h" | "24h",
+                        )
+                      }
+                      options={[
+                        { value: "disabled", label: t("rules.autoUpdateDisabled") },
+                        { value: "1h", label: t("rules.autoUpdate1h") },
+                        { value: "12h", label: t("rules.autoUpdate12h") },
+                        { value: "24h", label: t("rules.autoUpdate24h") },
+                      ]}
+                    />
+                  </label>
                 </>
               )}
               <p className="muted" style={{ fontSize: 12, margin: 0 }}>
@@ -1660,46 +1716,83 @@ export function RulesPage({ embedded = false }: Props) {
         </div>
       )}
 
-      {renameSetTarget && (
+      {editSetTarget && (
         <div
           className="modal-backdrop"
-          onClick={() => !renameSetBusy && setRenameSetTarget(null)}
+          onClick={() => !editSetBusy && setEditSetTarget(null)}
         >
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-header">
-              <h2>{t("rules.renameSetTitle")}</h2>
+              <h2>{t("rules.editSetTitle")}</h2>
               <button
                 type="button"
                 className="icon-btn"
-                disabled={renameSetBusy}
-                onClick={() => setRenameSetTarget(null)}
+                disabled={editSetBusy}
+                onClick={() => setEditSetTarget(null)}
               >
                 ×
               </button>
             </header>
-            <form className="modal-body" onSubmit={(e) => void onRenameSet(e)}>
+            <form className="modal-body" onSubmit={(e) => void onEditSet(e)}>
               <label className="field">
                 <span>{t("rules.setName")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  value={renameSetName}
-                  onChange={(e) => setRenameSetName(e.target.value)}
+                  value={editSetName}
+                  onChange={(e) => setEditSetName(e.target.value)}
                   autoFocus
                   maxLength={64}
                 />
               </label>
+              {editSetTarget.remote && (
+                <>
+                  <label className="field">
+                    <span>{t("rules.addModeRemote")}</span>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={editSetUrl}
+                      onChange={(e) => setEditSetUrl(e.target.value)}
+                      placeholder="https://example.com/rules.json"
+                    />
+                  </label>
+                  <label className="field">
+                    <span>{t("rules.autoUpdate")}</span>
+                    <GlassSeg
+                      value={editSetUpdateInterval}
+                      ariaLabel={t("rules.autoUpdate")}
+                      onChange={(value) =>
+                        setEditSetUpdateInterval(
+                          value as "disabled" | "1h" | "12h" | "24h",
+                        )
+                      }
+                      options={[
+                        { value: "disabled", label: t("rules.autoUpdateDisabled") },
+                        { value: "1h", label: t("rules.autoUpdate1h") },
+                        { value: "12h", label: t("rules.autoUpdate12h") },
+                        { value: "24h", label: t("rules.autoUpdate24h") },
+                      ]}
+                    />
+                  </label>
+                </>
+              )}
               <footer className="modal-footer">
-                <GlassButton disabled={renameSetBusy} onClick={() => setRenameSetTarget(null)}>
+                <GlassButton disabled={editSetBusy} onClick={() => setEditSetTarget(null)}>
                   {t("common.cancel")}
                 </GlassButton>
                 <GlassButton
                   type="submit"
                   variant="primary"
-                  disabled={renameSetBusy || !renameSetName.trim()}
+                  disabled={
+                    editSetBusy ||
+                    !editSetName.trim() ||
+                    (!!editSetTarget.remote && !editSetUrl.trim())
+                  }
                 >
-                  {renameSetBusy ? t("common.saving") : t("common.save")}
+                  {editSetBusy ? t("common.saving") : t("common.save")}
                 </GlassButton>
               </footer>
             </form>

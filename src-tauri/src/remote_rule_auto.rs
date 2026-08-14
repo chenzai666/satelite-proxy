@@ -10,7 +10,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const EVENT: &str = "remote-rule-set-status";
 const MAX_BYTES: usize = 32 * 1024 * 1024;
-const REFRESH_SECS: i64 = 60 * 60;
 const TICK_SECS: u64 = 60;
 
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -45,10 +44,26 @@ pub fn spawn(app: AppHandle) {
         tokio::time::sleep(Duration::from_secs(2)).await;
         loop {
             let due = due_ids(&app);
+            let mut changed = false;
+            let mut cleanup_after_apply = Vec::new();
             for id in due {
-                if let Err(error) = refresh(app.clone(), id.clone()).await {
-                    crate::app_log::warn("remote_rules", format!("refresh {id} failed: {error}"));
+                match refresh_download(app.clone(), id.clone()).await {
+                    Ok(downloaded) => {
+                        changed = true;
+                        cleanup_after_apply.extend(downloaded.cleanup_after_apply);
+                    }
+                    Err(error) => {
+                        crate::app_log::warn(
+                            "remote_rules",
+                            format!("refresh {id} failed: {error}"),
+                        );
+                    }
                 }
+            }
+            // Apply the entire due set with one restart instead of restarting
+            // once after every sequential download.
+            if changed {
+                crate::rule_apply::request_restart(app.clone(), cleanup_after_apply);
             }
             tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         }
@@ -67,9 +82,13 @@ fn due_ids(app: &AppHandle) -> Vec<String> {
                 .iter()
                 .filter_map(|set| {
                     let remote = set.remote.as_ref()?;
-                    let due = remote.download_status == "downloading"
-                        || remote.local_path.is_none()
-                        || now.saturating_sub(remote.last_attempt.unwrap_or(0)) >= REFRESH_SECS;
+                    let interval =
+                        crate::domain::remote_update_interval_secs(&remote.update_interval);
+                    let due = interval.is_some_and(|seconds| {
+                        remote.download_status == "downloading"
+                            || remote.local_path.is_none()
+                            || now.saturating_sub(remote.last_attempt.unwrap_or(0)) >= seconds
+                    });
                     due.then(|| set.id.clone())
                 })
                 .collect())
@@ -78,6 +97,17 @@ fn due_ids(app: &AppHandle) -> Vec<String> {
 }
 
 pub async fn refresh(app: AppHandle, id: String) -> Result<RuleSet, String> {
+    let downloaded = refresh_download(app.clone(), id).await?;
+    crate::rule_apply::request_restart(app, downloaded.cleanup_after_apply);
+    Ok(downloaded.set)
+}
+
+struct DownloadedRule {
+    set: RuleSet,
+    cleanup_after_apply: Vec<std::path::PathBuf>,
+}
+
+async fn refresh_download(app: AppHandle, id: String) -> Result<DownloadedRule, String> {
     {
         let mut active = ACTIVE
             .get_or_init(|| Mutex::new(HashSet::new()))
@@ -95,7 +125,7 @@ pub async fn refresh(app: AppHandle, id: String) -> Result<RuleSet, String> {
     result
 }
 
-async fn refresh_inner(app: &AppHandle, id: &str) -> Result<RuleSet, String> {
+async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, String> {
     let state = app
         .try_state::<AppState>()
         .ok_or_else(|| "app state unavailable".to_string())?;
@@ -195,31 +225,17 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<RuleSet, String> {
     // fails. Tell the UI to stop spinning and surface restart failure separately.
     emit(app, id, "ready", None);
 
-    let restart_app = app.clone();
-    let restart_result = tauri::async_runtime::spawn_blocking(move || {
-        let state = restart_app
-            .try_state::<AppState>()
-            .ok_or_else(|| "app state unavailable".to_string())?;
-        let resource_dir = restart_app.path().resource_dir().ok();
-        state
-            .restart_if_running(resource_dir.as_deref())
-            .map_err(|error| format!("规则已下载，但重启内核失败: {error}"))?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|error| error.to_string())
-    .and_then(|result| result);
-    if let Err(error) = restart_result {
-        return Err(error);
-    }
-
+    let mut cleanup_after_apply = Vec::new();
     if let Some(old_path) = old_path.filter(|old| old != &path.to_string_lossy()) {
         let old = std::path::PathBuf::from(old_path);
         if old.parent() == Some(cache_dir.as_path()) {
-            let _ = std::fs::remove_file(old);
+            cleanup_after_apply.push(old);
         }
     }
-    Ok(set)
+    Ok(DownloadedRule {
+        set,
+        cleanup_after_apply,
+    })
 }
 
 async fn download(url: &str, proxy_port: Option<u16>) -> Result<Vec<u8>, String> {
@@ -264,7 +280,7 @@ fn validate_source(bytes: &[u8]) -> Result<u32, String> {
     u32::try_from(rules.len()).map_err(|_| "远程规则集条目数量过多".to_string())
 }
 
-fn fail(app: &AppHandle, id: &str, error: String) -> Result<RuleSet, String> {
+fn fail<T>(app: &AppHandle, id: &str, error: String) -> Result<T, String> {
     if let Some(state) = app.try_state::<AppState>() {
         let _ = state.with_store_mut(|store| {
             if let Some(remote) = store

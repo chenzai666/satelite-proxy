@@ -343,11 +343,13 @@ export function createRuleSet(
   name: string,
   remoteUrl?: string | null,
   target?: "proxy" | "direct" | "block" | null,
+  updateInterval?: "disabled" | "1h" | "12h" | "24h" | null,
 ) {
   return invoke<RuleSet>("create_rule_set", {
     name,
     remoteUrl: remoteUrl ?? null,
     target: target ?? null,
+    updateInterval: updateInterval ?? null,
   });
 }
 
@@ -355,8 +357,18 @@ export function refreshRemoteRuleSet(id: string) {
   return invoke<RuleSet>("refresh_remote_rule_set", { id });
 }
 
-export function renameRuleSet(id: string, name: string) {
-  return invoke<RuleSet>("rename_rule_set", { id, name });
+export function updateRuleSet(
+  id: string,
+  name: string,
+  remoteUrl?: string | null,
+  updateInterval?: "disabled" | "1h" | "12h" | "24h" | null,
+) {
+  return invoke<RuleSet>("update_rule_set", {
+    id,
+    name,
+    remoteUrl: remoteUrl ?? null,
+    updateInterval: updateInterval ?? null,
+  });
 }
 
 export function listRemoteRuleItems(

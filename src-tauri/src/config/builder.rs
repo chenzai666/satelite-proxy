@@ -1534,7 +1534,12 @@ mod tests {
     fn inline_rule_set_converts_domain_and_suffix_to_punycode_but_not_keyword() {
         let rules = vec![
             Rule::new(RuleType::Domain, "中文.com".into(), RuleTarget::Proxy, 0),
-            Rule::new(RuleType::DomainSuffix, "中国.com".into(), RuleTarget::Proxy, 1),
+            Rule::new(
+                RuleType::DomainSuffix,
+                "中国.com".into(),
+                RuleTarget::Proxy,
+                1,
+            ),
             Rule::new(RuleType::DomainKeyword, "中文".into(), RuleTarget::Proxy, 2),
         ];
         let built = build_inline_rule_set("test-set", &rules);

@@ -1,21 +1,116 @@
-//! Async apply-and-restart for rule-set enable/disable toggles.
+//! Debounced, globally serialized apply-and-restart for rule-set changes.
 //!
-//! Persisting a toggle is synchronous and fast; restarting sing-box so the
-//! change actually takes routing effect is not (stop + start + health-check,
-//! several seconds). This module runs that restart in the background and
-//! reports progress/result via the `rule-set-apply-status` event, so the
-//! calling command can return to the frontend immediately.
-//!
-//! Rapid repeated toggles of the *same* rule set are coalesced: only one
-//! restart worker runs per id at a time. If the target value changes again
-//! while a restart is in flight, the worker loops once more after finishing,
-//! rather than spawning a second overlapping restart.
+//! Rule-set toggles and downloaded remote-rule updates share one worker.
+//! Changes are collected until the queue has been quiet for 500ms, then the
+//! final store state is applied with one core restart. Changes arriving during
+//! that restart form at most one next batch instead of creating overlapping
+//! restart workers.
 
 use crate::state::AppState;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 const EVENT: &str = "rule-set-apply-status";
+const CONFIG_EVENT: &str = "config-apply-status";
+const DEBOUNCE: Duration = Duration::from_millis(500);
+const CORE_BUSY_RETRY: Duration = Duration::from_millis(500);
+
+#[derive(Default)]
+pub(crate) struct RuleApplyQueue {
+    pending: HashMap<String, bool>,
+    cleanup_after_apply: Vec<PathBuf>,
+    restart_requested: bool,
+    generic_change: bool,
+    revision: u64,
+    worker_running: bool,
+}
+
+#[derive(Debug)]
+struct ApplyBatch {
+    toggles: HashMap<String, bool>,
+    cleanup_after_apply: Vec<PathBuf>,
+    generic_change: bool,
+}
+
+impl RuleApplyQueue {
+    fn is_running(&self) -> bool {
+        self.worker_running
+    }
+    /// Returns true only for the request that must start the singleton worker.
+    fn enqueue_toggle(&mut self, id: String, enabled: bool) -> bool {
+        self.pending.insert(id, enabled);
+        self.restart_requested = true;
+        self.revision = self.revision.wrapping_add(1);
+        if self.worker_running {
+            false
+        } else {
+            self.worker_running = true;
+            true
+        }
+    }
+
+    /// Queue a restart for a non-toggle rule change, such as a downloaded
+    /// remote rule file. Returns true only when a worker must be started.
+    fn enqueue_restart(&mut self, cleanup_after_apply: Vec<PathBuf>) -> bool {
+        self.cleanup_after_apply.extend(cleanup_after_apply);
+        self.restart_requested = true;
+        self.generic_change = true;
+        self.revision = self.revision.wrapping_add(1);
+        if self.worker_running {
+            false
+        } else {
+            self.worker_running = true;
+            true
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn take_if_unchanged(&mut self, observed_revision: u64) -> Option<ApplyBatch> {
+        if self.revision != observed_revision || !self.restart_requested {
+            return None;
+        }
+        self.restart_requested = false;
+        Some(ApplyBatch {
+            toggles: std::mem::take(&mut self.pending),
+            cleanup_after_apply: std::mem::take(&mut self.cleanup_after_apply),
+            generic_change: std::mem::take(&mut self.generic_change),
+        })
+    }
+
+    /// Requeue an un-applied batch without overwriting newer values for an id.
+    fn requeue_older_batch(&mut self, batch: ApplyBatch) {
+        for (id, enabled) in batch.toggles {
+            self.pending.entry(id).or_insert(enabled);
+        }
+        self.cleanup_after_apply.extend(batch.cleanup_after_apply);
+        self.generic_change |= batch.generic_change;
+        self.restart_requested = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn finish_if_empty(&mut self) -> bool {
+        if !self.restart_requested {
+            self.worker_running = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn terminal_subset(&self, batch: &HashMap<String, bool>) -> HashMap<String, bool> {
+        batch
+            .iter()
+            .filter(|(id, _)| !self.pending.contains_key(*id))
+            .map(|(id, enabled)| (id.clone(), *enabled))
+            .collect()
+    }
+}
 
 #[derive(Clone, Serialize)]
 struct ApplyStatusEvent {
@@ -23,6 +118,16 @@ struct ApplyStatusEvent {
     enabled: bool,
     status: &'static str,
     error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ConfigApplyStatusEvent {
+    status: &'static str,
+    error: Option<String>,
+}
+
+fn emit_config(app: &AppHandle, status: &'static str, error: Option<String>) {
+    let _ = app.emit(CONFIG_EVENT, ConfigApplyStatusEvent { status, error });
 }
 
 fn emit(app: &AppHandle, id: &str, enabled: bool, status: &'static str, error: Option<String>) {
@@ -37,63 +142,255 @@ fn emit(app: &AppHandle, id: &str, enabled: bool, status: &'static str, error: O
     );
 }
 
-/// Record the latest requested value for `id` and, if no restart worker is
-/// already handling it, spawn one. Called right after the store write
-/// succeeds; never blocks.
+fn emit_batch(
+    app: &AppHandle,
+    batch: &HashMap<String, bool>,
+    status: &'static str,
+    error: Option<String>,
+) {
+    for (id, enabled) in batch {
+        emit(app, id, *enabled, status, error.clone());
+    }
+}
+
+/// Persisting has already completed when this is called. Queue the final value
+/// and return immediately; all ids share one background restart worker.
 pub fn request_apply(app: AppHandle, id: String, enabled: bool) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
-    let had_pending = {
-        let mut pending = state.lock_pending_rule_set_toggle();
-        pending.insert(id.clone(), enabled).is_some()
-    };
-    if !had_pending {
-        spawn_worker(app, id);
+    let start_worker = state.lock_rule_apply_queue().enqueue_toggle(id, enabled);
+    if start_worker {
+        spawn_worker(app);
     }
 }
 
-fn spawn_worker(app: AppHandle, id: String) {
+/// Queue a non-toggle rule change for the same globally serialized restart.
+/// This is used after one or more remote rule files have been downloaded.
+pub fn request_restart(app: AppHandle, cleanup_after_apply: Vec<PathBuf>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let start_worker = state
+        .lock_rule_apply_queue()
+        .enqueue_restart(cleanup_after_apply);
+    if start_worker {
+        spawn_worker(app);
+    }
+}
+
+pub fn is_pending(state: &AppState) -> bool {
+    state.lock_rule_apply_queue().is_running()
+}
+
+fn spawn_worker(app: AppHandle) {
     tauri::async_runtime::spawn_blocking(move || loop {
         let Some(state) = app.try_state::<AppState>() else {
             return;
         };
-        let target = match state.lock_pending_rule_set_toggle().get(&id) {
-            Some(v) => *v,
-            None => return, // shouldn't happen: we only remove after this round completes
-        };
 
-        emit(&app, &id, target, "restarting", None);
-
-        let resource_dir = app.path().resource_dir().ok();
-        let result = state.restart_if_running(resource_dir.as_deref());
-
-        // Converge: drop the pending entry only if no newer request arrived
-        // while this restart was running. Otherwise loop once more with the
-        // latest target instead of leaving it stale.
-        let still_current = {
-            let mut pending = state.lock_pending_rule_set_toggle();
-            if pending.get(&id) == Some(&target) {
-                pending.remove(&id);
-                true
-            } else {
-                false
+        // True debounce: require a complete quiet window, not merely 500ms
+        // since the first click.
+        let batch = loop {
+            let revision = state.lock_rule_apply_queue().revision();
+            std::thread::sleep(DEBOUNCE);
+            let mut queue = state.lock_rule_apply_queue();
+            if let Some(batch) = queue.take_if_unchanged(revision) {
+                break batch;
             }
         };
 
+        emit_batch(&app, &batch.toggles, "restarting", None);
+        if batch.generic_change {
+            emit_config(&app, "restarting", None);
+        }
+        let resource_dir = app.path().resource_dir().ok();
+        let result = state.restart_if_running(resource_dir.as_deref());
+
         match result {
-            Ok(_) => emit(&app, &id, target, "ready", None),
-            Err(e) => emit(
-                &app,
-                &id,
-                target,
-                "error",
-                Some(format!("已保存，但重启内核失败: {e}")),
-            ),
+            Ok(_) => {
+                if !batch.cleanup_after_apply.is_empty() {
+                    crate::app_log::info("rule_apply", "remote rule updates applied");
+                } else if batch.generic_change {
+                    crate::app_log::info("rule_apply", "queued config changes applied");
+                }
+                for path in &batch.cleanup_after_apply {
+                    if let Err(error) = std::fs::remove_file(path) {
+                        if error.kind() != std::io::ErrorKind::NotFound {
+                            crate::app_log::warn(
+                                "remote_rules",
+                                format!("failed to remove old cache {}: {error}", path.display()),
+                            );
+                        }
+                    }
+                }
+                let terminal = state
+                    .lock_rule_apply_queue()
+                    .terminal_subset(&batch.toggles);
+                emit_batch(&app, &terminal, "ready", None);
+                if batch.generic_change {
+                    emit_config(&app, "ready", None);
+                }
+            }
+            Err(error) if error.to_string().contains("内核正在切换") => {
+                // Another legitimate operation (for example TUN switching) owns
+                // the transition. Keep the latest values queued and retry later.
+                state.lock_rule_apply_queue().requeue_older_batch(batch);
+                std::thread::sleep(CORE_BUSY_RETRY);
+                continue;
+            }
+            Err(error) => {
+                crate::app_log::error(
+                    "rule_apply",
+                    format!("queued rule changes failed to restart core: {error}"),
+                );
+                let terminal = state
+                    .lock_rule_apply_queue()
+                    .terminal_subset(&batch.toggles);
+                emit_batch(
+                    &app,
+                    &terminal,
+                    "error",
+                    Some(format!("已保存，但重启内核失败: {error}")),
+                );
+                if batch.generic_change {
+                    emit_config(
+                        &app,
+                        "error",
+                        Some(format!("配置已保存，但应用到内核失败: {error}")),
+                    );
+                }
+            }
         }
 
-        if still_current {
+        if state.lock_rule_apply_queue().finish_if_empty() {
             break;
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn different_rule_sets_share_one_worker_and_one_batch() {
+        let mut queue = RuleApplyQueue::default();
+        assert!(queue.enqueue_toggle("a".into(), true));
+        assert!(!queue.enqueue_toggle("b".into(), false));
+        assert!(!queue.enqueue_toggle("c".into(), true));
+        let revision = queue.revision();
+        let batch = queue.take_if_unchanged(revision).unwrap();
+        assert_eq!(batch.toggles.len(), 3);
+        assert!(queue.worker_running);
+        assert!(queue.finish_if_empty());
+        assert!(!queue.worker_running);
+    }
+
+    #[test]
+    fn latest_value_wins_before_restart() {
+        let mut queue = RuleApplyQueue::default();
+        queue.enqueue_toggle("same".into(), true);
+        let stale_revision = queue.revision();
+        queue.enqueue_toggle("same".into(), false);
+        assert!(queue.take_if_unchanged(stale_revision).is_none());
+        let batch = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(batch.toggles.get("same"), Some(&false));
+    }
+
+    #[test]
+    fn change_during_restart_forms_only_next_batch() {
+        let mut queue = RuleApplyQueue::default();
+        queue.enqueue_toggle("a".into(), true);
+        let first = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(first.toggles.len(), 1);
+        assert!(!queue.enqueue_toggle("b".into(), true));
+        assert!(!queue.finish_if_empty());
+        let second = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(
+            second.toggles.keys().collect::<Vec<_>>(),
+            vec![&"b".to_string()]
+        );
+    }
+
+    #[test]
+    fn busy_retry_preserves_newer_value() {
+        let mut queue = RuleApplyQueue::default();
+        queue.enqueue_toggle("a".into(), true);
+        let old = queue.take_if_unchanged(queue.revision()).unwrap();
+        queue.enqueue_toggle("a".into(), false);
+        queue.requeue_older_batch(old);
+        let next = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(next.toggles.get("a"), Some(&false));
+    }
+
+    #[test]
+    fn stale_terminal_event_is_suppressed_for_changed_id() {
+        let mut queue = RuleApplyQueue::default();
+        queue.enqueue_toggle("a".into(), true);
+        queue.enqueue_toggle("b".into(), true);
+        let first = queue.take_if_unchanged(queue.revision()).unwrap();
+        queue.enqueue_toggle("a".into(), false);
+        let terminal = queue.terminal_subset(&first.toggles);
+        assert!(!terminal.contains_key("a"));
+        assert_eq!(terminal.get("b"), Some(&true));
+    }
+
+    #[test]
+    fn remote_updates_and_toggles_share_one_batch() {
+        let mut queue = RuleApplyQueue::default();
+        assert!(queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_toggle("a".into(), true));
+
+        let batch = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(batch.toggles.get("a"), Some(&true));
+        assert!(queue.finish_if_empty());
+    }
+
+    #[test]
+    fn config_sources_share_one_worker_and_debounced_batch() {
+        let mut queue = RuleApplyQueue::default();
+        // Rule edit, DNS save and settings save all request the same generic
+        // restart while a toggle and remote cleanup arrive in the same window.
+        assert!(queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_toggle("rule-set".into(), true));
+        let old_cache = PathBuf::from("old-remote.json");
+        assert!(!queue.enqueue_restart(vec![old_cache.clone()]));
+
+        let batch = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(batch.toggles.get("rule-set"), Some(&true));
+        assert_eq!(batch.cleanup_after_apply, vec![old_cache]);
+        assert!(batch.generic_change);
+        assert!(queue.finish_if_empty());
+    }
+
+    #[test]
+    fn remote_update_during_restart_forms_one_next_batch() {
+        let mut queue = RuleApplyQueue::default();
+        queue.enqueue_restart(Vec::new());
+        let first = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert!(first.toggles.is_empty());
+
+        assert!(!queue.enqueue_restart(Vec::new()));
+        assert!(!queue.enqueue_restart(Vec::new()));
+        assert!(!queue.finish_if_empty());
+        let second = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert!(second.toggles.is_empty());
+        assert!(queue.finish_if_empty());
+    }
+
+    #[test]
+    fn busy_retry_keeps_remote_cache_cleanup() {
+        let mut queue = RuleApplyQueue::default();
+        let old = PathBuf::from("old-rule.json");
+        queue.enqueue_restart(vec![old.clone()]);
+        let batch = queue.take_if_unchanged(queue.revision()).unwrap();
+        queue.requeue_older_batch(batch);
+
+        let retried = queue.take_if_unchanged(queue.revision()).unwrap();
+        assert_eq!(retried.cleanup_after_apply, vec![old]);
+    }
 }

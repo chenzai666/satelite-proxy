@@ -25,18 +25,9 @@ pub struct SaveRuleInput {
     pub smart_exclude: Option<Vec<String>>,
 }
 
-fn resource_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
-    app.path().resource_dir().ok()
-}
-
-/// Persist done; if core running, restart so route rules apply.
-fn apply_running(app: &AppHandle, state: &AppState) -> Result<(), String> {
-    let res = resource_dir(app);
-    match state.restart_if_running(res.as_deref()) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Ok(()),
-        Err(e) => Err(format!("已保存，但重启内核失败: {e}")),
-    }
+/// Persisting is done; queue one globally debounced restart and return.
+fn apply_running(app: &AppHandle) {
+    crate::rule_apply::request_restart(app.clone(), Vec::new());
 }
 
 /// Write Clash `.list` for a set under app data.
@@ -383,7 +374,8 @@ pub fn set_active_rule_set(
     state
         .with_store_mut(|store| store.set_rule_set_enabled(&id, true))
         .map_err(|e| e.to_string())?;
-    apply_running(&app, &state)
+    apply_running(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -433,7 +425,7 @@ pub fn set_rule_set_strategy(
             Ok(set.clone())
         })
         .map_err(|e| e.to_string())?;
-    apply_running(&app, &state)?;
+    apply_running(&app);
     Ok(set)
 }
 
@@ -455,7 +447,7 @@ pub fn set_rule_set_dns_strategy(
             Ok(set.clone())
         })
         .map_err(|e| e.to_string())?;
-    apply_running(&app, &state)?;
+    apply_running(&app);
     Ok(set)
 }
 
@@ -473,7 +465,7 @@ pub fn reorder_rule_sets(
         .with_store_mut(|store| store.reorder_rule_sets(&ids))
         .map_err(|e| e.to_string())?;
     // Order is already saved; restart failure must not revert UI order.
-    let _ = apply_running(&app, &state);
+    apply_running(&app);
     state
         .with_store(|store| Ok(store.list_rule_set_summaries()))
         .map_err(|e| e.to_string())
@@ -485,6 +477,7 @@ pub fn create_rule_set(
     name: String,
     remote_url: Option<String>,
     target: Option<RuleTarget>,
+    update_interval: Option<String>,
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
@@ -526,7 +519,14 @@ pub fn create_rule_set(
                         "远程规则集仅支持 proxy/direct/block 策略".into(),
                     ));
                 }
-                Ok(store.create_remote_rule_set(n, url, target))
+                let update_interval = update_interval.as_deref().unwrap_or("disabled");
+                let update_interval = crate::domain::normalize_remote_update_interval(
+                    update_interval,
+                )
+                .ok_or_else(|| {
+                    crate::error::AppError::Config("自动更新周期必须是 disabled/1h/12h/24h".into())
+                })?;
+                Ok(store.create_remote_rule_set(n, url, target, update_interval))
             } else {
                 Ok(store.create_rule_set(n))
             }
@@ -537,10 +537,12 @@ pub fn create_rule_set(
 }
 
 #[tauri::command]
-pub fn rename_rule_set(
+pub fn update_rule_set(
     state: State<'_, AppState>,
     id: String,
     name: String,
+    remote_url: Option<String>,
+    update_interval: Option<String>,
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
@@ -568,6 +570,29 @@ pub fn rename_rule_set(
                 .find(|set| set.id == id)
                 .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
             set.name = name.to_string();
+            if let Some(remote) = set.remote.as_mut() {
+                let url = remote_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        crate::error::AppError::Config("远程规则集 URL 不能为空".into())
+                    })?;
+                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                    return Err(crate::error::AppError::Config(
+                        "远程规则集 URL 必须以 http:// 或 https:// 开头".into(),
+                    ));
+                }
+                let interval = update_interval.as_deref().unwrap_or("disabled");
+                let interval = crate::domain::normalize_remote_update_interval(interval)
+                    .ok_or_else(|| {
+                        crate::error::AppError::Config(
+                            "自动更新周期必须是 disabled/1h/12h/24h".into(),
+                        )
+                    })?;
+                remote.url = url.to_string();
+                remote.update_interval = interval.to_string();
+            }
             Ok(set.clone())
         })
         .map_err(|error| error.to_string())?;
@@ -606,7 +631,8 @@ pub fn delete_rule_set(
             let _ = std::fs::remove_file(path);
         }
     }
-    apply_running(&app, &state)
+    apply_running(&app);
+    Ok(())
 }
 
 /// Reset one builtin factory set from `resources/rules/{id}.list`.
@@ -620,7 +646,7 @@ pub fn reset_rule_set(
         .with_store_mut(|store| store.reset_rule_set(state.resource_dir.as_deref(), &id))
         .map_err(|e| e.to_string())?;
     dump_set(&state, &set.id);
-    apply_running(&app, &state)?;
+    apply_running(&app);
     Ok(set)
 }
 
@@ -655,7 +681,7 @@ pub fn reset_builtin_rule_set(
             let _ = crate::config::dump_rule_set_files(&state.app_data_dir, &s);
         }
     }
-    apply_running(&app, &state)?;
+    apply_running(&app);
     Ok(set)
 }
 
@@ -832,15 +858,18 @@ pub fn save_rule(
     } else if let Some(sid) = input.set_id.as_deref() {
         dump_set(&state, sid);
     }
-    apply_running(&app, &state)?;
+    apply_running(&app);
     // Best-effort: pick best node for new/updated smart rule after core restarts.
     if matches!(rule.target, RuleTarget::Smart) && rule.enabled {
         let r = rule.clone();
         let app2 = app.clone();
         tauri::async_runtime::spawn(async move {
-            // Wait for restart/clash_api to come up.
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
             if let Some(state) = app2.try_state::<AppState>() {
+                // Wait for the shared config-apply queue (including any
+                // follow-up batch) before selecting the smart-rule outbound.
+                while crate::rule_apply::is_pending(&state) {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
                 let _ = crate::smart_switch::refresh_smart_rule_now(&state, &r).await;
             }
         });
@@ -885,7 +914,8 @@ pub fn remove_rule(
         .with_store_mut(|store| store.remove_rule_from_set(&sid, &id))
         .map_err(|e| e.to_string())?;
     dump_set(&state, &sid);
-    apply_running(&app, &state)
+    apply_running(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -926,6 +956,6 @@ pub fn set_rule_enabled(
         })
         .map_err(|e| e.to_string())?;
     dump_set(&state, &sid);
-    apply_running(&app, &state)?;
+    apply_running(&app);
     Ok(rule)
 }
