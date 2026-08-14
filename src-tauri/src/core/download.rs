@@ -1,8 +1,8 @@
 //! Download sing-box core from GitHub releases (SagerNet/sing-box).
 
 use crate::core::paths::{
-    binary_name, core_bin_path, core_dir, detect_platform, normalize_version, write_version_file,
-    CorePlatform,
+    binary_name, core_bin_path, core_dir, detect_platform, normalize_version,
+    read_version_of_binary, write_version_file, CorePlatform,
 };
 use crate::error::{AppError, AppResult};
 use flate2::read::GzDecoder;
@@ -297,49 +297,101 @@ fn install_downloaded_archive(
     }
 
     let dest = core_bin_path(app_data_dir);
-    // remove old binary first (Windows may need this; macOS setuid needs elevation)
-    if dest.exists() {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = crate::core::macos_auth::remove_setuid_core_if_needed(&dest);
+    let staged = staged_core_path(&dest);
+    let previous = previous_core_path(&dest);
+    let _ = fs::remove_file(&staged);
+    let install_result = (|| {
+        if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
+            extract_singbox_from_tar_gz(&archive_path, &staged)?;
+        } else if info.asset_name.ends_with(".zip") {
+            extract_singbox_from_zip(&archive_path, &staged)?;
+        } else {
+            return Err(AppError::Core(format!(
+                "unsupported archive: {}",
+                info.asset_name
+            )));
         }
-        let _ = fs::remove_file(&dest);
-    }
 
-    if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
-        extract_singbox_from_tar_gz(&archive_path, &dest)?;
-    } else if info.asset_name.ends_with(".zip") {
-        extract_singbox_from_zip(&archive_path, &dest)?;
-    } else {
-        return Err(AppError::Core(format!(
-            "unsupported archive: {}",
-            info.asset_name
-        )));
-    }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&staged)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&staged, perms)?;
+        }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&dest)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&dest, perms)?;
-    }
+        let actual_version = read_version_of_binary(&staged)?;
+        if !versions_match(&actual_version, &info.version) {
+            return Err(AppError::Core(format!(
+                "downloaded core version mismatch: expected {}, got {actual_version}",
+                info.version
+            )));
+        }
 
-    // cleanup archive
+        let had_previous = replace_installed_core(&staged, &dest, &previous)?;
+        if let Err(error) = write_version_file(app_data_dir, &actual_version) {
+            let _ = fs::remove_file(&dest);
+            if had_previous {
+                let _ = fs::rename(&previous, &dest);
+            }
+            return Err(error);
+        }
+        if had_previous {
+            let _ = fs::remove_file(&previous);
+        }
+
+        Ok(CoreDownloadResult {
+            version: actual_version,
+            path: dest.display().to_string(),
+            asset_name: info.asset_name.clone(),
+            platform: info.platform.clone(),
+            bytes: bytes.len() as u64,
+        })
+    })();
+
     let _ = fs::remove_file(&archive_path);
+    if install_result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    install_result
+}
 
-    write_version_file(app_data_dir, &info.version)?;
+fn staged_core_path(dest: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return dest.with_file_name("sing-box.new.exe");
+    #[cfg(not(target_os = "windows"))]
+    return dest.with_file_name("sing-box.new");
+}
 
-    // verify runnable
-    let _ = crate::core::paths::read_core_version_via_binary(app_data_dir);
+fn previous_core_path(dest: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return dest.with_file_name("sing-box.previous.exe");
+    #[cfg(not(target_os = "windows"))]
+    return dest.with_file_name("sing-box.previous");
+}
 
-    Ok(CoreDownloadResult {
-        version: info.version.clone(),
-        path: dest.display().to_string(),
-        asset_name: info.asset_name.clone(),
-        platform: info.platform.clone(),
-        bytes: bytes.len() as u64,
-    })
+fn versions_match(actual: &str, expected: &str) -> bool {
+    normalize_version(actual) == normalize_version(expected)
+}
+
+fn replace_installed_core(staged: &Path, dest: &Path, previous: &Path) -> AppResult<bool> {
+    let _ = fs::remove_file(previous);
+    #[cfg(target_os = "macos")]
+    if dest.exists() {
+        crate::core::macos_auth::remove_setuid_core_if_needed(dest)?;
+    }
+    let had_previous = dest.exists();
+    if had_previous {
+        fs::rename(dest, previous)
+            .map_err(|error| AppError::Core(format!("stage previous core: {error}")))?;
+    }
+    if let Err(error) = fs::rename(staged, dest) {
+        if had_previous {
+            let _ = fs::rename(previous, dest);
+        }
+        return Err(AppError::Core(format!("activate downloaded core: {error}")));
+    }
+    Ok(had_previous)
 }
 
 fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
@@ -420,6 +472,17 @@ fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
 mod tests {
     use super::*;
 
+    fn replacement_test_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "satelite-core-replace-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn platform_suffix_known() {
         let p = detect_platform().expect("platform");
@@ -431,5 +494,27 @@ mod tests {
         assert!(validate_archive_size_hint(0).is_ok());
         assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64).is_ok());
         assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64 + 1).is_err());
+    }
+
+    #[test]
+    fn downloaded_core_version_must_match_release() {
+        assert!(versions_match("1.13.15", "v1.13.15"));
+        assert!(!versions_match("v1.13.14", "v1.13.15"));
+    }
+
+    #[test]
+    fn failed_activation_restores_previous_core() {
+        let directory = replacement_test_dir("rollback");
+        fs::create_dir_all(&directory).unwrap();
+        let dest = directory.join(binary_name());
+        let staged = staged_core_path(&dest);
+        let previous = previous_core_path(&dest);
+        fs::write(&dest, b"old").unwrap();
+
+        assert!(replace_installed_core(&staged, &dest, &previous).is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"old");
+        assert!(!previous.exists());
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -7,7 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -191,6 +191,8 @@ impl LogSink {
 }
 
 static RING: LazyLock<Mutex<LogRing>> = LazyLock::new(|| Mutex::new(LogRing::new()));
+static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+static PANIC_HOOK: Once = Once::new();
 
 enum WriterMessage {
     Configure(PathBuf, mpsc::Sender<()>),
@@ -237,10 +239,61 @@ fn lock_ring() -> std::sync::MutexGuard<'static, LogRing> {
 
 pub fn init(log_dir: PathBuf) {
     let _ = std::fs::create_dir_all(&log_dir);
+    let _ = LOG_DIR.set(log_dir.clone());
     let (ack_tx, ack_rx) = mpsc::channel();
     if send_writer_bounded(WriterMessage::Configure(log_dir, ack_tx)) {
         let _ = ack_rx.recv_timeout(PERSIST_ACK_TIMEOUT);
     }
+}
+
+/// Persist panic details without touching the in-memory log mutex. A panic may
+/// have started while that mutex was held, so the regular logger could deadlock.
+pub fn install_panic_hook() {
+    PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic_info| {
+            if let Some(log_dir) = LOG_DIR.get() {
+                let location = panic_info
+                    .location()
+                    .map(|location| {
+                        format!(
+                            "{}:{}:{}",
+                            location.file(),
+                            location.line(),
+                            location.column()
+                        )
+                    })
+                    .unwrap_or_else(|| "unknown".into());
+                let payload = panic_info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| {
+                        panic_info
+                            .payload()
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                    })
+                    .unwrap_or("non-string panic payload");
+                if let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(log_dir.join("panic.log"))
+                {
+                    let _ = writeln!(
+                        file,
+                        "{} [panic] [{}] {}\n{}",
+                        now_ms(),
+                        location,
+                        payload,
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                    let _ = file.flush();
+                }
+            }
+            previous(panic_info);
+        }));
+    });
 }
 
 pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<String>) {

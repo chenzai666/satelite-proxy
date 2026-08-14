@@ -66,6 +66,7 @@ pub fn run() {
             let dir = app.path().app_data_dir().expect("resolve app data dir");
             std::fs::create_dir_all(&dir).ok();
             app_log::init(dir.join("logs"));
+            app_log::install_panic_hook();
             let resource_dir = app.path().resource_dir().ok();
             let app_state = AppState::load(dir, resource_dir).expect("load app store");
 

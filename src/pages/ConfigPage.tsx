@@ -21,6 +21,33 @@ import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
 import type { SubscriptionTraffic, SubscriptionView } from "../types";
 
+const REFRESH_ALL_CONCURRENCY = 4;
+
+async function settleWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  task: (value: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(values.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      try {
+        results[index] = {
+          status: "fulfilled",
+          value: await task(values[index] as T),
+        };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+  const workerCount = Math.min(Math.max(1, concurrency), values.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 function formatTime(ts: number) {
   if (!ts) return "—";
   try {
@@ -377,14 +404,16 @@ export function ConfigPage() {
     }
   }
 
-  /** Concurrently refresh every subscription (URL fetch / file re-read). */
+  /** Refresh subscriptions in a bounded pool to avoid request and parse bursts. */
   async function onRefreshAll() {
     if (items.length === 0 || refreshingAll) return;
     setRefreshingAll(true);
     setListError(null);
     try {
-      const results = await Promise.allSettled(
-        items.map((item) => refreshSubscription(item.id)),
+      const results = await settleWithConcurrency(
+        items,
+        REFRESH_ALL_CONCURRENCY,
+        (item) => refreshSubscription(item.id),
       );
       const failed: string[] = [];
       results.forEach((r, i) => {

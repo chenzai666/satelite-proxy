@@ -8,7 +8,12 @@ use crate::domain::{
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const STORE_BACKUP_NAME: &str = "store.backup.json";
+const MAX_CORRUPT_SNAPSHOTS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppStore {
@@ -40,15 +45,7 @@ pub struct StoredNode {
 
 impl AppStore {
     pub fn load(path: &Path, resource_dir: Option<&Path>) -> AppResult<Self> {
-        if !path.exists() {
-            return Ok(Self::with_builtin_sets(resource_dir));
-        }
-        let raw = fs::read_to_string(path)?;
-        if raw.trim().is_empty() {
-            return Ok(Self::with_builtin_sets(resource_dir));
-        }
-        let mut store: Self = serde_json::from_str(&raw)
-            .map_err(|e| AppError::Storage(format!("invalid store json: {e}")))?;
+        let (mut store, source_raw) = Self::load_with_recovery(path, resource_dir)?;
         let schema_before = store.schema_version;
         store.settings.migrate_auto_select();
         store.settings.migrate_capture_mode();
@@ -58,15 +55,62 @@ impl AppStore {
         store.migrate_redundant_general_rule_set();
         store.migrate_remote_update_policy();
         store.ensure_subscription_enable_policy();
-        if schema_before < 5 {
+        if schema_before < 5 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v5.backup.json");
             if !backup.exists() {
-                let _ = fs::write(backup, &raw);
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
             }
         }
         // Persist migrations (new rule files) so they survive read-only sessions.
         let _ = store.save(path);
         Ok(store)
+    }
+
+    fn load_with_recovery(
+        path: &Path,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<(Self, Option<String>)> {
+        match fs::read_to_string(path) {
+            Ok(raw) => match parse_store(&raw) {
+                Ok(store) => Ok((store, Some(raw))),
+                Err(primary_error) => {
+                    quarantine_corrupt_store(path, &raw)?;
+                    if let Some((store, backup_raw)) = load_valid_backup(path) {
+                        crate::app_log::warn(
+                            "storage",
+                            format!(
+                                "store.json was invalid ({primary_error}); restored {}",
+                                backup_path(path).display()
+                            ),
+                        );
+                        Ok((store, Some(backup_raw)))
+                    } else {
+                        crate::app_log::error(
+                            "storage",
+                            format!(
+                                "store.json was invalid ({primary_error}) and no valid backup was available; starting with defaults"
+                            ),
+                        );
+                        Ok((Self::with_builtin_sets(resource_dir), None))
+                    }
+                }
+            },
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                if let Some((store, backup_raw)) = load_valid_backup(path) {
+                    crate::app_log::warn(
+                        "storage",
+                        format!(
+                            "store.json was missing; restored {}",
+                            backup_path(path).display()
+                        ),
+                    );
+                    Ok((store, Some(backup_raw)))
+                } else {
+                    Ok((Self::with_builtin_sets(resource_dir), None))
+                }
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn with_builtin_sets(resource_dir: Option<&Path>) -> Self {
@@ -459,9 +503,12 @@ impl AppStore {
         }
         let raw = serde_json::to_string_pretty(self)
             .map_err(|e| AppError::Storage(format!("serialize store: {e}")))?;
-        let tmp = path.with_extension("json.tmp");
-        fs::write(&tmp, raw)?;
-        fs::rename(&tmp, path)?;
+        if let Ok(previous_raw) = fs::read_to_string(path) {
+            if parse_store(&previous_raw).is_ok() {
+                replace_file(&backup_path(path), previous_raw.as_bytes())?;
+            }
+        }
+        replace_file(path, raw.as_bytes())?;
         Ok(())
     }
 
@@ -854,6 +901,73 @@ fn same_rules_ignoring_storage_fields(left: &[Rule], right: &[Rule]) -> bool {
     canonical(left) == canonical(right)
 }
 
+fn parse_store(raw: &str) -> Result<AppStore, serde_json::Error> {
+    serde_json::from_str(raw)
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    path.with_file_name(STORE_BACKUP_NAME)
+}
+
+fn load_valid_backup(path: &Path) -> Option<(AppStore, String)> {
+    let raw = fs::read_to_string(backup_path(path)).ok()?;
+    let store = parse_store(&raw).ok()?;
+    Some((store, raw))
+}
+
+fn quarantine_corrupt_store(path: &Path, raw: &str) -> AppResult<PathBuf> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let quarantine = path.with_file_name(format!(
+        "store.corrupt-{}-{timestamp}.json",
+        std::process::id()
+    ));
+    fs::write(&quarantine, raw)?;
+    if let Some(directory) = path.parent() {
+        let _ = prune_corrupt_snapshots(directory, MAX_CORRUPT_SNAPSHOTS);
+    }
+    Ok(quarantine)
+}
+
+fn prune_corrupt_snapshots(directory: &Path, keep: usize) -> std::io::Result<()> {
+    let mut snapshots: Vec<_> = fs::read_dir(directory)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("store.corrupt-"))
+        })
+        .collect();
+    snapshots.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    let remove_count = snapshots.len().saturating_sub(keep);
+    for entry in snapshots.into_iter().take(remove_count) {
+        fs::remove_file(entry.path())?;
+    }
+    Ok(())
+}
+
+fn replace_file(path: &Path, raw: &[u8]) -> AppResult<()> {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("json");
+    let tmp = path.with_extension(format!("{extension}.tmp"));
+    fs::write(&tmp, raw)?;
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
 pub fn default_store_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("data").join("store.json")
 }
@@ -862,6 +976,100 @@ pub fn default_store_path(app_data_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::domain::RuleType;
+
+    fn test_store_path(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "satelite-store-{name}-{}-{nonce}",
+                std::process::id()
+            ))
+            .join("store.json")
+    }
+
+    fn corrupt_snapshots(path: &Path) -> Vec<PathBuf> {
+        fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("store.corrupt-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn save_preserves_the_previous_valid_store() {
+        let path = test_store_path("backup");
+        let mut store = AppStore::default();
+        store.settings.mixed_port = 2101;
+        store.save(&path).unwrap();
+        store.settings.mixed_port = 2102;
+        store.save(&path).unwrap();
+
+        let current = parse_store(&fs::read_to_string(&path).unwrap()).unwrap();
+        let backup = parse_store(&fs::read_to_string(backup_path(&path)).unwrap()).unwrap();
+        assert_eq!(current.settings.mixed_port, 2102);
+        assert_eq!(backup.settings.mixed_port, 2101);
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn load_recovers_a_corrupt_store_from_backup() {
+        let path = test_store_path("recover");
+        let mut store = AppStore::default();
+        store.settings.mixed_port = 2201;
+        store.save(&path).unwrap();
+        store.settings.mixed_port = 2202;
+        store.save(&path).unwrap();
+        fs::write(&path, "{broken").unwrap();
+
+        let recovered = AppStore::load(&path, None).unwrap();
+        assert_eq!(recovered.settings.mixed_port, 2201);
+        assert_eq!(corrupt_snapshots(&path).len(), 1);
+        assert!(parse_store(&fs::read_to_string(&path).unwrap()).is_ok());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn load_quarantines_a_corrupt_store_without_backup() {
+        let path = test_store_path("defaults");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "not-json").unwrap();
+
+        let recovered = AppStore::load(&path, None).unwrap();
+        assert_eq!(
+            recovered.settings.mixed_port,
+            AppStore::default().settings.mixed_port
+        );
+        assert_eq!(corrupt_snapshots(&path).len(), 1);
+        assert!(parse_store(&fs::read_to_string(&path).unwrap()).is_ok());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn corrupt_store_snapshots_are_bounded() {
+        let path = test_store_path("prune");
+        let directory = path.parent().unwrap();
+        fs::create_dir_all(directory).unwrap();
+        for index in 0..5 {
+            fs::write(directory.join(format!("store.corrupt-{index}.json")), "bad").unwrap();
+        }
+
+        prune_corrupt_snapshots(directory, 3).unwrap();
+        assert_eq!(corrupt_snapshots(&path).len(), 3);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn unified_migration_splits_mixed_sets_once() {

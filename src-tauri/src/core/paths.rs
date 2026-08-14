@@ -258,11 +258,6 @@ pub fn active_core_version(app_data_dir: &Path, resource_dir: Option<&Path>) -> 
     }
 }
 
-pub fn read_core_version_via_binary(app_data_dir: &Path) -> AppResult<String> {
-    let bin = core_bin_path(app_data_dir);
-    read_version_of_binary(&bin)
-}
-
 pub fn read_version_of_binary(bin: &Path) -> AppResult<String> {
     if !bin.exists() {
         return Err(AppError::Core("sing-box binary not found".into()));
