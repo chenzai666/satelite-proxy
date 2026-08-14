@@ -311,14 +311,8 @@ async fn download(url: &str, proxy_port: Option<u16>) -> Result<Vec<u8>, String>
         .map_err(|error| error.to_string())?
         .error_for_status()
         .map_err(|error| error.to_string())?;
-    if response.content_length().unwrap_or(0) > MAX_BYTES as u64 {
-        return Err("远程规则集超过 32 MB".into());
-    }
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_BYTES {
-        return Err("远程规则集超过 32 MB".into());
-    }
-    Ok(bytes.to_vec())
+    crate::services::http_body::read_limited(response, MAX_BYTES, "远程规则集超过 32 MB".into())
+        .await
 }
 
 fn validate_source(bytes: &[u8]) -> Result<u32, String> {

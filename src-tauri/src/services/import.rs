@@ -83,17 +83,13 @@ pub async fn import_from_url_with_id(
     // Default label from Content-Disposition (RFC 5987 filename*), same as FlClash.
     let disposition_name = parse_content_disposition_filename(response.headers());
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| AppError::Fetch(e.to_string()))?;
-    if bytes.len() > MAX_BODY_BYTES {
-        return Err(AppError::Fetch(format!(
-            "body too large ({} bytes, max {})",
-            bytes.len(),
-            MAX_BODY_BYTES
-        )));
-    }
+    let bytes = crate::services::http_body::read_limited(
+        response,
+        MAX_BODY_BYTES,
+        format!("body too large (max {MAX_BODY_BYTES} bytes)"),
+    )
+    .await
+    .map_err(|e| AppError::Fetch(e.to_string()))?;
 
     // Name priority: user input > Content-Disposition filename* > URL host
     let display_name = name
