@@ -138,13 +138,12 @@ export function AddConfigModal({
       (kind === "file" && path.trim().length > 0));
 
   return (
-    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+    <div className="modal-backdrop">
       <div
         className="modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-modal-title"
-        onClick={(e) => e.stopPropagation()}
       >
         <header className="modal-header">
           <h2 id="config-modal-title">

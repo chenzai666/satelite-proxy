@@ -335,8 +335,8 @@ export function FailuresPage({ embedded = false }: Props) {
   );
 
   const modal = addOpen && (
-    <div className="modal-backdrop" onClick={() => !addBusy && setAddOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop">
+      <div className="modal">
         <header className="modal-header">
           <h2>{t("fails.addRuleTitle")}</h2>
           <button

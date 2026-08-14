@@ -61,14 +61,14 @@ pub async fn add_subscription_url(
 }
 
 #[tauri::command]
-pub fn add_subscription_file(
+pub async fn add_subscription_file(
     state: State<'_, AppState>,
     name: Option<String>,
     path: String,
     auto_update: Option<bool>,
     auto_update_interval_min: Option<u32>,
 ) -> Result<ImportResult, String> {
-    let mut outcome = import_from_file(name, &PathBuf::from(&path)).map_err(|e| e.to_string())?;
+    let mut outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
     apply_auto_update_prefs(
         &mut outcome.subscription,
         auto_update.unwrap_or(false),
@@ -131,12 +131,9 @@ pub async fn update_subscription(
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().to_string())
                 .ok_or_else(|| "path is required".to_string())?;
-            let mut o = import_from_file_with_id(
-                Some(display_name),
-                &PathBuf::from(&path),
-                Some(id.clone()),
-            )
-            .map_err(|e| e.to_string())?;
+            let mut o =
+                import_file_blocking(Some(display_name), PathBuf::from(path), Some(id.clone()))
+                    .await?;
             o.subscription.via_proxy = false;
             o
         }
@@ -210,12 +207,14 @@ async fn refresh_subscription_inner(
         )
         .await
         .map_err(|e| e.to_string())?,
-        crate::domain::SubscriptionSource::File { path } => import_from_file_with_id(
-            Some(existing.name.clone()),
-            &PathBuf::from(path),
-            Some(id.clone()),
-        )
-        .map_err(|e| e.to_string())?,
+        crate::domain::SubscriptionSource::File { path } => {
+            import_file_blocking(
+                Some(existing.name.clone()),
+                PathBuf::from(path),
+                Some(id.clone()),
+            )
+            .await?
+        }
     };
     outcome.subscription.enabled = existing.enabled;
     outcome.subscription.id = id;
@@ -225,6 +224,23 @@ async fn refresh_subscription_inner(
         existing.auto_update_interval_min,
     );
     persist_import(state, outcome)
+}
+
+async fn import_file_blocking(
+    name: Option<String>,
+    path: PathBuf,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if existing_id.is_some() {
+            import_from_file_with_id(name, &path, existing_id)
+        } else {
+            import_from_file(name, &path)
+        }
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription file task: {error}"))?
 }
 
 #[tauri::command]

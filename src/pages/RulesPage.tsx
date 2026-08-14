@@ -1417,8 +1417,8 @@ export function RulesPage({ embedded = false }: Props) {
       </div>
 
       {editOpen && (
-        <div className="modal-backdrop" onClick={() => !busy && setEditOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-backdrop">
+          <div className="modal">
             <header className="modal-header">
               <h2>{editRule ? t("rules.editRule") : t("rules.addRuleTitle")}</h2>
               <button type="button" className="icon-btn" onClick={() => setEditOpen(false)}>
@@ -1605,9 +1605,8 @@ export function RulesPage({ embedded = false }: Props) {
       {newSetOpen && (
         <div
           className="modal-backdrop"
-          onClick={() => !newSetBusy && setNewSetOpen(false)}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal">
             <header className="modal-header">
               <h2>{t("rules.newSetTitle")}</h2>
               <button
@@ -1719,9 +1718,8 @@ export function RulesPage({ embedded = false }: Props) {
       {editSetTarget && (
         <div
           className="modal-backdrop"
-          onClick={() => !editSetBusy && setEditSetTarget(null)}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal">
             <header className="modal-header">
               <h2>{t("rules.editSetTitle")}</h2>
               <button

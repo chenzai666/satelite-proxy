@@ -943,14 +943,12 @@ export function DashboardPage({
       {showPreview && result && (
         <div
           className="modal-backdrop"
-          onClick={() => setShowPreview(false)}
         >
           <div
             className="modal preview-modal"
             role="dialog"
             aria-modal="true"
             aria-labelledby="preview-modal-title"
-            onClick={(e) => e.stopPropagation()}
           >
             <header className="modal-header">
               <h2 id="preview-modal-title">{t("common.preview")}</h2>

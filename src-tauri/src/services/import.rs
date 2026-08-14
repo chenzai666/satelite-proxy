@@ -95,28 +95,33 @@ pub async fn import_from_url_with_id(
         )));
     }
 
-    let content = String::from_utf8_lossy(&bytes).into_owned();
-    let body_traffic = parse_userinfo_from_content(&content);
-    let parsed = parse_subscription(&content)?;
     // Name priority: user input > Content-Disposition filename* > URL host
     let display_name = name
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
         .or(disposition_name)
         .unwrap_or_else(|| name_from_url(&url));
-
-    let mut outcome = build_outcome(
-        display_name,
-        SubscriptionSource::Url { url },
-        parsed,
-        existing_id,
-    );
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let mut outcome = tokio::task::spawn_blocking(move || -> AppResult<ImportOutcome> {
+        let body_traffic = parse_userinfo_from_content(&content);
+        let parsed = parse_subscription(&content)?;
+        let mut outcome = build_outcome(
+            display_name,
+            SubscriptionSource::Url { url },
+            parsed,
+            existing_id,
+        );
+        // URL body comment > remark nodes; HTTP headers are merged below.
+        outcome.subscription.traffic =
+            SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic);
+        Ok(outcome)
+    })
+    .await
+    .map_err(|error| AppError::Fetch(format!("subscription parse task: {error}")))??;
     outcome.subscription.via_proxy = via_proxy;
     // Priority: HTTP header > body comment > remark node names
-    outcome.subscription.traffic = SubscriptionTraffic::merge(
-        traffic,
-        SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic),
-    );
+    outcome.subscription.traffic =
+        SubscriptionTraffic::merge(traffic, outcome.subscription.traffic);
     Ok(outcome)
 }
 
