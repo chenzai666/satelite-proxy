@@ -56,9 +56,10 @@ impl AppStore {
         store.migrate_unified_rule_sets();
         store.ensure_rule_sets(resource_dir);
         store.migrate_redundant_general_rule_set();
+        store.migrate_remote_update_policy();
         store.ensure_subscription_enable_policy();
-        if schema_before < 4 {
-            let backup = path.with_file_name("store.pre-v4.backup.json");
+        if schema_before < 5 {
+            let backup = path.with_file_name("store.pre-v5.backup.json");
             if !backup.exists() {
                 let _ = fs::write(backup, &raw);
             }
@@ -74,6 +75,7 @@ impl AppStore {
         s.migrate_unified_rule_sets();
         s.ensure_rule_sets(resource_dir);
         s.migrate_redundant_general_rule_set();
+        s.migrate_remote_update_policy();
         s
     }
 
@@ -435,6 +437,22 @@ impl AppStore {
         self.schema_version = VERSION;
     }
 
+    /// v5: remote updates used to run hourly without an explicit user choice.
+    /// Upgrade existing remote sets to opt-in scheduling; newly created sets
+    /// persist the user's selected interval and are already on schema v5.
+    pub fn migrate_remote_update_policy(&mut self) {
+        const VERSION: u32 = 5;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        for set in &mut self.rule_sets {
+            if let Some(remote) = set.remote.as_mut() {
+                remote.update_interval = "disabled".into();
+            }
+        }
+        self.schema_version = VERSION;
+    }
+
     pub fn save(&self, path: &Path) -> AppResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -724,8 +742,12 @@ impl AppStore {
         name: &str,
         url: &str,
         target: crate::domain::RuleTarget,
+        update_interval: &str,
     ) -> RuleSet {
-        let set = RuleSet::new_remote(name, url, target);
+        let mut set = RuleSet::new_remote(name, url, target);
+        if let Some(remote) = set.remote.as_mut() {
+            remote.update_interval = update_interval.to_string();
+        }
         self.rule_sets.insert(0, set.clone());
         set
     }
@@ -967,6 +989,35 @@ mod tests {
     }
 
     #[test]
+    fn v5_disables_implicit_remote_auto_updates_once() {
+        let mut store = AppStore {
+            schema_version: 4,
+            ..AppStore::default()
+        };
+        let mut remote = RuleSet::new_remote(
+            "旧远程规则",
+            "https://example.com/rules.json",
+            RuleTarget::Proxy,
+        );
+        remote.remote.as_mut().unwrap().update_interval = "1h".into();
+        store.rule_sets.push(remote);
+
+        store.migrate_remote_update_policy();
+        assert_eq!(store.schema_version, 5);
+        assert_eq!(
+            store.rule_sets[0].remote.as_ref().unwrap().update_interval,
+            "disabled"
+        );
+
+        store.rule_sets[0].remote.as_mut().unwrap().update_interval = "12h".into();
+        store.migrate_remote_update_policy();
+        assert_eq!(
+            store.rule_sets[0].remote.as_ref().unwrap().update_interval,
+            "12h"
+        );
+    }
+
+    #[test]
     fn deleted_builtin_is_restored_only_when_still_bundled() {
         let mut store = AppStore::default();
         let bundled = load_builtin_rule_sets(None)
@@ -1031,6 +1082,7 @@ mod tests {
             "新远程",
             "https://example.com/rules.json",
             RuleTarget::Proxy,
+            "1h",
         );
         assert_eq!(store.rule_sets[0].id, remote.id);
         assert_eq!(store.rule_sets[1].id, local.id);

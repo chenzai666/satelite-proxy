@@ -43,6 +43,11 @@ fn journal_loop(app: AppHandle) {
             continue;
         };
 
+        if state.is_core_transitioning() {
+            thread::sleep(Duration::from_millis(IDLE_MS));
+            continue;
+        }
+
         let api = {
             let rt = state.lock_runtime();
             rt.api_clone()
@@ -55,19 +60,27 @@ fn journal_loop(app: AppHandle) {
 
         let interval = journal_interval_ms(&state);
 
-        match stream_ws_snapshots(&api, interval, |text| match parse_connections_json(text) {
-            Ok(snap) => {
-                let mut rt = state.lock_runtime();
-                rt.apply_snapshot(snap);
+        match stream_ws_snapshots(&api, interval, |text| {
+            if state.is_core_transitioning() {
+                return;
             }
-            Err(e) => {
-                crate::app_log::debug("journal", format!("parse: {e}"));
+            match parse_connections_json(text) {
+                Ok(snap) => {
+                    let mut rt = state.lock_runtime();
+                    rt.apply_snapshot(snap);
+                }
+                Err(e) => {
+                    crate::app_log::debug("journal", format!("parse: {e}"));
+                }
             }
         }) {
             Ok(()) => {}
             Err(e) => {
                 crate::app_log::debug("journal", format!("WS: {e}; fallback HTTP"));
                 for _ in 0..10 {
+                    if state.is_core_transitioning() {
+                        break;
+                    }
                     let still = {
                         let rt = state.lock_runtime();
                         rt.api_clone()

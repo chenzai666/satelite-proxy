@@ -12,6 +12,13 @@ pub enum Protocol {
     Hysteria2,
     Tuic,
     Socks5,
+    Http,
+    Hysteria,
+    ShadowTls,
+    Ssh,
+    Naive,
+    Tor,
+    WireGuard,
     /// AnyTLS (sing-box ≥ 1.12).
     AnyTls,
     /// Snell (sing-box ≥ 1.14, versions 4 / 6).
@@ -28,6 +35,13 @@ impl Protocol {
             Self::Hysteria2 => "hysteria2",
             Self::Tuic => "tuic",
             Self::Socks5 => "socks5",
+            Self::Http => "http",
+            Self::Hysteria => "hysteria",
+            Self::ShadowTls => "shadowtls",
+            Self::Ssh => "ssh",
+            Self::Naive => "naive",
+            Self::Tor => "tor",
+            Self::WireGuard => "wireguard",
             Self::AnyTls => "anytls",
             Self::Snell => "snell",
         }
@@ -42,6 +56,13 @@ impl Protocol {
             "hysteria2" | "hy2" => Some(Self::Hysteria2),
             "tuic" => Some(Self::Tuic),
             "socks5" | "socks" => Some(Self::Socks5),
+            "http" | "https" => Some(Self::Http),
+            "hysteria" | "hy" => Some(Self::Hysteria),
+            "shadowtls" => Some(Self::ShadowTls),
+            "ssh" => Some(Self::Ssh),
+            "naive" => Some(Self::Naive),
+            "tor" => Some(Self::Tor),
+            "wireguard" | "wg" => Some(Self::WireGuard),
             "anytls" => Some(Self::AnyTls),
             "snell" => Some(Self::Snell),
             _ => None,
@@ -151,6 +172,66 @@ pub enum ProtocolConfig {
         username: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         password: Option<String>,
+    },
+    Http {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        username: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    Hysteria {
+        auth: String,
+        #[serde(default)]
+        auth_base64: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        up_mbps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        down_mbps: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        obfs: Option<String>,
+    },
+    ShadowTls {
+        version: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
+    Ssh {
+        user: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        private_key: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        private_key_passphrase: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        host_key: Vec<String>,
+    },
+    Naive {
+        username: String,
+        password: String,
+        #[serde(default)]
+        quic: bool,
+    },
+    Tor {
+        executable_path: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_args: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data_directory: Option<String>,
+    },
+    /// sing-box 1.13+ WireGuard endpoint represented as a selectable node.
+    WireGuard {
+        local_address: Vec<String>,
+        private_key: String,
+        peer_public_key: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pre_shared_key: Option<String>,
+        #[serde(default)]
+        reserved: Vec<u8>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mtu: Option<u32>,
     },
     /// AnyTLS password (often a UUID in share links).
     AnyTls {

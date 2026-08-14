@@ -55,10 +55,270 @@ pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
         "hysteria2" | "hy2" => parse_hysteria2_uri(line),
         "tuic" => parse_tuic_uri(line),
         "socks" | "socks5" => parse_socks_uri(line),
+        "http" | "https" => parse_http_uri(line),
+        "hysteria" | "hy" => parse_hysteria_uri(line),
+        "shadowtls" => parse_shadowtls_uri(line),
+        "ssh" => parse_ssh_uri(line),
+        "naive" | "naive+https" | "naive+quic" => parse_naive_uri(line),
+        "tor" => parse_tor_uri(line),
         "anytls" => parse_anytls_uri(line),
         "snell" => parse_snell_uri(line),
         _ => Err(format!("unsupported uri scheme: {scheme}")),
     }
+}
+
+fn basic_url_parts(
+    line: &str,
+    label: &str,
+    default_port: Option<u16>,
+) -> Result<(Url, String, u16, String, BTreeMap<String, String>), String> {
+    let url = Url::parse(line).map_err(|e| format!("{label} url: {e}"))?;
+    let server = url
+        .host_str()
+        .ok_or_else(|| format!("{label}: missing host"))?
+        .to_string();
+    let port = url
+        .port()
+        .or(default_port)
+        .ok_or_else(|| format!("{label}: missing port"))?;
+    let name = fragment_name(&url).unwrap_or_else(|| format!("{label}-{server}-{port}"));
+    let query = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    Ok((url, server, port, name, query))
+}
+
+fn tls_from_query(query: &BTreeMap<String, String>, default_enabled: bool) -> Option<TlsConfig> {
+    let enabled = query
+        .get("tls")
+        .map(|v| matches!(v.as_str(), "1" | "true"))
+        .unwrap_or(default_enabled);
+    if !enabled {
+        return None;
+    }
+    Some(TlsConfig {
+        enabled: true,
+        server_name: query.get("sni").or_else(|| query.get("peer")).cloned(),
+        insecure: query
+            .get("insecure")
+            .or_else(|| query.get("allowInsecure"))
+            .map(|v| matches!(v.as_str(), "1" | "true")),
+        alpn: None,
+        utls_fingerprint: None,
+        reality_public_key: None,
+        reality_short_id: None,
+    })
+}
+
+fn parse_http_uri(line: &str) -> Result<ProxyNode, String> {
+    let (url, server, port, name, query) = basic_url_parts(line, "http", None)?;
+    let username = (!url.username().is_empty()).then(|| percent_decode(url.username()));
+    let password = url.password().map(percent_decode);
+    let tls = tls_from_query(&query, url.scheme().eq_ignore_ascii_case("https"));
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Http,
+        server,
+        port,
+        tls,
+        transport: None,
+        udp: Some(false),
+        config: ProtocolConfig::Http {
+            username,
+            password,
+            path: query.get("path").cloned(),
+        },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+fn parse_hysteria_uri(line: &str) -> Result<ProxyNode, String> {
+    let (url, server, port, name, query) = basic_url_parts(line, "hysteria", Some(443))?;
+    let auth = if !url.username().is_empty() {
+        percent_decode(url.username())
+    } else {
+        query
+            .get("auth")
+            .or_else(|| query.get("auth_str"))
+            .cloned()
+            .unwrap_or_default()
+    };
+    if auth.is_empty() {
+        return Err("hysteria: missing auth".into());
+    }
+    let num = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| query.get(*k))
+            .and_then(|v| v.split_whitespace().next())
+            .and_then(|v| v.parse().ok())
+    };
+    let tls = tls_from_query(&query, true);
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Hysteria,
+        server,
+        port,
+        tls,
+        transport: None,
+        udp: Some(true),
+        config: ProtocolConfig::Hysteria {
+            auth,
+            auth_base64: false,
+            up_mbps: num(&["upmbps", "up_mbps", "up"]),
+            down_mbps: num(&["downmbps", "down_mbps", "down"]),
+            obfs: query.get("obfs").cloned(),
+        },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+fn parse_shadowtls_uri(line: &str) -> Result<ProxyNode, String> {
+    let (url, server, port, name, query) = basic_url_parts(line, "shadowtls", Some(443))?;
+    let password = (!url.username().is_empty())
+        .then(|| percent_decode(url.username()))
+        .or_else(|| query.get("password").cloned());
+    let version = query
+        .get("version")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
+    if !(1..=3).contains(&version) {
+        return Err("shadowtls: version must be 1, 2, or 3".into());
+    }
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::ShadowTls,
+        server,
+        port,
+        tls: tls_from_query(&query, true),
+        transport: None,
+        udp: Some(false),
+        config: ProtocolConfig::ShadowTls { version, password },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+fn parse_ssh_uri(line: &str) -> Result<ProxyNode, String> {
+    let (url, server, port, name, query) = basic_url_parts(line, "ssh", Some(22))?;
+    let user = if url.username().is_empty() {
+        "root".into()
+    } else {
+        percent_decode(url.username())
+    };
+    let password = url
+        .password()
+        .map(percent_decode)
+        .or_else(|| query.get("password").cloned());
+    let private_key = query
+        .get("private_key")
+        .or_else(|| query.get("private-key"))
+        .cloned();
+    if password.is_none() && private_key.is_none() {
+        return Err("ssh: missing password or private key".into());
+    }
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Ssh,
+        server,
+        port,
+        tls: None,
+        transport: None,
+        udp: Some(false),
+        config: ProtocolConfig::Ssh {
+            user,
+            password,
+            private_key,
+            private_key_passphrase: query.get("private_key_passphrase").cloned(),
+            host_key: Vec::new(),
+        },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+fn parse_naive_uri(line: &str) -> Result<ProxyNode, String> {
+    let normalized = if line.starts_with("naive+https://") || line.starts_with("naive+quic://") {
+        line.replacen(line.split(':').next().unwrap_or("naive"), "naive", 1)
+    } else {
+        line.to_string()
+    };
+    let (url, server, port, name, query) = basic_url_parts(&normalized, "naive", Some(443))?;
+    let username = percent_decode(url.username());
+    let password = url.password().map(percent_decode).unwrap_or_default();
+    if username.is_empty() || password.is_empty() {
+        return Err("naive: missing username/password".into());
+    }
+    let quic = line.starts_with("naive+quic://")
+        || query
+            .get("quic")
+            .map(|v| matches!(v.as_str(), "1" | "true"))
+            .unwrap_or(false);
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Naive,
+        server,
+        port,
+        tls: tls_from_query(&query, true),
+        transport: None,
+        udp: Some(true),
+        config: ProtocolConfig::Naive {
+            username,
+            password,
+            quic,
+        },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
+}
+
+fn parse_tor_uri(line: &str) -> Result<ProxyNode, String> {
+    let (url, _host, _port, name, query) = basic_url_parts(line, "tor", Some(1))?;
+    let executable_path = query
+        .get("executable_path")
+        .or_else(|| query.get("executable-path"))
+        .cloned()
+        .ok_or_else(|| "tor: external executable_path is required by bundled core".to_string())?;
+    let extra_args = query
+        .get("extra_args")
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Tor,
+        server: "localhost".into(),
+        port: 0,
+        tls: None,
+        transport: None,
+        udp: Some(false),
+        config: ProtocolConfig::Tor {
+            executable_path,
+            extra_args,
+            data_directory: query.get("data_directory").cloned(),
+        },
+        source: Some(url.scheme().into()),
+        latency_ms: None,
+        latency_at: None,
+    })
 }
 
 fn decode_base64_flexible(input: &str) -> Result<Vec<u8>, String> {
@@ -918,5 +1178,43 @@ mod tests {
             }
             _ => panic!("expected Snell config"),
         }
+    }
+
+    #[test]
+    fn parse_http_proxy() {
+        let node = parse_uri_line("https://user:pass@proxy.example:8443#HTTPS").unwrap();
+        assert_eq!(node.protocol, Protocol::Http);
+        assert!(node.tls.as_ref().is_some_and(|t| t.enabled));
+        assert!(matches!(
+            node.config,
+            ProtocolConfig::Http {
+                username: Some(_),
+                password: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_hysteria_v1() {
+        let node = parse_uri_line(
+            "hysteria://secret@hy.example:443?upmbps=20&downmbps=100&sni=hy.example#HY",
+        )
+        .unwrap();
+        assert_eq!(node.protocol, Protocol::Hysteria);
+        assert!(matches!(
+            node.config,
+            ProtocolConfig::Hysteria {
+                up_mbps: Some(20),
+                down_mbps: Some(100),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parse_naive_proxy() {
+        let node = parse_uri_line("naive+https://user:pass@naive.example:443#Naive").unwrap();
+        assert_eq!(node.protocol, Protocol::Naive);
     }
 }

@@ -18,6 +18,14 @@ export interface ConfigFormValues {
   autoUpdateIntervalMin?: number;
 }
 
+type AutoUpdateInterval = "disabled" | "1h" | "12h" | "24h";
+
+const AUTO_UPDATE_MINUTES: Record<Exclude<AutoUpdateInterval, "disabled">, number> = {
+  "1h": 60,
+  "12h": 720,
+  "24h": 1440,
+};
+
 interface Props {
   open: boolean;
   busy: boolean;
@@ -51,8 +59,8 @@ export function AddConfigModal({
   const [url, setUrl] = useState("");
   const [path, setPath] = useState("");
   const [viaProxy, setViaProxy] = useState(false);
-  const [autoUpdate, setAutoUpdate] = useState(true);
-  const [autoUpdateIntervalMin, setAutoUpdateIntervalMin] = useState("1440");
+  const [autoUpdateInterval, setAutoUpdateInterval] =
+    useState<AutoUpdateInterval>("24h");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -62,9 +70,15 @@ export function AddConfigModal({
       setUrl(initial.url ?? "");
       setPath(initial.path ?? "");
       setViaProxy(!!initial.viaProxy);
-      setAutoUpdate(initial.autoUpdate !== false);
-      setAutoUpdateIntervalMin(
-        String(initial.autoUpdateIntervalMin ?? 1440),
+      const interval = initial.autoUpdateIntervalMin ?? 1440;
+      setAutoUpdateInterval(
+        initial.autoUpdate === false
+          ? "disabled"
+          : interval === 60
+            ? "1h"
+            : interval === 720
+              ? "12h"
+              : "24h",
       );
     } else {
       setKind("url");
@@ -72,8 +86,7 @@ export function AddConfigModal({
       setUrl("");
       setPath("");
       setViaProxy(false);
-      setAutoUpdate(true);
-      setAutoUpdateIntervalMin("1440");
+      setAutoUpdateInterval("24h");
     }
   }, [isOpen, initial]);
 
@@ -92,15 +105,12 @@ export function AddConfigModal({
     }
   }
 
-  function parseIntervalMin(): number {
-    const n = Number(autoUpdateIntervalMin);
-    if (!Number.isFinite(n) || n < 1) return 1440;
-    return Math.floor(n);
-  }
-
   function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    const interval = parseIntervalMin();
+    const autoUpdate = autoUpdateInterval !== "disabled";
+    const interval = autoUpdate
+      ? AUTO_UPDATE_MINUTES[autoUpdateInterval]
+      : 1440;
     if (kind === "url") {
       onSubmit({
         name: name.trim(),
@@ -229,39 +239,23 @@ export function AddConfigModal({
             </div>
           )}
 
-          <div className="via-proxy-row">
-            <div>
-              <div className="sys-proxy-title">自动更新</div>
-              <div className="sys-proxy-desc">
-                按间隔自动重新拉取/读取此配置
-              </div>
-            </div>
-            <GlassSwitchControl
-              checked={autoUpdate}
-              title="自动更新"
+          <div className="field">
+            <span>自动更新</span>
+            <GlassSeg
+              value={autoUpdateInterval}
+              ariaLabel="自动更新间隔"
               disabled={busy}
-              onChange={setAutoUpdate}
+              onChange={(value) =>
+                setAutoUpdateInterval(value as AutoUpdateInterval)
+              }
+              options={[
+                { value: "disabled", label: "禁用" },
+                { value: "1h", label: "1 小时" },
+                { value: "12h", label: "12 小时" },
+                { value: "24h", label: "24 小时" },
+              ]}
             />
           </div>
-
-          {autoUpdate && (
-            <label className="field">
-              <span>更新间隔（分钟）</span>
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="mono"
-                type="number"
-                min={1}
-                step={1}
-                value={autoUpdateIntervalMin}
-                onChange={(e) => setAutoUpdateIntervalMin(e.target.value)}
-                disabled={busy}
-                placeholder="1440"
-              />
-            </label>
-          )}
 
           <p className="hint">
             {isEdit

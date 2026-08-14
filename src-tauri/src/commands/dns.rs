@@ -6,7 +6,7 @@ use crate::state::AppState;
 use serde::Serialize;
 use std::net::ToSocketAddrs;
 use std::time::Instant;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 /// Export the current DNS rules to `{app_data}/data/dns/user-dns-rules.list`.
 fn dump_dns_rules(state: &AppState) {
@@ -55,12 +55,8 @@ pub fn update_dns_settings(
     // Export user DNS rules to disk (mirror routing rule export).
     dump_dns_rules(&state);
 
-    if apply && state.is_core_running() {
-        let resource_dir = app.path().resource_dir().ok();
-        // Restart so DNS is rewritten into active.json
-        state
-            .restart_if_running(resource_dir.as_deref())
-            .map_err(|e| format!("DNS 已保存，但重启内核失败: {e}"))?;
+    if apply {
+        crate::rule_apply::request_restart(app, Vec::new());
     }
 
     Ok(dns)
@@ -76,7 +72,6 @@ pub fn reset_dns_defaults(
     apply: Option<bool>,
 ) -> Result<DnsSettings, String> {
     let apply = apply.unwrap_or(true);
-    let resource_dir = app.path().resource_dir().ok();
     let section = section.trim().to_ascii_lowercase();
 
     let dns = state
@@ -97,10 +92,8 @@ pub fn reset_dns_defaults(
 
     dump_dns_rules(&state);
 
-    if apply && state.is_core_running() {
-        state
-            .restart_if_running(resource_dir.as_deref())
-            .map_err(|e| format!("DNS 已重置，但重启内核失败: {e}"))?;
+    if apply {
+        crate::rule_apply::request_restart(app, Vec::new());
     }
 
     Ok(dns)

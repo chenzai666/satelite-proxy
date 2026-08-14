@@ -4,12 +4,13 @@
   --radius-sm: 10px;
   --radius-xs: 5px;
   --radius-pill: 999px;
-  --mono: "Cascadia Code", "Cascadia Mono", "JetBrains Mono", "SF Mono", ui-monospace, Consolas, Menlo, monospace;
   /* Latin UI font per platform, each followed by its matching CJK companion
      so Chinese falls through to the right system font per-glyph (browsers
      resolve each character against the first font in the stack that has a
      glyph for it, not just the first font overall). */
   --font: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Inter", sans-serif;
+  /* Legacy semantic hooks such as .mono now use the same global UI font. */
+  --mono: var(--font);
   font-family: var(--font);
   line-height: 1.45;
   font-weight: 400;
@@ -2013,10 +2014,6 @@ tr.rule-row:hover {
   gap: 6px;
   margin-bottom: 10px;
   padding: 12px 14px;
-}
-
-.remote-rule-url {
-  overflow-wrap: anywhere;
 }
 
 .remote-rules-wrap.table-wrap {
@@ -5975,4 +5972,14 @@ button.simple-sub-row,
 button.simple-link-row,
 button.simple-section-toggle {
   text-transform: none;
+}
+.global-apply-error {
+  position: fixed;
+  z-index: 10000;
+  top: 12px;
+  left: 50%;
+  width: min(680px, calc(100vw - 32px));
+  transform: translateX(-50%);
+  cursor: pointer;
+  text-align: left;
 }

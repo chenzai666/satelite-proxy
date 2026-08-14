@@ -29,6 +29,9 @@ const MIN_DWELL: Duration = Duration::from_secs(120);
 const COOLDOWN: Duration = Duration::from_secs(90);
 /// When healthy, re-probe current + top-K at most this often (url-test-like drift fix).
 const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(600);
+/// Smart-rule selectors use the same low-frequency refresh cadence.
+const RULE_PROBE_INTERVAL: Duration = Duration::from_secs(600);
+const RULE_FAILURE_RETRY_BASE: Duration = Duration::from_secs(60);
 
 // —— Active probe ——
 const PROBE_TIMEOUT_MS: u64 = 2500;
@@ -185,7 +188,9 @@ fn ctrl() -> std::sync::MutexGuard<'static, Controller> {
 /// Per smart-rule: last switch + last measured latency of the selected leaf.
 #[derive(Debug, Clone)]
 struct RuleState {
-    last_switch: Instant,
+    last_switch: Option<Instant>,
+    last_probe: Instant,
+    consecutive_probe_fails: u32,
     last_node_id: Option<String>,
     last_latency_ms: Option<u32>,
 }
@@ -242,6 +247,10 @@ pub fn spawn(app: AppHandle) {
         tokio::time::sleep(Duration::from_secs(10)).await;
         loop {
             if let Some(state) = app.try_state::<AppState>() {
+                if state.is_core_transitioning() {
+                    tokio::time::sleep(TICK).await;
+                    continue;
+                }
                 if let Err(e) = tick(&state).await {
                     app_log::warn("smart_switch", format!("tick: {e}"));
                 }
@@ -914,7 +923,12 @@ async fn maintain_smart_rule(
     {
         let map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(st) = map.get(&rule.id) {
-            if st.last_switch.elapsed() < MIN_DWELL + COOLDOWN {
+            let retry = rule_probe_interval(st.consecutive_probe_fails);
+            let in_switch_cooldown = st
+                .last_switch
+                .map(|at| at.elapsed() < MIN_DWELL + COOLDOWN)
+                .unwrap_or(false);
+            if in_switch_cooldown || st.last_probe.elapsed() < retry {
                 return Ok(());
             }
         }
@@ -929,7 +943,7 @@ async fn maintain_smart_rule(
     sort_candidates_by_score(&mut pool, &ejected);
     pool.truncate(BOOTSTRAP_MAX.min(TOP_K.max(8)));
 
-    let results = probe_nodes(
+    let results = match probe_nodes(
         &pool,
         Some(PROBE_TIMEOUT_MS),
         Some(BOOTSTRAP_CONCURRENCY),
@@ -937,7 +951,13 @@ async fn maintain_smart_rule(
         probe_url.to_string(),
     )
     .await
-    .map_err(|e| e.to_string())?;
+    {
+        Ok(results) => results,
+        Err(e) => {
+            record_rule_probe_failure(&rule.id);
+            return Err(e.to_string());
+        }
+    };
 
     let _ = state.with_store_mut(|store| {
         for r in &results {
@@ -962,6 +982,7 @@ async fn maintain_smart_rule(
             .then_with(|| a.2.cmp(&b.2))
     });
     let Some((best_id, best_name, best_ms, _)) = ranked.into_iter().next() else {
+        record_rule_probe_failure(&rule.id);
         return Ok(());
     };
 
@@ -978,6 +999,8 @@ async fn maintain_smart_rule(
                 rule.id.clone(),
                 RuleState {
                     last_switch: st.last_switch,
+                    last_probe: Instant::now(),
+                    consecutive_probe_fails: 0,
                     last_node_id: Some(best_id),
                     last_latency_ms: Some(best_ms),
                 },
@@ -986,6 +1009,12 @@ async fn maintain_smart_rule(
         }
         if let Some(cur_ms) = st.last_latency_ms {
             if !should_prefer(best_ms, cur_ms) {
+                let mut map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(current) = map.get_mut(&rule.id) {
+                    current.last_probe = Instant::now();
+                    current.consecutive_probe_fails = 0;
+                    current.last_latency_ms = Some(cur_ms);
+                }
                 app_log::debug(
                     "smart_switch",
                     format!(
@@ -1007,11 +1036,15 @@ async fn maintain_smart_rule(
             .ok_or_else(|| format!("node {best_id} missing"))?
     };
 
-    {
+    let selected = {
         let runtime = state.lock_runtime();
         runtime
             .select_group_live(&group, &tag)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+    };
+    if let Err(e) = selected {
+        record_rule_probe_failure(&rule.id);
+        return Err(e);
     }
 
     {
@@ -1019,7 +1052,9 @@ async fn maintain_smart_rule(
         map.insert(
             rule.id.clone(),
             RuleState {
-                last_switch: Instant::now(),
+                last_switch: Some(Instant::now()),
+                last_probe: Instant::now(),
+                consecutive_probe_fails: 0,
                 last_node_id: Some(best_id.clone()),
                 last_latency_ms: Some(best_ms),
             },
@@ -1034,6 +1069,53 @@ async fn maintain_smart_rule(
         ),
     );
     Ok(())
+}
+
+fn rule_probe_interval(consecutive_fails: u32) -> Duration {
+    if consecutive_fails == 0 {
+        return RULE_PROBE_INTERVAL;
+    }
+    let shift = consecutive_fails.saturating_sub(1).min(4);
+    RULE_FAILURE_RETRY_BASE
+        .checked_mul(1u32 << shift)
+        .unwrap_or(RULE_PROBE_INTERVAL)
+        .min(RULE_PROBE_INTERVAL)
+}
+
+fn record_rule_probe_failure(rule_id: &str) {
+    let mut map = RULE_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    let previous = map.get(rule_id).cloned();
+    map.insert(
+        rule_id.to_string(),
+        RuleState {
+            last_switch: previous.as_ref().and_then(|st| st.last_switch),
+            last_probe: Instant::now(),
+            consecutive_probe_fails: previous
+                .as_ref()
+                .map(|st| st.consecutive_probe_fails.saturating_add(1))
+                .unwrap_or(1),
+            last_node_id: previous.as_ref().and_then(|st| st.last_node_id.clone()),
+            last_latency_ms: previous.and_then(|st| st.last_latency_ms),
+        },
+    );
+}
+
+#[cfg(test)]
+mod probe_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn healthy_smart_rules_probe_every_ten_minutes() {
+        assert_eq!(rule_probe_interval(0), Duration::from_secs(600));
+    }
+
+    #[test]
+    fn smart_rule_failures_back_off_up_to_ten_minutes() {
+        let seconds: Vec<u64> = (1..=7)
+            .map(|fails| rule_probe_interval(fails).as_secs())
+            .collect();
+        assert_eq!(seconds, vec![60, 120, 240, 480, 600, 600, 600]);
+    }
 }
 
 /// Immediate probe for one smart rule (e.g. after save). Best-effort.

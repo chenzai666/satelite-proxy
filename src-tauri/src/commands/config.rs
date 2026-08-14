@@ -6,7 +6,7 @@ use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[derive(Debug, Serialize)]
 pub struct GenerateConfigResult {
@@ -37,6 +37,7 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn update_settings(
+    app: AppHandle,
     state: State<'_, AppState>,
     mixed_port: Option<u16>,
     api_port: Option<u16>,
@@ -209,10 +210,7 @@ pub fn update_settings(
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
     if need_restart {
-        let res = state.resource_dir.clone();
-        if let Err(e) = state.restart_if_running(res.as_deref()) {
-            return Err(e.to_string());
-        }
+        crate::rule_apply::request_restart(app, Vec::new());
     }
 
     Ok(settings)

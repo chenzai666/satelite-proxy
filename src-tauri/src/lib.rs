@@ -7,6 +7,7 @@ mod conn_journal;
 mod core;
 mod domain;
 mod error;
+mod log_retention;
 mod proxy;
 mod remote_rule_auto;
 mod rule_apply;
@@ -42,6 +43,10 @@ pub async fn download_core_to(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if let Some(code) = core::manager::try_run_elevated_log_helper() {
+        std::process::exit(code);
+    }
     let mut builder = tauri::Builder::default();
 
     // Single instance + deep-link: second launch (e.g. click clash:// while running)
@@ -60,6 +65,7 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir().expect("resolve app data dir");
             std::fs::create_dir_all(&dir).ok();
+            app_log::init(dir.join("logs"));
             let resource_dir = app.path().resource_dir().ok();
             let app_state = AppState::load(dir, resource_dir).expect("load app store");
 
@@ -252,7 +258,7 @@ pub fn run() {
             commands::set_rule_set_strategy,
             commands::set_rule_set_dns_strategy,
             commands::create_rule_set,
-            commands::rename_rule_set,
+            commands::update_rule_set,
             commands::refresh_remote_rule_set,
             commands::reorder_rule_sets,
             commands::delete_rule_set,

@@ -5,8 +5,10 @@ use crate::state::AppState;
 use tauri::{AppHandle, Manager, State};
 
 #[tauri::command]
-pub fn get_proxy_status(state: State<'_, AppState>) -> Result<ProxyStatus, String> {
-    state.proxy_status().map_err(|e| e.to_string())
+pub fn get_proxy_status(app: AppHandle, state: State<'_, AppState>) -> Result<ProxyStatus, String> {
+    let status = state.proxy_status().map_err(|e| e.to_string())?;
+    AppState::schedule_kernel_selection_sync(app);
+    Ok(status)
 }
 
 #[tauri::command]

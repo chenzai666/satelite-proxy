@@ -2,10 +2,55 @@ use crate::app_log;
 use crate::error::AppResult;
 use crate::runtime::{ProxyStatus, Runtime};
 use crate::storage::{default_store_path, AppStore};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+const KERNEL_SELECTION_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const KERNEL_SELECTION_HTTP_TIMEOUT: Duration = Duration::from_millis(800);
+
+#[derive(Default)]
+struct KernelSelectionPoll {
+    in_flight: bool,
+    last_started: Option<Instant>,
+}
+
+impl KernelSelectionPoll {
+    fn try_start(&mut self, now: Instant) -> bool {
+        if self.in_flight
+            || self.last_started.is_some_and(|last| {
+                now.saturating_duration_since(last) < KERNEL_SELECTION_POLL_INTERVAL
+            })
+        {
+            return false;
+        }
+        self.in_flight = true;
+        self.last_started = Some(now);
+        true
+    }
+
+    fn finish(&mut self) {
+        self.in_flight = false;
+    }
+}
+
+#[cfg(test)]
+mod kernel_selection_poll_tests {
+    use super::*;
+
+    #[test]
+    fn suppresses_concurrent_and_recent_status_polls() {
+        let mut poll = KernelSelectionPoll::default();
+        let start = Instant::now();
+        assert!(poll.try_start(start));
+        assert!(!poll.try_start(start + Duration::from_secs(10)));
+
+        poll.finish();
+        assert!(!poll.try_start(start + Duration::from_millis(500)));
+        assert!(poll.try_start(start + KERNEL_SELECTION_POLL_INTERVAL));
+    }
+}
 
 pub struct AppState {
     pub app_data_dir: PathBuf,
@@ -19,12 +64,25 @@ pub struct AppState {
     /// Only true when user explicitly quits (tray Quit / close without tray).
     /// Destroying the last WebView would otherwise kill tray + sing-box.
     pub exit_allowed: AtomicBool,
+    /// True while the managed core is being started, stopped, or replaced.
+    /// Background samplers must not contend for Runtime during this window.
+    core_transitioning: AtomicBool,
     /// One-click subscribe deep links waiting for the add-subscription UI.
     /// Cleared when the user closes the modal (not sticky across intentional dismiss).
     pending_import_urls: Mutex<Option<Vec<String>>>,
-    /// Rule-set id -> latest requested `enabled` value not yet confirmed applied.
-    /// Lets `rule_apply` coalesce rapid repeated toggles into one restart cycle.
-    pub pending_rule_set_toggle: Mutex<HashMap<String, bool>>,
+    /// One global debounced apply queue for toggles and remote-rule updates.
+    rule_apply_queue: Mutex<crate::rule_apply::RuleApplyQueue>,
+    kernel_selection_poll: Mutex<KernelSelectionPoll>,
+}
+
+struct CoreTransitionGuard<'a> {
+    flag: &'a AtomicBool,
+}
+
+impl Drop for CoreTransitionGuard<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
 }
 
 /// Recover from a poisoned mutex so one panic cannot brick the whole app.
@@ -55,8 +113,10 @@ impl AppState {
             runtime: Mutex::new(Runtime::new()),
             ui_visible: AtomicBool::new(true),
             exit_allowed: AtomicBool::new(false),
+            core_transitioning: AtomicBool::new(false),
             pending_import_urls: Mutex::new(None),
-            pending_rule_set_toggle: Mutex::new(HashMap::new()),
+            rule_apply_queue: Mutex::new(crate::rule_apply::RuleApplyQueue::default()),
+            kernel_selection_poll: Mutex::new(KernelSelectionPoll::default()),
         })
     }
 
@@ -86,8 +146,10 @@ impl AppState {
     }
 
     /// Short-lived bookkeeping lock; unrelated to the runtime/store lock order.
-    pub fn lock_pending_rule_set_toggle(&self) -> MutexGuard<'_, HashMap<String, bool>> {
-        recover_lock(&self.pending_rule_set_toggle, "pending_rule_set_toggle")
+    pub(crate) fn lock_rule_apply_queue(
+        &self,
+    ) -> MutexGuard<'_, crate::rule_apply::RuleApplyQueue> {
+        recover_lock(&self.rule_apply_queue, "rule_apply_queue")
     }
 
     pub fn set_ui_visible(&self, visible: bool) {
@@ -104,6 +166,19 @@ impl AppState {
 
     pub fn is_exit_allowed(&self) -> bool {
         self.exit_allowed.load(Ordering::SeqCst)
+    }
+
+    pub fn is_core_transitioning(&self) -> bool {
+        self.core_transitioning.load(Ordering::Acquire)
+    }
+
+    fn begin_core_transition(&self) -> AppResult<CoreTransitionGuard<'_>> {
+        self.core_transitioning
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| crate::error::AppError::Core("内核正在切换，请稍候".into()))?;
+        Ok(CoreTransitionGuard {
+            flag: &self.core_transitioning,
+        })
     }
 
     pub fn unload_ui_on_tray(&self) -> bool {
@@ -134,6 +209,7 @@ impl AppState {
         resource_dir: Option<&Path>,
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
+        let _transition = self.begin_core_transition()?;
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
         let stored_capture = store.settings.capture_mode;
@@ -162,12 +238,14 @@ impl AppState {
     }
 
     pub fn stop_proxy(&self) -> AppResult<ProxyStatus> {
+        let _transition = self.begin_core_transition()?;
         let mut runtime = self.lock_runtime();
         let store = self.lock_store();
         runtime.stop_proxy(&store)
     }
 
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
+        let _transition = self.begin_core_transition()?;
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
         let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
@@ -191,15 +269,41 @@ impl AppState {
     }
 
     pub fn proxy_status(&self) -> AppResult<ProxyStatus> {
-        // Kernel urltest: mirror selected tag → current_node_id so UI / nodes stay accurate.
-        self.sync_kernel_selection();
         let mut runtime = self.lock_runtime();
         let store = self.lock_store();
         Ok(runtime.status(&store))
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.
-    fn sync_kernel_selection(&self) {
+    pub fn schedule_kernel_selection_sync(app: tauri::AppHandle) {
+        use tauri::Manager;
+
+        let Some(state) = app.try_state::<AppState>() else {
+            return;
+        };
+        let kernel_mode = state
+            .with_store(|store| {
+                Ok(store.settings.auto_select == crate::domain::AutoSelectMode::Kernel)
+            })
+            .unwrap_or(false);
+        if !kernel_mode
+            || state.is_core_transitioning()
+            || !recover_lock(&state.kernel_selection_poll, "kernel_selection_poll")
+                .try_start(Instant::now())
+        {
+            return;
+        }
+
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Some(state) = app.try_state::<AppState>() {
+                state.sync_kernel_selection_outside_runtime_lock();
+                recover_lock(&state.kernel_selection_poll, "kernel_selection_poll").finish();
+            }
+        });
+    }
+
+    /// Mirror the kernel urltest selection without holding Runtime during HTTP.
+    fn sync_kernel_selection_outside_runtime_lock(&self) {
         use crate::config::outbound_tag;
         use crate::domain::AutoSelectMode;
 
@@ -211,19 +315,19 @@ impl AppState {
             return;
         }
 
-        let now_tag = {
+        let api = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
             if !runtime.core.is_running() {
                 return;
             }
-            let Some(api) = runtime.api.as_ref() else {
-                return;
-            };
-            match api.proxy_group_now("proxy") {
-                Ok(t) => t,
-                Err(_) => return,
-            }
+            runtime.api_clone()
+        };
+        let Some(api) = api else { return };
+        let now_tag = match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT)
+        {
+            Ok(tag) => tag,
+            Err(_) => return,
         };
         let Some(tag) = now_tag else {
             return;
@@ -304,6 +408,7 @@ impl AppState {
         mode: &str,
         resource_dir: Option<&Path>,
     ) -> AppResult<ProxyStatus> {
+        let _transition = self.begin_core_transition()?;
         let mode = crate::domain::CaptureMode::parse(mode).ok_or_else(|| {
             crate::error::AppError::Core("capture mode must be off | system | tun".into())
         })?;
@@ -348,6 +453,7 @@ impl AppState {
         mode: crate::domain::OutboundMode,
         resource_dir: Option<&Path>,
     ) -> AppResult<ProxyStatus> {
+        let _transition = self.begin_core_transition()?;
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
 

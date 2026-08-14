@@ -65,11 +65,18 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
 
     let name = get_str(map, &["name"]).unwrap_or_else(|| "unnamed".into());
     let type_str = get_str(map, &["type"]).ok_or_else(|| "missing type".to_string())?;
-    let server = get_str(map, &["server"]).ok_or_else(|| "missing server".to_string())?;
-    let port = get_u16(map, &["port"]).ok_or_else(|| "missing or invalid port".to_string())?;
-
     let protocol = Protocol::from_clash_type(&type_str)
         .ok_or_else(|| format!("unsupported type: {type_str}"))?;
+    let server = if matches!(protocol, Protocol::Tor) {
+        get_str(map, &["server"]).unwrap_or_else(|| "localhost".into())
+    } else {
+        get_str(map, &["server"]).ok_or_else(|| "missing server".to_string())?
+    };
+    let port = if matches!(protocol, Protocol::Tor) {
+        get_u16(map, &["port"]).unwrap_or(0)
+    } else {
+        get_u16(map, &["port"]).ok_or_else(|| "missing or invalid port".to_string())?
+    };
 
     let udp = get_bool(map, &["udp"]);
     let (tls, transport, config) = match protocol {
@@ -80,6 +87,13 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
         Protocol::Hysteria2 => parse_hysteria2(map)?,
         Protocol::Tuic => parse_tuic(map)?,
         Protocol::Socks5 => parse_socks5(map)?,
+        Protocol::Http => parse_http(map)?,
+        Protocol::Hysteria => parse_hysteria(map)?,
+        Protocol::ShadowTls => parse_shadowtls(map)?,
+        Protocol::Ssh => parse_ssh(map)?,
+        Protocol::Naive => parse_naive(map)?,
+        Protocol::Tor => parse_tor(map)?,
+        Protocol::WireGuard => parse_wireguard(map)?,
         Protocol::AnyTls => parse_anytls(map)?,
         Protocol::Snell => parse_snell(map)?,
     };
@@ -361,6 +375,181 @@ fn parse_socks5(
     let tls = parse_tls_common(map, false);
 
     Ok((tls, None, ProtocolConfig::Socks5 { username, password }))
+}
+
+fn parse_http(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let username = get_str(map, &["username", "user"]);
+    let password = get_str(map, &["password"]);
+    let path = get_str(map, &["path"]);
+    // Clash uses type:http + tls:true for HTTPS proxy nodes, and some providers use type:https.
+    let default_tls = get_str(map, &["type"])
+        .map(|v| v.eq_ignore_ascii_case("https"))
+        .unwrap_or(false);
+    let tls = parse_tls_common(map, default_tls);
+    Ok((
+        tls,
+        None,
+        ProtocolConfig::Http {
+            username,
+            password,
+            path,
+        },
+    ))
+}
+
+fn parse_hysteria(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let auth_str = get_str(map, &["auth-str", "auth_str"]);
+    let auth_base64 = auth_str.is_none();
+    let auth = auth_str
+        .or_else(|| get_str(map, &["auth"]))
+        .ok_or_else(|| "hysteria: missing auth/auth-str".to_string())?;
+    let up_mbps = get_u32(map, &["up", "up-mbps", "up_mbps"]);
+    let down_mbps = get_u32(map, &["down", "down-mbps", "down_mbps"]);
+    let obfs = get_str(map, &["obfs"]);
+    let tls = parse_tls_common(map, true);
+    Ok((
+        tls,
+        None,
+        ProtocolConfig::Hysteria {
+            auth,
+            auth_base64,
+            up_mbps,
+            down_mbps,
+            obfs,
+        },
+    ))
+}
+
+fn parse_shadowtls(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let version = get_u16(map, &["version"]).unwrap_or(1) as u8;
+    if !(1..=3).contains(&version) {
+        return Err("shadowtls: version must be 1, 2, or 3".into());
+    }
+    let password = get_str(map, &["password"]);
+    let tls = parse_tls_common(map, true);
+    Ok((tls, None, ProtocolConfig::ShadowTls { version, password }))
+}
+
+fn parse_ssh(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let user = get_str(map, &["user", "username"]).unwrap_or_else(|| "root".into());
+    let password = get_str(map, &["password"]);
+    let private_key = get_str(map, &["private-key", "private_key"]);
+    if password.is_none() && private_key.is_none() {
+        return Err("ssh: missing password or private key".into());
+    }
+    let private_key_passphrase =
+        get_str(map, &["private-key-passphrase", "private_key_passphrase"]);
+    let host_key = map
+        .get(Value::String("host-key".into()))
+        .or_else(|| map.get(Value::String("host_key".into())))
+        .and_then(Value::as_sequence)
+        .map(|v| v.iter().filter_map(value_to_string).collect())
+        .unwrap_or_default();
+    Ok((
+        None,
+        None,
+        ProtocolConfig::Ssh {
+            user,
+            password,
+            private_key,
+            private_key_passphrase,
+            host_key,
+        },
+    ))
+}
+
+fn parse_naive(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let username =
+        get_str(map, &["username", "user"]).ok_or_else(|| "naive: missing username".to_string())?;
+    let password =
+        get_str(map, &["password"]).ok_or_else(|| "naive: missing password".to_string())?;
+    let quic = get_bool(map, &["quic"]).unwrap_or(false);
+    Ok((
+        parse_tls_common(map, true),
+        None,
+        ProtocolConfig::Naive {
+            username,
+            password,
+            quic,
+        },
+    ))
+}
+
+fn parse_tor(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let executable_path = get_str(map, &["executable-path", "executable_path"])
+        .ok_or_else(|| "tor: external executable-path is required by bundled core".to_string())?;
+    let extra_args = map
+        .get(Value::String("extra-args".into()))
+        .or_else(|| map.get(Value::String("extra_args".into())))
+        .and_then(Value::as_sequence)
+        .map(|v| v.iter().filter_map(value_to_string).collect())
+        .unwrap_or_default();
+    let data_directory = get_str(map, &["data-directory", "data_directory"]);
+    Ok((
+        None,
+        None,
+        ProtocolConfig::Tor {
+            executable_path,
+            extra_args,
+            data_directory,
+        },
+    ))
+}
+
+fn parse_wireguard(
+    map: &serde_yaml::Mapping,
+) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
+    let private_key = get_str(map, &["private-key", "private_key"])
+        .ok_or_else(|| "wireguard: missing private key".to_string())?;
+    let peer_public_key = get_str(map, &["public-key", "peer-public-key", "peer_public_key"])
+        .ok_or_else(|| "wireguard: missing peer public key".to_string())?;
+    let pre_shared_key = get_str(map, &["pre-shared-key", "pre_shared_key"]);
+    let local_address: Vec<String> = map
+        .get(Value::String("ip".into()))
+        .or_else(|| map.get(Value::String("local-address".into())))
+        .or_else(|| map.get(Value::String("local_address".into())))
+        .map(|v| match v {
+            Value::Sequence(items) => items.iter().filter_map(value_to_string).collect(),
+            _ => value_to_string(v).into_iter().collect(),
+        })
+        .unwrap_or_default();
+    if local_address.is_empty() {
+        return Err("wireguard: missing local address".into());
+    }
+    let reserved = map
+        .get(Value::String("reserved".into()))
+        .and_then(Value::as_sequence)
+        .map(|v| {
+            v.iter()
+                .filter_map(|x| x.as_u64().and_then(|n| u8::try_from(n).ok()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mtu = get_u32(map, &["mtu"]);
+    Ok((
+        None,
+        None,
+        ProtocolConfig::WireGuard {
+            local_address,
+            private_key,
+            peer_public_key,
+            pre_shared_key,
+            reserved,
+            mtu,
+        },
+    ))
 }
 
 fn parse_tls_common(map: &serde_yaml::Mapping, default_enabled: bool) -> Option<TlsConfig> {

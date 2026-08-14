@@ -3,7 +3,7 @@
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -51,6 +51,7 @@ pub struct CoreManager {
     config_path: Option<PathBuf>,
     binary_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
+    log_dir: Option<PathBuf>,
 }
 
 impl Default for CoreManager {
@@ -64,6 +65,7 @@ impl Default for CoreManager {
             config_path: None,
             binary_path: None,
             log_path: None,
+            log_dir: None,
         }
     }
 }
@@ -75,6 +77,18 @@ impl CoreManager {
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    pub fn log_path(&self) -> Option<&Path> {
+        self.log_path.as_deref()
+    }
+
+    fn latest_log_path(&self) -> Option<PathBuf> {
+        self.log_dir
+            .as_ref()
+            .map(|dir| crate::log_retention::hourly_path(dir, "sing-box"))
+            .filter(|path| path.exists())
+            .or_else(|| self.log_path.clone())
     }
 
     pub fn is_running(&self) -> bool {
@@ -92,7 +106,7 @@ impl CoreManager {
                 } else if self.state != CoreState::Stopped {
                     self.state = CoreState::Error;
                     let detail = self
-                        .log_path
+                        .latest_log_path()
                         .as_ref()
                         .and_then(|p| read_log_tail(p, 4000))
                         .filter(|s| !s.trim().is_empty())
@@ -113,7 +127,7 @@ impl CoreManager {
                     } else {
                         self.state = CoreState::Error;
                         let detail = self
-                            .log_path
+                            .latest_log_path()
                             .as_ref()
                             .and_then(|p| read_log_tail(p, 4000))
                             .filter(|s| !s.trim().is_empty())
@@ -308,18 +322,21 @@ impl CoreManager {
         }
 
         fs::create_dir_all(log_dir).map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
-        let log_path = log_dir.join("sing-box.log");
-        // truncate previous run log
+        // One file per wall-clock hour. Core restarts within that hour append,
+        // preserving the sequence around TUN and capture-mode transitions.
+        let log_path = crate::log_retention::hourly_path(log_dir, "sing-box");
+        crate::log_retention::cleanup_current_hour(log_dir)
+            .map_err(|e| AppError::Core(format!("clean logs: {e}")))?;
         let _ = OpenOptions::new()
             .create(true)
-            .write(true)
-            .truncate(true)
+            .append(true)
             .open(&log_path)
             .map_err(|e| AppError::Core(format!("open log: {e}")))?;
 
         self.state = CoreState::Starting;
         self.last_error = None;
         self.log_path = Some(log_path.clone());
+        self.log_dir = Some(log_dir.to_path_buf());
         self.config_path = Some(config.to_path_buf());
         self.binary_path = Some(binary.to_path_buf());
         self.elevated_pid = None;
@@ -331,22 +348,13 @@ impl CoreManager {
             return self.start_elevated_windows(binary, config, &log_path, mixed_port);
         }
 
-        let log_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|e| AppError::Core(format!("open log: {e}")))?;
-        let log_err = log_file
-            .try_clone()
-            .map_err(|e| AppError::Core(format!("clone log: {e}")))?;
-
         let mut cmd = Command::new(binary);
         cmd.args(["run", "-c"]).arg(config);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let child = cmd
-            .stdout(Stdio::from(log_file))
-            .stderr(Stdio::from(log_err))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
                 self.state = CoreState::Error;
@@ -378,6 +386,16 @@ impl CoreManager {
             );
         }
 
+        let mut child = child;
+        let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(
+            log_dir.to_path_buf(),
+        )));
+        if let Some(stdout) = child.stdout.take() {
+            spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            spawn_rotating_log_copy(stderr, writer);
+        }
         self.child = Some(child);
         self.run_mode = RunMode::Sidecar;
 
@@ -391,17 +409,23 @@ impl CoreManager {
         &mut self,
         binary: &Path,
         config: &Path,
-        log_path: &Path,
+        _log_path: &Path,
         mixed_port: u16,
     ) -> AppResult<()> {
-        // sing-box redirects its own stdout/stderr when given 2>&1 >>file in the
-        // args, so we pass those flags. Quote paths defensively (spaces).
-        let bin_s = binary.display().to_string();
-        let cfg_s = config.display().to_string();
-        let log_s = log_path.display().to_string();
-        let args = format!("run -c \"{cfg_s}\" >>\"{log_s}\" 2>&1");
+        let helper = std::env::current_exe()
+            .map_err(|e| AppError::Core(format!("resolve log helper: {e}")))?;
+        let log_dir = self
+            .log_dir
+            .as_ref()
+            .ok_or_else(|| AppError::Core("log directory missing".into()))?;
+        let args = format!(
+            "--satelite-core-helper \"{}\" \"{}\" \"{}\"",
+            escape_windows_arg(binary),
+            escape_windows_arg(config),
+            escape_windows_arg(log_dir)
+        );
 
-        let _elevated = match super::elevate::run_elevated(Path::new(&bin_s), &args, None) {
+        let _elevated = match super::elevate::run_elevated(&helper, &args, None) {
             Ok(c) => c,
             Err(e) => {
                 self.state = CoreState::Error;
@@ -546,6 +570,61 @@ impl CoreManager {
         self.run_mode = RunMode::None;
         self.last_error = None;
     }
+}
+
+#[cfg(target_os = "windows")]
+fn escape_windows_arg(path: &Path) -> String {
+    path.to_string_lossy().replace('"', "\\\"")
+}
+
+/// Elevated helper entry point. It owns the real sing-box child, captures both
+/// output streams through the same hourly writer, and binds the child to a Job
+/// Object so killing the helper also kills sing-box.
+#[cfg(target_os = "windows")]
+pub fn try_run_elevated_log_helper() -> Option<i32> {
+    let args: Vec<_> = std::env::args_os().collect();
+    let marker = args
+        .iter()
+        .position(|value| value == "--satelite-core-helper")?;
+    if args.len() <= marker + 3 {
+        return Some(2);
+    }
+    let binary = PathBuf::from(&args[marker + 1]);
+    let config = PathBuf::from(&args[marker + 2]);
+    let log_dir = PathBuf::from(&args[marker + 3]);
+    if fs::create_dir_all(&log_dir).is_err() {
+        return Some(3);
+    }
+    let mut command = Command::new(binary);
+    command
+        .args(["run", "-c"])
+        .arg(config)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(_) => return Some(4),
+    };
+    if super::job::ensure_child_killed_on_parent_exit(child.id()).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Some(5);
+    }
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(log_dir)));
+    if let Some(stdout) = child.stdout.take() {
+        spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_rotating_log_copy(stderr, writer);
+    }
+    Some(
+        child
+            .wait()
+            .ok()
+            .and_then(|status| status.code())
+            .unwrap_or(1),
+    )
 }
 
 fn pid_alive(pid: u32) -> bool {
@@ -769,6 +848,101 @@ fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
         return Some((*last).to_string());
     }
     Some(buf.trim().to_string())
+}
+
+struct RotatingCoreWriter {
+    log_dir: PathBuf,
+    file_hour: Option<u64>,
+    file: Option<File>,
+    file_bytes: u64,
+    bytes_since_cleanup: u64,
+}
+
+impl RotatingCoreWriter {
+    fn new(log_dir: PathBuf) -> Self {
+        Self {
+            log_dir,
+            file_hour: None,
+            file: None,
+            file_bytes: 0,
+            bytes_since_cleanup: 0,
+        }
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let hour = crate::log_retention::current_hour();
+        if self.file_hour != Some(hour) || self.file.is_none() {
+            let path = crate::log_retention::hourly_path_for(&self.log_dir, "sing-box", hour);
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(opened) => {
+                    self.file_bytes = opened.metadata().map(|m| m.len()).unwrap_or(0);
+                    self.bytes_since_cleanup = 0;
+                    self.file = Some(opened);
+                    self.file_hour = Some(hour);
+                    let _ = crate::log_retention::cleanup_current_hour(&self.log_dir);
+                }
+                Err(error) => {
+                    crate::app_log::error("core_log", format!("open {}: {error}", path.display()));
+                    self.file = None;
+                    self.file_hour = None;
+                    self.file_bytes = 0;
+                    return;
+                }
+            }
+        }
+        if self.file_bytes >= crate::log_retention::CORE_ACTIVE_MAX_BYTES {
+            return;
+        }
+        let allowed = crate::log_retention::CORE_ACTIVE_MAX_BYTES - self.file_bytes;
+        let write_count = bytes.len().min(allowed as usize);
+        let Some(active) = self.file.as_mut() else {
+            return;
+        };
+        if let Err(error) = active
+            .write_all(&bytes[..write_count])
+            .and_then(|_| active.flush())
+        {
+            crate::app_log::error("core_log", format!("write: {error}"));
+            self.file = None;
+            self.file_hour = None;
+            self.file_bytes = 0;
+            return;
+        }
+        self.file_bytes = self.file_bytes.saturating_add(write_count as u64);
+        self.bytes_since_cleanup = self.bytes_since_cleanup.saturating_add(write_count as u64);
+        if self.bytes_since_cleanup >= 1024 * 1024 {
+            let _ = crate::log_retention::cleanup_current_hour(&self.log_dir);
+            self.bytes_since_cleanup = 0;
+        }
+    }
+}
+
+/// Copy one core output stream into the active hourly file. Reading in chunks
+/// avoids blocking sing-box on a full pipe; each chunk is flushed so a crash
+/// still leaves a useful final log tail.
+fn spawn_rotating_log_copy<R>(
+    mut reader: R,
+    writer: std::sync::Arc<std::sync::Mutex<RotatingCoreWriter>>,
+) where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 16 * 1024];
+        loop {
+            let count = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(error) => {
+                    crate::app_log::warn("core_log", format!("read core output: {error}"));
+                    break;
+                }
+            };
+            writer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .write(&buffer[..count]);
+        }
+    });
 }
 
 fn strip_ansi(s: &str) -> String {
