@@ -1,7 +1,7 @@
 use crate::app_log;
 use crate::core::manager::CoreState;
 use crate::error::AppResult;
-use crate::runtime::{ProxyStatus, Runtime};
+use crate::runtime::{ConnectionView, ProxyStatus, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +15,20 @@ const KERNEL_SELECTION_HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 struct KernelSelectionPoll {
     in_flight: bool,
     last_started: Option<Instant>,
+}
+
+#[derive(Default)]
+struct QueryViewCache {
+    query: String,
+    limit: Option<usize>,
+    rows: Vec<ConnectionView>,
+}
+
+#[derive(Default)]
+struct TrafficViewCache {
+    live: Vec<ConnectionView>,
+    requests: QueryViewCache,
+    failures: QueryViewCache,
 }
 
 impl KernelSelectionPoll {
@@ -85,6 +99,42 @@ mod kernel_selection_poll_tests {
 
         let _ = std::fs::remove_dir_all(test_dir);
     }
+
+    #[test]
+    fn traffic_views_use_cache_instead_of_waiting_during_transition() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-traffic-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = Arc::new(AppState::load(test_dir.clone(), None).expect("load test state"));
+        state.core_transitioning.store(true, Ordering::Release);
+
+        let runtime = state.lock_runtime();
+        let (tx, rx) = mpsc::channel();
+        let query_state = Arc::clone(&state);
+        let query = std::thread::spawn(move || {
+            let live = query_state.live_connection_views();
+            let requests = query_state.request_views(None, Some(800), false);
+            let failures = query_state.request_views(None, Some(800), true);
+            tx.send((live, requests, failures))
+                .expect("send traffic views");
+        });
+
+        let result = rx.recv_timeout(Duration::from_millis(200));
+        drop(runtime);
+        query.join().expect("traffic query thread");
+        let (live, requests, failures) =
+            result.expect("traffic queries must not wait for the runtime lock");
+        assert!(live.is_empty());
+        assert!(requests.is_empty());
+        assert!(failures.is_empty());
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
 }
 
 pub struct AppState {
@@ -97,6 +147,9 @@ pub struct AppState {
     /// Last complete status snapshot. Status IPC reads this while a long core
     /// transition owns `runtime`, so the WebView never queues behind startup.
     status_cache: Mutex<ProxyStatus>,
+    /// Last rendered traffic rows. Traffic pages keep showing these while a
+    /// core transition owns `runtime` instead of queuing another IPC request.
+    traffic_view_cache: Mutex<TrafficViewCache>,
     /// Main WebView is visible (affects journal sampling rate).
     pub ui_visible: AtomicBool,
     /// Only true when user explicitly quits (tray Quit / close without tray).
@@ -152,6 +205,7 @@ impl AppState {
             store: Mutex::new(store),
             runtime: Mutex::new(runtime),
             status_cache: Mutex::new(status_cache),
+            traffic_view_cache: Mutex::new(TrafficViewCache::default()),
             ui_visible: AtomicBool::new(true),
             exit_allowed: AtomicBool::new(false),
             core_transitioning: AtomicBool::new(false),
@@ -356,6 +410,103 @@ impl AppState {
         let status = runtime.status(&store);
         self.cache_status(&status);
         Ok(status)
+    }
+
+    pub fn live_connection_views(&self) -> Vec<ConnectionView> {
+        if self.is_core_transitioning() {
+            return recover_lock(&self.traffic_view_cache, "traffic_view_cache")
+                .live
+                .clone();
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => {
+                return recover_lock(&self.traffic_view_cache, "traffic_view_cache")
+                    .live
+                    .clone()
+            }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => {
+                return recover_lock(&self.traffic_view_cache, "traffic_view_cache")
+                    .live
+                    .clone()
+            }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let rows = runtime.live_connections(&store);
+        recover_lock(&self.traffic_view_cache, "traffic_view_cache").live = rows.clone();
+        rows
+    }
+
+    pub fn request_views(
+        &self,
+        query: Option<&str>,
+        limit: Option<usize>,
+        failures_only: bool,
+    ) -> Vec<ConnectionView> {
+        let query = query.unwrap_or("").trim().to_string();
+        let cached = || {
+            let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
+            let entry = if failures_only {
+                &cache.failures
+            } else {
+                &cache.requests
+            };
+            if entry.query == query && entry.limit == limit {
+                entry.rows.clone()
+            } else {
+                Vec::new()
+            }
+        };
+        if self.is_core_transitioning() {
+            return cached();
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return cached(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => return cached(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let rows = if failures_only {
+            runtime.request_failures(&store, Some(&query), limit)
+        } else {
+            runtime.request_history(&store, Some(&query), limit)
+        };
+        let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
+        let entry = if failures_only {
+            &mut cache.failures
+        } else {
+            &mut cache.requests
+        };
+        entry.query = query;
+        entry.limit = limit;
+        entry.rows = rows.clone();
+        rows
+    }
+
+    pub fn clear_request_history_nonblocking(&self) -> AppResult<()> {
+        if self.is_core_transitioning() {
+            return Err(crate::error::AppError::Core("内核正在切换，请稍候".into()));
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => {
+                return Err(crate::error::AppError::Core("内核正忙，请稍候".into()))
+            }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        runtime.clear_request_history();
+        let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
+        cache.requests.rows.clear();
+        cache.failures.rows.clear();
+        Ok(())
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.
