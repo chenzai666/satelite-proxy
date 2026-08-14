@@ -276,8 +276,11 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 }
 
 #[tauri::command]
-pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
+pub async fn generate_singbox_config(
+    state: State<'_, AppState>,
+) -> Result<GenerateConfigResult, String> {
     let secret = generate_api_secret();
+    let app_data_dir = state.app_data_dir.clone();
 
     let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
@@ -291,29 +294,42 @@ pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateCon
         })
         .map_err(|e| e.to_string())?;
 
-    let built = build_singbox_config(
-        &nodes,
-        &BuildOptions {
+    let worker_secret = secret.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: settings.mixed_port,
+                api_port: settings.api_port,
+                api_secret: worker_secret,
+                current_node_id: settings.current_node_id.clone(),
+                log_level: "info".into(),
+                rules,
+                rule_sets: remote_rule_sets,
+                tun_enabled: settings.tun_enabled,
+                tun_stack: settings.tun_stack.clone(),
+                dns,
+                outbound_mode: settings.outbound_mode,
+                route_final: settings.route_final.clone(),
+                auto_select: settings.auto_select,
+                probe_url: settings.probe_url.clone(),
+                find_process: settings.find_process,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
+        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+        Ok::<_, String>(GenerateConfigResult {
+            path: path.display().to_string(),
+            selected_tag: built.selected_tag,
+            outbound_count: built.outbound_tags.len(),
             mixed_port: settings.mixed_port,
             api_port: settings.api_port,
-            api_secret: secret.clone(),
-            current_node_id: settings.current_node_id.clone(),
-            log_level: "info".into(),
-            rules,
-            rule_sets: remote_rule_sets,
-            tun_enabled: settings.tun_enabled,
-            tun_stack: settings.tun_stack.clone(),
-            dns,
-            outbound_mode: settings.outbound_mode,
-            route_final: settings.route_final.clone(),
-            auto_select: settings.auto_select,
-            probe_url: settings.probe_url.clone(),
-            find_process: settings.find_process,
-        },
-    )
-    .map_err(|e| e.to_string())?;
-
-    let path = write_active_config(&state.app_data_dir, &built).map_err(|e| e.to_string())?;
+            preview,
+        })
+    })
+    .await
+    .map_err(|e| format!("generate config task: {e}"))??;
 
     // persist secret + ensure current node set if missing
     state
@@ -328,16 +344,7 @@ pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateCon
         })
         .map_err(|e| e.to_string())?;
 
-    let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-
-    Ok(GenerateConfigResult {
-        path: path.display().to_string(),
-        selected_tag: built.selected_tag,
-        outbound_count: built.outbound_tags.len(),
-        mixed_port: settings.mixed_port,
-        api_port: settings.api_port,
-        preview,
-    })
+    Ok(result)
 }
 
 #[tauri::command]
@@ -351,7 +358,9 @@ pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<Strin
 }
 
 #[tauri::command]
-pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
+pub async fn preview_singbox_config(
+    state: State<'_, AppState>,
+) -> Result<GenerateConfigResult, String> {
     let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
@@ -369,37 +378,39 @@ pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConf
         .clone()
         .unwrap_or_else(generate_api_secret);
 
-    let built = build_singbox_config(
-        &nodes,
-        &BuildOptions {
+    let path = active_config_path(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: settings.mixed_port,
+                api_port: settings.api_port,
+                api_secret: secret,
+                current_node_id: settings.current_node_id.clone(),
+                log_level: "info".into(),
+                rules,
+                rule_sets: remote_rule_sets,
+                tun_enabled: settings.tun_enabled,
+                tun_stack: settings.tun_stack.clone(),
+                dns,
+                outbound_mode: settings.outbound_mode,
+                route_final: settings.route_final.clone(),
+                auto_select: settings.auto_select,
+                probe_url: settings.probe_url.clone(),
+                find_process: settings.find_process,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+        Ok::<_, String>(GenerateConfigResult {
+            path: path.display().to_string(),
+            selected_tag: built.selected_tag,
+            outbound_count: built.outbound_tags.len(),
             mixed_port: settings.mixed_port,
             api_port: settings.api_port,
-            api_secret: secret,
-            current_node_id: settings.current_node_id.clone(),
-            log_level: "info".into(),
-            rules,
-            rule_sets: remote_rule_sets,
-            tun_enabled: settings.tun_enabled,
-            tun_stack: settings.tun_stack.clone(),
-            dns,
-            outbound_mode: settings.outbound_mode,
-            route_final: settings.route_final.clone(),
-            auto_select: settings.auto_select,
-            probe_url: settings.probe_url.clone(),
-            find_process: settings.find_process,
-        },
-    )
-    .map_err(|e| e.to_string())?;
-
-    let path = active_config_path(&state.app_data_dir);
-    let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-
-    Ok(GenerateConfigResult {
-        path: path.display().to_string(),
-        selected_tag: built.selected_tag,
-        outbound_count: built.outbound_tags.len(),
-        mixed_port: settings.mixed_port,
-        api_port: settings.api_port,
-        preview,
+            preview,
+        })
     })
+    .await
+    .map_err(|e| format!("preview config task: {e}"))?
 }
