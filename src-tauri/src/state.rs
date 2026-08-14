@@ -1,10 +1,11 @@
 use crate::app_log;
+use crate::core::manager::CoreState;
 use crate::error::AppResult;
 use crate::runtime::{ProxyStatus, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 const KERNEL_SELECTION_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -38,6 +39,8 @@ impl KernelSelectionPoll {
 #[cfg(test)]
 mod kernel_selection_poll_tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::sync::Arc;
 
     #[test]
     fn suppresses_concurrent_and_recent_status_polls() {
@@ -50,6 +53,38 @@ mod kernel_selection_poll_tests {
         assert!(!poll.try_start(start + Duration::from_millis(500)));
         assert!(poll.try_start(start + KERNEL_SELECTION_POLL_INTERVAL));
     }
+
+    #[test]
+    fn status_uses_cache_instead_of_waiting_for_runtime_during_transition() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-status-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = Arc::new(AppState::load(test_dir.clone(), None).expect("load test state"));
+        state.core_transitioning.store(true, Ordering::Release);
+        state.mark_cached_core_state(CoreState::Starting);
+
+        let runtime = state.lock_runtime();
+        let (tx, rx) = mpsc::channel();
+        let query_state = Arc::clone(&state);
+        let query = std::thread::spawn(move || {
+            tx.send(query_state.proxy_status()).expect("send status");
+        });
+
+        let result = rx.recv_timeout(Duration::from_millis(200));
+        drop(runtime);
+        query.join().expect("status query thread");
+        let status = result
+            .expect("status query must not wait for the runtime lock")
+            .expect("status query");
+        assert_eq!(status.core_state, CoreState::Starting);
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
 }
 
 pub struct AppState {
@@ -59,6 +94,9 @@ pub struct AppState {
     pub store_path: PathBuf,
     pub store: Mutex<AppStore>,
     pub runtime: Mutex<Runtime>,
+    /// Last complete status snapshot. Status IPC reads this while a long core
+    /// transition owns `runtime`, so the WebView never queues behind startup.
+    status_cache: Mutex<ProxyStatus>,
     /// Main WebView is visible (affects journal sampling rate).
     pub ui_visible: AtomicBool,
     /// Only true when user explicitly quits (tray Quit / close without tray).
@@ -105,12 +143,15 @@ impl AppState {
     pub fn load(app_data_dir: PathBuf, resource_dir: Option<PathBuf>) -> AppResult<Self> {
         let store_path = default_store_path(&app_data_dir);
         let store = AppStore::load(&store_path, resource_dir.as_deref())?;
+        let mut runtime = Runtime::new();
+        let status_cache = runtime.status(&store);
         Ok(Self {
             app_data_dir,
             resource_dir,
             store_path,
             store: Mutex::new(store),
-            runtime: Mutex::new(Runtime::new()),
+            runtime: Mutex::new(runtime),
+            status_cache: Mutex::new(status_cache),
             ui_visible: AtomicBool::new(true),
             exit_allowed: AtomicBool::new(false),
             core_transitioning: AtomicBool::new(false),
@@ -181,6 +222,19 @@ impl AppState {
         })
     }
 
+    fn cache_status(&self, status: &ProxyStatus) {
+        *recover_lock(&self.status_cache, "status_cache") = status.clone();
+    }
+
+    fn cached_status(&self) -> ProxyStatus {
+        recover_lock(&self.status_cache, "status_cache").clone()
+    }
+
+    fn mark_cached_core_state(&self, core_state: CoreState) {
+        let mut status = recover_lock(&self.status_cache, "status_cache");
+        status.core_state = core_state;
+    }
+
     pub fn unload_ui_on_tray(&self) -> bool {
         self.with_store(|s| Ok(s.settings.unload_ui_on_tray))
             .unwrap_or(false)
@@ -210,6 +264,7 @@ impl AppState {
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
         let _transition = self.begin_core_transition()?;
+        self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
         let stored_capture = store.settings.capture_mode;
@@ -234,18 +289,23 @@ impl AppState {
             status = runtime.set_system_proxy(&store, enable_system_proxy)?;
         }
         store.save(&self.store_path)?;
+        self.cache_status(&status);
         Ok(status)
     }
 
     pub fn stop_proxy(&self) -> AppResult<ProxyStatus> {
         let _transition = self.begin_core_transition()?;
+        self.mark_cached_core_state(CoreState::Stopping);
         let mut runtime = self.lock_runtime();
         let store = self.lock_store();
-        runtime.stop_proxy(&store)
+        let status = runtime.stop_proxy(&store)?;
+        self.cache_status(&status);
+        Ok(status)
     }
 
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
         let _transition = self.begin_core_transition()?;
+        self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
         let mut store = self.lock_store();
         let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
@@ -254,6 +314,7 @@ impl AppState {
             status = runtime.set_system_proxy(&store, want_system)?;
         }
         store.save(&self.store_path)?;
+        self.cache_status(&status);
         Ok(status)
     }
 
@@ -262,6 +323,9 @@ impl AppState {
         &self,
         resource_dir: Option<&Path>,
     ) -> AppResult<Option<crate::runtime::ProxyStatus>> {
+        if self.is_core_transitioning() {
+            return Err(crate::error::AppError::Core("内核正在切换，请稍候".into()));
+        }
         if !self.is_core_running() {
             return Ok(None);
         }
@@ -269,9 +333,29 @@ impl AppState {
     }
 
     pub fn proxy_status(&self) -> AppResult<ProxyStatus> {
-        let mut runtime = self.lock_runtime();
-        let store = self.lock_store();
-        Ok(runtime.status(&store))
+        if self.is_core_transitioning() {
+            return Ok(self.cached_status());
+        }
+
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return Ok(self.cached_status()),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => return Ok(self.cached_status()),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "store lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        let status = runtime.status(&store);
+        self.cache_status(&status);
+        Ok(status)
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.
@@ -422,7 +506,9 @@ impl AppState {
         let sys_now = runtime.system_proxy_on;
 
         if tun_now == want_tun && sys_now == want_sys && store.settings.capture_mode == mode {
-            return Ok(runtime.status(&store));
+            let status = runtime.status(&store);
+            self.cache_status(&status);
+            return Ok(status);
         }
 
         store.settings.capture_mode = mode;
@@ -432,6 +518,7 @@ impl AppState {
             store.settings.tun_enabled = want_tun;
             store.save(&self.store_path)?;
             if runtime.core.is_running() {
+                self.mark_cached_core_state(CoreState::Starting);
                 runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
                 store.save(&self.store_path)?;
             }
@@ -444,7 +531,9 @@ impl AppState {
 
         store.save(&self.store_path)?;
 
-        Ok(runtime.status(&store))
+        let status = runtime.status(&store);
+        self.cache_status(&status);
+        Ok(status)
     }
 
     /// Clash-style rule / global / direct. Restarts core when running.
@@ -458,18 +547,24 @@ impl AppState {
         let mut store = self.lock_store();
 
         if store.settings.outbound_mode == mode {
-            return Ok(runtime.status(&store));
+            let status = runtime.status(&store);
+            self.cache_status(&status);
+            return Ok(status);
         }
         store.settings.outbound_mode = mode;
         store.save(&self.store_path)?;
 
         runtime.core.poll();
         if runtime.core.is_running() {
+            self.mark_cached_core_state(CoreState::Starting);
             let status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
             store.save(&self.store_path)?;
+            self.cache_status(&status);
             Ok(status)
         } else {
-            Ok(runtime.status(&store))
+            let status = runtime.status(&store);
+            self.cache_status(&status);
+            Ok(status)
         }
     }
 }
