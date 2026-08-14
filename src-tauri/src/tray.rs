@@ -148,7 +148,7 @@ fn current_style(app: &AppHandle<impl TauriRuntime>) -> TrayIconStyle {
 }
 
 /// Re-select and apply the tray icon based on current core run state.
-/// Safe to call frequently; `is_core_running()` is a short-lived lock.
+/// Safe to call frequently; `is_core_running()` falls back to a cached snapshot.
 pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;

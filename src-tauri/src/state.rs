@@ -220,6 +220,51 @@ mod kernel_selection_poll_tests {
 
         let _ = std::fs::remove_dir_all(test_dir);
     }
+
+    #[test]
+    fn core_running_check_never_waits_for_runtime_lock() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-running-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = Arc::new(AppState::load(test_dir.clone(), None).expect("load test state"));
+        {
+            let mut cached = recover_lock(&state.status_cache, "status_cache");
+            cached.running = true;
+            cached.core_state = CoreState::Running;
+        }
+
+        let runtime = state.lock_runtime();
+        let (tx, rx) = mpsc::channel();
+        let query_state = Arc::clone(&state);
+        let cached_query = std::thread::spawn(move || {
+            tx.send(query_state.is_core_running())
+                .expect("send cached running state");
+        });
+        let cached_running = rx.recv_timeout(Duration::from_millis(200));
+        drop(runtime);
+        cached_query.join().expect("cached running query");
+
+        state.core_transitioning.store(true, Ordering::Release);
+        let runtime = state.lock_runtime();
+        let (tx, rx) = mpsc::channel();
+        let query_state = Arc::clone(&state);
+        let transition_query = std::thread::spawn(move || {
+            tx.send(query_state.is_core_running())
+                .expect("send transition running state");
+        });
+        let transition_running = rx.recv_timeout(Duration::from_millis(200));
+        drop(runtime);
+        transition_query.join().expect("transition running query");
+
+        assert!(cached_running.expect("lock contention must use cached state"));
+        assert!(!transition_running.expect("transition check must not wait"));
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
 }
 
 pub struct AppState {
@@ -765,9 +810,29 @@ impl AppState {
     }
 
     pub fn is_core_running(&self) -> bool {
-        let mut r = self.lock_runtime();
-        r.core.poll();
-        r.core.is_running()
+        // Background schedulers must skip work while the endpoint is being
+        // replaced; waiting here can occupy an async worker for 6–10 seconds.
+        if self.is_core_transitioning() {
+            return false;
+        }
+
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return self.cached_status().running,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        runtime.core.poll();
+        let running = runtime.core.is_running();
+        let core_state = runtime.core.state();
+        drop(runtime);
+
+        let mut cached = recover_lock(&self.status_cache, "status_cache");
+        cached.running = running;
+        cached.core_state = core_state;
+        running
     }
 
     pub fn set_system_proxy(
