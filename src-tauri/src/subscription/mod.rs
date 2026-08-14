@@ -96,6 +96,18 @@ fn is_proxy_uri(line: &str) -> bool {
         || lower.starts_with("tuic://")
         || lower.starts_with("socks://")
         || lower.starts_with("socks5://")
+        || lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("hysteria://")
+        || lower.starts_with("hy://")
+        || lower.starts_with("shadowtls://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("naive://")
+        || lower.starts_with("naive+https://")
+        || lower.starts_with("naive+quic://")
+        || lower.starts_with("tor://")
+        || lower.starts_with("anytls://")
+        || lower.starts_with("snell://")
 }
 
 fn try_decode_base64_body(s: &str) -> Option<String> {

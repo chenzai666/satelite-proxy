@@ -146,17 +146,7 @@ fn expand_remote_rules(rules: &[serde_json::Value]) -> Vec<RemoteRuleView<'_>> {
         };
         // Logical/nested rules must remain grouped. Ordinary matcher objects
         // are flattened field by field for read-only display only.
-        if object.contains_key("type")
-            || object.iter().any(|(field, value)| {
-                field != "invert"
-                    && (value.is_object()
-                        || value.as_array().is_some_and(|values| {
-                            values
-                                .iter()
-                                .any(|item| item.is_object() || item.is_array())
-                        }))
-            })
-        {
+        if crate::domain::remote_rule_is_complex(rule) {
             expanded.push(RemoteRuleView::Whole(rule));
             continue;
         }
@@ -243,7 +233,7 @@ fn remote_view_item(index: usize, view: RemoteRuleView<'_>) -> RemoteRuleItem {
     }
 }
 
-/// Parse a downloaded sing-box source rule set for read-only, paged display.
+/// Parse a downloaded sing-box source or binary rule set for read-only display.
 #[tauri::command]
 pub async fn list_remote_rule_items(
     app: AppHandle,
@@ -253,21 +243,21 @@ pub async fn list_remote_rule_items(
     limit: u32,
     query: Option<String>,
 ) -> Result<RemoteRulePage, String> {
-    let local_path = state
-        .with_store(|store| {
-            let set = store
-                .get_rule_set(&id)
-                .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
-            let remote = set
-                .remote
-                .as_ref()
-                .ok_or_else(|| crate::error::AppError::Config("该规则集不是远程规则集".into()))?;
-            remote
-                .local_path
-                .clone()
-                .ok_or_else(|| crate::error::AppError::Config("远程规则集尚未下载完成".into()))
-        })
-        .map_err(|error| error.to_string())?;
+    let (local_path, format) =
+        state
+            .with_store(|store| {
+                let set = store
+                    .get_rule_set(&id)
+                    .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
+                let remote = set.remote.as_ref().ok_or_else(|| {
+                    crate::error::AppError::Config("该规则集不是远程规则集".into())
+                })?;
+                let path = remote.local_path.clone().ok_or_else(|| {
+                    crate::error::AppError::Config("远程规则集尚未下载完成".into())
+                })?;
+                Ok((path, remote.format.clone()))
+            })
+            .map_err(|error| error.to_string())?;
 
     let cache_dir = app
         .path()
@@ -283,22 +273,62 @@ pub async fn list_remote_rule_items(
         return Err("远程规则缓存路径无效".into());
     }
     let query = query.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || {
-        parse_remote_rule_page(&path, offset, limit, &query)
+    let persist_count = query.trim().is_empty();
+    let core = if format == "binary" {
+        let resource_dir = app.path().resource_dir().ok();
+        crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref()).0
+    } else {
+        None
+    };
+    let page = tauri::async_runtime::spawn_blocking(move || {
+        let bytes = if format == "binary" {
+            let core = core.ok_or_else(|| "无法查看 SRS：sing-box 内核不可用".to_string())?;
+            crate::remote_rule_auto::decompile_srs(&core, &path)?
+        } else {
+            std::fs::read(&path).map_err(|error| error.to_string())?
+        };
+        parse_remote_rule_bytes(&bytes, offset, limit, &query)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    if persist_count {
+        let needs_update = state
+            .with_store(|store| {
+                Ok(store
+                    .rule_sets
+                    .iter()
+                    .find(|set| set.id == id)
+                    .and_then(|set| set.remote.as_ref())
+                    .is_some_and(|remote| remote.rule_count != Some(page.total)))
+            })
+            .map_err(|error| error.to_string())?;
+        if needs_update {
+            state
+                .with_store_mut(|store| {
+                    if let Some(remote) = store
+                        .rule_sets
+                        .iter_mut()
+                        .find(|set| set.id == id)
+                        .and_then(|set| set.remote.as_mut())
+                    {
+                        remote.rule_count = Some(page.total);
+                    }
+                    Ok(())
+                })
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(page)
 }
 
-fn parse_remote_rule_page(
-    path: &std::path::Path,
+fn parse_remote_rule_bytes(
+    bytes: &[u8],
     offset: u32,
     limit: u32,
     query: &str,
 ) -> Result<RemoteRulePage, String> {
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let source: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|error| format!("无法解析远程规则缓存: {error}"))?;
+        serde_json::from_slice(bytes).map_err(|error| format!("无法解析远程规则缓存: {error}"))?;
     let rules = source
         .get("rules")
         .and_then(serde_json::Value::as_array)

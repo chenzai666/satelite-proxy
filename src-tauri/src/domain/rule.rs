@@ -336,7 +336,7 @@ pub struct RemoteRuleSetConfig {
     pub update_interval: String,
     /// Whole-set route strategy. Remote sets intentionally do not support node/smart.
     pub target: RuleTarget,
-    /// Rust-managed downloaded source file. sing-box only sees this local path.
+    /// Rust-managed downloaded source JSON or binary SRS file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_path: Option<String>,
     /// idle | downloading | ready | error
@@ -348,7 +348,7 @@ pub struct RemoteRuleSetConfig {
     pub last_update: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_attempt: Option<i64>,
-    /// Number of top-level source rules in the latest validated cache.
+    /// Number of expanded display entries in the latest validated cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_count: Option<u32>,
 }
@@ -430,6 +430,9 @@ impl RuleSet {
             rule_count: None,
         });
         set.strategy = RuleSetStrategy::from_target(target);
+        if let Some(dns_strategy) = set.strategy.recommended_dns_strategy() {
+            set.dns_strategy = dns_strategy;
+        }
         set
     }
 }
@@ -487,6 +490,38 @@ pub const GENERAL_SET_NAME: &str = "通用规则";
 /// Legacy / known id for the large default list file `builtin-ruleset.list`.
 pub const BUILTIN_SET_ID: &str = "builtin-ruleset";
 pub const BUILTIN_SET_NAME: &str = "内置规则集";
+
+/// Whether a source rule must remain one logical row in the remote rule viewer.
+pub fn remote_rule_is_complex(rule: &serde_json::Value) -> bool {
+    let Some(object) = rule.as_object() else {
+        return true;
+    };
+    object.contains_key("type")
+        || object.iter().any(|(field, value)| {
+            field != "invert"
+                && (value.is_object()
+                    || value.as_array().is_some_and(|values| {
+                        values
+                            .iter()
+                            .any(|item| item.is_object() || item.is_array())
+                    }))
+        })
+}
+
+/// Count the rows produced when a source rule is expanded for display.
+pub fn remote_rule_display_count(rule: &serde_json::Value) -> usize {
+    if remote_rule_is_complex(rule) {
+        return 1;
+    }
+    let count: usize = rule
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .filter(|(field, _)| field.as_str() != "invert")
+        .map(|(_, value)| value.as_array().map_or(1, Vec::len))
+        .sum();
+    count.max(1)
+}
 
 /// Sets that ship as factory templates under `resources/rules/`.
 /// - **Restart**: store edits are kept (templates only fill missing sets).
@@ -905,6 +940,22 @@ FINAL,PROXY
             Some(RuleSetDnsStrategy::Remote)
         );
         assert_eq!(RuleSetStrategy::Block.recommended_dns_strategy(), None);
+    }
+
+    #[test]
+    fn new_remote_derives_dns_strategy_from_route_target() {
+        let proxy =
+            RuleSet::new_remote("Proxy", "https://example.com/proxy.srs", RuleTarget::Proxy);
+        assert_eq!(proxy.strategy, RuleSetStrategy::Proxy);
+        assert_eq!(proxy.dns_strategy, RuleSetDnsStrategy::Remote);
+
+        let direct = RuleSet::new_remote(
+            "Direct",
+            "https://example.com/direct.srs",
+            RuleTarget::Direct,
+        );
+        assert_eq!(direct.strategy, RuleSetStrategy::Direct);
+        assert_eq!(direct.dns_strategy, RuleSetDnsStrategy::Local);
     }
 
     #[test]

@@ -311,7 +311,7 @@ export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
 
 export interface RemoteRuleSetConfig {
   url: string;
-  format: "source" | string;
+  format: "source" | "binary" | string;
   update_interval: "disabled" | "1h" | "12h" | "24h" | string;
   target: "proxy" | "direct" | "block";
   local_path?: string | null;

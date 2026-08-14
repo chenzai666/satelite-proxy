@@ -73,6 +73,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     }
 
     let mut node_outbounds = Vec::new();
+    let mut node_endpoints = Vec::new();
     let mut tags = Vec::new();
     let mut errors = Vec::new();
 
@@ -80,13 +81,17 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         match node_to_outbound(node) {
             Ok((tag, outbound)) => {
                 tags.push(tag);
-                node_outbounds.push(outbound);
+                if matches!(node.protocol, Protocol::WireGuard) {
+                    node_endpoints.push(outbound);
+                } else {
+                    node_outbounds.push(outbound);
+                }
             }
             Err(e) => errors.push(format!("{}: {e}", node.name)),
         }
     }
 
-    if node_outbounds.is_empty() {
+    if node_outbounds.is_empty() && node_endpoints.is_empty() {
         return Err(AppError::Config(format!(
             "failed to map any node to outbound: {}",
             errors.join("; ")
@@ -192,7 +197,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         }));
     }
 
-    let value = json!({
+    let mut value = json!({
         "log": {
             "level": opts.log_level,
             "timestamp": true
@@ -219,6 +224,9 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             }
         }
     });
+    if !node_endpoints.is_empty() {
+        value["endpoints"] = json!(node_endpoints);
+    }
 
     Ok(BuiltConfig {
         value,
@@ -692,6 +700,133 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             o
         }
+        (
+            Protocol::Http,
+            ProtocolConfig::Http {
+                username,
+                password,
+                path,
+            },
+        ) => {
+            let mut o = json!({ "type": "http", "tag": tag.clone(), "server": node.server, "server_port": node.port });
+            if let Some(v) = username {
+                o["username"] = json!(v);
+            }
+            if let Some(v) = password {
+                o["password"] = json!(v);
+            }
+            if let Some(v) = path {
+                o["path"] = json!(v);
+            }
+            o
+        }
+        (
+            Protocol::Hysteria,
+            ProtocolConfig::Hysteria {
+                auth,
+                auth_base64,
+                up_mbps,
+                down_mbps,
+                obfs,
+            },
+        ) => {
+            let mut o = json!({ "type": "hysteria", "tag": tag.clone(), "server": node.server, "server_port": node.port });
+            if *auth_base64 {
+                o["auth"] = json!(auth);
+            } else {
+                o["auth_str"] = json!(auth);
+            }
+            o["up_mbps"] = json!(up_mbps.unwrap_or(100));
+            o["down_mbps"] = json!(down_mbps.unwrap_or(100));
+            if let Some(v) = obfs {
+                o["obfs"] = json!(v);
+            }
+            o
+        }
+        (Protocol::ShadowTls, ProtocolConfig::ShadowTls { version, password }) => {
+            let mut o = json!({ "type": "shadowtls", "tag": tag.clone(), "server": node.server, "server_port": node.port, "version": version });
+            if let Some(v) = password {
+                o["password"] = json!(v);
+            }
+            o
+        }
+        (
+            Protocol::Ssh,
+            ProtocolConfig::Ssh {
+                user,
+                password,
+                private_key,
+                private_key_passphrase,
+                host_key,
+            },
+        ) => {
+            let mut o = json!({ "type": "ssh", "tag": tag.clone(), "server": node.server, "server_port": node.port, "user": user });
+            if let Some(v) = password {
+                o["password"] = json!(v);
+            }
+            if let Some(v) = private_key {
+                o["private_key"] = json!(v);
+            }
+            if let Some(v) = private_key_passphrase {
+                o["private_key_passphrase"] = json!(v);
+            }
+            if !host_key.is_empty() {
+                o["host_key"] = json!(host_key);
+            }
+            o
+        }
+        (
+            Protocol::Naive,
+            ProtocolConfig::Naive {
+                username,
+                password,
+                quic,
+            },
+        ) => {
+            json!({ "type": "naive", "tag": tag.clone(), "server": node.server, "server_port": node.port, "username": username, "password": password, "quic": quic })
+        }
+        (
+            Protocol::Tor,
+            ProtocolConfig::Tor {
+                executable_path,
+                extra_args,
+                data_directory,
+            },
+        ) => {
+            let mut o =
+                json!({ "type": "tor", "tag": tag.clone(), "executable_path": executable_path });
+            if !extra_args.is_empty() {
+                o["extra_args"] = json!(extra_args);
+            }
+            if let Some(v) = data_directory {
+                o["data_directory"] = json!(v);
+            }
+            o
+        }
+        (
+            Protocol::WireGuard,
+            ProtocolConfig::WireGuard {
+                local_address,
+                private_key,
+                peer_public_key,
+                pre_shared_key,
+                reserved,
+                mtu,
+            },
+        ) => {
+            let mut peer = json!({ "address": node.server, "port": node.port, "public_key": peer_public_key, "allowed_ips": ["0.0.0.0/0", "::/0"] });
+            if let Some(v) = pre_shared_key {
+                peer["pre_shared_key"] = json!(v);
+            }
+            if !reserved.is_empty() {
+                peer["reserved"] = json!(reserved);
+            }
+            let mut o = json!({ "type": "wireguard", "tag": tag.clone(), "address": local_address, "private_key": private_key, "peers": [peer] });
+            if let Some(v) = mtu {
+                o["mtu"] = json!(v);
+            }
+            o
+        }
         (Protocol::AnyTls, ProtocolConfig::AnyTls { password }) => {
             // sing-box ≥ 1.12; TLS is required on the outbound.
             json!({
@@ -777,7 +912,10 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
     }
 
     // AnyTLS requires a TLS block in sing-box.
-    if matches!(node.protocol, Protocol::AnyTls) {
+    if matches!(
+        node.protocol,
+        Protocol::AnyTls | Protocol::ShadowTls | Protocol::Naive
+    ) {
         let obj = ob
             .as_object_mut()
             .ok_or_else(|| AppError::Config("outbound not object".into()))?;
@@ -963,7 +1101,7 @@ mod tests {
             .to_string();
         set.remote.as_mut().unwrap().local_path = Some(local_path.clone());
         let tag = set.id.clone();
-        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set.clone()], &[], &[]);
 
         assert_eq!(definitions[0]["tag"], tag);
         assert_eq!(definitions[0]["type"], "local");
@@ -975,6 +1113,10 @@ mod tests {
             json!({ "rule_set": [tag.clone()], "action": "reject" })
         );
         assert_eq!(dns[0], json!({ "rule_set": [tag], "action": "reject" }));
+
+        set.remote.as_mut().unwrap().format = "binary".into();
+        let (binary_definitions, _, _) = build_grouped_rule_sets(&[set], &[], &[]);
+        assert_eq!(binary_definitions[0]["format"], "binary");
     }
 
     #[test]

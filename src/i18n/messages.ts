@@ -457,7 +457,7 @@ const en = {
   "rules.addModeRemote": "Remote URL",
   "rules.setNamePhExample": "e.g. Company LAN",
   "rules.newSetRemoteHint":
-    "Loaded as sing-box source format; routing and DNS are generated from the group strategy.",
+    "Automatically detects sing-box source JSON or binary SRS; routing and DNS are generated from the group strategy.",
   "rules.newSetLocalHint":
     "Enabled by default after creation; use the switch on the left to control whether it participates in routing.",
   "rules.creating": "Creating…",
@@ -1051,7 +1051,7 @@ const zh: Record<MessageKey, string> = {
   "rules.addModeRemote": "远程 URL",
   "rules.setNamePhExample": "例如：公司内网",
   "rules.newSetRemoteHint":
-    "以 sing-box source 格式加载；路由与 DNS 均按整组策略生成。",
+    "自动识别 sing-box source JSON 或二进制 SRS；路由与 DNS 均按整组策略生成。",
   "rules.newSetLocalHint": "创建后默认为启用；可在左侧开关控制是否参与路由。",
   "rules.creating": "创建中…",
   "rules.create": "创建",
