@@ -54,9 +54,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   }, [reload]);
 
   // Live list: 1.5s while visible only (history filled by backend journal).
-  useVisibleInterval(() => {
-    void reload();
-  }, 1500);
+  useVisibleInterval(() => reload(), 1500);
 
   const q = query.trim().toLowerCase();
   const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);

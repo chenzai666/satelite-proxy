@@ -143,8 +143,8 @@ export function SimpleConnectPage({ onGoServers }: Props) {
 
   // Poll status only (not full node list) — keeps uptime/speeds fresh cheaply.
   useVisibleInterval(() => {
-    void reloadStatus();
     setNowSec(Math.floor(Date.now() / 1000));
+    return reloadStatus();
   }, 1000);
 
   const running = proxy?.running ?? false;

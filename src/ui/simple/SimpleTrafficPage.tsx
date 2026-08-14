@@ -33,9 +33,7 @@ export function SimpleTrafficPage() {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 1500);
+  useVisibleInterval(() => reload(), 1500);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

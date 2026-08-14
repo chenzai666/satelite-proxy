@@ -171,7 +171,7 @@ export function DashboardPage({
   useVisibleInterval(() => {
     // Do not clobber optimistic capture UI while a switch is in flight.
     if (captureBusy) return;
-    void getProxyStatus()
+    return getProxyStatus()
       .then(setProxy)
       .catch(() => undefined);
   }, 2000);

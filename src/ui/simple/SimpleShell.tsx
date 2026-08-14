@@ -69,7 +69,7 @@ export function SimpleShell() {
 
   useVisibleInterval(() => {
     if (coreBusy) return;
-    void tick();
+    return tick();
   }, 3000);
 
   useEffect(() => {

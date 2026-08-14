@@ -83,9 +83,7 @@ export function FailuresPage({ embedded = false }: Props) {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 2500);
+  useVisibleInterval(() => reload(), 2500);
 
   async function onClear() {
     if (!confirm(t("req.clearConfirm"))) return;

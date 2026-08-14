@@ -52,9 +52,7 @@ export function RequestsPage({ embedded = false }: Props) {
   }, [reload]);
 
   // History UI can refresh slower; journal keeps filling in Rust.
-  useVisibleInterval(() => {
-    void reload();
-  }, 2500);
+  useVisibleInterval(() => reload(), 2500);
 
   async function onClear() {
     if (!confirm(t("req.clearConfirm"))) return;

@@ -65,9 +65,7 @@ export function LogsPage() {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 1200);
+  useVisibleInterval(() => reload(), 1200);
 
   useEffect(() => {
     if (!autoScroll || !listRef.current) return;
