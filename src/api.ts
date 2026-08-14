@@ -116,6 +116,10 @@ export function getSettings() {
   return invoke<AppSettings>("get_settings");
 }
 
+// Auto-save controls stay interactive, so preserve click order here instead
+// of disabling the whole settings page while each small write completes.
+let settingsUpdateTail: Promise<void> = Promise.resolve();
+
 export function updateSettings(payload: {
   mixedPort?: number | null;
   apiPort?: number | null;
@@ -141,27 +145,34 @@ export function updateSettings(payload: {
   /** Resolve originating process per connection (find_process_mode). */
   findProcess?: boolean | null;
 }) {
-  return invoke<AppSettings>("update_settings", {
-    mixedPort: payload.mixedPort ?? null,
-    apiPort: payload.apiPort ?? null,
-    probeUrl: payload.probeUrl ?? null,
-    tunEnabled: payload.tunEnabled ?? null,
-    tunStack: payload.tunStack ?? null,
-    closeToTray: payload.closeToTray ?? null,
-    launchAtLogin: payload.launchAtLogin ?? null,
-    silentStart: payload.silentStart ?? null,
-    autoStartProxy: payload.autoStartProxy ?? null,
-    closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
-    locale: payload.locale ?? null,
-    theme: payload.theme ?? null,
-    accent: payload.accent ?? null,
-    trayIcon: payload.trayIcon ?? null,
-    unloadUiOnTray: payload.unloadUiOnTray ?? null,
-    smartSwitch: payload.smartSwitch ?? null,
-    autoSelect: payload.autoSelect ?? null,
-    routeFinal: payload.routeFinal ?? null,
-    findProcess: payload.findProcess ?? null,
-  });
+  const run = () =>
+    invoke<AppSettings>("update_settings", {
+      mixedPort: payload.mixedPort ?? null,
+      apiPort: payload.apiPort ?? null,
+      probeUrl: payload.probeUrl ?? null,
+      tunEnabled: payload.tunEnabled ?? null,
+      tunStack: payload.tunStack ?? null,
+      closeToTray: payload.closeToTray ?? null,
+      launchAtLogin: payload.launchAtLogin ?? null,
+      silentStart: payload.silentStart ?? null,
+      autoStartProxy: payload.autoStartProxy ?? null,
+      closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
+      locale: payload.locale ?? null,
+      theme: payload.theme ?? null,
+      accent: payload.accent ?? null,
+      trayIcon: payload.trayIcon ?? null,
+      unloadUiOnTray: payload.unloadUiOnTray ?? null,
+      smartSwitch: payload.smartSwitch ?? null,
+      autoSelect: payload.autoSelect ?? null,
+      routeFinal: payload.routeFinal ?? null,
+      findProcess: payload.findProcess ?? null,
+    });
+  const result = settingsUpdateTail.then(run, run);
+  settingsUpdateTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 export function setCurrentNode(nodeId: string) {

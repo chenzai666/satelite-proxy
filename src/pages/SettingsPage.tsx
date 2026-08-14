@@ -165,7 +165,6 @@ export function SettingsPage() {
   }
 
   async function patchApp(partial: Parameters<typeof updateSettings>[0]) {
-    setBusy(true);
     setError(null);
     try {
       const s = await updateSettings(partial);
@@ -178,14 +177,11 @@ export function SettingsPage() {
       } catch {
         /* ignore */
       }
-    } finally {
-      setBusy(false);
     }
   }
 
   async function onChangeLocale(next: Locale) {
     if (next === locale) return;
-    setBusy(true);
     setError(null);
     try {
       await setLocale(next);
@@ -193,14 +189,11 @@ export function SettingsPage() {
       setSettings(s);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
     }
   }
 
   async function onChangeTheme(next: ThemeId) {
     if (next === theme) return;
-    setBusy(true);
     setError(null);
     try {
       await setTheme(next);
@@ -208,8 +201,6 @@ export function SettingsPage() {
       setSettings(s);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
     }
   }
 

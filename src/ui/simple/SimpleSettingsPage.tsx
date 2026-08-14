@@ -55,15 +55,12 @@ export function SimpleSettingsPage() {
   }, [reload]);
 
   async function patchSettings(partial: Parameters<typeof updateSettings>[0]) {
-    setBusy(true);
     setError(null);
     try {
       const s = await updateSettings(partial);
       setSettings(s);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
     }
   }
 
