@@ -200,8 +200,12 @@ fn spawn_worker(app: AppHandle) {
             }
         };
 
+        // Rule toggles and generic config edits both rebuild the same running
+        // core. Drive the global navbar busy animation only when a restart is
+        // actually expected; a stopped core only needs the persisted config.
+        let announce_core_restart = state.is_core_running();
         emit_batch(&app, &batch.toggles, "restarting", None);
-        if batch.generic_change {
+        if announce_core_restart {
             emit_config(&app, "restarting", None);
         }
         let resource_dir = app.path().resource_dir().ok();
@@ -228,11 +232,16 @@ fn spawn_worker(app: AppHandle) {
                     .lock_rule_apply_queue()
                     .terminal_subset(&batch.toggles);
                 emit_batch(&app, &terminal, "ready", None);
-                if batch.generic_change {
+                if announce_core_restart {
                     emit_config(&app, "ready", None);
                 }
             }
             Err(error) if error.to_string().contains("内核正在切换") => {
+                // Close the current busy token before retrying. The next
+                // attempt emits a fresh restarting event after the owner exits.
+                if announce_core_restart {
+                    emit_config(&app, "ready", None);
+                }
                 // Another legitimate operation (for example TUN switching) owns
                 // the transition. Keep the latest values queued and retry later.
                 state.lock_rule_apply_queue().requeue_older_batch(batch);
@@ -253,7 +262,7 @@ fn spawn_worker(app: AppHandle) {
                     "error",
                     Some(format!("已保存，但重启内核失败: {error}")),
                 );
-                if batch.generic_change {
+                if announce_core_restart {
                     emit_config(
                         &app,
                         "error",

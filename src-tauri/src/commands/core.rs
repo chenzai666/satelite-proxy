@@ -1,6 +1,6 @@
 use crate::core::{
     active_core_version, bundled_core_version, detect_platform, download_latest_core,
-    fetch_latest_release, resolve_core_bin, CoreDownloadResult, CoreSource,
+    fetch_latest_release, inspect_core_bin, CoreDownloadResult, CoreSource,
 };
 use crate::state::AppState;
 use serde::Serialize;
@@ -27,8 +27,8 @@ pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreI
     let resource_dir = app.path().resource_dir().ok();
     let res = resource_dir.as_deref();
 
-    let (path, source) = resolve_core_bin(&state.app_data_dir, res);
-    // Prefer version.txt / lightweight resolution — avoid spawning sing-box when possible.
+    let (path, source) = inspect_core_bin(&state.app_data_dir, res);
+    // Metadata-only inspection: do not stage/copy the bundled core during page load.
     let version = active_core_version(&state.app_data_dir, res);
     let bundled_version = bundled_core_version(res);
 
