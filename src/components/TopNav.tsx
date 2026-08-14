@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { getProxyStatus } from "../api";
+import { useCoreBusy } from "../coreBusy";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n/messages";
@@ -33,6 +34,7 @@ interface Props {
 
 export function TopNav({ active, onChange }: Props) {
   const { t } = useI18n();
+  const coreBusy = useCoreBusy();
   const [running, setRunning] = useState(false);
   const [coreState, setCoreState] = useState("stopped");
 
@@ -65,23 +67,35 @@ export function TopNav({ active, onChange }: Props) {
     void tick();
   }, [tick]);
 
+  // Steady poll when idle. While coreBusy the status pill already spins via
+  // useCoreBusy — avoid hammering get_proxy_status (it contends for the same
+  // runtime lock held by set_capture_mode / restart).
   useVisibleInterval(() => {
+    if (coreBusy) return;
     void tick();
   }, 3000);
 
-  const stateLabel = running
-    ? "RUN"
-    : coreState === "starting"
-      ? "…"
+  useEffect(() => {
+    if (!coreBusy) void tick();
+  }, [coreBusy, tick]);
+
+  const transitioning =
+    coreBusy ||
+    coreState === "starting" ||
+    coreState === "stopping";
+
+  const stateLabel = transitioning
+    ? "…"
+    : running
+      ? "RUN"
       : coreState === "error"
         ? "ERR"
         : "OFF";
-  const dotClass =
-    running || coreState === "running"
+  const dotClass = transitioning
+    ? "busy"
+    : running || coreState === "running"
       ? "on"
-      : coreState === "starting" || coreState === "stopping"
-        ? "busy"
-        : "off";
+      : "off";
 
   return (
     <header className="topnav-wrap">
@@ -119,7 +133,11 @@ export function TopNav({ active, onChange }: Props) {
         </nav>
         <div className="topnav-tools">
           <ThemeSwitch />
-          <div className="topnav-status" title={stateLabel}>
+          <div
+            className="topnav-status"
+            title={transitioning ? "内核切换中" : stateLabel}
+            aria-busy={transitioning}
+          >
             <span className={`status-dot ${dotClass}`} />
             <span className="topnav-status-text">{stateLabel}</span>
           </div>

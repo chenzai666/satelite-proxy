@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { TopNav } from "./components/TopNav";
+import { beginCoreBusy } from "./coreBusy";
 import { ImportIntentProvider, useImportIntent } from "./ImportIntentContext";
 import { LocaleProvider } from "./i18n";
 import { ThemeProvider } from "./theme";
@@ -83,21 +84,34 @@ function AppShell() {
   const { mode } = useUiMode();
   const [applyError, setApplyError] = useState<string | null>(null);
 
+  // Background rule/config apply restarts the core outside invoke wrappers —
+  // keep the navbar spinner in sync via the apply-status event.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let endBusy: (() => Promise<void>) | undefined;
     void listen<{
       status: "restarting" | "ready" | "error";
       error?: string | null;
     }>("config-apply-status", (event) => {
-      if (event.payload.status === "error") {
-        setApplyError(event.payload.error || "配置应用失败");
-      } else if (event.payload.status === "ready") {
-        setApplyError(null);
+      const status = event.payload.status;
+      if (status === "restarting") {
+        if (!endBusy) endBusy = beginCoreBusy();
+      } else {
+        void endBusy?.();
+        endBusy = undefined;
+        if (status === "error") {
+          setApplyError(event.payload.error || "配置应用失败");
+        } else {
+          setApplyError(null);
+        }
       }
     }).then((dispose) => {
       unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      void endBusy?.();
+      unlisten?.();
+    };
   }, []);
 
   // Paint immediately from localStorage mode (Rust already sized window on recreate).

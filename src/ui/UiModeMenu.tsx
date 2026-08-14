@@ -148,7 +148,11 @@ export function UiModeMenu() {
             onClick={() => void onRestart()}
           >
             <span className="ui-mode-radio" aria-hidden>
-              {restarting ? "…" : "↻"}
+              {restarting ? (
+                <span className="lat-spinner ui-mode-restart-spinner" />
+              ) : (
+                "↻"
+              )}
             </span>
             {restarting ? "重启中…" : "重启内核"}
           </button>

@@ -1449,10 +1449,15 @@ button.node-card:disabled,
   background: var(--border-strong);
 }
 
+/* Transition: ring spinner (same language as lat-spinner). */
 .status-dot.busy {
-  background: var(--warning);
-  box-shadow: 0 0 0 3px rgba(232, 184, 75, 0.22);
-  animation: pulse-dot 1s ease-in-out infinite;
+  width: 9px;
+  height: 9px;
+  background: transparent;
+  border: 1.5px solid rgba(232, 184, 75, 0.35);
+  border-top-color: var(--warning);
+  box-shadow: none;
+  animation: lat-spin 0.7s linear infinite;
 }
 
 @keyframes pulse-dot {
@@ -3961,6 +3966,34 @@ button.check.on {
   animation: orbit-spin 48s linear infinite;
 }
 
+/* Start/stop/restart: faster orbit + core spinner. */
+.orbit.spin.switching .orbit-sat {
+  animation: orbit-spin 2.2s linear infinite;
+}
+
+.orbit.spin.switching .orbit-ring-b {
+  animation: orbit-spin 6s linear infinite;
+}
+
+.orbit.spin.switching .orbit-ring-a {
+  animation: orbit-spin 9s linear reverse infinite;
+}
+
+.orbit-core-spinner {
+  width: 22px;
+  height: 22px;
+  border-width: 2.5px;
+  border-color: rgba(255, 255, 255, 0.22);
+  border-top-color: rgba(255, 255, 255, 0.92);
+}
+
+.ui-mode-restart-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  vertical-align: -1px;
+}
+
 .dash-hero.is-live .orbit-core {
   box-shadow:
     0 0 48px rgba(85, 200, 154, 0.4),
@@ -5205,6 +5238,9 @@ button.active-soft {
   font-size: 0.7rem;
   color: var(--primary);
   text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .ui-mode-menu-item:not(.active) .ui-mode-radio {

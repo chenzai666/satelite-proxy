@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import {
-  getProxyStatus,
   getSettings,
   listAllNodes,
-  setCaptureMode,
+  getProxyStatus,
   setOutboundMode,
   smartSwitchNow,
   updateSettings,
 } from "../../api";
-import { useI18n, type Locale } from "../../i18n";
 import { GlassSeg } from "../../components/GlassSeg";
 import { GlassSwitchControl } from "../../components/GlassSwitchControl";
+import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
+import { useI18n, type Locale } from "../../i18n";
 import { useTheme } from "../../theme";
 import type {
   AppSettings,
@@ -30,11 +29,6 @@ export function SimpleSettingsPage() {
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [captureBusy, setCaptureBusy] = useState(false);
-  const [captureUi, setCaptureUi] = useState<"off" | "system" | "tun" | null>(
-    null,
-  );
-  const captureGenRef = useRef(0);
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
@@ -143,56 +137,13 @@ export function SimpleSettingsPage() {
 
   const mode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
   const autoSelectMode = resolveAutoSelect();
-  const captureResolved =
-    captureUi ??
-    (proxy?.capture_mode === "system" || proxy?.capture_mode === "tun"
-      ? proxy.capture_mode
-      : proxy?.tun_enabled
-        ? "tun"
-        : proxy?.system_proxy
-          ? "system"
-          : "off");
 
-  function onCaptureChange(key: "off" | "system" | "tun") {
-    if (key === captureResolved || captureBusy) return;
-    const prev = proxy;
-    const gen = ++captureGenRef.current;
-    flushSync(() => {
-      setCaptureUi(key);
-      setCaptureBusy(true);
-      setError(null);
-      if (prev) {
-        setProxy({
-          ...prev,
-          system_proxy: key === "system",
-          tun_enabled: key === "tun",
-          capture_mode: key,
-        });
-      }
-    });
-    void (async () => {
-      try {
-        const s = await setCaptureMode(key);
-        if (gen !== captureGenRef.current) return;
-        setProxy(s);
-        setCaptureUi(null);
-      } catch (e) {
-        if (gen !== captureGenRef.current) return;
-        setError(typeof e === "string" ? e : String(e));
-        setCaptureUi(null);
-        if (prev) {
-          setProxy(prev);
-        } else {
-          const s = await getProxyStatus().catch(() => null);
-          if (s) setProxy(s);
-        }
-      } finally {
-        if (gen === captureGenRef.current) {
-          setCaptureBusy(false);
-        }
-      }
-    })();
-  }
+  const onCaptureError = useCallback((msg: string) => {
+    setError(msg);
+  }, []);
+
+  const { captureMode: captureResolved, captureBusy, requestCaptureMode } =
+    useCaptureModeSwitch(proxy, setProxy, onCaptureError);
 
   return (
     <div className="simple-page simple-settings">
@@ -233,9 +184,6 @@ export function SimpleSettingsPage() {
               disabledValues={
                 new Set(
                   [
-                    captureBusy && captureResolved !== "off" ? "off" : null,
-                    captureBusy && captureResolved !== "system" ? "system" : null,
-                    captureBusy && captureResolved !== "tun" ? "tun" : null,
                     nodeCount === 0 && captureResolved !== "tun" ? "tun" : null,
                   ].filter((v): v is string => v != null),
                 )
@@ -245,7 +193,10 @@ export function SimpleSettingsPage() {
                 system: t("dashboard.captureSystemHint"),
                 off: t("dashboard.captureDesc"),
               }}
-              onChange={(v) => onCaptureChange(v as "off" | "system" | "tun")}
+              onChange={(v) => {
+                setError(null);
+                requestCaptureMode(v as "off" | "system" | "tun");
+              }}
               options={[
                 { value: "off", label: t("dashboard.captureOff") },
                 { value: "system", label: t("dashboard.captureSystem") },

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import {
   getCoreInfo,
   getProxyStatus,
@@ -8,13 +7,15 @@ import {
   listSubscriptions,
   previewSingboxConfig,
   restartProxy,
-  setCaptureMode,
   setOutboundMode,
   startProxy,
   smartSwitchNow,
   stopProxy,
   updateSettings,
 } from "../api";
+import {
+  useCaptureModeSwitch,
+} from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
@@ -87,12 +88,6 @@ export function DashboardPage({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [captureBusy, setCaptureBusy] = useState(false);
-  /** Optimistic selection while backend applies (null = use proxy status). */
-  const [captureUi, setCaptureUi] = useState<"off" | "system" | "tun" | null>(
-    null,
-  );
-  const captureGenRef = useRef(0);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -157,6 +152,22 @@ export function DashboardPage({
     void reload();
   }, [reload]);
 
+  const onCaptureError = useCallback((msg: string) => {
+    setError(msg);
+  }, []);
+
+  // Hook only invokes this when the drain batch touched TUN (core restart).
+  const onCaptureApplied = useCallback(() => {
+    void reload();
+  }, [reload]);
+
+  const { captureMode, captureBusy, requestCaptureMode } = useCaptureModeSwitch(
+    proxy,
+    setProxy,
+    onCaptureError,
+    onCaptureApplied,
+  );
+
   useVisibleInterval(() => {
     // Do not clobber optimistic capture UI while a switch is in flight.
     if (captureBusy) return;
@@ -188,71 +199,6 @@ export function DashboardPage({
     } finally {
       setBusy(false);
     }
-  }
-
-  type CaptureMode = "off" | "system" | "tun";
-
-  function resolveCaptureMode(p: ProxyStatus | null): CaptureMode {
-    if (p?.capture_mode === "system" || p?.capture_mode === "tun") {
-      return p.capture_mode;
-    }
-    if (p?.tun_enabled) return "tun";
-    if (p?.system_proxy) return "system";
-    return "off";
-  }
-
-  const captureMode = captureUi ?? resolveCaptureMode(proxy);
-
-  /**
-   * Optimistic UI: paint target mode immediately, apply in background.
-   * Failure → restore previous selection + error banner.
-   */
-  function onSetCaptureMode(mode: CaptureMode) {
-    if (mode === captureMode || captureBusy) return;
-    const prevProxy = proxy;
-    const prevMode = resolveCaptureMode(proxy);
-    const gen = ++captureGenRef.current;
-
-    // Force commit before IPC so the indicator slides this frame.
-    flushSync(() => {
-      setCaptureUi(mode);
-      setCaptureBusy(true);
-      setError(null);
-      if (prevProxy) {
-        setProxy({
-          ...prevProxy,
-          system_proxy: mode === "system",
-          tun_enabled: mode === "tun",
-          capture_mode: mode,
-        });
-      }
-    });
-
-    void (async () => {
-      try {
-        const s = await setCaptureMode(mode);
-        if (gen !== captureGenRef.current) return;
-        setProxy(s);
-        setCaptureUi(null);
-        if (mode === "tun" || prevMode === "tun") {
-          void reload();
-        }
-      } catch (e) {
-        if (gen !== captureGenRef.current) return;
-        setError(typeof e === "string" ? e : String(e));
-        setCaptureUi(null);
-        if (prevProxy) {
-          setProxy(prevProxy);
-        } else {
-          const s = await getProxyStatus().catch(() => null);
-          if (s) setProxy(s);
-        }
-      } finally {
-        if (gen === captureGenRef.current) {
-          setCaptureBusy(false);
-        }
-      }
-    })();
   }
 
   function resolveAutoSelect(p: ProxyStatus | null): AutoSelectMode {
@@ -519,13 +465,17 @@ export function DashboardPage({
       {/* —— Hero: orbit + status + embedded controls (no floating QC card) —— */}
       <section className={`dash-hero is-${orbitState}`}>
         <div
-          className={`orbit ${running ? "spin" : ""} ${switching ? "pulse" : ""}`}
+          className={`orbit ${running || switching ? "spin" : ""} ${switching ? "pulse switching" : ""}`}
           aria-hidden
         >
           <div className="orbit-ring orbit-ring-a" />
           <div className="orbit-ring orbit-ring-b" />
           <div className="orbit-core">
-            <span className="orbit-glyph">◈</span>
+            {switching ? (
+              <span className="lat-spinner orbit-core-spinner" aria-hidden />
+            ) : (
+              <span className="orbit-glyph">◈</span>
+            )}
           </div>
           <div className="orbit-sat" />
         </div>
@@ -605,7 +555,17 @@ export function DashboardPage({
                     disabled={busy || !running}
                     onClick={() => void onRestart()}
                   >
-                    {t("dashboard.restart")}
+                    {busy && running ? (
+                      <>
+                        <span
+                          className="lat-spinner ui-mode-restart-spinner"
+                          aria-hidden
+                        />{" "}
+                        {t("dashboard.restart")}
+                      </>
+                    ) : (
+                      t("dashboard.restart")
+                    )}
                   </button>
                   <button
                     type="button"
@@ -737,9 +697,6 @@ export function DashboardPage({
               disabledValues={
                 new Set(
                   [
-                    captureBusy && captureMode !== "off" ? "off" : null,
-                    captureBusy && captureMode !== "system" ? "system" : null,
-                    captureBusy && captureMode !== "tun" ? "tun" : null,
                     nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
                   ].filter((v): v is string => v != null),
                 )
@@ -749,7 +706,10 @@ export function DashboardPage({
                 system: t("dashboard.captureSystemHint"),
                 off: t("dashboard.captureDesc"),
               }}
-              onChange={(v) => onSetCaptureMode(v as "off" | "system" | "tun")}
+              onChange={(v) => {
+                setError(null);
+                requestCaptureMode(v as "off" | "system" | "tun");
+              }}
               options={[
                 { value: "off", label: t("dashboard.captureOff") },
                 { value: "system", label: t("dashboard.captureSystem") },

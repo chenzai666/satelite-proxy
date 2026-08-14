@@ -149,7 +149,9 @@ export function SimpleConnectPage({ onGoServers }: Props) {
 
   const running = proxy?.running ?? false;
   const connecting =
-    proxy?.core_state === "starting" || proxy?.core_state === "stopping";
+    busy ||
+    proxy?.core_state === "starting" ||
+    proxy?.core_state === "stopping";
   const orbitState = connecting
     ? "switching"
     : running
@@ -182,9 +184,9 @@ export function SimpleConnectPage({ onGoServers }: Props) {
   }
 
   const statusText = connecting
-    ? proxy?.core_state === "starting"
-      ? "连接中…"
-      : "停止中…"
+    ? proxy?.core_state === "stopping" || (busy && running)
+      ? "停止中…"
+      : "连接中…"
     : running
       ? "已连接"
       : "未连接";
@@ -212,15 +214,19 @@ export function SimpleConnectPage({ onGoServers }: Props) {
           aria-pressed={running}
         >
           <div
-            className={`orbit simple-orbit ${running ? "spin" : ""} ${connecting ? "pulse" : ""}`}
+            className={`orbit simple-orbit ${running || connecting ? "spin" : ""} ${connecting ? "pulse switching" : ""}`}
             aria-hidden
           >
             <div className="orbit-ring orbit-ring-a" />
             <div className="orbit-ring orbit-ring-b" />
             <div className="orbit-core">
-              <span className="orbit-glyph simple-orbit-power" title="Power">
-                ⏻
-              </span>
+              {connecting ? (
+                <span className="lat-spinner orbit-core-spinner" aria-hidden />
+              ) : (
+                <span className="orbit-glyph simple-orbit-power" title="Power">
+                  ⏻
+                </span>
+              )}
             </div>
             <div className="orbit-sat" />
           </div>

@@ -22,6 +22,7 @@ import type {
   DnsTestResult,
   HostsEntry,
 } from "./types";
+import { trackCoreBusy } from "./coreBusy";
 
 export function listSubscriptions() {
   return invoke<SubscriptionView[]>("list_subscriptions");
@@ -261,17 +262,20 @@ export function getProxyStatus() {
 }
 
 export function startProxy(enableSystemProxy = false) {
-  return invoke<ProxyStatus>("start_proxy", {
-    enableSystemProxy,
-  });
+  return trackCoreBusy(
+    invoke<ProxyStatus>("start_proxy", {
+      enableSystemProxy,
+    }),
+  );
 }
 
 export function stopProxy() {
-  return invoke<ProxyStatus>("stop_proxy");
+  return trackCoreBusy(invoke<ProxyStatus>("stop_proxy"));
 }
 
 export function restartProxy() {
-  return invoke<ProxyStatus>("restart_proxy");
+  // Slightly longer min hold so ⋯ / Overview restart never flash-clears.
+  return trackCoreBusy(invoke<ProxyStatus>("restart_proxy"), 700);
 }
 
 export function setSystemProxy(enabled: boolean) {
@@ -280,17 +284,17 @@ export function setSystemProxy(enabled: boolean) {
 
 /** Toggle TUN; restarts core when running so config applies. */
 export function setTunEnabled(enabled: boolean) {
-  return invoke<ProxyStatus>("set_tun_enabled", { enabled });
+  return trackCoreBusy(invoke<ProxyStatus>("set_tun_enabled", { enabled }));
 }
 
 /** Traffic capture mode: off | system | tun (mutually exclusive). */
 export function setCaptureMode(mode: "off" | "system" | "tun") {
-  return invoke<ProxyStatus>("set_capture_mode", { mode });
+  return trackCoreBusy(invoke<ProxyStatus>("set_capture_mode", { mode }));
 }
 
 /** rule | global | direct — restarts core when running. */
 export function setOutboundMode(mode: "rule" | "global" | "direct") {
-  return invoke<ProxyStatus>("set_outbound_mode", { mode });
+  return trackCoreBusy(invoke<ProxyStatus>("set_outbound_mode", { mode }));
 }
 
 export function getDnsSettings() {

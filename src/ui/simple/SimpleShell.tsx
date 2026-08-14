@@ -1,5 +1,8 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { getProxyStatus } from "../../api";
 import { ThemeSwitch } from "../../components/ThemeSwitch";
+import { useCoreBusy } from "../../coreBusy";
+import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
 import type { MessageKey } from "../../i18n";
@@ -39,13 +42,56 @@ function SimplePageFallback() {
 
 export function SimpleShell() {
   const { t } = useI18n();
+  const coreBusy = useCoreBusy();
   const [nav, setNav] = useState<SimpleNavKey>("connect");
+  const [running, setRunning] = useState(false);
+  const [coreState, setCoreState] = useState("stopped");
   const { token, prefill } = useImportIntent();
 
   // One-click subscribe → open 节点 page (add subscription modal).
   useEffect(() => {
     if (token && prefill) setNav("servers");
   }, [token, prefill]);
+
+  const tick = useCallback(async () => {
+    try {
+      const status = await getProxyStatus().catch(() => null);
+      setRunning(status?.running ?? false);
+      setCoreState(status?.core_state ?? "stopped");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void tick();
+  }, [tick]);
+
+  useVisibleInterval(() => {
+    if (coreBusy) return;
+    void tick();
+  }, 3000);
+
+  useEffect(() => {
+    if (!coreBusy) void tick();
+  }, [coreBusy, tick]);
+
+  const transitioning =
+    coreBusy ||
+    coreState === "starting" ||
+    coreState === "stopping";
+  const stateLabel = transitioning
+    ? "…"
+    : running
+      ? "RUN"
+      : coreState === "error"
+        ? "ERR"
+        : "OFF";
+  const dotClass = transitioning
+    ? "busy"
+    : running || coreState === "running"
+      ? "on"
+      : "off";
 
   return (
     <div className="app-shell simple-shell">
@@ -69,6 +115,14 @@ export function SimpleShell() {
           </nav>
           <div className="topnav-tools simple-topnav-tools">
             <ThemeSwitch />
+            <div
+              className="topnav-status"
+              title={transitioning ? "内核切换中" : stateLabel}
+              aria-busy={transitioning}
+            >
+              <span className={`status-dot ${dotClass}`} />
+              <span className="topnav-status-text">{stateLabel}</span>
+            </div>
             <UiModeMenu />
           </div>
         </div>
