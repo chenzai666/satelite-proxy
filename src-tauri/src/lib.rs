@@ -297,6 +297,7 @@ pub fn run() {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.shutdown_runtime();
                     }
+                    app_log::flush();
                 }
                 // Process is exiting regardless (Cmd+Q / terminate: goes straight here,
                 // bypassing ExitRequested and exit_allowed). Always clean up.
@@ -304,6 +305,7 @@ pub fn run() {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.shutdown_runtime();
                     }
+                    app_log::flush();
                 }
                 // macOS Dock / “reopen”: user clicked the app icon while no visible window
                 // (UI destroyed or hidden to tray). Tray already calls show_main; Dock did not.

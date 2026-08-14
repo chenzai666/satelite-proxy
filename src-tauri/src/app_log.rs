@@ -6,10 +6,14 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_ENTRIES: usize = 2_000;
+const PERSIST_QUEUE_CAPACITY: usize = 2_048;
+const PERSIST_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -56,6 +60,9 @@ pub struct LogEntry {
 struct LogRing {
     next_id: u64,
     entries: VecDeque<LogEntry>,
+}
+
+struct LogSink {
     log_dir: Option<PathBuf>,
     file_hour: Option<u64>,
     file: Option<File>,
@@ -67,16 +74,10 @@ impl LogRing {
         Self {
             next_id: 1,
             entries: VecDeque::with_capacity(256),
-            log_dir: None,
-            file_hour: None,
-            file: None,
-            file_bytes: 0,
         }
     }
 
-    fn push(&mut self, level: LogLevel, target: impl Into<String>, message: impl Into<String>) {
-        let target = target.into();
-        let message = message.into();
+    fn push(&mut self, level: LogLevel, target: String, message: String) -> LogEntry {
         let entry = LogEntry {
             id: self.next_id,
             ts_ms: now_ms(),
@@ -88,11 +89,57 @@ impl LogRing {
         if self.entries.len() >= MAX_ENTRIES {
             self.entries.pop_front();
         }
-        self.persist(&entry);
-        self.entries.push_back(entry);
+        self.entries.push_back(entry.clone());
+        entry
     }
 
-    fn persist(&mut self, entry: &LogEntry) {
+    fn list(&self, min_level: LogLevel, limit: usize, query: Option<&str>) -> Vec<LogEntry> {
+        let q = query
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+        let mut out: Vec<LogEntry> = self
+            .entries
+            .iter()
+            .rev()
+            .filter(|e| e.level >= min_level)
+            .filter(|e| {
+                let Some(q) = q.as_ref() else {
+                    return true;
+                };
+                e.message.to_ascii_lowercase().contains(q)
+                    || e.target.to_ascii_lowercase().contains(q)
+            })
+            .take(limit.max(1))
+            .cloned()
+            .collect();
+        out.reverse();
+        out
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+impl LogSink {
+    fn new() -> Self {
+        Self {
+            log_dir: None,
+            file_hour: None,
+            file: None,
+            file_bytes: 0,
+        }
+    }
+
+    fn configure(&mut self, log_dir: PathBuf) {
+        self.log_dir = Some(log_dir.clone());
+        self.file_hour = None;
+        self.file = None;
+        self.file_bytes = 0;
+        let _ = crate::log_retention::cleanup_current_hour(&log_dir);
+    }
+
+    fn persist_entry(&mut self, entry: &LogEntry) {
         let Some(dir) = self.log_dir.clone() else {
             return;
         };
@@ -141,36 +188,48 @@ impl LogRing {
             self.file_bytes = self.file_bytes.saturating_add(line_bytes);
         }
     }
-
-    fn list(&self, min_level: LogLevel, limit: usize, query: Option<&str>) -> Vec<LogEntry> {
-        let q = query
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty());
-        let mut out: Vec<LogEntry> = self
-            .entries
-            .iter()
-            .rev()
-            .filter(|e| e.level >= min_level)
-            .filter(|e| {
-                let Some(q) = q.as_ref() else {
-                    return true;
-                };
-                e.message.to_ascii_lowercase().contains(q)
-                    || e.target.to_ascii_lowercase().contains(q)
-            })
-            .take(limit.max(1))
-            .cloned()
-            .collect();
-        out.reverse();
-        out
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-    }
 }
 
 static RING: LazyLock<Mutex<LogRing>> = LazyLock::new(|| Mutex::new(LogRing::new()));
+
+enum WriterMessage {
+    Configure(PathBuf, mpsc::Sender<()>),
+    Entry(LogEntry, Option<mpsc::Sender<()>>),
+    Flush(mpsc::Sender<()>),
+}
+
+static WRITER: LazyLock<SyncSender<WriterMessage>> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::sync_channel(PERSIST_QUEUE_CAPACITY);
+    std::thread::Builder::new()
+        .name("satelite-log-writer".into())
+        .spawn(move || writer_loop(rx))
+        .expect("spawn app log writer");
+    tx
+});
+
+fn writer_loop(rx: Receiver<WriterMessage>) {
+    let mut sink = LogSink::new();
+    while let Ok(message) = rx.recv() {
+        match message {
+            WriterMessage::Configure(dir, ack) => {
+                sink.configure(dir);
+                let _ = ack.send(());
+            }
+            WriterMessage::Entry(entry, ack) => {
+                sink.persist_entry(&entry);
+                if let Some(ack) = ack {
+                    let _ = ack.send(());
+                }
+            }
+            WriterMessage::Flush(ack) => {
+                if let Some(file) = sink.file.as_mut() {
+                    let _ = file.flush();
+                }
+                let _ = ack.send(());
+            }
+        }
+    }
+}
 
 fn lock_ring() -> std::sync::MutexGuard<'static, LogRing> {
     RING.lock().unwrap_or_else(|p| p.into_inner())
@@ -178,12 +237,10 @@ fn lock_ring() -> std::sync::MutexGuard<'static, LogRing> {
 
 pub fn init(log_dir: PathBuf) {
     let _ = std::fs::create_dir_all(&log_dir);
-    let mut ring = lock_ring();
-    ring.log_dir = Some(log_dir.clone());
-    ring.file_hour = None;
-    ring.file = None;
-    ring.file_bytes = 0;
-    let _ = crate::log_retention::cleanup_current_hour(&log_dir);
+    let (ack_tx, ack_rx) = mpsc::channel();
+    if send_writer_bounded(WriterMessage::Configure(log_dir, ack_tx)) {
+        let _ = ack_rx.recv_timeout(PERSIST_ACK_TIMEOUT);
+    }
 }
 
 pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<String>) {
@@ -191,7 +248,51 @@ pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<Strin
     let message = message.into();
     // Mirror to stderr for dev / Console.app
     eprintln!("[satelite][{}][{}] {}", level.as_str(), target, message);
-    lock_ring().push(level, target, message);
+    let entry = lock_ring().push(level, target, message);
+    enqueue_persist(entry);
+}
+
+fn enqueue_persist(entry: LogEntry) {
+    if entry.level >= LogLevel::Warn {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if send_writer_bounded(WriterMessage::Entry(entry, Some(ack_tx))) {
+            let _ = ack_rx.recv_timeout(PERSIST_ACK_TIMEOUT);
+        }
+        return;
+    }
+
+    let message = WriterMessage::Entry(entry, None);
+    match WRITER.try_send(message) {
+        Ok(()) => {}
+        // Persistence is intentionally lossy for non-critical logs once the
+        // bounded queue is full. The in-memory UI ring still keeps the entry.
+        Err(TrySendError::Full(_)) => {}
+        Err(TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn send_writer_bounded(mut message: WriterMessage) -> bool {
+    let started = Instant::now();
+    loop {
+        match WRITER.try_send(message) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(returned)) => {
+                if started.elapsed() >= PERSIST_ACK_TIMEOUT {
+                    return false;
+                }
+                message = returned;
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
+    }
+}
+
+pub fn flush() {
+    let (ack_tx, ack_rx) = mpsc::channel();
+    if send_writer_bounded(WriterMessage::Flush(ack_tx)) {
+        let _ = ack_rx.recv_timeout(PERSIST_ACK_TIMEOUT);
+    }
 }
 
 pub fn list(min_level: LogLevel, limit: usize, query: Option<&str>) -> Vec<LogEntry> {
@@ -233,21 +334,65 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn test_log_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "satelite-app-log-{name}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ))
+    }
+
     #[test]
     fn persisted_log_is_immediately_visible_on_disk() {
-        let dir = std::env::temp_dir().join(format!(
-            "satelite-app-log-{}-{}",
-            std::process::id(),
-            crate::log_retention::current_hour()
-        ));
+        let dir = test_log_dir("sink");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut ring = LogRing::new();
-        ring.log_dir = Some(dir.clone());
-        ring.push(LogLevel::Info, "test", "persist-now");
+        let mut sink = LogSink::new();
+        sink.configure(dir.clone());
+        sink.persist_entry(&LogEntry {
+            id: 1,
+            ts_ms: now_ms(),
+            level: LogLevel::Info,
+            target: "test".into(),
+            message: "persist-now".into(),
+        });
         let path = crate::log_retention::hourly_path(&dir, "app");
         let content = std::fs::read_to_string(path).unwrap();
         assert!(content.contains("[info] [test] persist-now"));
-        drop(ring);
+        drop(sink);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writer_ack_means_error_is_persisted() {
+        let dir = test_log_dir("writer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (tx, rx) = mpsc::sync_channel(8);
+        let writer = std::thread::spawn(move || writer_loop(rx));
+
+        let (configure_tx, configure_rx) = mpsc::channel();
+        tx.send(WriterMessage::Configure(dir.clone(), configure_tx))
+            .unwrap();
+        configure_rx.recv_timeout(PERSIST_ACK_TIMEOUT).unwrap();
+
+        let (entry_tx, entry_rx) = mpsc::channel();
+        tx.send(WriterMessage::Entry(
+            LogEntry {
+                id: 1,
+                ts_ms: now_ms(),
+                level: LogLevel::Error,
+                target: "test".into(),
+                message: "persist-before-ack".into(),
+            },
+            Some(entry_tx),
+        ))
+        .unwrap();
+        entry_rx.recv_timeout(PERSIST_ACK_TIMEOUT).unwrap();
+
+        let path = crate::log_retention::hourly_path(&dir, "app");
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("[error] [test] persist-before-ack"));
+        drop(tx);
+        writer.join().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 }
