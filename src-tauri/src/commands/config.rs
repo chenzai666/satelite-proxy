@@ -6,7 +6,7 @@ use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 pub struct GenerateConfigResult {
@@ -224,42 +224,22 @@ pub fn update_settings(
 }
 
 #[tauri::command]
-pub fn set_current_node(
-    state: State<'_, AppState>,
-    node_id: String,
-) -> Result<AppSettings, String> {
-    let (settings, close_conns) = state
-        .with_store_mut(|store| {
-            if store.find_node(&node_id).is_none() {
-                return Err(crate::error::AppError::NotFound(node_id.clone()));
-            }
-            store.settings.current_node_id = Some(node_id.clone());
-            Ok((
-                store.settings.clone(),
-                store.settings.close_connections_on_switch,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Hot-switch selector when core is running (no restart).
-    if state.is_core_running() {
-        if let Ok(tag) = state.with_store(|store| {
-            store
-                .find_node(&node_id)
-                .map(crate::config::outbound_tag)
-                .ok_or_else(|| crate::error::AppError::NotFound(node_id.clone()))
-        }) {
-            let runtime = state.lock_runtime();
-            let _ = runtime.select_node_live(&tag);
-            if close_conns {
-                if let Some(api) = runtime.clash_api_clone() {
-                    let _ = api.close_all_connections();
-                }
-            }
+pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSettings, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        let (settings, was_kernel, _) = state
+            .select_current_node_serialized(&node_id, true, true)
+            .map_err(|e| e.to_string())?;
+        if was_kernel {
+            crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
         }
-    }
-
-    Ok(settings)
+        Ok(settings)
+    })
+    .await
+    .map_err(|e| format!("select node task: {e}"))?
 }
 
 #[tauri::command]

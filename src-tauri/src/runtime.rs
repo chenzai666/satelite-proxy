@@ -626,19 +626,6 @@ impl Runtime {
         self.start_proxy(app_data_dir, resource_dir, store, sys)
     }
 
-    pub fn select_node_live(&self, node_tag: &str) -> AppResult<()> {
-        self.select_group_live("proxy", node_tag)
-    }
-
-    /// Hot-select outbound `node_tag` inside selector group (main `proxy` or smart-*).
-    pub fn select_group_live(&self, group: &str, node_tag: &str) -> AppResult<()> {
-        let api = self
-            .api
-            .as_ref()
-            .ok_or_else(|| AppError::Core("core not running".into()))?;
-        api.select_proxy(group, node_tag)
-    }
-
     /// Full cleanup on app exit: system proxy off and stop the managed core.
     pub fn shutdown(&mut self) {
         if self.system_proxy_on {

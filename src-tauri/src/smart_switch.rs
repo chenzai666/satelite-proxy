@@ -505,32 +505,17 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
         (outbound_tag(node), node.name.clone())
     };
 
-    let close_conns = state
-        .with_store(|s| Ok(s.settings.close_connections_on_switch))
-        .unwrap_or(true);
-
-    {
-        let runtime = state.lock_runtime();
-        if let Err(e) = runtime.select_node_live(&tag) {
+    match state.select_current_node_serialized(best_id, false, hard_fail) {
+        Ok((_, _, true)) => {}
+        Ok((_, _, false)) => return Err("core not running".into()),
+        Err(e) => {
             app_log::error(
                 "smart_switch",
                 format!("select_node_live failed for {name} ({tag}): {e}"),
             );
             return Err(e.to_string());
         }
-        if close_conns && hard_fail {
-            if let Some(api) = runtime.clash_api_clone() {
-                let _ = api.close_all_connections();
-            }
-        }
     }
-
-    state
-        .with_store_mut(|store| {
-            store.settings.current_node_id = Some(best_id.to_string());
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
 
     app_log::debug(
         "smart_switch",
@@ -1036,12 +1021,14 @@ async fn maintain_smart_rule(
             .ok_or_else(|| format!("node {best_id} missing"))?
     };
 
-    let selected = {
-        let runtime = state.lock_runtime();
-        runtime
-            .select_group_live(&group, &tag)
-            .map_err(|e| e.to_string())
-    };
+    let selected = state
+        .select_group_live_serialized(&group, &tag, false)
+        .and_then(|selected| {
+            selected
+                .then_some(())
+                .ok_or_else(|| crate::error::AppError::Core("core not running".into()))
+        })
+        .map_err(|e| e.to_string());
     if let Err(e) = selected {
         record_rule_probe_failure(&rule.id);
         return Err(e);

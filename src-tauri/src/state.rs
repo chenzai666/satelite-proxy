@@ -31,6 +31,20 @@ struct TrafficViewCache {
     failures: QueryViewCache,
 }
 
+fn apply_selected_node(
+    settings: &mut crate::domain::AppSettings,
+    node_id: String,
+    manual: bool,
+) -> bool {
+    let was_kernel = settings.auto_select.is_kernel();
+    settings.current_node_id = Some(node_id);
+    if manual {
+        settings.auto_select = crate::domain::AutoSelectMode::Off;
+        settings.smart_switch = false;
+    }
+    was_kernel
+}
+
 impl KernelSelectionPoll {
     fn try_start(&mut self, now: Instant) -> bool {
         if self.in_flight
@@ -53,6 +67,8 @@ impl KernelSelectionPoll {
 #[cfg(test)]
 mod kernel_selection_poll_tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::sync::mpsc;
     use std::sync::Arc;
 
@@ -66,6 +82,25 @@ mod kernel_selection_poll_tests {
         poll.finish();
         assert!(!poll.try_start(start + Duration::from_millis(500)));
         assert!(poll.try_start(start + KERNEL_SELECTION_POLL_INTERVAL));
+    }
+
+    #[test]
+    fn manual_node_selection_disables_every_auto_select_mode() {
+        for mode in [
+            crate::domain::AutoSelectMode::Smart,
+            crate::domain::AutoSelectMode::Kernel,
+        ] {
+            let mut settings = crate::domain::AppSettings {
+                auto_select: mode,
+                smart_switch: true,
+                ..crate::domain::AppSettings::default()
+            };
+            let was_kernel = apply_selected_node(&mut settings, "manual-node".into(), true);
+            assert_eq!(settings.auto_select, crate::domain::AutoSelectMode::Off);
+            assert!(!settings.smart_switch);
+            assert_eq!(settings.current_node_id.as_deref(), Some("manual-node"));
+            assert_eq!(was_kernel, mode.is_kernel());
+        }
     }
 
     #[test]
@@ -132,6 +167,56 @@ mod kernel_selection_poll_tests {
         assert!(live.is_empty());
         assert!(requests.is_empty());
         assert!(failures.is_empty());
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn live_selection_does_not_hold_runtime_lock_during_http() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-live-select-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = Arc::new(AppState::load(test_dir.clone(), None).expect("load test state"));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake clash api");
+        let port = listener.local_addr().expect("fake api address").port();
+        state.lock_runtime().api = Some(crate::api::ClashApi::new("127.0.0.1", port, "test"));
+
+        let (seen_tx, seen_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept selector request");
+            let mut request = [0u8; 4096];
+            socket.read(&mut request).expect("read selector request");
+            seen_tx.send(()).expect("signal request received");
+            release_rx.recv().expect("release fake response");
+            socket
+                .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                .expect("write selector response");
+        });
+
+        let operation_state = Arc::clone(&state);
+        let operation = std::thread::spawn(move || {
+            operation_state.select_group_live_serialized("proxy", "node-a", false)
+        });
+        seen_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("selector request must reach fake api");
+        let runtime_was_available = state.runtime.try_lock().is_ok();
+        release_tx.send(()).expect("release selector response");
+        server.join().expect("fake api server");
+        assert!(operation
+            .join()
+            .expect("selector thread")
+            .expect("selection"));
+        assert!(
+            runtime_was_available,
+            "runtime lock must be released before selector HTTP waits"
+        );
 
         let _ = std::fs::remove_dir_all(test_dir);
     }
@@ -507,6 +592,75 @@ impl AppState {
         cache.requests.rows.clear();
         cache.failures.rows.clear();
         Ok(())
+    }
+
+    /// Run a Clash selector update without holding `runtime` across HTTP I/O.
+    /// The transition guard prevents a core restart from replacing the API
+    /// endpoint between cloning the handle and applying the selection.
+    pub fn select_group_live_serialized(
+        &self,
+        group: &str,
+        node_tag: &str,
+        close_connections: bool,
+    ) -> AppResult<bool> {
+        let _operation = self.begin_core_transition()?;
+        let api = {
+            let runtime = self.lock_runtime();
+            runtime.clash_api_clone()
+        };
+        let Some(api) = api else {
+            return Ok(false);
+        };
+
+        api.select_proxy(group, node_tag)?;
+        if close_connections {
+            let _ = api.close_all_connections();
+        }
+        Ok(true)
+    }
+
+    /// Select the main proxy node and persist it under the same operation
+    /// guard, so a manual click and a smart-switch apply cannot overwrite one
+    /// another mid-flight.
+    pub fn select_current_node_serialized(
+        &self,
+        node_id: &str,
+        manual: bool,
+        close_if_enabled: bool,
+    ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
+        let _operation = self.begin_core_transition()?;
+        let (tag, should_close) = self.with_store(|store| {
+            if !manual && !store.settings.auto_select.is_smart() {
+                return Err(crate::error::AppError::Core("智能切换已关闭".into()));
+            }
+            let node = store
+                .find_node(node_id)
+                .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
+            Ok((
+                crate::config::outbound_tag(node),
+                close_if_enabled && store.settings.close_connections_on_switch,
+            ))
+        })?;
+        let api = {
+            let runtime = self.lock_runtime();
+            runtime.clash_api_clone()
+        };
+        let selected_live = if let Some(api) = api {
+            api.select_proxy("proxy", &tag)?;
+            if should_close {
+                let _ = api.close_all_connections();
+            }
+            true
+        } else {
+            false
+        };
+
+        let node_id = node_id.to_string();
+        let (settings, was_kernel) = self.with_store_mut(|store| {
+            let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
+            Ok((store.settings.clone(), was_kernel))
+        })?;
+        Ok((settings, was_kernel, selected_live))
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.

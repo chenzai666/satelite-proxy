@@ -1,4 +1,3 @@
-use crate::config::outbound_tag;
 use crate::runtime::ProxyStatus;
 use crate::smart_switch::{self, SmartSwitchNowResult};
 use crate::state::AppState;
@@ -147,30 +146,20 @@ pub async fn smart_switch_now(state: State<'_, AppState>) -> Result<SmartSwitchN
 
 /// Set current node: persist + hot-switch via clash_api when running.
 #[tauri::command]
-pub fn set_current_node_live(
-    state: State<'_, AppState>,
-    node_id: String,
-) -> Result<ProxyStatus, String> {
-    let (tag, close_conns) = state
-        .with_store_mut(|store| {
-            let node = store
-                .find_node(&node_id)
-                .ok_or_else(|| crate::error::AppError::NotFound(node_id.clone()))?;
-            let tag = outbound_tag(node);
-            store.settings.current_node_id = Some(node_id.clone());
-            Ok((tag, store.settings.close_connections_on_switch))
-        })
-        .map_err(|e| e.to_string())?;
-
-    if state.is_core_running() {
-        let runtime = state.lock_runtime();
-        runtime.select_node_live(&tag).map_err(|e| e.to_string())?;
-        if close_conns {
-            if let Some(api) = runtime.clash_api_clone() {
-                let _ = api.close_all_connections();
-            }
+pub async fn set_current_node_live(app: AppHandle, node_id: String) -> Result<ProxyStatus, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        let (_, was_kernel, _) = state
+            .select_current_node_serialized(&node_id, true, true)
+            .map_err(|e| e.to_string())?;
+        if was_kernel {
+            crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
         }
-    }
-
-    state.proxy_status().map_err(|e| e.to_string())
+        state.proxy_status().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("live node selection task: {e}"))?
 }
