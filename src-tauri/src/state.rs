@@ -172,6 +172,45 @@ mod kernel_selection_poll_tests {
     }
 
     #[test]
+    fn journal_never_waits_for_runtime_and_rejects_stale_sessions() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-journal-session-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = Arc::new(AppState::load(test_dir.clone(), None).expect("load test state"));
+        let current = crate::api::ClashApi::new("127.0.0.1", 19090, "current");
+        state.lock_runtime().api = Some(current.clone());
+
+        let runtime = state.lock_runtime();
+        let (tx, rx) = mpsc::channel();
+        let journal_state = Arc::clone(&state);
+        let query = std::thread::spawn(move || {
+            tx.send(journal_state.try_clash_api_clone())
+                .expect("send journal API");
+        });
+        let busy_result = rx.recv_timeout(Duration::from_millis(200));
+        drop(runtime);
+        query.join().expect("journal query thread");
+        assert!(busy_result.expect("journal query must not wait").is_none());
+
+        let stale = crate::api::ClashApi::new("127.0.0.1", 19090, "stale");
+        let snapshot = |upload_total| crate::api::ConnectionsSnapshot {
+            upload_total,
+            download_total: 0,
+            connections: Vec::new(),
+        };
+        assert!(!state.try_apply_connection_snapshot(&stale, snapshot(3)));
+        assert!(state.try_apply_connection_snapshot(&current, snapshot(7)));
+        assert_eq!(state.proxy_status().expect("status").upload_total, 7);
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
     fn live_selection_does_not_hold_runtime_lock_during_http() {
         let test_dir = std::env::temp_dir().join(format!(
             "satelite-live-select-{}-{}",
@@ -395,6 +434,53 @@ impl AppState {
 
     pub fn is_core_transitioning(&self) -> bool {
         self.core_transitioning.load(Ordering::Acquire)
+    }
+
+    /// The connection journal is best-effort and high-frequency. It must never
+    /// queue behind a core transition; another snapshot will arrive shortly.
+    pub fn try_clash_api_clone(&self) -> Option<crate::api::ClashApi> {
+        if self.is_core_transitioning() {
+            return None;
+        }
+        match self.runtime.try_lock() {
+            Ok(runtime) => runtime.clash_api_clone(),
+            Err(TryLockError::WouldBlock) => None,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner().clash_api_clone()
+            }
+        }
+    }
+
+    /// Apply only a snapshot from the currently active core session. If the
+    /// runtime is busy, dropping one frame is safer than delaying a restart or
+    /// applying stale data after it completes.
+    pub fn try_apply_connection_snapshot(
+        &self,
+        api: &crate::api::ClashApi,
+        snapshot: crate::api::ConnectionsSnapshot,
+    ) -> bool {
+        if self.is_core_transitioning() || !api.is_active() {
+            return false;
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if self.is_core_transitioning()
+            || !api.is_active()
+            || !runtime
+                .clash_api_clone()
+                .is_some_and(|current| current.same_session(api))
+        {
+            return false;
+        }
+        runtime.apply_snapshot(snapshot);
+        true
     }
 
     fn begin_core_transition(&self) -> AppResult<CoreTransitionGuard<'_>> {

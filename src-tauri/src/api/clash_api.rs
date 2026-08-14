@@ -103,6 +103,11 @@ impl ClashApi {
         self.active.load(Ordering::Acquire)
     }
 
+    /// Clones from one core session share the same activity token.
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.active, &other.active)
+    }
+
     /// Fast readiness probe (short timeout). Used while waiting for core start.
     pub fn health_ok(&self) -> bool {
         shared_agent()

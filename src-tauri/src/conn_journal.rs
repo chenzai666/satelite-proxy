@@ -48,10 +48,7 @@ fn journal_loop(app: AppHandle) {
             continue;
         }
 
-        let api = {
-            let rt = state.lock_runtime();
-            rt.api_clone()
-        };
+        let api = state.try_clash_api_clone();
 
         let Some(api) = api else {
             thread::sleep(Duration::from_millis(IDLE_MS));
@@ -66,8 +63,7 @@ fn journal_loop(app: AppHandle) {
             }
             match parse_connections_json(text) {
                 Ok(snap) => {
-                    let mut rt = state.lock_runtime();
-                    rt.apply_snapshot(snap);
+                    state.try_apply_connection_snapshot(&api, snap);
                 }
                 Err(e) => {
                     crate::app_log::debug("journal", format!("parse: {e}"));
@@ -81,15 +77,11 @@ fn journal_loop(app: AppHandle) {
                     if state.is_core_transitioning() {
                         break;
                     }
-                    let still = {
-                        let rt = state.lock_runtime();
-                        rt.api_clone()
-                    };
+                    let still = state.try_clash_api_clone();
                     let Some(api) = still else { break };
                     match api.list_connections() {
                         Ok(snap) => {
-                            let mut rt = state.lock_runtime();
-                            rt.apply_snapshot(snap);
+                            state.try_apply_connection_snapshot(&api, snap);
                         }
                         Err(_) => break,
                     }
