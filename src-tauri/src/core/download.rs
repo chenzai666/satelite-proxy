@@ -10,10 +10,12 @@ use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tar::Archive;
 
 const GITHUB_LATEST: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
 const GITHUB_TAG: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/";
+const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct GhRelease {
@@ -38,6 +40,15 @@ pub struct CoreDownloadResult {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct CoreDownloadProgress {
+    pub stage: &'static str,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub percent: Option<u8>,
+    pub via_proxy: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LatestReleaseInfo {
     pub version: String,
     pub asset_name: String,
@@ -49,31 +60,35 @@ pub struct LatestReleaseInfo {
 /// Default pin used only when GitHub API is unreachable.
 const FALLBACK_VERSION: &str = "v1.13.15";
 
-pub async fn fetch_latest_release() -> AppResult<LatestReleaseInfo> {
+pub async fn fetch_latest_release_with_proxy(
+    proxy_url: Option<&str>,
+) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
-    match fetch_release_json(GITHUB_LATEST).await {
+    match fetch_release_json(GITHUB_LATEST, proxy_url).await {
         Ok(release) => pick_asset(release, platform),
         Err(api_err) => {
             // API blocked/unreachable → direct asset URL with pinned fallback version
             let _ = api_err;
-            // API blocked/unreachable → direct asset URL with pinned fallback version
             Ok(synthetic_release_info(FALLBACK_VERSION, platform))
         }
     }
 }
 
-pub async fn fetch_release_by_tag(tag: &str) -> AppResult<LatestReleaseInfo> {
+async fn fetch_release_by_tag_with_proxy(
+    tag: &str,
+    proxy_url: Option<&str>,
+) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
     let tag = normalize_version(tag);
     let url = format!("{GITHUB_TAG}{tag}");
-    match fetch_release_json(&url).await {
+    match fetch_release_json(&url, proxy_url).await {
         Ok(release) => pick_asset(release, platform),
         Err(_) => Ok(synthetic_release_info(&tag, platform)),
     }
 }
 
-async fn fetch_release_json(url: &str) -> AppResult<GhRelease> {
-    let client = http_client()?;
+async fn fetch_release_json(url: &str, proxy_url: Option<&str>) -> AppResult<GhRelease> {
+    let client = http_client(proxy_url)?;
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -147,12 +162,17 @@ fn pick_asset(release: GhRelease, platform: CorePlatform) -> AppResult<LatestRel
     })
 }
 
-fn http_client() -> AppResult<reqwest::Client> {
-    reqwest::Client::builder()
+fn http_client(proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
-        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)")
-        .build()
-        .map_err(|e| AppError::Core(e.to_string()))
+        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)");
+    if let Some(proxy_url) = proxy_url {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy_url)
+                .map_err(|error| AppError::Core(format!("download proxy: {error}")))?,
+        );
+    }
+    builder.build().map_err(|e| AppError::Core(e.to_string()))
 }
 
 /// Download latest (or given tag) and install into `{app_data}/bin/sing-box`.
@@ -160,22 +180,37 @@ pub async fn download_latest_core(
     app_data_dir: &Path,
     tag: Option<String>,
 ) -> AppResult<CoreDownloadResult> {
-    let info = if let Some(t) = tag {
-        fetch_release_by_tag(&t).await?
-    } else {
-        fetch_latest_release().await?
-    };
-    download_and_install(app_data_dir, &info).await
+    download_latest_core_with_progress(app_data_dir, tag, None, |_| {}).await
 }
 
-async fn download_and_install(
+pub async fn download_latest_core_with_progress(
+    app_data_dir: &Path,
+    tag: Option<String>,
+    proxy_url: Option<String>,
+    progress: impl Fn(CoreDownloadProgress) + Send + Sync + 'static,
+) -> AppResult<CoreDownloadResult> {
+    let info = if let Some(t) = tag {
+        fetch_release_by_tag_with_proxy(&t, proxy_url.as_deref()).await?
+    } else {
+        fetch_latest_release_with_proxy(proxy_url.as_deref()).await?
+    };
+    download_and_install(app_data_dir, &info, proxy_url.as_deref(), progress).await
+}
+
+async fn download_and_install<F>(
     app_data_dir: &Path,
     info: &LatestReleaseInfo,
-) -> AppResult<CoreDownloadResult> {
-    let bin_dir = core_dir(app_data_dir);
-    fs::create_dir_all(&bin_dir)?;
+    proxy_url: Option<&str>,
+    progress: F,
+) -> AppResult<CoreDownloadResult>
+where
+    F: Fn(CoreDownloadProgress) + Send + Sync + 'static,
+{
+    validate_archive_size_hint(info.size)?;
+    let via_proxy = proxy_url.is_some();
+    let progress = Arc::new(progress);
 
-    let client = http_client()?;
+    let client = http_client(proxy_url)?;
     let resp = client
         .get(&info.download_url)
         .send()
@@ -184,14 +219,75 @@ async fn download_and_install(
     if !resp.status().is_success() {
         return Err(AppError::Core(format!("download status {}", resp.status())));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::Core(format!("download body: {e}")))?;
+    let declared_total = (info.size > 0).then_some(info.size);
+    let mut last_percent = None;
+    let download_progress = Arc::clone(&progress);
+    let bytes = crate::services::http_body::read_limited_with_progress(
+        resp,
+        MAX_CORE_ARCHIVE_BYTES,
+        "core archive exceeds 256 MB".into(),
+        move |downloaded, response_total| {
+            let total = response_total.or(declared_total);
+            let percent = total
+                .filter(|total| *total > 0)
+                .map(|total| ((downloaded.saturating_mul(100) / total).min(100)) as u8);
+            if downloaded == 0 || percent != last_percent {
+                last_percent = percent;
+                download_progress(CoreDownloadProgress {
+                    stage: "downloading",
+                    downloaded,
+                    total,
+                    percent,
+                    via_proxy,
+                });
+            }
+        },
+    )
+    .await
+    .map_err(|e| AppError::Core(format!("download body: {e}")))?;
     if bytes.len() < 1024 {
         return Err(AppError::Core("download too small, likely failed".into()));
     }
 
+    let app_data_dir = app_data_dir.to_path_buf();
+    let info = info.clone();
+    let downloaded = bytes.len() as u64;
+    progress(CoreDownloadProgress {
+        stage: "installing",
+        downloaded,
+        total: Some(downloaded),
+        percent: Some(100),
+        via_proxy,
+    });
+    let result = tokio::task::spawn_blocking(move || {
+        install_downloaded_archive(&app_data_dir, &info, bytes)
+    })
+    .await
+    .map_err(|error| AppError::Core(format!("install core task: {error}")))??;
+    progress(CoreDownloadProgress {
+        stage: "done",
+        downloaded,
+        total: Some(downloaded),
+        percent: Some(100),
+        via_proxy,
+    });
+    Ok(result)
+}
+
+fn validate_archive_size_hint(size: u64) -> AppResult<()> {
+    if size > MAX_CORE_ARCHIVE_BYTES as u64 {
+        return Err(AppError::Core("core archive exceeds 256 MB".into()));
+    }
+    Ok(())
+}
+
+fn install_downloaded_archive(
+    app_data_dir: &Path,
+    info: &LatestReleaseInfo,
+    bytes: Vec<u8>,
+) -> AppResult<CoreDownloadResult> {
+    let bin_dir = core_dir(app_data_dir);
+    fs::create_dir_all(&bin_dir)?;
     let archive_path = bin_dir.join(&info.asset_name);
     {
         let mut f = File::create(&archive_path)
@@ -328,5 +424,12 @@ mod tests {
     fn platform_suffix_known() {
         let p = detect_platform().expect("platform");
         assert!(!p.asset_suffix.is_empty());
+    }
+
+    #[test]
+    fn core_archive_size_hint_is_bounded() {
+        assert!(validate_archive_size_hint(0).is_ok());
+        assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64).is_ok());
+        assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64 + 1).is_err());
     }
 }

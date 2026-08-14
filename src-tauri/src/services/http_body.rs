@@ -2,9 +2,18 @@
 /// caller's memory limit. `Content-Length` is only an early rejection hint;
 /// chunked or dishonest responses are still bounded while streaming.
 pub async fn read_limited(
+    response: reqwest::Response,
+    max_bytes: usize,
+    too_large: String,
+) -> Result<Vec<u8>, String> {
+    read_limited_with_progress(response, max_bytes, too_large, |_, _| {}).await
+}
+
+pub async fn read_limited_with_progress(
     mut response: reqwest::Response,
     max_bytes: usize,
     too_large: String,
+    mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<Vec<u8>, String> {
     if response
         .content_length()
@@ -19,12 +28,14 @@ pub async fn read_limited(
         .unwrap_or(0)
         .min(max_bytes);
     let mut body = Vec::with_capacity(capacity);
+    on_progress(0, response.content_length());
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| format!("response body: {error}"))?
     {
         append_limited(&mut body, &chunk, max_bytes, &too_large)?;
+        on_progress(body.len() as u64, response.content_length());
     }
     Ok(body)
 }

@@ -254,6 +254,14 @@ export interface CoreDownloadResult {
   bytes: number;
 }
 
+export interface CoreDownloadProgress {
+  stage: "preparing" | "downloading" | "installing" | "done";
+  downloaded: number;
+  total?: number | null;
+  percent?: number | null;
+  via_proxy: boolean;
+}
+
 export type CoreState =
   | "stopped"
   | "starting"

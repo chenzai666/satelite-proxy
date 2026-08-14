@@ -9,7 +9,8 @@ pub mod manager;
 mod paths;
 
 pub use download::{
-    download_latest_core, fetch_latest_release, CoreDownloadResult, LatestReleaseInfo,
+    download_latest_core, download_latest_core_with_progress, fetch_latest_release_with_proxy,
+    CoreDownloadResult, LatestReleaseInfo,
 };
 #[cfg(test)]
 pub use paths::find_bundled_core;

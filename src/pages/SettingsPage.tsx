@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   checkCoreUpdate,
   downloadCore,
@@ -15,7 +16,13 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
-import type { AppSettings, CoreInfo, ThemeId, TrayIconStyle } from "../types";
+import type {
+  AppSettings,
+  CoreDownloadProgress,
+  CoreInfo,
+  ThemeId,
+  TrayIconStyle,
+} from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 import { HostsPage } from "./HostsPage";
@@ -34,6 +41,11 @@ const ACCENT_LABEL_KEY: Record<string, MessageKey> = {
   cyan: "accent.cyan",
 };
 
+function fmtCoreBytes(value: number) {
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme, accent, setAccent } = useTheme();
@@ -48,7 +60,11 @@ export function SettingsPage() {
 
   const [core, setCore] = useState<CoreInfo | null>(null);
   const [coreBusy, setCoreBusy] = useState(false);
+  const [coreChecking, setCoreChecking] = useState(false);
   const [coreError, setCoreError] = useState<string | null>(null);
+  const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
+  const [coreProgress, setCoreProgress] =
+    useState<CoreDownloadProgress | null>(null);
 
   const tabs = useMemo(
     () =>
@@ -82,30 +98,42 @@ export function SettingsPage() {
     [t],
   );
 
+  const runCoreUpdateCheck = useCallback(
+    async (localVersion: string | null, reportError: boolean) => {
+      setCoreChecking(true);
+      if (reportError) setCoreError(null);
+      try {
+        const update = await checkCoreUpdate(localVersion);
+        setCore((prev) =>
+          prev
+            ? {
+                ...prev,
+                latest_version: update.latest_version,
+                update_available: update.update_available,
+              }
+            : prev,
+        );
+      } catch (e) {
+        if (reportError) {
+          setCoreError(typeof e === "string" ? e : String(e));
+        }
+      } finally {
+        setCoreChecking(false);
+      }
+    },
+    [],
+  );
+
   const reloadCore = useCallback(async () => {
     setCoreError(null);
     try {
       const local = await getCoreInfo();
       setCore(local);
-      void checkCoreUpdate(local.version)
-        .then((u) => {
-          setCore((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  latest_version: u.latest_version,
-                  update_available: u.update_available,
-                }
-              : prev,
-          );
-        })
-        .catch(() => {
-          /* ignore */
-        });
+      void runCoreUpdateCheck(local.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
-  }, []);
+  }, [runCoreUpdateCheck]);
 
   useEffect(() => {
     getSettings()
@@ -119,6 +147,24 @@ export function SettingsPage() {
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
     void reloadCore();
   }, [reloadCore]);
+
+  useEffect(() => {
+    if (tab !== "core") return;
+    void getProxyStatus()
+      .then((status) => setCoreProxyAvailable(status.running))
+      .catch(() => setCoreProxyAvailable(false));
+  }, [tab]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<CoreDownloadProgress>("core-download-progress", (event) => {
+      setCoreProgress(event.payload);
+      setCoreProxyAvailable(event.payload.via_proxy);
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => unlisten?.();
+  }, []);
 
   async function onSaveNetwork() {
     setBusy(true);
@@ -154,6 +200,16 @@ export function SettingsPage() {
   async function onDownloadCore() {
     setCoreBusy(true);
     setCoreError(null);
+    const status = await getProxyStatus().catch(() => null);
+    const viaProxy = !!status?.running;
+    setCoreProxyAvailable(viaProxy);
+    setCoreProgress({
+      stage: "preparing",
+      downloaded: 0,
+      total: null,
+      percent: null,
+      via_proxy: viaProxy,
+    });
     try {
       await downloadCore(null);
       await reloadCore();
@@ -162,6 +218,10 @@ export function SettingsPage() {
     } finally {
       setCoreBusy(false);
     }
+  }
+
+  async function onCheckCoreUpdate() {
+    await runCoreUpdateCheck(core?.version ?? null, true);
   }
 
   async function patchApp(partial: Parameters<typeof updateSettings>[0]) {
@@ -492,20 +552,31 @@ export function SettingsPage() {
                   <span className="muted mono">{core?.platform ?? "…"}</span>
                 </div>
               </div>
-              <GlassButton
-                variant="primary"
-                icon="⤓"
-                disabled={coreBusy}
-                onClick={() => void onDownloadCore()}
-              >
-                {coreBusy
-                  ? t("settings.coreDownloading")
-                  : core?.source === "downloaded"
-                    ? core.update_available
-                      ? t("settings.coreUpdate")
-                      : t("settings.coreRedownload")
-                    : t("settings.coreDownload")}
-              </GlassButton>
+              <div className="core-actions">
+                <GlassButton
+                  icon="↻"
+                  disabled={coreBusy || coreChecking || !core}
+                  onClick={() => void onCheckCoreUpdate()}
+                >
+                  {coreChecking
+                    ? t("settings.coreChecking")
+                    : t("settings.coreCheck")}
+                </GlassButton>
+                <GlassButton
+                  variant="primary"
+                  icon="⤓"
+                  disabled={coreBusy || coreChecking}
+                  onClick={() => void onDownloadCore()}
+                >
+                  {coreBusy
+                    ? t("settings.coreDownloading")
+                    : core?.source === "downloaded"
+                      ? core.update_available
+                        ? t("settings.coreUpdate")
+                        : t("settings.coreRedownload")
+                      : t("settings.coreDownload")}
+                </GlassButton>
+              </div>
             </div>
 
             <div className="core-meta">
@@ -544,6 +615,54 @@ export function SettingsPage() {
               <div className="core-path">
                 <span className="stat-label">{t("settings.corePath")}</span>
                 <code className="path-text mono">{core.path}</code>
+              </div>
+            )}
+
+            <div
+              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
+            >
+              <span className="core-route-dot" aria-hidden />
+              <span>
+                {coreProxyAvailable
+                  ? t("settings.coreProxyRoute")
+                  : t("settings.coreDirectRoute")}
+              </span>
+            </div>
+
+            {coreBusy && coreProgress && (
+              <div className="core-download-progress" aria-live="polite">
+                <div className="core-download-progress-head">
+                  <span className="lat-spinner" aria-hidden />
+                  <span>
+                    {coreProgress.stage === "preparing"
+                      ? t("settings.corePreparing")
+                      : coreProgress.stage === "installing"
+                        ? t("settings.coreInstalling")
+                        : t("settings.coreDownloading")}
+                  </span>
+                  <span className="mono core-download-percent">
+                    {coreProgress.percent != null
+                      ? `${coreProgress.percent}%`
+                      : "…"}
+                  </span>
+                </div>
+                <div
+                  className={`core-progress-track${coreProgress.percent == null ? " indeterminate" : ""}`}
+                >
+                  <span
+                    style={{
+                      width: `${coreProgress.percent ?? 24}%`,
+                    }}
+                  />
+                </div>
+                {coreProgress.downloaded > 0 && (
+                  <div className="muted mono core-download-bytes">
+                    {fmtCoreBytes(coreProgress.downloaded)}
+                    {coreProgress.total
+                      ? ` / ${fmtCoreBytes(coreProgress.total)}`
+                      : ""}
+                  </div>
+                )}
               </div>
             )}
 
