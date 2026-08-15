@@ -481,18 +481,33 @@ export function listConnections() {
   return invoke<ConnectionView[]>("list_connections");
 }
 
-export function listRequests(query?: string | null, limit?: number | null) {
-  return invoke<ConnectionView[]>("list_requests", {
+export interface RequestBatch {
+  entries: ConnectionView[];
+  cursor: number;
+}
+
+export function listRequests(
+  query?: string | null,
+  limit?: number | null,
+  afterSeq?: number | null,
+) {
+  return invoke<RequestBatch>("list_requests", {
     query: query ?? null,
     limit: limit ?? null,
+    afterSeq: afterSeq ?? null,
   });
 }
 
 /** Suspicious closed requests: short-lived & near-zero bytes (failure/timeout). */
-export function listRequestFailures(query?: string | null, limit?: number | null) {
-  return invoke<ConnectionView[]>("list_request_failures", {
+export function listRequestFailures(
+  query?: string | null,
+  limit?: number | null,
+  afterSeq?: number | null,
+) {
+  return invoke<RequestBatch>("list_request_failures", {
     query: query ?? null,
     limit: limit ?? null,
+    afterSeq: afterSeq ?? null,
   });
 }
 

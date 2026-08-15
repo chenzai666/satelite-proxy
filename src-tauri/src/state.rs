@@ -1,7 +1,7 @@
 use crate::app_log;
 use crate::core::manager::CoreState;
 use crate::error::AppResult;
-use crate::runtime::{ConnectionView, ProxyStatus, Runtime};
+use crate::runtime::{ConnectionView, ProxyStatus, RequestBatch, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +22,7 @@ struct QueryViewCache {
     query: String,
     limit: Option<usize>,
     rows: Vec<ConnectionView>,
+    cursor: u64,
 }
 
 #[derive(Default)]
@@ -153,8 +154,8 @@ mod kernel_selection_poll_tests {
         let query_state = Arc::clone(&state);
         let query = std::thread::spawn(move || {
             let live = query_state.live_connection_views();
-            let requests = query_state.request_views(None, Some(800), false);
-            let failures = query_state.request_views(None, Some(800), true);
+            let requests = query_state.request_views(None, Some(800), false, None);
+            let failures = query_state.request_views(None, Some(800), true, None);
             tx.send((live, requests, failures))
                 .expect("send traffic views");
         });
@@ -165,8 +166,8 @@ mod kernel_selection_poll_tests {
         let (live, requests, failures) =
             result.expect("traffic queries must not wait for the runtime lock");
         assert!(live.is_empty());
-        assert!(requests.is_empty());
-        assert!(failures.is_empty());
+        assert!(requests.entries.is_empty());
+        assert!(failures.entries.is_empty());
 
         let _ = std::fs::remove_dir_all(test_dir);
     }
@@ -690,9 +691,16 @@ impl AppState {
         query: Option<&str>,
         limit: Option<usize>,
         failures_only: bool,
-    ) -> Vec<ConnectionView> {
+        after_seq: Option<u64>,
+    ) -> RequestBatch {
         let query = query.unwrap_or("").trim().to_string();
         let cached = || {
+            if let Some(cursor) = after_seq {
+                return RequestBatch {
+                    entries: Vec::new(),
+                    cursor,
+                };
+            }
             let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             let entry = if failures_only {
                 &cache.failures
@@ -700,9 +708,12 @@ impl AppState {
                 &cache.requests
             };
             if entry.query == query && entry.limit == limit {
-                entry.rows.clone()
+                RequestBatch {
+                    entries: entry.rows.clone(),
+                    cursor: entry.cursor,
+                }
             } else {
-                Vec::new()
+                RequestBatch::default()
             }
         };
         if self.is_core_transitioning() {
@@ -719,10 +730,13 @@ impl AppState {
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
         let rows = if failures_only {
-            runtime.request_failures(&store, Some(&query), limit)
+            runtime.request_failures(&store, Some(&query), limit, after_seq)
         } else {
-            runtime.request_history(&store, Some(&query), limit)
+            runtime.request_history(&store, Some(&query), limit, after_seq)
         };
+        if after_seq.is_some() {
+            return rows;
+        }
         let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
         let entry = if failures_only {
             &mut cache.failures
@@ -731,7 +745,8 @@ impl AppState {
         };
         entry.query = query;
         entry.limit = limit;
-        entry.rows = rows.clone();
+        entry.rows = rows.entries.clone();
+        entry.cursor = rows.cursor;
         rows
     }
 

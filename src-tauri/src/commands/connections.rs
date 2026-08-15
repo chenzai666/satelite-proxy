@@ -1,4 +1,4 @@
-use crate::runtime::ConnectionView;
+use crate::runtime::{ConnectionView, RequestBatch};
 use crate::state::AppState;
 use tauri::{AppHandle, Manager, State};
 
@@ -19,12 +19,13 @@ pub async fn list_requests(
     app: AppHandle,
     query: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<ConnectionView>, String> {
+    after_seq: Option<u64>,
+) -> Result<RequestBatch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
-        Ok(state.request_views(query.as_deref(), limit, false))
+        Ok(state.request_views(query.as_deref(), limit, false, after_seq))
     })
     .await
     .map_err(|e| format!("list requests task: {e}"))?
@@ -35,12 +36,13 @@ pub async fn list_request_failures(
     app: AppHandle,
     query: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<ConnectionView>, String> {
+    after_seq: Option<u64>,
+) -> Result<RequestBatch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
-        Ok(state.request_views(query.as_deref(), limit, true))
+        Ok(state.request_views(query.as_deref(), limit, true, after_seq))
     })
     .await
     .map_err(|e| format!("list request failures task: {e}"))?

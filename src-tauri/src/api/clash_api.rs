@@ -469,6 +469,9 @@ pub struct TrafficTotals {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestRecord {
     pub id: String,
+    /// Monotonic sequence assigned whenever the request becomes closed/history-visible.
+    #[serde(default)]
+    pub history_seq: u64,
     pub destination: String,
     pub host: String,
     pub network: String,
@@ -496,6 +499,7 @@ impl RequestRecord {
     pub fn from_connection(c: &ConnectionInfo, now_ms: i64) -> Self {
         Self {
             id: c.id.clone(),
+            history_seq: 0,
             destination: c.destination.clone(),
             host: c.host.clone(),
             network: c.network.clone(),

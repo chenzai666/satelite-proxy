@@ -312,7 +312,6 @@ impl Runtime {
                     rec.process = c.process.clone();
                 }
             } else {
-                self.journal_seq = self.journal_seq.wrapping_add(1);
                 let mut rec = RequestRecord::from_connection(c, now_ms);
                 rec.id = id.clone();
                 self.request_by_id.insert(id.clone(), rec);
@@ -331,6 +330,8 @@ impl Runtime {
             if !seen.contains(&id) {
                 if let Some(rec) = self.request_by_id.get_mut(&id) {
                     if !rec.closed {
+                        self.journal_seq = self.journal_seq.saturating_add(1);
+                        rec.history_seq = self.journal_seq;
                         rec.closed = true;
                         rec.closed_at = Some(now_ms);
                         rec.last_seen = now_ms;
@@ -356,19 +357,9 @@ impl Runtime {
         store: &AppStore,
         query: Option<&str>,
         limit: Option<usize>,
-    ) -> Vec<ConnectionView> {
-        self.core.poll();
-        let tag_info = node_tag_info_map(store);
-        let q = query.unwrap_or("").trim();
-        let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
-        self.request_order
-            .iter()
-            .filter_map(|id| self.request_by_id.get(id))
-            .filter(|r| r.closed)
-            .filter(|r| r.matches_query(q))
-            .take(limit)
-            .map(|r| ConnectionView::from_record(r, &tag_info))
-            .collect()
+        after_seq: Option<u64>,
+    ) -> RequestBatch {
+        self.request_batch(store, query, limit, after_seq, false)
     }
 
     /// Closed requests that look like failures / timeouts: short-lived (≤ 3s)
@@ -379,24 +370,72 @@ impl Runtime {
         store: &AppStore,
         query: Option<&str>,
         limit: Option<usize>,
-    ) -> Vec<ConnectionView> {
+        after_seq: Option<u64>,
+    ) -> RequestBatch {
+        self.request_batch(store, query, limit, after_seq, true)
+    }
+
+    fn request_batch(
+        &mut self,
+        store: &AppStore,
+        query: Option<&str>,
+        limit: Option<usize>,
+        after_seq: Option<u64>,
+        failures_only: bool,
+    ) -> RequestBatch {
         self.core.poll();
         let tag_info = node_tag_info_map(store);
         let q = query.unwrap_or("").trim();
         let limit = limit.unwrap_or(800).min(MAX_REQUEST_HISTORY);
-        self.request_order
+        let is_failure = |record: &RequestRecord| {
+            if !failures_only {
+                return true;
+            }
+            let closed_at = record.closed_at.unwrap_or(record.last_seen);
+            let duration = closed_at.saturating_sub(record.first_seen);
+            duration <= 3000 && record.download < 1024 && record.upload < 1024
+        };
+
+        if let Some(after_seq) = after_seq {
+            let mut records: Vec<&RequestRecord> = self
+                .request_by_id
+                .values()
+                .filter(|record| record.closed && record.history_seq > after_seq)
+                .collect();
+            records.sort_unstable_by_key(|record| record.history_seq);
+            let mut entries = Vec::new();
+            let mut cursor = after_seq;
+            let mut hit_limit = false;
+            for record in records {
+                cursor = record.history_seq;
+                if is_failure(record) && record.matches_query(q) {
+                    entries.push(ConnectionView::from_record(record, &tag_info));
+                    if entries.len() >= limit {
+                        hit_limit = true;
+                        break;
+                    }
+                }
+            }
+            if !hit_limit {
+                cursor = self.journal_seq;
+            }
+            return RequestBatch { entries, cursor };
+        }
+
+        let entries = self
+            .request_order
             .iter()
             .filter_map(|id| self.request_by_id.get(id))
-            .filter(|r| r.closed)
-            .filter(|r| {
-                let closed_at = r.closed_at.unwrap_or(r.last_seen);
-                let dur = closed_at.saturating_sub(r.first_seen);
-                dur <= 3000 && r.download < 1024 && r.upload < 1024
-            })
-            .filter(|r| r.matches_query(q))
+            .filter(|record| record.closed)
+            .filter(|record| is_failure(record))
+            .filter(|record| record.matches_query(q))
             .take(limit)
-            .map(|r| ConnectionView::from_record(r, &tag_info))
-            .collect()
+            .map(|record| ConnectionView::from_record(record, &tag_info))
+            .collect();
+        RequestBatch {
+            entries,
+            cursor: self.journal_seq,
+        }
     }
 
     pub fn clear_request_history(&mut self) {
@@ -767,6 +806,12 @@ pub struct ConnectionView {
     pub closed_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RequestBatch {
+    pub entries: Vec<ConnectionView>,
+    pub cursor: u64,
+}
+
 impl ConnectionView {
     fn from_info(c: &ConnectionInfo, tag_info: &HashMap<String, NodeInfo>) -> Self {
         let info = tag_info.get(&c.node);
@@ -889,6 +934,57 @@ mod stop_behavior_tests {
             detail: "previous system proxy".into(),
         });
         (runtime, disabled)
+    }
+
+    fn closed_record(id: &str, history_seq: u64, host: &str) -> RequestRecord {
+        RequestRecord {
+            id: id.into(),
+            history_seq,
+            destination: format!("{host}:443"),
+            host: host.into(),
+            network: "tcp".into(),
+            conn_type: "http".into(),
+            node: "proxy".into(),
+            chains: Vec::new(),
+            rule: String::new(),
+            rule_payload: String::new(),
+            process: String::new(),
+            source: String::new(),
+            upload: 10,
+            download: 10,
+            first_seen: 1_000,
+            last_seen: 1_100,
+            closed: true,
+            closed_at: Some(1_100),
+        }
+    }
+
+    #[test]
+    fn request_incremental_cursor_pages_without_skipping() {
+        let store = AppStore::default();
+        let mut runtime = Runtime::new();
+        runtime.journal_seq = 3;
+        for (id, seq, host) in [
+            ("one", 1, "match.example"),
+            ("two", 2, "other.example"),
+            ("three", 3, "match.example"),
+        ] {
+            runtime
+                .request_by_id
+                .insert(id.into(), closed_record(id, seq, host));
+        }
+
+        let first = runtime.request_history(&store, None, Some(1), Some(0));
+        assert_eq!(first.entries.len(), 1);
+        assert_eq!(first.cursor, 1);
+        let second = runtime.request_history(&store, None, Some(1), Some(first.cursor));
+        assert_eq!(second.entries.len(), 1);
+        assert_eq!(second.cursor, 2);
+
+        let filtered = runtime.request_history(&store, Some("match"), Some(10), Some(1));
+        assert_eq!(filtered.entries.len(), 1);
+        assert_eq!(filtered.entries[0].id, "three");
+        assert_eq!(filtered.cursor, 3);
     }
 
     #[test]
