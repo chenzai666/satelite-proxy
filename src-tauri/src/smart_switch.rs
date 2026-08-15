@@ -16,7 +16,7 @@ use crate::domain::{ProxyNode, Rule, RuleSetStrategy, RuleTarget};
 use crate::services::latency::probe_nodes;
 use crate::state::AppState;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -166,7 +166,16 @@ impl Controller {
 
     fn clear_eject_if_expired(&mut self) {
         let now = Instant::now();
-        self.ejected.retain(|_, until| *until > now);
+        let expired: Vec<_> = self
+            .ejected
+            .iter()
+            .filter(|(_, until)| **until <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            self.ejected.remove(&id);
+            self.eject_counts.remove(&id);
+        }
     }
 
     fn ejected_ids(&self) -> Vec<String> {
@@ -873,6 +882,11 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
     let rules = collect_enabled_smart_rules(state);
+    let active_rule_ids: HashSet<_> = rules.iter().map(|rule| rule.id.as_str()).collect();
+    RULE_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|rule_id, _| active_rule_ids.contains(rule_id.as_str()));
     if rules.is_empty() {
         return Ok(());
     }
@@ -1102,6 +1116,21 @@ mod probe_schedule_tests {
             .map(|fails| rule_probe_interval(fails).as_secs())
             .collect();
         assert_eq!(seconds, vec![60, 120, 240, 480, 600, 600, 600]);
+    }
+
+    #[test]
+    fn expired_ejection_resets_failure_escalation() {
+        let mut controller = Controller::default();
+        controller.ejected.insert(
+            "recovered-node".into(),
+            Instant::now() - Duration::from_secs(1),
+        );
+        controller.eject_counts.insert("recovered-node".into(), 4);
+
+        controller.clear_eject_if_expired();
+
+        assert!(!controller.ejected.contains_key("recovered-node"));
+        assert!(!controller.eject_counts.contains_key("recovered-node"));
     }
 }
 
