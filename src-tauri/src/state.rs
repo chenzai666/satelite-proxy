@@ -313,6 +313,9 @@ pub struct AppState {
     pub resource_dir: Option<PathBuf>,
     pub store_path: PathBuf,
     pub store: Mutex<AppStore>,
+    /// Serializes store mutations through their durable write. The store mutex
+    /// itself can be released before disk I/O so read-only UI calls stay responsive.
+    store_persistence: Mutex<()>,
     pub runtime: Mutex<Runtime>,
     /// Last complete status snapshot. Status IPC reads this while a long core
     /// transition owns `runtime`, so the WebView never queues behind startup.
@@ -373,6 +376,7 @@ impl AppState {
             resource_dir,
             store_path,
             store: Mutex::new(store),
+            store_persistence: Mutex::new(()),
             runtime: Mutex::new(runtime),
             status_cache: Mutex::new(status_cache),
             traffic_view_cache: Mutex::new(TrafficViewCache::default()),
@@ -408,6 +412,10 @@ impl AppState {
 
     pub fn lock_store(&self) -> MutexGuard<'_, AppStore> {
         recover_lock(&self.store, "store")
+    }
+
+    fn lock_store_persistence(&self) -> MutexGuard<'_, ()> {
+        recover_lock(&self.store_persistence, "store_persistence")
     }
 
     /// Short-lived bookkeeping lock; unrelated to the runtime/store lock order.
@@ -515,9 +523,13 @@ impl AppState {
     where
         F: FnOnce(&mut AppStore) -> AppResult<T>,
     {
-        let mut guard = self.lock_store();
-        let result = f(&mut guard)?;
-        guard.save(&self.store_path)?;
+        let _persistence = self.lock_store_persistence();
+        let (result, snapshot) = {
+            let mut guard = self.lock_store();
+            let result = f(&mut guard)?;
+            (result, guard.clone())
+        };
+        snapshot.save(&self.store_path)?;
         Ok(result)
     }
 
@@ -537,6 +549,7 @@ impl AppState {
         let _transition = self.begin_core_transition()?;
         self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
+        let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
         let stored_capture = store.settings.capture_mode;
         let enable_system_proxy = match stored_capture {
@@ -595,6 +608,7 @@ impl AppState {
         let _transition = self.begin_core_transition()?;
         self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
+        let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
         let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
         let mut status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
@@ -1021,6 +1035,7 @@ impl AppState {
             crate::error::AppError::Core("capture mode must be off | system | tun".into())
         })?;
         let mut runtime = self.lock_runtime();
+        let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
         runtime.core.poll();
 
@@ -1088,6 +1103,7 @@ impl AppState {
     ) -> AppResult<ProxyStatus> {
         let _transition = self.begin_core_transition()?;
         let mut runtime = self.lock_runtime();
+        let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
 
         if store.settings.outbound_mode == mode {
