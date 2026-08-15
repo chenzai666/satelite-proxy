@@ -4303,6 +4303,11 @@ button.check.on {
   white-space: nowrap;
 }
 
+.instrument-subscription-names {
+  min-width: 0;
+  width: 100%;
+}
+
 .instrument-sub {
   margin-top: auto;
   font-size: 0.68rem;

@@ -427,25 +427,50 @@ export function DashboardPage({
     }
   }
 
-  const activeSub = useMemo(() => {
-    const enabled = subs.filter((s) => s.enabled);
-    return enabled[0] ?? subs[0] ?? null;
-  }, [subs]);
+  const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
+
+  const activeSub = enabledSubs[0] ?? subs[0] ?? null;
+
+  const visibleSubs = useMemo(
+    () => (enabledSubs.length > 0 ? enabledSubs : activeSub ? [activeSub] : []),
+    [activeSub, enabledSubs],
+  );
+
+  const activeSubNames = useMemo(
+    () => visibleSubs.map((sub) => sub.name).join(" · "),
+    [visibleSubs],
+  );
 
   const subQuotaLabel = useMemo(() => {
-    const tr = activeSub?.traffic;
-    if (!tr) return "—";
-    const used = (tr.upload ?? 0) + (tr.download ?? 0);
-    if (tr.total && tr.total > 0) {
-      const pct = Math.min(100, Math.round((used / tr.total) * 100));
-      return `${pct}% · ${fmtBytes(used)} / ${fmtBytes(tr.total)}`;
+    const traffic = visibleSubs.map((sub) => sub.traffic);
+    if (traffic.length === 0 || traffic.every((tr) => !tr)) return "—";
+
+    const used = traffic.reduce(
+      (sum, tr) => sum + (tr?.upload ?? 0) + (tr?.download ?? 0),
+      0,
+    );
+    const hasCompleteTotals = traffic.every(
+      (tr) => tr?.total != null && tr.total > 0,
+    );
+    if (hasCompleteTotals) {
+      const total = traffic.reduce((sum, tr) => sum + (tr?.total ?? 0), 0);
+      const pct = Math.min(100, Math.round((used / total) * 100));
+      return `${pct}% · ${fmtBytes(used)} / ${fmtBytes(total)}`;
     }
-    if (tr.quota_remaining != null) {
-      return t("common.remaining", { n: fmtBytes(tr.quota_remaining) });
+
+    const hasCompleteRemaining = traffic.every(
+      (tr) => tr?.quota_remaining != null,
+    );
+    if (hasCompleteRemaining) {
+      const remaining = traffic.reduce(
+        (sum, tr) => sum + (tr?.quota_remaining ?? 0),
+        0,
+      );
+      return t("common.remaining", { n: fmtBytes(remaining) });
     }
     if (used > 0) return fmtBytes(used);
     return "—";
-  }, [activeSub, t]);
+  }, [t, visibleSubs]);
 
   const modeLabel =
     outboundMode === "rule"
@@ -878,8 +903,11 @@ export function DashboardPage({
               {subCount > 0 ? "ACTIVE" : "—"}
             </span>
           </header>
-          <div className="instrument-value sm">
-            {activeSub?.name ?? t("dashboard.noSub")}
+          <div
+            className="instrument-value sm instrument-subscription-names"
+            title={activeSubNames || undefined}
+          >
+            {activeSubNames || t("dashboard.noSub")}
           </div>
           <div className="instrument-kv mono">
             <div>
