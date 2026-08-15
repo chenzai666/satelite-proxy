@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { getProxyStatus, listConnections } from "../../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getProxyStatus, listConnectionChanges } from "../../api";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import type { ConnectionView } from "../../types";
+import { applyConnectionChanges } from "../../connectionChanges";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -14,15 +15,17 @@ export function SimpleTrafficPage() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const revisionRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [status, list] = await Promise.all([
+      const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnections(),
+        listConnectionChanges(revisionRef.current),
       ]);
       setRunning(!!status?.running);
-      setRows(list);
+      revisionRef.current = batch.revision;
+      if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));

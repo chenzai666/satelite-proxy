@@ -117,15 +117,24 @@ export function listAllNodes() {
   return invoke<ProxyNode[]>("list_all_nodes");
 }
 
+export function listNodesPage(query: string, sortMode: string, offset = 0, limit = 200) {
+  return invoke<import("./types").NodePage>("list_nodes_page", {
+    query,
+    sortMode,
+    offset,
+    limit,
+  });
+}
+
+export function listNodeIds(query = "") {
+  return invoke<string[]>("list_node_ids", { query });
+}
+
 export function getSettings() {
   return invoke<AppSettings>("get_settings");
 }
 
-// Auto-save controls stay interactive, so preserve click order here instead
-// of disabling the whole settings page while each small write completes.
-let settingsUpdateTail: Promise<void> = Promise.resolve();
-
-export function updateSettings(payload: {
+export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   apiPort?: number | null;
   probeUrl?: string | null;
@@ -149,9 +158,28 @@ export function updateSettings(payload: {
   routeFinal?: string | null;
   /** Resolve originating process per connection (find_process_mode). */
   findProcess?: boolean | null;
-}) {
-  const run = () =>
-    invoke<AppSettings>("update_settings", {
+}
+
+type SettingsWaiter = {
+  resolve: (settings: AppSettings) => void;
+  reject: (error: unknown) => void;
+};
+
+let pendingSettings: SettingsUpdatePayload = {};
+let pendingSettingsWaiters: SettingsWaiter[] = [];
+let settingsTimer: number | null = null;
+let settingsWriteInFlight = false;
+
+function scheduleSettingsWrite() {
+  if (settingsTimer != null || settingsWriteInFlight || pendingSettingsWaiters.length === 0) return;
+  settingsTimer = window.setTimeout(() => {
+    settingsTimer = null;
+    const payload = pendingSettings;
+    const waiters = pendingSettingsWaiters;
+    pendingSettings = {};
+    pendingSettingsWaiters = [];
+    settingsWriteInFlight = true;
+    void invoke<AppSettings>("update_settings", {
       mixedPort: payload.mixedPort ?? null,
       apiPort: payload.apiPort ?? null,
       probeUrl: payload.probeUrl ?? null,
@@ -171,12 +199,23 @@ export function updateSettings(payload: {
       autoSelect: payload.autoSelect ?? null,
       routeFinal: payload.routeFinal ?? null,
       findProcess: payload.findProcess ?? null,
-    });
-  const result = settingsUpdateTail.then(run, run);
-  settingsUpdateTail = result.then(
-    () => undefined,
-    () => undefined,
-  );
+    })
+      .then((settings) => waiters.forEach(({ resolve }) => resolve(settings)))
+      .catch((error) => waiters.forEach(({ reject }) => reject(error)))
+      .finally(() => {
+        settingsWriteInFlight = false;
+        scheduleSettingsWrite();
+      });
+  }, 60);
+}
+
+/** Merge settings changes made in the same interaction burst into one durable write. */
+export function updateSettings(payload: SettingsUpdatePayload) {
+  pendingSettings = { ...pendingSettings, ...payload };
+  const result = new Promise<AppSettings>((resolve, reject) => {
+    pendingSettingsWaiters.push({ resolve, reject });
+  });
+  scheduleSettingsWrite();
   return result;
 }
 
@@ -479,6 +518,12 @@ export function setRuleEnabled(id: string, enabled: boolean, setId?: string | nu
 
 export function listConnections() {
   return invoke<ConnectionView[]>("list_connections");
+}
+
+export function listConnectionChanges(sinceRevision?: number | null) {
+  return invoke<import("./types").LiveConnectionBatch>("list_connection_changes", {
+    sinceRevision: sinceRevision ?? null,
+  });
 }
 
 export interface RequestBatch {

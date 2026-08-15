@@ -28,6 +28,51 @@ use tauri::{Emitter, Manager};
 const MAX_DEEP_LINK_URLS: usize = 8;
 const MAX_DEEP_LINK_URL_LEN: usize = 8 * 1024;
 
+fn show_startup_failure(
+    app: &tauri::App,
+    error: impl std::fmt::Display,
+    data_dir: Option<&std::path::Path>,
+) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.handle().clone();
+    let location = data_dir
+        .map(|path| {
+            format!(
+                "\n\n数据目录：{}\n日志目录：{}",
+                path.display(),
+                path.join("logs").display()
+            )
+        })
+        .unwrap_or_default();
+    let message = format!(
+        "Satelite 无法加载本地数据，已停止启动以避免覆盖现有配置。\n\n错误：{error}{location}"
+    );
+    let dialog = app
+        .dialog()
+        .message(message)
+        .title("Satelite 启动失败")
+        .kind(MessageDialogKind::Error);
+    if let Some(path) = data_dir.map(std::path::Path::to_path_buf) {
+        dialog
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "打开数据目录".into(),
+                "退出".into(),
+            ))
+            .show(move |open| {
+                if open {
+                    let _ = tauri_plugin_opener::open_path(path, None::<&str>);
+                }
+                handle.exit(1);
+            });
+    } else {
+        dialog.show(move |_| handle.exit(1));
+    }
+}
+
 fn bounded_deep_link_urls(urls: impl IntoIterator<Item = String>) -> Vec<String> {
     urls.into_iter()
         .filter(|url| url.len() <= MAX_DEEP_LINK_URL_LEN)
@@ -73,12 +118,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir().expect("resolve app data dir");
-            std::fs::create_dir_all(&dir).ok();
+            let dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(error) => {
+                    show_startup_failure(app, error, None);
+                    return Ok(());
+                }
+            };
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                show_startup_failure(app, error, Some(&dir));
+                return Ok(());
+            }
             app_log::init(dir.join("logs"));
             app_log::install_panic_hook();
             let resource_dir = app.path().resource_dir().ok();
-            let app_state = AppState::load(dir, resource_dir).expect("load app store");
+            let app_state = match AppState::load(dir.clone(), resource_dir) {
+                Ok(state) => state,
+                Err(error) => {
+                    app_log::error("startup", format!("load app store failed: {error}"));
+                    show_startup_failure(app, error, Some(&dir));
+                    return Ok(());
+                }
+            };
 
             // Snapshot app prefs before move into managed state
             let silent = app_state
@@ -273,6 +334,8 @@ pub fn run() {
             commands::remove_subscription,
             commands::list_subscription_nodes,
             commands::list_all_nodes,
+            commands::list_nodes_page,
+            commands::list_node_ids,
             commands::get_settings,
             commands::update_settings,
             commands::set_current_node,
@@ -318,6 +381,7 @@ pub fn run() {
             commands::remove_rule,
             commands::set_rule_enabled,
             commands::list_connections,
+            commands::list_connection_changes,
             commands::list_requests,
             commands::list_request_failures,
             commands::clear_request_history,

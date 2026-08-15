@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   generateSingboxConfig,
   getProxyStatus,
   getSettings,
-  listAllNodes,
+  listNodeIds,
+  listNodesPage,
   setCurrentNode,
   testNodesLatency,
 } from "../api";
@@ -16,6 +17,7 @@ import type { ProxyNode, SortMode, ViewMode } from "../types";
 const VIRTUALIZE_AFTER = 200;
 const LIST_ROW_HEIGHT = 49;
 const GRID_ROW_HEIGHT = 94;
+const PAGE_SIZE = 200;
 
 function gridColumns() {
   if (window.innerWidth <= 720) return 2;
@@ -61,6 +63,8 @@ export function NodesPage() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -80,22 +84,33 @@ export function NodesPage() {
     return () => window.removeEventListener("resize", update);
   }, []);
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (append = false) => {
     setError(null);
+    if (append) setLoadingMore(true);
     try {
-      const [list, settings] = await Promise.all([listAllNodes(), getSettings()]);
-      setNodes(list);
+      const offset = append ? nodes.length : 0;
+      const [page, settings] = await Promise.all([
+        listNodesPage(query, sortMode, offset, PAGE_SIZE),
+        getSettings(),
+      ]);
+      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+      setTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  }, []);
+  }, [nodes.length, query, sortMode]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    setLoading(true);
+    const timer = window.setTimeout(() => void reload(false), 150);
+    return () => window.clearTimeout(timer);
+    // nodes.length changes as pages append and must not restart the first page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, sortMode]);
 
   useEffect(() => {
     localStorage.setItem("nodes.viewMode", viewMode);
@@ -105,37 +120,7 @@ export function NodesPage() {
     localStorage.setItem("nodes.sortMode", sortMode);
   }, [sortMode]);
 
-  const displayed = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = nodes;
-    if (q) {
-      list = list.filter(
-        (n) =>
-          n.name.toLowerCase().includes(q) ||
-          n.server.toLowerCase().includes(q) ||
-          n.protocol.toLowerCase().includes(q) ||
-          (n.subscription_name?.toLowerCase().includes(q) ?? false),
-      );
-    }
-
-    const sorted = [...list];
-    if (sortMode === "name") {
-      sorted.sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-      );
-    } else if (sortMode === "latency") {
-      sorted.sort((a, b) => {
-        const la = a.latency_ms;
-        const lb = b.latency_ms;
-        // tested timeout (latency_at set, no ms) sort last among tested
-        const sa = la != null ? la : a.latency_at != null ? 999999 : 9999999;
-        const sb = lb != null ? lb : b.latency_at != null ? 999999 : 9999999;
-        if (sa !== sb) return sa - sb;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    return sorted;
-  }, [nodes, query, sortMode]);
+  const displayed = nodes;
   const virtualized = displayed.length > VIRTUALIZE_AFTER;
   const listRange = useVirtualRange({
     itemCount: displayed.length,
@@ -173,7 +158,7 @@ export function NodesPage() {
     setTesting(true);
     setError(null);
     // no top banner / completion message
-    const ids = displayed.map((n) => n.id);
+    const ids = await listNodeIds(query);
     const idSet = new Set(ids);
     setTestingIds(idSet);
 
@@ -207,6 +192,7 @@ export function NodesPage() {
     } finally {
       setTesting(false);
       setTestingIds(new Set());
+      await reload(false);
     }
   }
 
@@ -219,12 +205,12 @@ export function NodesPage() {
             {t("nodes.desc")}
             {" · "}
             <span className="mono">
-              {query.trim() && displayed.length !== nodes.length
+              {query.trim()
                 ? t("nodes.countFiltered", {
                     shown: displayed.length,
-                    total: nodes.length,
+                    total,
                   })
-                : t("nodes.count", { n: nodes.length })}
+                : t("nodes.count", { n: total })}
             </span>
           </p>
         </div>
@@ -389,6 +375,13 @@ export function NodesPage() {
           {gridRange.paddingBottom > 0 && (
             <div style={{ height: gridRange.paddingBottom }} aria-hidden="true" />
           )}
+        </div>
+      )}
+      {!loading && nodes.length < total && (
+        <div style={{ display: "flex", justifyContent: "center", padding: 12 }}>
+          <GlassButton disabled={loadingMore} onClick={() => void reload(true)}>
+            {loadingMore ? t("common.loading") : `加载更多（${nodes.length}/${total}）`}
+          </GlassButton>
         </div>
       )}
     </div>

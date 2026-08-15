@@ -51,6 +51,7 @@ pub struct ProxyStatus {
 
 /// Cap history to limit RAM (UI only needs recent activity).
 const MAX_REQUEST_HISTORY: usize = 3_000;
+const MAX_LIVE_REMOVAL_HISTORY: usize = 10_000;
 
 /// Passive connection-journal stats for one outbound tag (smart switch Level 0).
 #[derive(Debug, Clone, Default)]
@@ -101,6 +102,10 @@ pub struct Runtime {
     traffic_speed: (u64, u64),
     /// Live connections (last poll)
     live_connections: Vec<ConnectionInfo>,
+    live_revision: u64,
+    live_item_revisions: HashMap<String, u64>,
+    live_removals: VecDeque<(u64, String)>,
+    live_diff_floor: u64,
     /// History of requests keyed by connection id (or synthetic key).
     request_by_id: HashMap<String, RequestRecord>,
     /// Newest ids at the front.
@@ -126,6 +131,10 @@ impl Runtime {
             traffic_prev: None,
             traffic_speed: (0, 0),
             live_connections: Vec::new(),
+            live_revision: 0,
+            live_item_revisions: HashMap::new(),
+            live_removals: VecDeque::new(),
+            live_diff_floor: 0,
             request_by_id: HashMap::new(),
             request_order: VecDeque::new(),
             last_sample_at: None,
@@ -340,7 +349,33 @@ impl Runtime {
             }
         }
 
-        self.live_connections = connections;
+        if self.live_connections != connections {
+            self.live_revision = self.live_revision.saturating_add(1);
+            let revision = self.live_revision;
+            let previous: HashMap<String, &ConnectionInfo> = self
+                .live_connections
+                .iter()
+                .map(|connection| (connection_history_key(connection), connection))
+                .collect();
+            for connection in &connections {
+                let id = connection_history_key(connection);
+                if previous.get(&id).is_none_or(|old| *old != connection) {
+                    self.live_item_revisions.insert(id, revision);
+                }
+            }
+            for id in previous.keys() {
+                if !seen.contains(id) {
+                    self.live_item_revisions.remove(id);
+                    self.live_removals.push_back((revision, id.clone()));
+                }
+            }
+            while self.live_removals.len() > MAX_LIVE_REMOVAL_HISTORY {
+                if let Some((removed_revision, _)) = self.live_removals.pop_front() {
+                    self.live_diff_floor = removed_revision;
+                }
+            }
+            self.live_connections = connections;
+        }
     }
 
     pub fn live_connections(&mut self, store: &AppStore) -> Vec<ConnectionView> {
@@ -350,6 +385,57 @@ impl Runtime {
             .iter()
             .map(|c| ConnectionView::from_info(c, &tag_info))
             .collect()
+    }
+
+    pub fn live_connection_batch(
+        &mut self,
+        store: &AppStore,
+        since_revision: Option<u64>,
+    ) -> LiveConnectionBatch {
+        self.core.poll();
+        if since_revision == Some(self.live_revision) {
+            return LiveConnectionBatch {
+                rows: Vec::new(),
+                removed_ids: Vec::new(),
+                order_ids: Vec::new(),
+                revision: self.live_revision,
+                unchanged: true,
+                full: false,
+            };
+        }
+        let full = since_revision.is_none_or(|since| since < self.live_diff_floor);
+        let since = since_revision.unwrap_or(0);
+        let tag_info = node_tag_info_map(store);
+        LiveConnectionBatch {
+            rows: self
+                .live_connections
+                .iter()
+                .filter(|connection| {
+                    full || self
+                        .live_item_revisions
+                        .get(&connection_history_key(connection))
+                        .is_some_and(|revision| *revision > since)
+                })
+                .map(|connection| ConnectionView::from_info(connection, &tag_info))
+                .collect(),
+            removed_ids: if full {
+                Vec::new()
+            } else {
+                self.live_removals
+                    .iter()
+                    .filter(|(revision, _)| *revision > since)
+                    .map(|(_, id)| id.clone())
+                    .collect()
+            },
+            order_ids: self
+                .live_connections
+                .iter()
+                .map(connection_history_key)
+                .collect(),
+            revision: self.live_revision,
+            unchanged: false,
+            full,
+        }
     }
 
     pub fn request_history(
@@ -623,6 +709,25 @@ impl Runtime {
 
     /// Stop only the managed sing-box process.
     ///
+    fn clear_live_connections(&mut self) {
+        if self.live_connections.is_empty() {
+            return;
+        }
+        self.live_revision = self.live_revision.saturating_add(1);
+        let revision = self.live_revision;
+        for connection in &self.live_connections {
+            let id = connection_history_key(connection);
+            self.live_item_revisions.remove(&id);
+            self.live_removals.push_back((revision, id));
+        }
+        self.live_connections.clear();
+        while self.live_removals.len() > MAX_LIVE_REMOVAL_HISTORY {
+            if let Some((removed_revision, _)) = self.live_removals.pop_front() {
+                self.live_diff_floor = removed_revision;
+            }
+        }
+    }
+
     /// Internal restarts deliberately use this path so the saved/effective
     /// system-proxy state survives the short process replacement. A user
     /// initiated stop must use `stop_proxy`, which restores the OS first.
@@ -636,7 +741,7 @@ impl Runtime {
         // ownership proof and could otherwise terminate another running app
         // instance (or an unrelated process using the configured ports).
         self.core_started_at = None;
-        self.live_connections.clear();
+        self.clear_live_connections();
         Ok(())
     }
 
@@ -691,7 +796,7 @@ impl Runtime {
             api.deactivate();
         }
         self.core.force_shutdown();
-        self.live_connections.clear();
+        self.clear_live_connections();
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
         proxy_cleared
@@ -807,6 +912,16 @@ pub struct ConnectionView {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct LiveConnectionBatch {
+    pub rows: Vec<ConnectionView>,
+    pub removed_ids: Vec<String>,
+    pub order_ids: Vec<String>,
+    pub revision: u64,
+    pub unchanged: bool,
+    pub full: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct RequestBatch {
     pub entries: Vec<ConnectionView>,
     pub cursor: u64,
@@ -821,7 +936,7 @@ impl ConnectionView {
         let subscription_name = info.map(|i| i.subscription.clone()).unwrap_or_default();
         let chains_display = c.chains.join(" → ");
         Self {
-            id: c.id.clone(),
+            id: connection_history_key(c),
             destination: c.destination.clone(),
             host: c.host.clone(),
             network: c.network.clone(),

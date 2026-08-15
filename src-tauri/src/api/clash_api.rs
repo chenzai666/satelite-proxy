@@ -352,7 +352,7 @@ struct RawMetadata {
     process: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ConnectionInfo {
     pub id: String,
     /// e.g. www.google.com:443 or 1.2.3.4:443

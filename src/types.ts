@@ -156,6 +156,12 @@ export interface ProxyNode {
 export type ViewMode = "list" | "grid";
 export type SortMode = "default" | "name" | "latency";
 
+export interface NodePage {
+  nodes: ProxyNode[];
+  total: number;
+  offset: number;
+}
+
 export interface LatencyResult {
   id: string;
   name: string;
@@ -411,4 +417,13 @@ export interface ConnectionView {
   last_seen?: number | null;
   closed?: boolean;
   closed_at?: number | null;
+}
+
+export interface LiveConnectionBatch {
+  rows: ConnectionView[];
+  removed_ids: string[];
+  order_ids: string[];
+  revision: number;
+  unchanged: boolean;
+  full: boolean;
 }

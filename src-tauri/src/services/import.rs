@@ -10,6 +10,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
+/// Conservative comparison key for subscription URLs. Query order and path case are
+/// intentionally preserved because they can carry signed credentials.
+pub(crate) fn canonical_subscription_url(input: &str) -> Option<String> {
+    let mut url = url::Url::parse(input.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if (url.scheme() == "http" && url.port() == Some(80))
+        || (url.scheme() == "https" && url.port() == Some(443))
+    {
+        let _ = url.set_port(None);
+    }
+    url.set_fragment(None);
+    if url.path().is_empty() {
+        url.set_path("/");
+    }
+    Some(url.to_string())
+}
+
 pub struct ImportOutcome {
     pub subscription: Subscription,
     pub nodes: Vec<ProxyNode>,
@@ -907,7 +926,9 @@ fn subscription_id(source: &SubscriptionSource) -> String {
     match source {
         SubscriptionSource::Url { url } => {
             hasher.update(b"url|");
-            hasher.update(url.as_bytes());
+            let canonical =
+                canonical_subscription_url(url).unwrap_or_else(|| url.trim().to_string());
+            hasher.update(canonical.as_bytes());
         }
         SubscriptionSource::File { path } => {
             hasher.update(b"file|");
@@ -916,6 +937,31 @@ fn subscription_id(source: &SubscriptionSource) -> String {
     }
     let digest = hasher.finalize();
     hex::encode(&digest[..16])
+}
+
+#[cfg(test)]
+mod canonical_url_tests {
+    use super::canonical_subscription_url;
+
+    #[test]
+    fn normalizes_only_safe_url_parts() {
+        assert_eq!(
+            canonical_subscription_url(" HTTPS://Example.COM:443#view "),
+            Some("https://example.com/".into())
+        );
+        assert_eq!(
+            canonical_subscription_url("http://example.com:80/path?b=2&a=1"),
+            Some("http://example.com/path?b=2&a=1".into())
+        );
+    }
+
+    #[test]
+    fn preserves_sensitive_path_and_query_order() {
+        assert_ne!(
+            canonical_subscription_url("https://example.com/Token?a=1&b=2"),
+            canonical_subscription_url("https://example.com/token?b=2&a=1")
+        );
+    }
 }
 
 fn name_from_url(url: &str) -> String {

@@ -5,7 +5,8 @@ import {
   addSubscriptionUrl,
   getProxyStatus,
   getSettings,
-  listAllNodes,
+  listNodeIds,
+  listNodesPage,
   listSubscriptions,
   refreshSubscription,
   restartProxy,
@@ -25,6 +26,7 @@ const SORT_KEY = "simple.nodes.sortMode";
 const SUBS_COLLAPSE_KEY = "simple.nodes.subsCollapsed";
 const VIRTUALIZE_AFTER = 200;
 const NODE_ROW_HEIGHT = 48;
+const PAGE_SIZE = 200;
 
 function readSortMode(): SortMode {
   try {
@@ -77,6 +79,8 @@ export function SimpleServersPage() {
   const { prefill, token, consume, dismiss } = useImportIntent();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
+  const [nodeTotal, setNodeTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
@@ -92,24 +96,31 @@ export function SimpleServersPage() {
     null,
   );
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (append = false) => {
     try {
-      const [s, n, settings] = await Promise.all([
+      if (append) setLoadingMore(true);
+      const [s, page, settings] = await Promise.all([
         listSubscriptions(),
-        listAllNodes(),
+        listNodesPage(query, sortMode, append ? nodes.length : 0, PAGE_SIZE),
         getSettings(),
       ]);
       setSubs(s);
-      setNodes(n);
+      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+      setNodeTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setLoadingMore(false);
     }
-  }, []);
+  }, [nodes.length, query, sortMode]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    const timer = window.setTimeout(() => void reload(false), 150);
+    return () => window.clearTimeout(timer);
+    // nodes.length changes when appending and must not reset pagination.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, sortMode]);
 
   // One-click subscribe deep link → open add modal prefilled.
   useEffect(() => {
@@ -152,35 +163,7 @@ export function SimpleServersPage() {
     [subs, activeSubId],
   );
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = nodes;
-    if (q) {
-      list = list.filter(
-        (n) =>
-          n.name.toLowerCase().includes(q) ||
-          n.protocol.toLowerCase().includes(q) ||
-          n.server.toLowerCase().includes(q),
-      );
-    }
-    const sorted = [...list];
-    if (sortMode === "name") {
-      sorted.sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-      );
-    } else if (sortMode === "latency") {
-      // Low latency first; timeout next; untested last.
-      sorted.sort((a, b) => {
-        const la = a.latency_ms;
-        const lb = b.latency_ms;
-        const sa = la != null ? la : a.latency_at != null ? 999999 : 9999999;
-        const sb = lb != null ? lb : b.latency_at != null ? 999999 : 9999999;
-        if (sa !== sb) return sa - sb;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    return sorted;
-  }, [nodes, query, sortMode]);
+  const filtered = nodes;
   const virtualized = filtered.length > VIRTUALIZE_AFTER;
   const nodeRange = useVirtualRange({
     itemCount: filtered.length,
@@ -212,12 +195,13 @@ export function SimpleServersPage() {
       const list = await activateSubscription(id);
       setSubs(list);
       // Reload nodes for the newly enabled profile(s).
-      const [n, settings, status] = await Promise.all([
-        listAllNodes(),
+      const [page, settings, status] = await Promise.all([
+        listNodesPage(query, sortMode, 0, PAGE_SIZE),
         getSettings(),
         getProxyStatus().catch(() => null),
       ]);
-      setNodes(n);
+      setNodes(page.nodes);
+      setNodeTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
       // Apply new node pool if core is running.
       if (status?.running) {
@@ -231,8 +215,8 @@ export function SimpleServersPage() {
   }
 
   async function onTestAll() {
-    if (testing || nodes.length === 0) return;
-    const ids = nodes.map((n) => n.id);
+    if (testing || nodeTotal === 0) return;
+    const ids = await listNodeIds(query);
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -265,6 +249,7 @@ export function SimpleServersPage() {
     } finally {
       setTesting(false);
       setTestingIds(new Set());
+      await reload(false);
     }
   }
 
@@ -326,7 +311,7 @@ export function SimpleServersPage() {
           <button
             type="button"
             className="btn-pill secondary"
-            disabled={testing || nodes.length === 0}
+            disabled={testing || nodeTotal === 0}
             onClick={() => void onTestAll()}
           >
             {testing ? "测速中…" : "测速"}
@@ -413,7 +398,7 @@ export function SimpleServersPage() {
 
       <section className="simple-section">
         <div className="simple-section-label muted">
-          节点 · {filtered.length}
+          节点 · {nodeTotal}
           {activeSubId
             ? ` · ${subs.find((s) => s.id === activeSubId)?.name ?? ""}`
             : ""}
@@ -483,6 +468,17 @@ export function SimpleServersPage() {
               />
             )}
           </ul>
+        )}
+        {nodes.length < nodeTotal && (
+          <button
+            type="button"
+            className="btn-pill secondary"
+            disabled={loadingMore}
+            onClick={() => void reload(true)}
+            style={{ margin: "12px auto", display: "block" }}
+          >
+            {loadingMore ? "加载中…" : `加载更多（${nodes.length}/${nodeTotal}）`}
+          </button>
         )}
       </section>
 

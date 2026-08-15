@@ -4,6 +4,7 @@ import { GlassButton } from "./GlassButton";
 import { GlassSeg } from "./GlassSeg";
 import { GlassSwitchControl } from "./GlassSwitchControl";
 import type { AddSourceKind } from "../types";
+import { canonicalSubscriptionUrl } from "../subscriptionUrl";
 
 export interface ConfigFormValues {
   name: string;
@@ -140,10 +141,14 @@ export function AddConfigModal({
     ((kind === "url" && url.trim().length > 0) ||
       (kind === "file" && path.trim().length > 0));
   const normalizedUrl = url.trim();
+  const canonicalUrl = canonicalSubscriptionUrl(normalizedUrl);
   const duplicateUrl =
     kind === "url" &&
     normalizedUrl.length > 0 &&
-    existingUrls.some((existingUrl) => existingUrl.trim() === normalizedUrl);
+    existingUrls.some(
+      (existingUrl) =>
+        canonicalUrl != null && canonicalSubscriptionUrl(existingUrl) === canonicalUrl,
+    );
 
   return (
     <div className="modal-backdrop">

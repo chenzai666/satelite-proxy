@@ -1,4 +1,4 @@
-use crate::runtime::{ConnectionView, RequestBatch};
+use crate::runtime::{ConnectionView, LiveConnectionBatch, RequestBatch};
 use crate::state::AppState;
 use tauri::{AppHandle, Manager, State};
 
@@ -12,6 +12,21 @@ pub async fn list_connections(app: AppHandle) -> Result<Vec<ConnectionView>, Str
     })
     .await
     .map_err(|e| format!("list connections task: {e}"))?
+}
+
+#[tauri::command]
+pub async fn list_connection_changes(
+    app: AppHandle,
+    since_revision: Option<u64>,
+) -> Result<LiveConnectionBatch, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        Ok(state.live_connection_batch(since_revision))
+    })
+    .await
+    .map_err(|e| format!("list connection changes task: {e}"))?
 }
 
 #[tauri::command]

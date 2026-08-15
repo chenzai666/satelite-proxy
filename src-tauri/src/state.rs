@@ -1,7 +1,7 @@
 use crate::app_log;
 use crate::core::manager::CoreState;
 use crate::error::AppResult;
-use crate::runtime::{ConnectionView, ProxyStatus, RequestBatch, Runtime};
+use crate::runtime::{ConnectionView, LiveConnectionBatch, ProxyStatus, RequestBatch, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +28,7 @@ struct QueryViewCache {
 #[derive(Default)]
 struct TrafficViewCache {
     live: Vec<ConnectionView>,
+    live_revision: u64,
     requests: QueryViewCache,
     failures: QueryViewCache,
 }
@@ -698,6 +699,70 @@ impl AppState {
         let rows = runtime.live_connections(&store);
         recover_lock(&self.traffic_view_cache, "traffic_view_cache").live = rows.clone();
         rows
+    }
+
+    pub fn live_connection_batch(&self, since_revision: Option<u64>) -> LiveConnectionBatch {
+        let cached = || {
+            let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
+            if since_revision == Some(cache.live_revision) {
+                LiveConnectionBatch {
+                    rows: Vec::new(),
+                    removed_ids: Vec::new(),
+                    order_ids: Vec::new(),
+                    revision: cache.live_revision,
+                    unchanged: true,
+                    full: false,
+                }
+            } else {
+                LiveConnectionBatch {
+                    rows: cache.live.clone(),
+                    removed_ids: Vec::new(),
+                    order_ids: cache.live.iter().map(|row| row.id.clone()).collect(),
+                    revision: cache.live_revision,
+                    unchanged: false,
+                    full: true,
+                }
+            }
+        };
+        if self.is_core_transitioning() {
+            return cached();
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return cached(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => return cached(),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        let batch = runtime.live_connection_batch(&store, since_revision);
+        if !batch.unchanged {
+            let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
+            if batch.full {
+                cache.live = batch.rows.clone();
+            } else {
+                let removed: std::collections::HashSet<&str> =
+                    batch.removed_ids.iter().map(String::as_str).collect();
+                let mut by_id: std::collections::HashMap<String, ConnectionView> = cache
+                    .live
+                    .drain(..)
+                    .filter(|row| !removed.contains(row.id.as_str()))
+                    .map(|row| (row.id.clone(), row))
+                    .collect();
+                for row in &batch.rows {
+                    by_id.insert(row.id.clone(), row.clone());
+                }
+                cache.live = batch
+                    .order_ids
+                    .iter()
+                    .filter_map(|id| by_id.remove(id))
+                    .collect();
+            }
+            cache.live_revision = batch.revision;
+        }
+        batch
     }
 
     pub fn request_views(

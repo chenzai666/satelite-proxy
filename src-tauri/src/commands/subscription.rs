@@ -1,6 +1,6 @@
 use crate::domain::{ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView};
 use crate::services::import::{
-    import_from_file, import_from_file_with_id, import_from_url_with_id,
+    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_url_with_id,
 };
 use crate::state::AppState;
 use serde::Serialize;
@@ -158,10 +158,27 @@ pub async fn add_subscription_url(
     auto_update_interval_min: Option<u32>,
 ) -> Result<ImportResult, String> {
     let via = via_proxy.unwrap_or(false);
+    let canonical = canonical_subscription_url(&url);
+    let existing_id = state
+        .with_store(|store| {
+            Ok(store
+                .subscriptions
+                .iter()
+                .find_map(|subscription| match &subscription.source {
+                    SubscriptionSource::Url { url: existing_url }
+                        if canonical.is_some()
+                            && canonical_subscription_url(existing_url) == canonical =>
+                    {
+                        Some(subscription.id.clone())
+                    }
+                    _ => None,
+                }))
+        })
+        .map_err(|e| e.to_string())?;
     let mixed_port = state
         .with_store(|s| Ok(s.settings.mixed_port))
         .map_err(|e| e.to_string())?;
-    let mut outcome = import_from_url_with_id(name, url, None, via, Some(mixed_port))
+    let mut outcome = import_from_url_with_id(name, url, existing_id, via, Some(mixed_port))
         .await
         .map_err(|e| e.to_string())?;
     apply_auto_update_prefs(
@@ -236,7 +253,8 @@ pub async fn update_subscription(
                         }
                         match &subscription.source {
                             SubscriptionSource::Url { url: existing_url }
-                                if existing_url == &url =>
+                                if canonical_subscription_url(existing_url)
+                                    == canonical_subscription_url(&url) =>
                             {
                                 Some((subscription.id.clone(), subscription.enabled))
                             }
