@@ -77,6 +77,12 @@ pub fn run() {
             let auto_proxy = app_state
                 .with_store(|s| Ok(s.settings.auto_start_proxy))
                 .unwrap_or(false);
+            let keep_system_proxy_for_auto_start = auto_proxy
+                && app_state
+                    .with_store(|s| {
+                        Ok(s.settings.capture_mode == crate::domain::CaptureMode::System)
+                    })
+                    .unwrap_or(false);
             // Keep LaunchAgent in sync with stored preference
             let launch = app_state
                 .with_store(|s| Ok(s.settings.launch_at_login))
@@ -167,23 +173,52 @@ pub fn run() {
                 window_ctrl::soft_hide_main(app.handle());
             }
 
-            // Auto-run proxy after launch
-            if auto_proxy {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    // slight delay so tray / window settle
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    if let Some(state) = handle.try_state::<AppState>() {
-                        let res = handle.path().resource_dir().ok();
-                        if let Err(e) = state.start_proxy(res.as_deref(), false) {
-                            app_log::error("app", format!("auto_start_proxy failed: {e}"));
-                        } else {
-                            app_log::info("app", "auto_start_proxy ok");
-                            tray::refresh_icon(&handle);
+            // Reconcile a proxy left by an unclean exit and auto-start in one
+            // worker, so cleanup can never race with re-enabling system mode.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // slight delay so tray / window settle
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let Some(state) = handle.try_state::<AppState>() else {
+                    return;
+                };
+                if !keep_system_proxy_for_auto_start {
+                    match state.cleanup_stale_system_proxy() {
+                        Ok(true) => app_log::warn(
+                            "system_proxy",
+                            "cleared stale owned proxy during startup",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => app_log::error(
+                            "system_proxy",
+                            format!("startup reconciliation failed: {error}"),
+                        ),
+                    }
+                }
+                if !auto_proxy {
+                    return;
+                }
+                let res = handle.path().resource_dir().ok();
+                if let Err(error) = state.start_proxy(res.as_deref(), false) {
+                    app_log::error("app", format!("auto_start_proxy failed: {error}"));
+                    if keep_system_proxy_for_auto_start {
+                        match state.cleanup_stale_system_proxy() {
+                            Ok(true) => app_log::warn(
+                                "system_proxy",
+                                "auto-start failed; cleared stale owned proxy",
+                            ),
+                            Ok(false) => {}
+                            Err(cleanup_error) => app_log::error(
+                                "system_proxy",
+                                format!("auto-start cleanup failed: {cleanup_error}"),
+                            ),
                         }
                     }
-                });
-            }
+                } else {
+                    app_log::info("app", "auto_start_proxy ok");
+                    tray::refresh_icon(&handle);
+                }
+            });
 
             Ok(())
         })

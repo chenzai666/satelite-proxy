@@ -627,12 +627,27 @@ impl Runtime {
     }
 
     /// Full cleanup on app exit: system proxy off and stop the managed core.
-    pub fn shutdown(&mut self) {
-        if self.system_proxy_on {
-            let _ = self.system_proxy.disable(self.proxy_snapshot.as_ref());
-            self.system_proxy_on = false;
-            self.proxy_snapshot = None;
-        }
+    /// Returns true when no owned OS proxy remains and the ownership marker
+    /// can be cleared safely.
+    pub fn shutdown(&mut self) -> bool {
+        let proxy_cleared = if self.system_proxy_on {
+            match self.system_proxy.disable(self.proxy_snapshot.as_ref()) {
+                Ok(()) => {
+                    self.system_proxy_on = false;
+                    self.proxy_snapshot = None;
+                    true
+                }
+                Err(error) => {
+                    crate::app_log::error(
+                        "system_proxy",
+                        format!("shutdown restore failed: {error}"),
+                    );
+                    false
+                }
+            }
+        } else {
+            true
+        };
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
@@ -640,6 +655,7 @@ impl Runtime {
         self.live_connections.clear();
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
+        proxy_cleared
     }
 }
 
@@ -855,6 +871,10 @@ mod stop_behavior_tests {
                 Ok(())
             }
         }
+
+        fn detect_owned(&self, _host: &str, _port: u16) -> AppResult<Option<SystemProxySnapshot>> {
+            Ok(None)
+        }
     }
 
     fn runtime_with_system_proxy(fail_disable: bool) -> (Runtime, Arc<Mutex<usize>>) {
@@ -896,6 +916,18 @@ mod stop_behavior_tests {
         assert_eq!(*disabled.lock().expect("disabled counter"), 1);
         assert!(runtime.system_proxy_on);
         assert!(runtime.proxy_snapshot.is_some());
+    }
+
+    #[test]
+    fn shutdown_reports_whether_system_proxy_was_cleared() {
+        let (mut successful, _) = runtime_with_system_proxy(false);
+        assert!(successful.shutdown());
+        assert!(!successful.system_proxy_on);
+
+        let (mut failed, _) = runtime_with_system_proxy(true);
+        assert!(!failed.shutdown());
+        assert!(failed.system_proxy_on);
+        assert!(failed.proxy_snapshot.is_some());
     }
 
     #[test]

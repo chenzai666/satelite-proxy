@@ -558,6 +558,17 @@ impl AppState {
         if runtime.system_proxy_on != enable_system_proxy {
             status = runtime.set_system_proxy(&store, enable_system_proxy)?;
         }
+        if status.system_proxy {
+            self.record_proxy_ownership(store.settings.mixed_port);
+        } else if crate::proxy::cleanup_stale_owned_proxy(
+            &self.app_data_dir,
+            store.settings.mixed_port,
+        )? {
+            app_log::warn(
+                "system_proxy",
+                "cleared stale owned proxy while starting core",
+            );
+        }
         store.save(&self.store_path)?;
         self.cache_status(&status);
         Ok(status)
@@ -569,6 +580,12 @@ impl AppState {
         let mut runtime = self.lock_runtime();
         let store = self.lock_store();
         let status = runtime.stop_proxy(&store)?;
+        if crate::proxy::cleanup_stale_owned_proxy(&self.app_data_dir, store.settings.mixed_port)? {
+            app_log::warn(
+                "system_proxy",
+                "cleared stale owned proxy while stopping core",
+            );
+        }
         self.cache_status(&status);
         Ok(status)
     }
@@ -582,6 +599,17 @@ impl AppState {
         let mut status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
         if runtime.system_proxy_on != want_system {
             status = runtime.set_system_proxy(&store, want_system)?;
+        }
+        if status.system_proxy {
+            self.record_proxy_ownership(store.settings.mixed_port);
+        } else if crate::proxy::cleanup_stale_owned_proxy(
+            &self.app_data_dir,
+            store.settings.mixed_port,
+        )? {
+            app_log::warn(
+                "system_proxy",
+                "cleared stale owned proxy while restarting core",
+            );
         }
         store.save(&self.store_path)?;
         self.cache_status(&status);
@@ -892,7 +920,32 @@ impl AppState {
 
     pub fn shutdown_runtime(&self) {
         let mut runtime = self.lock_runtime();
-        runtime.shutdown();
+        if runtime.shutdown() {
+            drop(runtime);
+            if let Err(error) = self.cleanup_stale_system_proxy() {
+                app_log::warn(
+                    "system_proxy",
+                    format!("shutdown ownership cleanup failed: {error}"),
+                );
+            }
+        }
+    }
+
+    pub fn cleanup_stale_system_proxy(&self) -> AppResult<bool> {
+        let mixed_port = self.with_store(|store| Ok(store.settings.mixed_port))?;
+        crate::proxy::cleanup_stale_owned_proxy(&self.app_data_dir, mixed_port)
+    }
+
+    fn record_proxy_ownership(&self, port: u16) {
+        if let Err(error) = crate::proxy::record_ownership(&self.app_data_dir, "127.0.0.1", port) {
+            app_log::error("system_proxy", format!("record ownership failed: {error}"));
+        }
+    }
+
+    fn clear_proxy_ownership(&self) {
+        if let Err(error) = crate::proxy::clear_ownership(&self.app_data_dir) {
+            app_log::warn("system_proxy", format!("clear ownership failed: {error}"));
+        }
     }
 
     pub fn is_core_running(&self) -> bool {
@@ -961,6 +1014,20 @@ impl AppState {
         let tun_now = store.settings.tun_enabled;
         let sys_now = runtime.system_proxy_on;
 
+        // Runtime state is process-local. After an unclean exit it may say
+        // "off" while the OS still points at our dead loopback endpoint.
+        if !want_sys && !sys_now {
+            if crate::proxy::cleanup_stale_owned_proxy(
+                &self.app_data_dir,
+                store.settings.mixed_port,
+            )? {
+                app_log::warn(
+                    "system_proxy",
+                    "cleared stale owned proxy while switching off",
+                );
+            }
+        }
+
         if tun_now == want_tun && sys_now == want_sys && store.settings.capture_mode == mode {
             let status = runtime.status(&store);
             self.cache_status(&status);
@@ -983,6 +1050,12 @@ impl AppState {
         // 2) System proxy: always align with mode (TUN implies proxy off).
         if runtime.system_proxy_on != want_sys {
             runtime.set_system_proxy(&store, want_sys)?;
+        }
+
+        if want_sys && runtime.system_proxy_on {
+            self.record_proxy_ownership(store.settings.mixed_port);
+        } else if !want_sys {
+            self.clear_proxy_ownership();
         }
 
         store.save(&self.store_path)?;

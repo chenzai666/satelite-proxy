@@ -7,6 +7,13 @@ use std::process::Command;
 #[derive(Default)]
 pub struct MacSystemProxy;
 
+#[derive(Debug, Default)]
+struct ProxyProbe {
+    enabled: bool,
+    server: String,
+    port: u16,
+}
+
 impl MacSystemProxy {
     fn services() -> AppResult<Vec<String>> {
         let out = Command::new("networksetup")
@@ -42,6 +49,31 @@ impl MacSystemProxy {
             return Err(AppError::Core(format!("networksetup {:?} failed", args)));
         }
         Ok(())
+    }
+
+    fn probe(service: &str, command: &str) -> AppResult<ProxyProbe> {
+        let output = Command::new("networksetup")
+            .args([command, service])
+            .output()
+            .map_err(|error| AppError::Core(format!("networksetup: {error}")))?;
+        if !output.status.success() {
+            return Err(AppError::Core(format!(
+                "networksetup {command} {service:?} failed"
+            )));
+        }
+        let mut probe = ProxyProbe::default();
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            match key.trim() {
+                "Enabled" => probe.enabled = value.trim().eq_ignore_ascii_case("yes"),
+                "Server" => probe.server = value.trim().to_string(),
+                "Port" => probe.port = value.trim().parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        Ok(probe)
     }
 }
 
@@ -94,13 +126,54 @@ impl SystemProxy for MacSystemProxy {
             Self::services().unwrap_or_else(|_| vec!["Wi-Fi".into()])
         };
 
+        let mut first_error = None;
         for svc in services {
-            let _ = Self::run(&["-setwebproxystate", &svc, "off"]);
-            let _ = Self::run(&["-setsecurewebproxystate", &svc, "off"]);
-            let _ = Command::new("networksetup")
-                .args(["-setsocksfirewallproxystate", &svc, "off"])
-                .status();
+            for command in [
+                "-setwebproxystate",
+                "-setsecurewebproxystate",
+                "-setsocksfirewallproxystate",
+            ] {
+                if let Err(error) = Self::run(&[command, &svc, "off"]) {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         Ok(())
+    }
+
+    fn detect_owned(&self, host: &str, port: u16) -> AppResult<Option<SystemProxySnapshot>> {
+        let mut owned_services = Vec::new();
+        for service in Self::services()? {
+            let probes: Vec<_> = [
+                "-getwebproxy",
+                "-getsecurewebproxy",
+                "-getsocksfirewallproxy",
+            ]
+            .into_iter()
+            .filter_map(|command| Self::probe(&service, command).ok())
+            .filter(|probe| probe.enabled)
+            .collect();
+            let has_owned = probes
+                .iter()
+                .any(|probe| probe.server.eq_ignore_ascii_case(host) && probe.port == port);
+            let has_foreign = probes
+                .iter()
+                .any(|probe| !probe.server.eq_ignore_ascii_case(host) || probe.port != port);
+            if has_owned && !has_foreign {
+                owned_services.push(service);
+            }
+        }
+        if owned_services.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(SystemProxySnapshot {
+                detail: owned_services.join("|"),
+            }))
+        }
     }
 }
