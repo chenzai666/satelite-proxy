@@ -10,7 +10,18 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import type { ProxyNode, SortMode, ViewMode } from "../types";
+
+const VIRTUALIZE_AFTER = 200;
+const LIST_ROW_HEIGHT = 49;
+const GRID_ROW_HEIGHT = 94;
+
+function gridColumns() {
+  if (window.innerWidth <= 720) return 2;
+  if (window.innerWidth <= 960) return 3;
+  return 4;
+}
 
 /** Render latency cell: spinner / ms / timeout / dash */
 function LatencyDisplay({
@@ -61,6 +72,13 @@ export function NodesPage() {
 
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [columnCount, setColumnCount] = useState(gridColumns);
+
+  useEffect(() => {
+    const update = () => setColumnCount(gridColumns());
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -118,6 +136,18 @@ export function NodesPage() {
     }
     return sorted;
   }, [nodes, query, sortMode]);
+  const virtualized = displayed.length > VIRTUALIZE_AFTER;
+  const listRange = useVirtualRange({
+    itemCount: displayed.length,
+    itemSize: LIST_ROW_HEIGHT,
+    enabled: virtualized,
+  });
+  const gridRange = useVirtualRange({
+    itemCount: displayed.length,
+    itemSize: GRID_ROW_HEIGHT,
+    itemsPerRow: columnCount,
+    enabled: virtualized,
+  });
 
   async function onSelect(id: string) {
     setBusyId(id);
@@ -144,12 +174,13 @@ export function NodesPage() {
     setError(null);
     // no top banner / completion message
     const ids = displayed.map((n) => n.id);
-    setTestingIds(new Set(ids));
+    const idSet = new Set(ids);
+    setTestingIds(idSet);
 
     // clear prior latency so only spinner shows while testing
     setNodes((prev) =>
       prev.map((n) =>
-        ids.includes(n.id)
+        idSet.has(n.id)
           ? { ...n, latency_ms: undefined, latency_at: undefined }
           : n,
       ),
@@ -262,14 +293,19 @@ export function NodesPage() {
                 <th style={{ width: 90 }}>{t("nodes.sortLatency")}</th>
               </tr>
             </thead>
-            <tbody>
-              {displayed.map((n) => {
+            <tbody ref={listRange.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {listRange.paddingTop > 0 && (
+                <tr className="node-virtual-spacer" aria-hidden="true">
+                  <td colSpan={6} style={{ height: listRange.paddingTop }} />
+                </tr>
+              )}
+              {displayed.slice(listRange.start, listRange.end).map((n) => {
                 const active = n.id === currentId;
                 const isTesting = testingIds.has(n.id);
                 return (
                   <tr
                     key={n.id}
-                    className={active ? "row-active" : undefined}
+                    className={`node-virtual-row ${active ? "row-active" : ""}`}
                     onClick={() => void onSelect(n.id)}
                     style={{ cursor: "pointer" }}
                   >
@@ -297,46 +333,62 @@ export function NodesPage() {
                   </tr>
                 );
               })}
+              {listRange.paddingBottom > 0 && (
+                <tr className="node-virtual-spacer" aria-hidden="true">
+                  <td colSpan={6} style={{ height: listRange.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       ) : (
-        <div className="node-grid">
-          {displayed.map((n) => {
-            const active = n.id === currentId;
-            const isTesting = testingIds.has(n.id);
-            return (
-              <button
-                key={n.id}
-                type="button"
-                className={`node-card ${active ? "active" : ""}`}
-                onClick={() => void onSelect(n.id)}
-                disabled={busyId === n.id}
-              >
-                <div className="node-card-top">
-                  <span className="node-dot">{active ? "●" : "○"}</span>
-                  <div className="node-card-meta">
-                    <code>{n.protocol}</code>
+        <div
+          className={virtualized ? "node-grid-window" : undefined}
+          ref={gridRange.containerRef as React.RefObject<HTMLDivElement>}
+        >
+          {gridRange.paddingTop > 0 && (
+            <div style={{ height: gridRange.paddingTop }} aria-hidden="true" />
+          )}
+          <div className={`node-grid ${virtualized ? "node-grid-virtual" : ""}`}>
+            {displayed.slice(gridRange.start, gridRange.end).map((n) => {
+              const active = n.id === currentId;
+              const isTesting = testingIds.has(n.id);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  className={`node-card ${active ? "active" : ""}`}
+                  onClick={() => void onSelect(n.id)}
+                  disabled={busyId === n.id}
+                >
+                  <div className="node-card-top">
+                    <span className="node-dot">{active ? "●" : "○"}</span>
+                    <div className="node-card-meta">
+                      <code>{n.protocol}</code>
+                    </div>
                   </div>
-                </div>
-                <div className="node-card-name" title={n.name}>
-                  {n.name}
-                </div>
-                <div className="node-card-footer">
-                  <span className="node-sub-label" title={n.subscription_name ?? ""}>
-                    {n.subscription_name}
-                  </span>
-                  <span className="node-card-latency">
-                    <LatencyDisplay
-                      ms={n.latency_ms}
-                      latencyAt={n.latency_at}
-                      testing={isTesting}
-                    />
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+                  <div className="node-card-name" title={n.name}>
+                    {n.name}
+                  </div>
+                  <div className="node-card-footer">
+                    <span className="node-sub-label" title={n.subscription_name ?? ""}>
+                      {n.subscription_name}
+                    </span>
+                    <span className="node-card-latency">
+                      <LatencyDisplay
+                        ms={n.latency_ms}
+                        latencyAt={n.latency_at}
+                        testing={isTesting}
+                      />
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {gridRange.paddingBottom > 0 && (
+            <div style={{ height: gridRange.paddingBottom }} aria-hidden="true" />
+          )}
         </div>
       )}
     </div>

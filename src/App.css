@@ -1372,6 +1372,23 @@ tr.row-active {
   padding: 0;
 }
 
+.node-grid-virtual {
+  gap: 10px;
+}
+
+.node-grid-virtual .node-card {
+  height: 84px;
+}
+
+.node-virtual-row {
+  height: 49px;
+}
+
+.node-virtual-spacer > td {
+  padding: 0;
+  border: 0;
+}
+
 @media (max-width: 960px) {
   .node-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5965,6 +5982,19 @@ button.simple-sub-row.active {
   display: flex;
   flex-direction: column;
   gap: 0.28rem;
+}
+
+.simple-node-list.virtualized {
+  gap: 0;
+}
+
+.simple-node-list.virtualized > li:not(.node-virtual-spacer) {
+  height: 48px;
+  padding-bottom: 4px;
+}
+
+.simple-node-list.virtualized .simple-node-item {
+  height: 44px;
 }
 
 .simple-node-item {

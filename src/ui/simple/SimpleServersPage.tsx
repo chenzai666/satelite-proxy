@@ -18,10 +18,13 @@ import {
 } from "../../components/AddConfigModal";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
+import { useVirtualRange } from "../../hooks/useVirtualRange";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
 const SUBS_COLLAPSE_KEY = "simple.nodes.subsCollapsed";
+const VIRTUALIZE_AFTER = 200;
+const NODE_ROW_HEIGHT = 48;
 
 function readSortMode(): SortMode {
   try {
@@ -178,6 +181,12 @@ export function SimpleServersPage() {
     }
     return sorted;
   }, [nodes, query, sortMode]);
+  const virtualized = filtered.length > VIRTUALIZE_AFTER;
+  const nodeRange = useVirtualRange({
+    itemCount: filtered.length,
+    itemSize: NODE_ROW_HEIGHT,
+    enabled: virtualized,
+  });
 
   async function onSelectNode(id: string) {
     if (busy || id === currentId) return;
@@ -224,13 +233,14 @@ export function SimpleServersPage() {
   async function onTestAll() {
     if (testing || nodes.length === 0) return;
     const ids = nodes.map((n) => n.id);
+    const idSet = new Set(ids);
     setTesting(true);
-    setTestingIds(new Set(ids));
+    setTestingIds(idSet);
     setError(null);
     // Clear prior latency so UI shows spinner while probing.
     setNodes((prev) =>
       prev.map((n) =>
-        ids.includes(n.id)
+        idSet.has(n.id)
           ? { ...n, latency_ms: undefined, latency_at: undefined }
           : n,
       ),
@@ -428,8 +438,18 @@ export function SimpleServersPage() {
               : "当前订阅无节点，点上方切换其他配置或刷新"}
           </div>
         ) : (
-          <ul className="simple-node-list">
-            {filtered.map((n) => {
+          <ul
+            className={`simple-node-list ${virtualized ? "virtualized" : ""}`}
+            ref={nodeRange.containerRef as React.RefObject<HTMLUListElement>}
+          >
+            {nodeRange.paddingTop > 0 && (
+              <li
+                className="node-virtual-spacer"
+                style={{ height: nodeRange.paddingTop }}
+                aria-hidden="true"
+              />
+            )}
+            {filtered.slice(nodeRange.start, nodeRange.end).map((n) => {
               const active = n.id === currentId;
               return (
                 <li key={n.id}>
@@ -455,6 +475,13 @@ export function SimpleServersPage() {
                 </li>
               );
             })}
+            {nodeRange.paddingBottom > 0 && (
+              <li
+                className="node-virtual-spacer"
+                style={{ height: nodeRange.paddingBottom }}
+                aria-hidden="true"
+              />
+            )}
           </ul>
         )}
       </section>
