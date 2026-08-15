@@ -16,6 +16,31 @@ const TICK_SECS: u64 = 60;
 
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
+struct ActiveDownload {
+    id: String,
+}
+
+impl ActiveDownload {
+    fn acquire(id: &str) -> Result<Self, String> {
+        let mut active = ACTIVE
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "remote rule download lock poisoned".to_string())?;
+        if !active.insert(id.to_string()) {
+            return Err("该远程规则集正在下载".into());
+        }
+        Ok(Self { id: id.into() })
+    }
+}
+
+impl Drop for ActiveDownload {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+            active.remove(&self.id);
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum RuleSetFileFormat {
     Source,
@@ -132,21 +157,8 @@ struct DownloadedRule {
 }
 
 async fn refresh_download(app: AppHandle, id: String) -> Result<DownloadedRule, String> {
-    {
-        let mut active = ACTIVE
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-            .map_err(|_| "remote rule download lock poisoned".to_string())?;
-        if !active.insert(id.clone()) {
-            return Err("该远程规则集正在下载".into());
-        }
-    }
-
-    let result = refresh_inner(&app, &id).await;
-    if let Ok(mut active) = ACTIVE.get_or_init(|| Mutex::new(HashSet::new())).lock() {
-        active.remove(&id);
-    }
-    result
+    let _active = ActiveDownload::acquire(&id)?;
+    refresh_inner(&app, &id).await
 }
 
 async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, String> {
@@ -393,6 +405,22 @@ fn fail<T>(app: &AppHandle, id: &str, error: String) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_download_guard_releases_id_when_dropped() {
+        let id = format!(
+            "remote-download-guard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let guard = ActiveDownload::acquire(&id).expect("first download acquires id");
+        assert!(ActiveDownload::acquire(&id).is_err());
+        drop(guard);
+        assert!(ActiveDownload::acquire(&id).is_ok());
+    }
 
     #[test]
     fn accepts_sing_box_source_json() {
