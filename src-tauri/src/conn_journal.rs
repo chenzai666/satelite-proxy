@@ -22,10 +22,15 @@ const IDLE_MS: u64 = 500;
 const RECONNECT_MS: u64 = 500;
 
 pub fn spawn_connection_journal(app: AppHandle) {
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name("conn-journal".into())
         .spawn(move || journal_loop(app))
-        .ok();
+    {
+        crate::app_log::error(
+            "journal",
+            format!("failed to start connection journal: {error}"),
+        );
+    }
 }
 
 fn journal_interval_ms(state: &AppState) -> u64 {

@@ -25,6 +25,16 @@ mod window_ctrl;
 use state::AppState;
 use tauri::{Emitter, Manager};
 
+const MAX_DEEP_LINK_URLS: usize = 8;
+const MAX_DEEP_LINK_URL_LEN: usize = 8 * 1024;
+
+fn bounded_deep_link_urls(urls: impl IntoIterator<Item = String>) -> Vec<String> {
+    urls.into_iter()
+        .filter(|url| url.len() <= MAX_DEEP_LINK_URL_LEN)
+        .take(MAX_DEEP_LINK_URLS)
+        .collect()
+}
+
 pub use domain::{
     AppSettings, ParseResult as SubscriptionParseResult, Protocol, ProtocolConfig, ProxyNode,
     SkippedProxy, Subscription, SubscriptionFormat, SubscriptionSource, SubscriptionView,
@@ -122,10 +132,11 @@ pub fn run() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let queue_import = |handle: &tauri::AppHandle, urls: Vec<String>| {
+                    let urls = bounded_deep_link_urls(urls);
                     if urls.is_empty() {
                         return;
                     }
-                    app_log::info("deep-link", format!("queue {:?}", urls));
+                    app_log::info("deep-link", format!("queued {} URL(s)", urls.len()));
                     if let Some(state) = handle.try_state::<AppState>() {
                         state.set_pending_import_urls(urls.clone());
                     }
@@ -134,9 +145,10 @@ pub fn run() {
                 };
 
                 if let Ok(Some(urls)) = app.deep_link().get_current() {
-                    if !urls.is_empty() {
+                    let list = bounded_deep_link_urls(urls.iter().map(|url| url.to_string()));
+                    if !list.is_empty() {
                         launched_via_deep_link = true;
-                        let list: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+                        app_log::info("deep-link", format!("queued {} startup URL(s)", list.len()));
                         // Store immediately; re-emit after UI boot if listener wasn't ready.
                         if let Some(state) = app.try_state::<AppState>() {
                             state.set_pending_import_urls(list.clone());
@@ -387,4 +399,23 @@ fn peek_pending_import_urls(state: tauri::State<'_, AppState>) -> Option<Vec<Str
 #[tauri::command]
 fn clear_pending_import_urls(state: tauri::State<'_, AppState>) {
     state.clear_pending_import_urls();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_deep_link_url_count_and_length() {
+        let mut urls: Vec<String> = (0..10)
+            .map(|index| format!("clash://install-config?url={index}"))
+            .collect();
+        urls.insert(2, "x".repeat(MAX_DEEP_LINK_URL_LEN + 1));
+
+        let bounded = bounded_deep_link_urls(urls);
+
+        assert_eq!(bounded.len(), MAX_DEEP_LINK_URLS);
+        assert!(bounded.iter().all(|url| url.len() <= MAX_DEEP_LINK_URL_LEN));
+        assert_eq!(bounded[2], "clash://install-config?url=2");
+    }
 }
