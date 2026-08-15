@@ -250,6 +250,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_subscriptions,
+            commands::list_subscription_urls,
             commands::get_subscription,
             commands::add_subscription_url,
             commands::add_subscription_file,

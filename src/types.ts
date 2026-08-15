@@ -128,6 +128,11 @@ export interface SubscriptionDetail {
   traffic?: SubscriptionTraffic | null;
 }
 
+export interface SubscriptionUrlEntry {
+  id: string;
+  url: string;
+}
+
 export interface ImportResult {
   subscription: SubscriptionView;
   node_count: number;

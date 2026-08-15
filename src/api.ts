@@ -17,6 +17,7 @@ import type {
   RuleTarget,
   RuleType,
   SubscriptionDetail,
+  SubscriptionUrlEntry,
   SubscriptionView,
   DnsSettings,
   DnsTestResult,
@@ -26,6 +27,10 @@ import { trackCoreBusy } from "./coreBusy";
 
 export function listSubscriptions() {
   return invoke<SubscriptionView[]>("list_subscriptions");
+}
+
+export function listSubscriptionUrls() {
+  return invoke<SubscriptionUrlEntry[]>("list_subscription_urls");
 }
 
 export function getSubscription(id: string) {

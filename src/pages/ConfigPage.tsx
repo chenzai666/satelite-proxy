@@ -6,6 +6,7 @@ import {
   getSettings,
   getSubscription,
   listSubscriptions,
+  listSubscriptionUrls,
   refreshSubscription,
   removeSubscription,
   setMixMode,
@@ -19,7 +20,11 @@ import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
-import type { SubscriptionTraffic, SubscriptionView } from "../types";
+import type {
+  SubscriptionTraffic,
+  SubscriptionUrlEntry,
+  SubscriptionView,
+} from "../types";
 
 const REFRESH_ALL_CONCURRENCY = 4;
 
@@ -228,9 +233,7 @@ export function ConfigPage() {
   const [editInitial, setEditInitial] = useState<ConfigFormValues | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
-  const [existingUrls, setExistingUrls] = useState<
-    Array<{ id: string; url: string }>
-  >([]);
+  const [existingUrls, setExistingUrls] = useState<SubscriptionUrlEntry[]>([]);
 
   const [actionId, setActionId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -262,22 +265,18 @@ export function ConfigPage() {
     if (!modalOpen) return;
     let cancelled = false;
     setExistingUrls([]);
-    void Promise.allSettled(items.map((item) => getSubscription(item.id))).then(
-      (results) => {
+    void listSubscriptionUrls()
+      .then((entries) => {
         if (cancelled) return;
-        setExistingUrls(
-          results.flatMap((result) =>
-            result.status === "fulfilled" && result.value.url
-              ? [{ id: result.value.id, url: result.value.url }]
-              : [],
-          ),
-        );
-      },
-    );
+        setExistingUrls(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setExistingUrls([]);
+      });
     return () => {
       cancelled = true;
     };
-  }, [modalOpen, items]);
+  }, [modalOpen, items.length]);
 
   // One-click subscribe deep link → open add modal with URL/name filled.
   useEffect(() => {

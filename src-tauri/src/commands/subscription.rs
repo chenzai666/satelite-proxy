@@ -17,6 +17,12 @@ pub struct ImportResult {
     pub skipped_count: u32,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SubscriptionUrlEntry {
+    pub id: String,
+    pub url: String,
+}
+
 type SharedRefreshResult = Result<ImportResult, String>;
 type RefreshSender = watch::Sender<Option<SharedRefreshResult>>;
 
@@ -104,6 +110,27 @@ pub fn list_subscriptions(state: State<'_, AppState>) -> Result<Vec<Subscription
     state
         .with_store(|store| Ok(store.subscriptions.iter().map(|s| s.to_view()).collect()))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_subscription_urls(
+    state: State<'_, AppState>,
+) -> Result<Vec<SubscriptionUrlEntry>, String> {
+    state
+        .with_store(|store| {
+            Ok(store
+                .subscriptions
+                .iter()
+                .filter_map(|subscription| match &subscription.source {
+                    SubscriptionSource::Url { url } => Some(SubscriptionUrlEntry {
+                        id: subscription.id.clone(),
+                        url: url.clone(),
+                    }),
+                    SubscriptionSource::File { .. } => None,
+                })
+                .collect())
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
