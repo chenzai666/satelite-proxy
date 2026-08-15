@@ -57,6 +57,12 @@ pub struct LogEntry {
     pub message: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct LogBatch {
+    pub entries: Vec<LogEntry>,
+    pub cursor: u64,
+}
+
 struct LogRing {
     next_id: u64,
     entries: VecDeque<LogEntry>,
@@ -93,27 +99,52 @@ impl LogRing {
         entry
     }
 
-    fn list(&self, min_level: LogLevel, limit: usize, query: Option<&str>) -> Vec<LogEntry> {
+    fn list(
+        &self,
+        min_level: LogLevel,
+        limit: usize,
+        query: Option<&str>,
+        after_id: Option<u64>,
+    ) -> LogBatch {
         let q = query
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty());
-        let mut out: Vec<LogEntry> = self
-            .entries
-            .iter()
-            .rev()
-            .filter(|e| e.level >= min_level)
-            .filter(|e| {
+        let matches = |entry: &&LogEntry| {
+            entry.level >= min_level && {
                 let Some(q) = q.as_ref() else {
                     return true;
                 };
-                e.message.to_ascii_lowercase().contains(q)
-                    || e.target.to_ascii_lowercase().contains(q)
-            })
-            .take(limit.max(1))
-            .cloned()
-            .collect();
-        out.reverse();
-        out
+                entry.message.to_ascii_lowercase().contains(q)
+                    || entry.target.to_ascii_lowercase().contains(q)
+            }
+        };
+        let limit = limit.max(1);
+        let (entries, cursor) = if let Some(after_id) = after_id {
+            let mut entries = Vec::new();
+            let mut cursor = after_id;
+            for entry in self.entries.iter().filter(|entry| entry.id > after_id) {
+                cursor = entry.id;
+                if matches(&entry) {
+                    entries.push(entry.clone());
+                    if entries.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            (entries, cursor)
+        } else {
+            let mut entries: Vec<LogEntry> = self
+                .entries
+                .iter()
+                .rev()
+                .filter(matches)
+                .take(limit)
+                .cloned()
+                .collect();
+            entries.reverse();
+            (entries, self.next_id.saturating_sub(1))
+        };
+        LogBatch { entries, cursor }
     }
 
     fn clear(&mut self) {
@@ -348,8 +379,13 @@ pub fn flush() {
     }
 }
 
-pub fn list(min_level: LogLevel, limit: usize, query: Option<&str>) -> Vec<LogEntry> {
-    lock_ring().list(min_level, limit, query)
+pub fn list(
+    min_level: LogLevel,
+    limit: usize,
+    query: Option<&str>,
+    after_id: Option<u64>,
+) -> LogBatch {
+    lock_ring().list(min_level, limit, query, after_id)
 }
 
 pub fn clear() {
@@ -393,6 +429,22 @@ mod tests {
             std::process::id(),
             now_ms()
         ))
+    }
+
+    #[test]
+    fn incremental_list_advances_cursor_past_filtered_entries() {
+        let mut ring = LogRing::new();
+        ring.push(LogLevel::Info, "core".into(), "ready".into());
+        ring.push(LogLevel::Debug, "probe".into(), "hidden".into());
+        let initial = ring.list(LogLevel::Info, 10, None, None);
+        assert_eq!(initial.entries.len(), 1);
+        assert_eq!(initial.cursor, 2);
+
+        ring.push(LogLevel::Warn, "core".into(), "retry".into());
+        let incremental = ring.list(LogLevel::Info, 10, None, Some(initial.cursor));
+        assert_eq!(incremental.entries.len(), 1);
+        assert_eq!(incremental.entries[0].message, "retry");
+        assert_eq!(incremental.cursor, 3);
     }
 
     #[test]

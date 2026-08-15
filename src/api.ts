@@ -209,15 +209,22 @@ export interface AppLogEntry {
   message: string;
 }
 
+export interface AppLogBatch {
+  entries: AppLogEntry[];
+  cursor: number;
+}
+
 export function listAppLogs(opts?: {
   minLevel?: AppLogLevel | null;
   limit?: number | null;
   query?: string | null;
+  afterId?: number | null;
 }) {
-  return invoke<AppLogEntry[]>("list_app_logs", {
+  return invoke<AppLogBatch>("list_app_logs", {
     minLevel: opts?.minLevel ?? "info",
     limit: opts?.limit ?? 500,
     query: opts?.query ?? null,
+    afterId: opts?.afterId ?? null,
   });
 }
 
