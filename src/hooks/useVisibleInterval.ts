@@ -7,7 +7,7 @@ import { useEffect, useRef } from "react";
 export function useVisibleInterval(
   callback: () => void | Promise<unknown>,
   delayMs: number | null,
-  /** Also fire immediately when becoming visible (default true). */
+  /** Fire immediately when returning from hidden to visible (default true). */
   runOnVisible = true,
 ) {
   const cbRef = useRef(callback);
@@ -18,6 +18,7 @@ export function useVisibleInterval(
 
     let id: number | null = null;
     let inFlight = false;
+    let visibilityInitialized = false;
 
     const run = () => {
       if (inFlight) return;
@@ -58,11 +59,12 @@ export function useVisibleInterval(
 
     const sync = () => {
       if (document.visibilityState === "visible") {
-        if (runOnVisible) run();
+        if (visibilityInitialized && runOnVisible) run();
         start();
       } else {
         clear();
       }
+      visibilityInitialized = true;
     };
 
     sync();

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { getProxyStatus } from "../../api";
 import { ThemeSwitch } from "../../components/ThemeSwitch";
 import { useCoreBusy } from "../../coreBusy";
@@ -72,8 +72,11 @@ export function SimpleShell() {
     return tick();
   }, 3000);
 
+  const wasCoreBusyRef = useRef(coreBusy);
   useEffect(() => {
-    if (!coreBusy) void tick();
+    const wasCoreBusy = wasCoreBusyRef.current;
+    wasCoreBusyRef.current = coreBusy;
+    if (wasCoreBusy && !coreBusy) void tick();
   }, [coreBusy, tick]);
 
   const transitioning =

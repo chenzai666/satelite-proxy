@@ -75,8 +75,11 @@ export function TopNav({ active, onChange }: Props) {
     return tick();
   }, 3000);
 
+  const wasCoreBusyRef = useRef(coreBusy);
   useEffect(() => {
-    if (!coreBusy) void tick();
+    const wasCoreBusy = wasCoreBusyRef.current;
+    wasCoreBusyRef.current = coreBusy;
+    if (wasCoreBusy && !coreBusy) void tick();
   }, [coreBusy, tick]);
 
   const transitioning =
