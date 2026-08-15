@@ -39,6 +39,8 @@ interface Props {
   isEdit?: boolean;
   title?: string;
   submitLabel?: string;
+  /** Raw URLs belonging to other profiles, used for duplicate feedback. */
+  existingUrls?: string[];
   onClose: () => void;
   onSubmit: (payload: ConfigFormValues) => void;
 }
@@ -51,6 +53,7 @@ export function AddConfigModal({
   isEdit = false,
   title,
   submitLabel,
+  existingUrls = [],
   onClose,
   onSubmit,
 }: Props) {
@@ -136,6 +139,11 @@ export function AddConfigModal({
     !busy &&
     ((kind === "url" && url.trim().length > 0) ||
       (kind === "file" && path.trim().length > 0));
+  const normalizedUrl = url.trim();
+  const duplicateUrl =
+    kind === "url" &&
+    normalizedUrl.length > 0 &&
+    existingUrls.some((existingUrl) => existingUrl.trim() === normalizedUrl);
 
   return (
     <div className="modal-backdrop">
@@ -202,6 +210,11 @@ export function AddConfigModal({
                   disabled={busy}
                   autoFocus
                 />
+                {duplicateUrl && (
+                  <span className="field-warning" role="status">
+                    订阅已存在，保存会覆盖已有配置
+                  </span>
+                )}
               </label>
               <div className="via-proxy-row">
                 <div>

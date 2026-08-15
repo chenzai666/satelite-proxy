@@ -228,6 +228,9 @@ export function ConfigPage() {
   const [editInitial, setEditInitial] = useState<ConfigFormValues | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [existingUrls, setExistingUrls] = useState<
+    Array<{ id: string; url: string }>
+  >([]);
 
   const [actionId, setActionId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -254,6 +257,27 @@ export function ConfigPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    let cancelled = false;
+    setExistingUrls([]);
+    void Promise.allSettled(items.map((item) => getSubscription(item.id))).then(
+      (results) => {
+        if (cancelled) return;
+        setExistingUrls(
+          results.flatMap((result) =>
+            result.status === "fulfilled" && result.value.url
+              ? [{ id: result.value.id, url: result.value.url }]
+              : [],
+          ),
+        );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, items]);
 
   // One-click subscribe deep link → open add modal with URL/name filled.
   useEffect(() => {
@@ -530,11 +554,15 @@ export function ConfigPage() {
             >
               <div className="sub-card-main">
                 <div className="sub-card-top">
+                  <span
+                    className="node-dot"
+                    title={item.enabled ? t("common.enabled") : t("common.disabled")}
+                    aria-label={item.enabled ? t("common.enabled") : t("common.disabled")}
+                  >
+                    {item.enabled ? "●" : "○"}
+                  </span>
                   <h3 title={item.name}>{item.name}</h3>
                   <div className="sub-card-top-right">
-                    {item.enabled && (
-                      <span className="pill active-pill">{t("config.inUse")}</span>
-                    )}
                     <div
                       className="sub-menu"
                       data-sub-menu
@@ -644,6 +672,9 @@ export function ConfigPage() {
         error={importError}
         isEdit={!!editId}
         initial={editInitial}
+        existingUrls={existingUrls
+          .filter((item) => item.id !== editId)
+          .map((item) => item.url)}
         onClose={() => {
           if (importing) return;
           setModalOpen(false);

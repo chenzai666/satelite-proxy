@@ -2413,14 +2413,6 @@ button.small {
   border: 1px solid var(--border);
 }
 
-.pill.active-pill {
-  background: var(--primary-muted);
-  color: var(--primary);
-  border-color: var(--primary-border);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
 button.mix-on {
   background: var(--primary-muted);
   color: var(--primary);
@@ -3568,6 +3560,14 @@ button.check.on {
   font-size: 0.75rem;
   display: block;
   margin-top: 0.25rem;
+}
+
+.field-warning {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--warning);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 /* Payload URL-suggestion button (RulesPage): a GlassButton sized to its
