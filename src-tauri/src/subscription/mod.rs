@@ -11,6 +11,19 @@ use crate::domain::{ParseResult, SubscriptionFormat};
 use crate::error::{AppError, AppResult};
 use base64::{engine::general_purpose, Engine as _};
 
+/// Protect parsing, persistence, config generation, and UI rendering from
+/// pathological subscription payloads while remaining well above normal use.
+pub(super) const MAX_SUBSCRIPTION_ENTRIES: usize = 10_000;
+
+pub(super) fn ensure_entry_limit(count: usize) -> AppResult<()> {
+    if count > MAX_SUBSCRIPTION_ENTRIES {
+        return Err(AppError::SubscriptionTooLarge {
+            max: MAX_SUBSCRIPTION_ENTRIES,
+        });
+    }
+    Ok(())
+}
+
 /// Detect format and parse subscription body (YAML / URI list / base64 URI list).
 pub fn parse_subscription(content: &str) -> AppResult<ParseResult> {
     let trimmed = content.trim();
@@ -143,6 +156,15 @@ fn try_decode_base64_body(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_subscription_entry_count_above_limit() {
+        assert!(ensure_entry_limit(MAX_SUBSCRIPTION_ENTRIES).is_ok());
+        assert!(matches!(
+            ensure_entry_limit(MAX_SUBSCRIPTION_ENTRIES + 1),
+            Err(AppError::SubscriptionTooLarge { .. })
+        ));
+    }
     use base64::Engine;
 
     #[test]

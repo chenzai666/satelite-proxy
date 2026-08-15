@@ -23,6 +23,7 @@ pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
     let proxies = extract_proxies_seq(&root).ok_or_else(|| {
         AppError::SubscriptionParse("no `proxies` list found in clash yaml".into())
     })?;
+    crate::subscription::ensure_entry_limit(proxies.len())?;
 
     let mut nodes = Vec::new();
     let mut skipped = Vec::new();

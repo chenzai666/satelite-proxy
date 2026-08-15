@@ -17,12 +17,15 @@ pub fn parse_uri_list(content: &str, format: SubscriptionFormat) -> AppResult<Pa
 
     let mut nodes = Vec::new();
     let mut skipped = Vec::new();
+    let mut entries = 0;
 
     for (idx, line) in content.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        entries += 1;
+        crate::subscription::ensure_entry_limit(entries)?;
         match parse_uri_line(line) {
             Ok(node) => nodes.push(node.with_computed_id()),
             Err(reason) => skipped.push(SkippedProxy {
