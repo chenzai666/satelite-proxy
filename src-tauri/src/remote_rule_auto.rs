@@ -13,6 +13,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const EVENT: &str = "remote-rule-set-status";
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const TICK_SECS: u64 = 60;
+const AUTO_UPDATE_CONCURRENCY: usize = 3;
 
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -95,18 +96,30 @@ pub fn spawn(app: AppHandle) {
             let due = due_ids(&app);
             let mut changed = false;
             let mut cleanup_after_apply = Vec::new();
-            for id in due {
-                match refresh_download(app.clone(), id.clone()).await {
-                    Ok(downloaded) => {
+            let mut pending = due.into_iter();
+            let mut downloads = tokio::task::JoinSet::new();
+            for _ in 0..AUTO_UPDATE_CONCURRENCY {
+                if let Some(id) = pending.next() {
+                    spawn_auto_download(&mut downloads, app.clone(), id);
+                }
+            }
+            while let Some(joined) = downloads.join_next().await {
+                match joined {
+                    Ok((_, Ok(downloaded))) => {
                         changed = true;
                         cleanup_after_apply.extend(downloaded.cleanup_after_apply);
                     }
-                    Err(error) => {
-                        crate::app_log::warn(
-                            "remote_rules",
-                            format!("refresh {id} failed: {error}"),
-                        );
-                    }
+                    Ok((id, Err(error))) => crate::app_log::warn(
+                        "remote_rules",
+                        format!("refresh {id} failed: {error}"),
+                    ),
+                    Err(error) => crate::app_log::warn(
+                        "remote_rules",
+                        format!("refresh task failed: {error}"),
+                    ),
+                }
+                if let Some(id) = pending.next() {
+                    spawn_auto_download(&mut downloads, app.clone(), id);
                 }
             }
             // Apply the entire due set with one restart instead of restarting
@@ -116,6 +129,17 @@ pub fn spawn(app: AppHandle) {
             }
             tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         }
+    });
+}
+
+fn spawn_auto_download(
+    downloads: &mut tokio::task::JoinSet<(String, Result<DownloadedRule, String>)>,
+    app: AppHandle,
+    id: String,
+) {
+    downloads.spawn(async move {
+        let result = refresh_download(app, id.clone()).await;
+        (id, result)
     });
 }
 
