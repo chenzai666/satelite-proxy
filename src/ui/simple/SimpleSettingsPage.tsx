@@ -5,12 +5,12 @@ import { GlassSwitchControl } from "../../components/GlassSwitchControl";
 import { TrayIconPicker } from "../../components/TrayIconPicker";
 import { useI18n, type Locale } from "../../i18n";
 import { useTheme } from "../../theme";
-import type { AppSettings, HeroStyle, ThemeId } from "../../types";
+import type { AppSettings, ThemeId } from "../../types";
 import { useUiMode } from "../UiModeContext";
 
 export function SimpleSettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, heroStyle, setHeroStyle } = useTheme();
+  const { theme, setTheme } = useTheme();
   const { setMode } = useUiMode();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,23 +83,6 @@ export function SimpleSettingsPage() {
                 options={[
                   { value: "aerospace", label: t("settings.themeAerospace") },
                   { value: "day", label: t("settings.themeDay") },
-                ]}
-              />
-            </div>
-            <div className="settings-app-row settings-app-pref settings-hero-row">
-              <div className="settings-app-text">
-                <div className="settings-app-title">{t("settings.heroStyle")}</div>
-                <div className="settings-app-desc muted">
-                  {t("settings.heroStyleDesc")}
-                </div>
-              </div>
-              <GlassSeg
-                value={heroStyle}
-                ariaLabel={t("settings.heroStyle")}
-                onChange={(v) => void setHeroStyle(v as HeroStyle)}
-                options={[
-                  { value: "particle", label: t("settings.heroStyleParticle") },
-                  { value: "classic", label: t("settings.heroStyleClassic") },
                 ]}
               />
             </div>

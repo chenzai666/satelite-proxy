@@ -18,17 +18,13 @@ export function HeroVisual({
   const { heroStyle } = useTheme();
   const simple = variant === "simple";
 
-  if (heroStyle === "particle") {
+  if (!simple && heroStyle === "particle") {
     return (
       <div
-        className={`orbit particle-orbit ${simple ? "simple-orbit" : ""} ${spinning ? "spin" : ""} ${switching ? "pulse switching" : ""}`}
+        className={`orbit particle-orbit ${spinning ? "spin" : ""} ${switching ? "pulse switching" : ""}`}
         aria-hidden
       >
-        <ParticleSphereLazy
-          state={state}
-          count={simple ? 1800 : 2400}
-          size={simple ? 1.84 : 1.96}
-        />
+        <ParticleSphereLazy state={state} />
       </div>
     );
   }
