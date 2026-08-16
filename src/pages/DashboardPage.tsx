@@ -20,12 +20,14 @@ import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
+import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import type {
   AutoSelectMode,
   GenerateConfigResult,
   OutboundMode,
   ProxyNode,
   ProxyStatus,
+  SubscriptionTraffic,
   SubscriptionView,
 } from "../types";
 
@@ -49,21 +51,35 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+const ASCII_BAR_W = 10;
+
+function asciiBar(ratio: number, width = ASCII_BAR_W) {
+  const filled = Math.round(Math.min(1, Math.max(0, ratio)) * width);
+  return {
+    filled: "█".repeat(filled),
+    empty: "░".repeat(width - filled),
+  };
+}
+
+function quotaParts(tr: SubscriptionTraffic | null | undefined) {
+  if (!tr) return null;
+  const total = tr.total != null && tr.total > 0 ? tr.total : null;
+  const remaining =
+    tr.quota_remaining != null && tr.quota_remaining >= 0
+      ? tr.quota_remaining
+      : null;
+  if (total == null && remaining == null) return null;
+  const usedParts = (tr.upload ?? 0) + (tr.download ?? 0);
+  const used =
+    total != null && usedParts === 0 && remaining != null
+      ? Math.max(0, total - remaining)
+      : usedParts;
+  return { used, total, remaining };
+}
+
 function fmtLatency(ms?: number | null) {
   if (ms == null || ms < 0) return "—";
   return `${ms} ms`;
-}
-
-function relativeAgo(
-  ts: number,
-  t: (k: "common.justNow" | "common.minutesAgo" | "common.hoursAgo" | "common.daysAgo", v?: Record<string, string | number>) => string,
-) {
-  if (!ts) return "—";
-  const sec = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-  if (sec < 60) return t("common.justNow");
-  if (sec < 3600) return t("common.minutesAgo", { n: Math.floor(sec / 60) });
-  if (sec < 86400) return t("common.hoursAgo", { n: Math.floor(sec / 3600) });
-  return t("common.daysAgo", { n: Math.floor(sec / 86400) });
 }
 
 export function DashboardPage({
@@ -79,6 +95,7 @@ export function DashboardPage({
   /** settings.current_node_id — available before full node list. */
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [settingsPorts, setSettingsPorts] = useState({ mixed: 2080, api: 19090 });
+  const [mixMode, setMixMode] = useState(false);
   const [coreLabel, setCoreLabel] = useState("—");
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
@@ -97,6 +114,23 @@ export function DashboardPage({
   const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  const [spark, setSpark] = useState<
+    { up: number; down: number; conns: number }[]
+  >([]);
+
+  const pushSpark = useCallback((s: ProxyStatus | null) => {
+    setSpark((prev) => {
+      const next = [
+        ...prev,
+        {
+          up: s?.upload_speed ?? 0,
+          down: s?.download_speed ?? 0,
+          conns: s?.connections ?? 0,
+        },
+      ];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+  }, []);
 
   /** Full reload (actions after start/stop/etc). */
   const reload = useCallback(async () => {
@@ -115,8 +149,10 @@ export function DashboardPage({
 
       const [settings, status] = await statusP;
       setSettingsPorts({ mixed: settings.mixed_port, api: settings.api_port });
+      setMixMode(!!settings.mix_mode);
       setCurrentNodeId(settings.current_node_id ?? null);
       setProxy(status);
+      pushSpark(status);
       setStatusReady(true);
 
       const [subList, nodeList, core] = await detailP;
@@ -147,7 +183,7 @@ export function DashboardPage({
       setStatusReady(true);
       setDetailsReady(true);
     }
-  }, [t]);
+  }, [pushSpark, t]);
 
   useEffect(() => {
     void reload();
@@ -173,9 +209,12 @@ export function DashboardPage({
     // Do not clobber optimistic capture UI while a switch is in flight.
     if (captureBusy) return;
     return getProxyStatus()
-      .then(setProxy)
+      .then((s) => {
+        setProxy(s);
+        pushSpark(s);
+      })
       .catch(() => undefined);
-  }, 2000);
+  }, 1000);
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -442,36 +481,62 @@ export function DashboardPage({
     [visibleSubs],
   );
 
-  const subQuotaLabel = useMemo(() => {
-    const traffic = visibleSubs.map((sub) => sub.traffic);
-    if (traffic.length === 0 || traffic.every((tr) => !tr)) return "—";
+  const subQuota = useMemo(() => {
+    const empty = {
+      used: 0,
+      total: null as number | null,
+      remaining: null as number | null,
+      ratio: null as number | null,
+      label: "—",
+    };
+    const parts = visibleSubs
+      .map((sub) => quotaParts(sub.traffic))
+      .filter((p): p is NonNullable<typeof p> => p != null);
+    if (parts.length === 0) return empty;
 
-    const used = traffic.reduce(
-      (sum, tr) => sum + (tr?.upload ?? 0) + (tr?.download ?? 0),
-      0,
-    );
-    const hasCompleteTotals = traffic.every(
-      (tr) => tr?.total != null && tr.total > 0,
-    );
-    if (hasCompleteTotals) {
-      const total = traffic.reduce((sum, tr) => sum + (tr?.total ?? 0), 0);
-      const pct = Math.min(100, Math.round((used / total) * 100));
-      return `${pct}% · ${fmtBytes(used)} / ${fmtBytes(total)}`;
+    const withTotal = parts.filter((p) => p.total != null);
+    if (withTotal.length > 0) {
+      const used = withTotal.reduce((sum, p) => sum + p.used, 0);
+      const total = withTotal.reduce((sum, p) => sum + (p.total ?? 0), 0);
+      const ratio = total > 0 ? Math.min(1, used / total) : 0;
+      return {
+        used,
+        total,
+        remaining: Math.max(0, total - used),
+        ratio,
+        label: `${fmtBytes(used)} / ${fmtBytes(total)}`,
+      };
     }
 
-    const hasCompleteRemaining = traffic.every(
-      (tr) => tr?.quota_remaining != null,
-    );
-    if (hasCompleteRemaining) {
-      const remaining = traffic.reduce(
-        (sum, tr) => sum + (tr?.quota_remaining ?? 0),
+    const withRemaining = parts.filter((p) => p.remaining != null);
+    if (withRemaining.length > 0) {
+      const remaining = withRemaining.reduce(
+        (sum, p) => sum + (p.remaining ?? 0),
         0,
       );
-      return t("common.remaining", { n: fmtBytes(remaining) });
+      return {
+        used: 0,
+        total: null,
+        remaining,
+        ratio: null,
+        label: t("common.remaining", { n: fmtBytes(remaining) }),
+      };
     }
-    if (used > 0) return fmtBytes(used);
-    return "—";
+    return empty;
   }, [t, visibleSubs]);
+
+  const quotaBar =
+    subQuota.ratio != null ? asciiBar(subQuota.ratio) : null;
+  const quotaPct =
+    subQuota.ratio != null ? Math.round(subQuota.ratio * 100) : null;
+  const quotaLevel =
+    subQuota.ratio == null
+      ? ""
+      : subQuota.ratio >= 0.9
+        ? "critical"
+        : subQuota.ratio >= 0.7
+          ? "warn"
+          : "ok";
 
   const modeLabel =
     outboundMode === "rule"
@@ -751,7 +816,7 @@ export function DashboardPage({
         </div>
       )}
 
-      {/* —— 6 cards: core / traffic / quality · conns / sub / system —— */}
+      {/* —— 6 cards: core / spark / traffic+conns · quality / sub / system —— */}
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">
         <article className="instrument accent-green">
           <header className="instrument-head">
@@ -779,6 +844,19 @@ export function DashboardPage({
           </div>
         </article>
 
+        <SimpleTrafficSpark
+          samples={spark}
+          up={proxy?.upload_speed ?? 0}
+          down={proxy?.download_speed ?? 0}
+          conns={proxy?.connections ?? 0}
+          running={running}
+          label={t("simple.spark")}
+          idleLabel={t("simple.sparkIdle")}
+          idleConnsLabel={t("simple.sparkIdleConns")}
+          connsLabel={t("simple.sparkConns", { n: proxy?.connections ?? 0 })}
+          onOpen={onGoTraffic}
+        />
+
         <article
           className="instrument accent-blue instrument-click"
           role="button"
@@ -789,29 +867,45 @@ export function DashboardPage({
           }}
         >
           <header className="instrument-head">
-            <span className="instrument-label">{t("dashboard.cardTraffic")}</span>
-            <span className="instrument-tag">NET</span>
+            <span className="instrument-label">
+              {t("dashboard.cardTraffic")} · {t("dashboard.cardConns")}
+            </span>
+            <span className="instrument-tag">
+              {proxy?.connections ?? 0}
+            </span>
           </header>
-          <div className="instrument-traffic">
-            <div>
-              <span className="tr-dir down">↓</span>{" "}
-              {fmtSpeed(proxy?.download_speed ?? 0)}
+          <div className="instrument-traffic-cols">
+            <div className="instrument-traffic-col">
+              <div className="instrument-traffic-col-label">
+                {t("dashboard.trafficLive")}
+              </div>
+              <div className="instrument-traffic">
+                <div>
+                  <span className="tr-dir down">↓</span>{" "}
+                  {fmtSpeed(proxy?.download_speed ?? 0)}
+                </div>
+                <div>
+                  <span className="tr-dir up">↑</span>{" "}
+                  {fmtSpeed(proxy?.upload_speed ?? 0)}
+                </div>
+              </div>
             </div>
-            <div>
-              <span className="tr-dir up">↑</span>{" "}
-              {fmtSpeed(proxy?.upload_speed ?? 0)}
-            </div>
-          </div>
-          <div className="instrument-kv mono">
-            <div>
-              <span className="kv-k down">Σ ↓</span>
-              <span className="kv-v">
-                {fmtBytes(proxy?.download_total ?? 0)}
-              </span>
-            </div>
-            <div>
-              <span className="kv-k up">Σ ↑</span>
-              <span className="kv-v">{fmtBytes(proxy?.upload_total ?? 0)}</span>
+            <div className="instrument-traffic-col">
+              <div className="instrument-traffic-col-label">
+                {t("dashboard.trafficTotal")}
+              </div>
+              <div className="instrument-traffic">
+                <div>
+                  <span className="tr-sigma down">Σ</span>
+                  <span className="tr-dir down">↓</span>{" "}
+                  {fmtBytes(proxy?.download_total ?? 0)}
+                </div>
+                <div>
+                  <span className="tr-sigma up">Σ</span>
+                  <span className="tr-dir up">↑</span>{" "}
+                  {fmtBytes(proxy?.upload_total ?? 0)}
+                </div>
+              </div>
             </div>
           </div>
         </article>
@@ -855,29 +949,6 @@ export function DashboardPage({
         </article>
 
         <article
-          className="instrument accent-yellow instrument-click"
-          role="button"
-          tabIndex={0}
-          onClick={() => onGoTraffic?.()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") onGoTraffic?.();
-          }}
-        >
-          <header className="instrument-head">
-            <span className="instrument-label">
-              {t("dashboard.cardConns")}
-            </span>
-            <span className="instrument-tag">LIVE</span>
-          </header>
-          <div className="instrument-value">
-            {proxy?.connections ?? 0}
-          </div>
-          <div className="instrument-sub mono">
-            {t("dashboard.activeConns")}
-          </div>
-        </article>
-
-        <article
           className="instrument accent-green instrument-click"
           role="button"
           tabIndex={0}
@@ -890,8 +961,12 @@ export function DashboardPage({
             <span className="instrument-label">
               {t("dashboard.cardSub")}
             </span>
-            <span className="instrument-tag">
-              {subCount > 0 ? "ACTIVE" : "—"}
+            <span className={`instrument-tag${mixMode ? " ok" : ""}`}>
+              {subCount === 0
+                ? "—"
+                : mixMode
+                  ? `${t("config.mix")} ${enabledSubs.length}/${subCount}`
+                  : "ACTIVE"}
             </span>
           </header>
           <div
@@ -900,24 +975,37 @@ export function DashboardPage({
           >
             {activeSubNames || t("dashboard.noSub")}
           </div>
+          {quotaBar && quotaPct != null ? (
+            <div
+              className={`instrument-ascii-bar ${quotaLevel}`}
+              title={subQuota.label}
+              aria-label={`${quotaPct}%`}
+            >
+              <span className="ascii-track">
+                <span className="ascii-fill">{quotaBar.filled}</span>
+                <span className="ascii-empty">{quotaBar.empty}</span>
+              </span>
+              <span className="ascii-pct">{quotaPct}%</span>
+            </div>
+          ) : null}
           <div className="instrument-kv mono">
+            <div>
+              <span className="kv-k">{t("config.mix")}</span>
+              <span className="kv-v">
+                {mixMode
+                  ? `${t("dashboard.enabled")} · ${enabledSubs.length}/${subCount}`
+                  : t("dashboard.disabled")}
+              </span>
+            </div>
+            <div>
+              <span className="kv-k">{t("dashboard.quota")}</span>
+              <span className="kv-v">{subQuota.label}</span>
+            </div>
             <div>
               <span className="kv-k">{t("dashboard.profiles")}</span>
               <span className="kv-v">
                 {subCount} · {nodeCount} {t("dashboard.nodes").toLowerCase()}
               </span>
-            </div>
-            <div>
-              <span className="kv-k">{t("dashboard.updated")}</span>
-              <span className="kv-v">
-                {activeSub
-                  ? relativeAgo(activeSub.last_update, t)
-                  : "—"}
-              </span>
-            </div>
-            <div>
-              <span className="kv-k">{t("dashboard.quota")}</span>
-              <span className="kv-v">{subQuotaLabel}</span>
             </div>
           </div>
         </article>
@@ -926,9 +1014,13 @@ export function DashboardPage({
           className="instrument accent-cyan instrument-click"
           role="button"
           tabIndex={0}
-          onClick={() => onGoSettings?.()}
+          title={t("dashboard.copyEnvHint")}
+          onClick={() => void onCopyEnv()}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") onGoSettings?.();
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              void onCopyEnv();
+            }
           }}
         >
           <header className="instrument-head">
@@ -939,6 +1031,9 @@ export function DashboardPage({
           </header>
           <div className="instrument-value sm mono">
             mixed :{mixedPort}
+          </div>
+          <div className="instrument-hint mono">
+            {envCopied ? t("dashboard.envCopied") : t("dashboard.copyEnvHint")}
           </div>
           <div className="instrument-kv mono">
             <div>
