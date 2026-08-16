@@ -198,6 +198,9 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// Overview hero visual: `particle` | `classic`.
+    #[serde(default = "default_hero_style")]
+    pub hero_style: String,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.
     #[serde(default)]
     pub tray_icon: TrayIconStyle,
@@ -247,6 +250,10 @@ fn default_accent() -> String {
     "green".into()
 }
 
+fn default_hero_style() -> String {
+    "particle".into()
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -269,6 +276,7 @@ impl Default for AppSettings {
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
+            hero_style: default_hero_style(),
             tray_icon: TrayIconStyle::default(),
             unload_ui_on_tray: false,
             auto_select: AutoSelectMode::Off,

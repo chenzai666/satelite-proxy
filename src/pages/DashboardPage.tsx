@@ -19,6 +19,7 @@ import {
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
+import { HeroVisual } from "../components/HeroVisual";
 import type {
   AutoSelectMode,
   GenerateConfigResult,
@@ -489,21 +490,11 @@ export function DashboardPage({
 
       {/* —— Hero: orbit + status + embedded controls (no floating QC card) —— */}
       <section className={`dash-hero is-${orbitState}`}>
-        <div
-          className={`orbit ${running || switching ? "spin" : ""} ${switching ? "pulse switching" : ""}`}
-          aria-hidden
-        >
-          <div className="orbit-ring orbit-ring-a" />
-          <div className="orbit-ring orbit-ring-b" />
-          <div className="orbit-core">
-            {switching ? (
-              <span className="lat-spinner orbit-core-spinner" aria-hidden />
-            ) : (
-              <span className="orbit-glyph">◈</span>
-            )}
-          </div>
-          <div className="orbit-sat" />
-        </div>
+        <HeroVisual
+          state={orbitState}
+          spinning={running || switching}
+          switching={switching}
+        />
 
         <div className="dash-hero-copy">
           <div className="dash-kicker mono">

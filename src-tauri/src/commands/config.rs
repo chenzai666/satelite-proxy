@@ -59,6 +59,7 @@ pub fn update_settings(
     locale: Option<String>,
     theme: Option<String>,
     accent: Option<String>,
+    hero_style: Option<String>,
     tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
@@ -137,6 +138,12 @@ pub fn update_settings(
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
                 ) {
                     store.settings.accent = ac;
+                }
+            }
+            if let Some(hs) = hero_style {
+                let hs = hs.trim().to_ascii_lowercase();
+                if matches!(hs.as_str(), "particle" | "classic") {
+                    store.settings.hero_style = hs;
                 }
             }
             if let Some(raw) = tray_icon {

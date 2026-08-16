@@ -217,6 +217,8 @@ export interface AppSettings {
   theme?: string;
   /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
   accent?: string;
+  /** Overview hero visual: particle | classic */
+  hero_style?: HeroStyle;
   /** Tray mark: badge | mark | ghost | buddy */
   tray_icon?: TrayIconStyle;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
@@ -233,6 +235,8 @@ export interface AppSettings {
 export type AutoSelectMode = "off" | "smart" | "kernel";
 
 export type ThemeId = "aerospace" | "day";
+
+export type HeroStyle = "particle" | "classic";
 
 export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy";
 

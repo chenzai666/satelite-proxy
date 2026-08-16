@@ -8,13 +8,19 @@ import {
   type ReactNode,
 } from "react";
 import { getSettings, updateSettings } from "../api";
-import type { ThemeId } from "../types";
+import type { HeroStyle, ThemeId } from "../types";
 import { applyAccentToDom, resolveAccent } from "./accents";
 
 export function normalizeTheme(raw: string | null | undefined): ThemeId {
   const t = (raw ?? "").trim().toLowerCase();
   if (t === "aerospace") return "aerospace";
   return "day";
+}
+
+export function normalizeHeroStyle(raw: string | null | undefined): HeroStyle {
+  const t = (raw ?? "").trim().toLowerCase();
+  if (t === "classic") return "classic";
+  return "particle";
 }
 
 export function applyThemeToDom(theme: ThemeId, accent: string) {
@@ -30,6 +36,8 @@ interface ThemeContextValue {
   setTheme: (next: ThemeId) => Promise<void>;
   accent: string;
   setAccent: (next: string) => Promise<void>;
+  heroStyle: HeroStyle;
+  setHeroStyle: (next: HeroStyle) => Promise<void>;
   ready: boolean;
 }
 
@@ -38,6 +46,7 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>("day");
   const [accent, setAccentState] = useState<string>("green");
+  const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -47,8 +56,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         const nextTheme = normalizeTheme(s.theme);
         const nextAccent = resolveAccent(s.accent).id;
+        const nextHero = normalizeHeroStyle(s.hero_style);
         setThemeState(nextTheme);
         setAccentState(nextAccent);
+        setHeroStyleState(nextHero);
         applyThemeToDom(nextTheme, nextAccent);
       })
       .catch(() => {
@@ -89,9 +100,27 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [theme],
   );
 
+  const setHeroStyle = useCallback(async (next: HeroStyle) => {
+    const style = normalizeHeroStyle(next);
+    setHeroStyleState(style);
+    try {
+      await updateSettings({ heroStyle: style });
+    } catch {
+      /* UI already switched */
+    }
+  }, []);
+
   const value = useMemo(
-    () => ({ theme, setTheme, accent, setAccent, ready }),
-    [theme, setTheme, accent, setAccent, ready],
+    () => ({
+      theme,
+      setTheme,
+      accent,
+      setAccent,
+      heroStyle,
+      setHeroStyle,
+      ready,
+    }),
+    [theme, setTheme, accent, setAccent, heroStyle, setHeroStyle, ready],
   );
 
   return (

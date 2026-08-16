@@ -21,6 +21,7 @@ import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  HeroStyle,
   ThemeId,
 } from "../types";
 import { RulesPage } from "./RulesPage";
@@ -48,7 +49,8 @@ function fmtCoreBytes(value: number) {
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, accent, setAccent } = useTheme();
+  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle } =
+    useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [mixed, setMixed] = useState("2080");
@@ -375,6 +377,24 @@ export function SettingsPage() {
                     </button>
                   ))}
                 </div>
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.heroStyle")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.heroStyleDesc")}
+                  </div>
+                </div>
+                <GlassSeg
+                  value={heroStyle}
+                  ariaLabel={t("settings.heroStyle")}
+                  disabled={busy}
+                  onChange={(v) => void setHeroStyle(v as HeroStyle)}
+                  options={[
+                    { value: "particle", label: t("settings.heroStyleParticle") },
+                    { value: "classic", label: t("settings.heroStyleClassic") },
+                  ]}
+                />
               </div>
               <div className="settings-app-row settings-app-pref settings-tray-icon-row">
                 <div className="settings-app-text">

@@ -11,6 +11,7 @@ import {
   updateSettings,
 } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
+import { HeroVisual } from "../../components/HeroVisual";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
@@ -313,21 +314,12 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
           aria-label={running ? t("dashboard.stop") : t("dashboard.start")}
           aria-pressed={running}
         >
-          <div
-            className={`orbit simple-orbit ${running || connecting ? "spin" : ""} ${connecting ? "pulse switching" : ""}`}
-            aria-hidden
-          >
-            <div className="orbit-ring orbit-ring-a" />
-            <div className="orbit-ring orbit-ring-b" />
-            <div className="orbit-core">
-              {connecting ? (
-                <span className="lat-spinner orbit-core-spinner" aria-hidden />
-              ) : (
-                <span className="orbit-glyph simple-orbit-power">⏻</span>
-              )}
-            </div>
-            <div className="orbit-sat" />
-          </div>
+          <HeroVisual
+            state={orbitState}
+            spinning={running || connecting}
+            switching={connecting}
+            variant="simple"
+          />
         </button>
         <div className="dash-hero-copy simple-dash-copy">
           <div className="dash-kicker mono">
