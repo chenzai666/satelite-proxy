@@ -1,14 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getProxyStatus,
   getSettings,
   listAllNodes,
+  setOutboundMode,
+  smartSwitchNow,
   startProxy,
   stopProxy,
   testNodesLatency,
+  updateSettings,
 } from "../../api";
+import { GlassSeg } from "../../components/GlassSeg";
+import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
-import type { ProxyNode, ProxyStatus } from "../../types";
+import { useI18n } from "../../i18n";
+import type {
+  AutoSelectMode,
+  OutboundMode,
+  ProxyNode,
+  ProxyStatus,
+} from "../../types";
 
 function fmtSpeed(bps: number) {
   if (bps < 1024) return `${bps} B/s`;
@@ -23,20 +34,11 @@ function fmtBytes(n: number) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/** Format elapsed seconds as H:MM:SS or M:SS. */
-function fmtUptime(sec: number) {
-  if (sec < 0 || !Number.isFinite(sec)) return "—";
-  const s = Math.floor(sec);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const r = s % 60;
-  const mm = String(m).padStart(2, "0");
-  const ss = String(r).padStart(2, "0");
-  if (h > 0) return `${h}:${mm}:${ss}`;
-  return `${m}:${ss}`;
+function fmtLatency(ms?: number | null) {
+  if (ms == null || ms < 0) return "—";
+  return `${ms} ms`;
 }
 
-/** Latency colors: green <200 · yellow <300 · red ≥300 (same as Nodes page). */
 function latencyClass(ms?: number | null) {
   if (ms == null || ms < 0) return "lat-none";
   if (ms < 200) return "lat-good";
@@ -44,37 +46,24 @@ function latencyClass(ms?: number | null) {
   return "lat-slow";
 }
 
-function LatencyLabel({
-  ms,
-  testedAt,
-}: {
-  ms?: number | null;
-  testedAt?: number | null;
-}) {
-  if (ms != null && ms >= 0) {
-    return <span className={`lat mono ${latencyClass(ms)}`}>{ms} ms</span>;
-  }
-  if (testedAt != null) {
-    return <span className="lat lat-timeout mono">timeout</span>;
-  }
-  return <span className="lat lat-none mono">未测</span>;
-}
-
 interface Props {
   onGoServers?: () => void;
+  onGoTraffic?: () => void;
 }
 
-export function SimpleConnectPage({ onGoServers }: Props) {
+export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
+  const { t } = useI18n();
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   const [node, setNode] = useState<ProxyNode | null>(null);
+  const [nodeCount, setNodeCount] = useState(0);
   const [nodeReady, setNodeReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Tick so uptime label updates without waiting for status poll. */
+  const [smartProbing, setSmartProbing] = useState(false);
+  const smartGenRef = useRef(0);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
 
-  /** Wave 1: proxy status only (cheap; used for live traffic poll). */
   const reloadStatus = useCallback(async () => {
     try {
       const status = await getProxyStatus().catch(() => null);
@@ -84,7 +73,6 @@ export function SimpleConnectPage({ onGoServers }: Props) {
     }
   }, []);
 
-  /** Wave 2: settings + nodes (heavier; only on boot / after actions). */
   const reloadNode = useCallback(async () => {
     try {
       const [settings, nodes] = await Promise.all([
@@ -92,7 +80,8 @@ export function SimpleConnectPage({ onGoServers }: Props) {
         listAllNodes().catch(() => [] as ProxyNode[]),
       ]);
       const id = settings?.current_node_id;
-      setNode(id ? nodes.find((n) => n.id === id) ?? null : nodes[0] ?? null);
+      setNode(id ? (nodes.find((n) => n.id === id) ?? null) : nodes[0] ?? null);
+      setNodeCount(nodes.length);
       setNodeReady(true);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -101,14 +90,12 @@ export function SimpleConnectPage({ onGoServers }: Props) {
   }, []);
 
   const reload = useCallback(async () => {
-    // Status commits as soon as ready; node list fills in after (parallel fetch).
     const statusP = reloadStatus();
     const nodeP = reloadNode();
     await statusP;
     await nodeP;
   }, [reloadStatus, reloadNode]);
 
-  /** Probe current node once; updates local node latency. */
   const probeCurrent = useCallback(async (nodeId: string) => {
     setTesting(true);
     setNode((prev) =>
@@ -131,7 +118,7 @@ export function SimpleConnectPage({ onGoServers }: Props) {
         );
       }
     } catch {
-      // Keep prior / cleared state; user can re-start or open servers to retest.
+      /* keep prior / cleared state */
     } finally {
       setTesting(false);
     }
@@ -141,24 +128,54 @@ export function SimpleConnectPage({ onGoServers }: Props) {
     void reload();
   }, [reload]);
 
-  // Poll status only (not full node list) — keeps uptime/speeds fresh cheaply.
   useVisibleInterval(() => {
     setNowSec(Math.floor(Date.now() / 1000));
     return reloadStatus();
   }, 1000);
+
+  const onCaptureError = useCallback((msg: string) => {
+    setError(msg);
+  }, []);
+
+  const { captureMode, captureBusy, requestCaptureMode } = useCaptureModeSwitch(
+    proxy,
+    setProxy,
+    onCaptureError,
+  );
 
   const running = proxy?.running ?? false;
   const connecting =
     busy ||
     proxy?.core_state === "starting" ||
     proxy?.core_state === "stopping";
+  const isError = proxy?.core_state === "error" || (!!proxy?.error && !running);
   const orbitState = connecting
     ? "switching"
     : running
       ? "live"
-      : proxy?.core_state === "error"
+      : isError
         ? "error"
         : "stopped";
+  const stateUpper = running
+    ? "RUNNING"
+    : connecting
+      ? proxy?.core_state === "stopping" || (busy && running)
+        ? "STOPPING"
+        : "STARTING"
+      : isError
+        ? "ERROR"
+        : "STOPPED";
+  const dotClass = running ? "on" : connecting ? "busy" : "off";
+
+  function resolveAutoSelect(): AutoSelectMode {
+    const raw =
+      proxy?.auto_select ?? (proxy?.smart_switch ? "smart" : "off");
+    if (raw === "smart" || raw === "kernel") return raw;
+    return "off";
+  }
+
+  const autoSelectMode = resolveAutoSelect();
+  const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
 
   async function onToggle() {
     if (busy || connecting) return;
@@ -172,7 +189,6 @@ export function SimpleConnectPage({ onGoServers }: Props) {
         const enableSys = proxy?.system_proxy ?? true;
         setProxy(await startProxy(enableSys));
         await reload();
-        // After start, auto-probe current node once.
         const id = node?.id;
         if (id) void probeCurrent(id);
       }
@@ -183,34 +199,106 @@ export function SimpleConnectPage({ onGoServers }: Props) {
     }
   }
 
-  const statusText = connecting
-    ? proxy?.core_state === "stopping" || (busy && running)
-      ? "停止中…"
-      : "连接中…"
-    : running
-      ? "已连接"
-      : "未连接";
+  async function onSetAutoSelect(mode: AutoSelectMode) {
+    const prev = autoSelectMode;
+    if (mode === prev) return;
+    setError(null);
+    if (mode !== "smart") {
+      smartGenRef.current += 1;
+      setSmartProbing(false);
+    }
+    setProxy((p) =>
+      p ? { ...p, auto_select: mode, smart_switch: mode === "smart" } : p,
+    );
+    const gen = ++smartGenRef.current;
+    if (mode === "smart") setSmartProbing(true);
+    try {
+      await updateSettings({ autoSelect: mode });
+      if (gen !== smartGenRef.current) return;
+      if (mode === "smart") {
+        try {
+          const r = await smartSwitchNow();
+          if (gen !== smartGenRef.current) return;
+          if (r.message === "core not running") {
+            setError(t("dashboard.smartSwitchNeedCore"));
+          } else if (
+            r.message === "all probes failed" ||
+            r.message === "clash api unavailable"
+          ) {
+            setError(t("dashboard.smartSwitchProbeFail"));
+          } else if (r.message === "no nodes") {
+            setError(t("dashboard.smartSwitchNoNodes"));
+          }
+        } catch (probeErr) {
+          if (gen !== smartGenRef.current) return;
+          setError(
+            typeof probeErr === "string" ? probeErr : String(probeErr),
+          );
+        }
+      }
+      if (gen !== smartGenRef.current) return;
+      await reload();
+    } catch (e) {
+      if (gen === smartGenRef.current) {
+        setError(typeof e === "string" ? e : String(e));
+        setProxy((p) =>
+          p
+            ? { ...p, auto_select: prev, smart_switch: prev === "smart" }
+            : p,
+        );
+      }
+    } finally {
+      if (gen === smartGenRef.current) setSmartProbing(false);
+    }
+  }
+
+  async function onSetMode(mode: OutboundMode) {
+    setBusy(true);
+    setError(null);
+    try {
+      setProxy(await setOutboundMode(mode));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const up = proxy?.upload_speed ?? 0;
   const down = proxy?.download_speed ?? 0;
-  const total = (proxy?.upload_total ?? 0) + (proxy?.download_total ?? 0);
-  const port = proxy?.mixed_port ?? 2080;
-  // Backend-owned start time — survives UI destroy / dock reopen.
   const startedAt = proxy?.core_started_at ?? null;
   const uptimeLabel =
     running && startedAt != null && startedAt > 0
       ? fmtUptime(nowSec - startedAt)
       : "—";
 
+  const heroTitle = !nodeReady && running
+    ? null
+    : running
+      ? node?.name ?? t("dashboard.disconnected")
+      : isError
+        ? t("dashboard.errorTitle")
+        : t("dashboard.disconnected");
+
+  const heroSub = !nodeReady && running
+    ? null
+    : running
+      ? [node?.protocol?.toUpperCase(), testing ? "…" : fmtLatency(node?.latency_ms)]
+          .filter(Boolean)
+          .join(" · ")
+      : t("dashboard.desc");
+
   return (
     <div className="simple-page simple-connect">
-      <div className={`simple-connect-hero is-${orbitState}`}>
+      {error && <div className="banner error">{error}</div>}
+
+      <section className={`dash-hero simple-dash-hero is-${orbitState}`}>
         <button
           type="button"
           className="simple-orbit-btn"
           disabled={busy || connecting}
           onClick={() => void onToggle()}
-          aria-label={running ? "断开连接" : "连接"}
+          aria-label={running ? t("dashboard.stop") : t("dashboard.start")}
           aria-pressed={running}
         >
           <div
@@ -223,72 +311,215 @@ export function SimpleConnectPage({ onGoServers }: Props) {
               {connecting ? (
                 <span className="lat-spinner orbit-core-spinner" aria-hidden />
               ) : (
-                <span className="orbit-glyph simple-orbit-power" title="Power">
-                  ⏻
-                </span>
+                <span className="orbit-glyph simple-orbit-power">⏻</span>
               )}
             </div>
             <div className="orbit-sat" />
           </div>
         </button>
-        <div className={`simple-status-label ${running ? "on" : ""}`}>
-          {statusText}
+        <div className="dash-hero-copy simple-dash-copy">
+          <div className="dash-kicker mono">
+            <span className={`status-dot ${dotClass}`} />
+            {stateUpper}
+            {running && (
+              <>
+                <span className="dash-kicker-sep">·</span>
+                {uptimeLabel}
+              </>
+            )}
+          </div>
+          <h1 className="dash-hero-title">
+            {heroTitle == null ? (
+              <span className="skel skel-inline skel-w-40" aria-hidden />
+            ) : (
+              heroTitle
+            )}
+          </h1>
+          <p className="dash-hero-desc">
+            {heroSub == null ? (
+              <span className="skel skel-inline skel-w-30" aria-hidden />
+            ) : (
+              heroSub
+            )}
+          </p>
         </div>
+      </section>
+
+      <div className="simple-instruments">
+        <button
+          type="button"
+          className="instrument accent-cyan instrument-click simple-instrument"
+          onClick={() => onGoServers?.()}
+        >
+          <header className="instrument-head">
+            <span className="instrument-label">{t("dashboard.node")}</span>
+            <span className="instrument-tag">
+              {!nodeReady
+                ? "…"
+                : (node?.protocol?.toUpperCase() ?? "—")}
+            </span>
+          </header>
+          <div className="instrument-value sm">
+            {!nodeReady ? (
+              <span className="skel skel-inline skel-w-50" aria-hidden />
+            ) : (
+              (node?.name ?? t("simple.pickNode"))
+            )}
+          </div>
+          <div className="instrument-kv mono">
+            <div>
+              <span className="kv-k">{t("dashboard.latency")}</span>
+              <span
+                className={`kv-v lat ${testing ? "lat-none" : latencyClass(node?.latency_ms)}`}
+              >
+                {testing ? "…" : fmtLatency(node?.latency_ms)}
+              </span>
+            </div>
+          </div>
+        </button>
+        <button
+          type="button"
+          className="instrument accent-blue instrument-click simple-instrument"
+          onClick={() => onGoTraffic?.()}
+        >
+          <header className="instrument-head">
+            <span className="instrument-label">{t("dashboard.cardTraffic")}</span>
+            <span className="instrument-tag">NET</span>
+          </header>
+          <div className="instrument-traffic">
+            <div>
+              <span className="tr-dir down">↓</span> {fmtSpeed(down)}
+            </div>
+            <div>
+              <span className="tr-dir up">↑</span> {fmtSpeed(up)}
+            </div>
+          </div>
+          <div className="instrument-kv mono">
+            <div>
+              <span className="kv-k">Σ</span>
+              <span className="kv-v">
+                {fmtBytes((proxy?.upload_total ?? 0) + (proxy?.download_total ?? 0))}
+              </span>
+            </div>
+          </div>
+        </button>
       </div>
 
-      {error && <div className="banner error simple-banner">{error}</div>}
-
-      <button
-        type="button"
-        className="simple-glass-bar"
-        onClick={() => onGoServers?.()}
-      >
-        <span className="simple-info-protocol">
-          {!nodeReady ? (
-            <span className="skel skel-inline skel-w-20" aria-hidden />
-          ) : (
-            (node?.protocol?.toUpperCase() ?? "—")
-          )}
-        </span>
-        <span className="simple-info-name">
-          {!nodeReady ? (
-            <span className="skel skel-inline skel-w-50" aria-hidden />
-          ) : (
-            (node?.name ?? "未选择节点")
-          )}
-        </span>
-        {running && node && (
-          <span className="simple-info-latency">
-            {testing ? (
-              <span className="lat lat-none mono">测速中…</span>
+      <aside className="simple-rail" aria-label={t("dashboard.quickControls")}>
+        <div className="dash-rail-title mono">{t("dashboard.quickControls")}</div>
+        <div className="dash-inline-row">
+          <span className="dash-inline-label">{t("dashboard.routing")}</span>
+          <GlassSeg
+            value={outboundMode}
+            ready={!!proxy}
+            ariaLabel={t("dashboard.routing")}
+            disabled={busy || !proxy}
+            onChange={(v) => void onSetMode(v as OutboundMode)}
+            options={[
+              { value: "rule", label: t("dashboard.modeRule") },
+              { value: "global", label: t("dashboard.modeGlobal") },
+              { value: "direct", label: t("dashboard.modeDirect") },
+            ]}
+          />
+        </div>
+        <div className="dash-inline-row">
+          <span
+            className={`dash-inline-label${smartProbing ? " dash-smart-probing" : ""}`}
+          >
+            {smartProbing ? (
+              <>
+                <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                <span>{t("dashboard.smartSwitchProbing")}</span>
+              </>
             ) : (
-              <LatencyLabel ms={node.latency_ms} testedAt={node.latency_at} />
+              t("dashboard.autoSelect")
             )}
           </span>
-        )}
-      </button>
-
-      <div className="simple-glass-bar">
-        <span className="muted mono">
-          {running ? `Proxy on 127.0.0.1:${port}` : "未运行"}
-        </span>
-        <span className="muted mono">{uptimeLabel}</span>
-      </div>
-
-      <div className="simple-glass-bar simple-info-traffic">
-        <span className="simple-info-traffic-cell">
-          <span className="tr-dir up">↑</span>
-          <strong className="mono">{fmtSpeed(up)}</strong>
-        </span>
-        <span className="simple-info-traffic-cell">
-          <span className="tr-dir down">↓</span>
-          <strong className="mono">{fmtSpeed(down)}</strong>
-        </span>
-        <span className="simple-info-traffic-cell">
-          <span className="muted">总计</span>
-          <strong className="mono">{fmtBytes(total)}</strong>
-        </span>
-      </div>
+          <GlassSeg
+            value={autoSelectMode}
+            ready={!!proxy}
+            ariaLabel={t("dashboard.autoSelect")}
+            disabled={busy || !proxy}
+            disabledValues={
+              new Set(
+                [
+                  smartProbing ? "smart" : null,
+                  nodeCount === 0 && autoSelectMode === "off" && !smartProbing
+                    ? "kernel"
+                    : null,
+                  nodeCount === 0 && autoSelectMode === "off" && !smartProbing
+                    ? "smart"
+                    : null,
+                ].filter((v): v is string => v != null),
+              )
+            }
+            titles={{
+              kernel: t("dashboard.autoSelectKernelHint"),
+              smart: t("dashboard.smartSwitchDesc"),
+              off: t("dashboard.autoSelectDesc"),
+            }}
+            onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}
+            options={[
+              { value: "off", label: t("dashboard.autoSelectOff") },
+              { value: "kernel", label: t("dashboard.autoSelectKernel") },
+              { value: "smart", label: t("dashboard.autoSelectSmart") },
+            ]}
+          />
+        </div>
+        <div className="dash-inline-row">
+          <span
+            className={`dash-inline-label${captureBusy ? " dash-smart-probing" : ""}`}
+          >
+            {captureBusy ? (
+              <>
+                <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                <span>{t("dashboard.captureSwitching")}</span>
+              </>
+            ) : (
+              t("dashboard.capture")
+            )}
+          </span>
+          <GlassSeg
+            value={captureMode}
+            ready={!!proxy}
+            ariaLabel={t("dashboard.capture")}
+            disabled={!proxy}
+            disabledValues={
+              new Set(
+                [
+                  nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
+                ].filter((v): v is string => v != null),
+              )
+            }
+            titles={{
+              tun: t("dashboard.captureTunHint"),
+              system: t("dashboard.captureSystemHint"),
+              off: t("dashboard.captureDesc"),
+            }}
+            onChange={(v) => {
+              setError(null);
+              requestCaptureMode(v as "off" | "system" | "tun");
+            }}
+            options={[
+              { value: "off", label: t("dashboard.captureOff") },
+              { value: "system", label: t("dashboard.captureSystem") },
+              { value: "tun", label: t("dashboard.captureTun") },
+            ]}
+          />
+        </div>
+      </aside>
     </div>
   );
+}
+
+function fmtUptime(sec: number) {
+  if (sec < 0 || !Number.isFinite(sec)) return "—";
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(r).padStart(2, "0");
+  if (h > 0) return `${h}:${mm}:${ss}`;
+  return `${m}:${ss}`;
 }

@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { getProxyStatus } from "../../api";
 import { ThemeSwitch } from "../../components/ThemeSwitch";
 import { useCoreBusy } from "../../coreBusy";
@@ -41,12 +50,25 @@ function SimplePageFallback() {
 }
 
 export function SimpleShell() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const coreBusy = useCoreBusy();
   const [nav, setNav] = useState<SimpleNavKey>("connect");
   const [running, setRunning] = useState(false);
   const [coreState, setCoreState] = useState("stopped");
   const { token, prefill } = useImportIntent();
+  const itemRefs = useRef<Record<string, HTMLButtonElement>>({});
+  const [indicatorStyle, setIndicatorStyle] = useState<CSSProperties>({
+    opacity: 0,
+  });
+  useLayoutEffect(() => {
+    const el = itemRefs.current[nav];
+    if (!el) return;
+    setIndicatorStyle({
+      opacity: 1,
+      transform: `translateX(${el.offsetLeft}px)`,
+      width: `${el.offsetWidth}px`,
+    });
+  }, [nav, locale]);
 
   // One-click subscribe → open 节点 page (add subscription modal).
   useEffect(() => {
@@ -97,18 +119,34 @@ export function SimpleShell() {
       : "off";
 
   return (
-    <div className="app-shell simple-shell">
+    <div
+      className={`app-shell simple-shell${nav === "connect" ? " dashboard-shell" : ""}`}
+    >
       <header className="topnav-wrap simple-topnav-wrap">
         <div
           className="topnav simple-topnav"
           role="navigation"
           aria-label="Simple"
         >
+          <div className="topnav-brand simple-brand" title="Satelite">
+            <span className="topnav-mark" aria-hidden>
+              ◈
+            </span>
+          </div>
+          <div className="topnav-divider" aria-hidden />
           <nav className="topnav-items simple-topnav-items">
+            <span
+              className="topnav-indicator"
+              aria-hidden="true"
+              style={indicatorStyle}
+            />
             {TABS.map((item) => (
               <button
                 key={item.key}
                 type="button"
+                ref={(el) => {
+                  if (el) itemRefs.current[item.key] = el;
+                }}
                 className={`topnav-item ${nav === item.key ? "active" : ""}`}
                 onClick={() => setNav(item.key)}
               >
@@ -120,7 +158,7 @@ export function SimpleShell() {
             <ThemeSwitch />
             <div
               className="topnav-status"
-              title={transitioning ? "内核切换中" : stateLabel}
+              title={transitioning ? t("dashboard.starting") : stateLabel}
               aria-busy={transitioning}
             >
               <span className={`status-dot ${dotClass}`} />
@@ -131,16 +169,21 @@ export function SimpleShell() {
         </div>
       </header>
       <main className="main simple-main">
-        {nav === "connect" && (
-          <SimpleConnectPage onGoServers={() => setNav("servers")} />
-        )}
-        {nav !== "connect" && (
-          <Suspense fallback={<SimplePageFallback />}>
-            {nav === "servers" && <SimpleServersPage />}
-            {nav === "traffic" && <SimpleTrafficPage />}
-            {nav === "settings" && <SimpleSettingsPage />}
-          </Suspense>
-        )}
+        <div className="page-enter" key={nav}>
+          {nav === "connect" && (
+            <SimpleConnectPage
+              onGoServers={() => setNav("servers")}
+              onGoTraffic={() => setNav("traffic")}
+            />
+          )}
+          {nav !== "connect" && (
+            <Suspense fallback={<SimplePageFallback />}>
+              {nav === "servers" && <SimpleServersPage />}
+              {nav === "traffic" && <SimpleTrafficPage />}
+              {nav === "settings" && <SimpleSettingsPage />}
+            </Suspense>
+          )}
+        </div>
       </main>
     </div>
   );

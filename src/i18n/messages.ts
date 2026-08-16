@@ -31,6 +31,15 @@ const en = {
 
   // nav (simple mode)
   "nav.connect": "Connect",
+  "simple.settingsHint": "Everyday options. Open full mode for rules and DNS.",
+  "simple.switchPro": "Switch to full mode",
+  "simple.switchProDesc": "Rules, DNS, logs, and other advanced tools",
+  "simple.subs": "Profiles",
+  "simple.pickNode": "Choose a node",
+  "simple.notRunning": "Not running",
+  "simple.stopping": "Stopping…",
+  "simple.connected": "Connected",
+  "simple.loadMore": "Load more ({shown}/{total})",
 
   // dashboard
   "dashboard.title": "Overview",
@@ -658,6 +667,15 @@ const zh: Record<MessageKey, string> = {
   "common.remaining": "剩余 {n}",
 
   "nav.connect": "连接",
+  "simple.settingsHint": "日常常用选项。规则、DNS 等请到完整模式。",
+  "simple.switchPro": "切换到完整模式",
+  "simple.switchProDesc": "规则、DNS、日志等专业功能",
+  "simple.subs": "订阅",
+  "simple.pickNode": "选择节点",
+  "simple.notRunning": "未运行",
+  "simple.stopping": "停止中…",
+  "simple.connected": "已连接",
+  "simple.loadMore": "加载更多（{shown}/{total}）",
 
   "dashboard.title": "概览",
   "dashboard.desc": "启动代理后通过所选节点转发流量",

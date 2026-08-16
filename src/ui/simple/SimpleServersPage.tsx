@@ -17,8 +17,10 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../../components/AddConfigModal";
+import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
+import { useI18n } from "../../i18n";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
@@ -76,6 +78,7 @@ function LatencyLabel({
 }
 
 export function SimpleServersPage() {
+  const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -301,32 +304,42 @@ export function SimpleServersPage() {
   }
 
   return (
-    <div className="simple-page simple-servers">
-      <header className="simple-page-head">
+    <div className="page simple-page simple-servers">
+      <header className="page-header">
         <div>
-          <div className="simple-kicker muted">LIBRARY</div>
-          <h1 className="simple-title">节点</h1>
+          <h1>{t("nodes.title")}</h1>
+          <p className="page-desc">
+            {t("nodes.desc")}
+            {" · "}
+            <span className="mono">
+              {query.trim()
+                ? t("nodes.countFiltered", {
+                    shown: filtered.length,
+                    total: nodeTotal,
+                  })
+                : t("nodes.count", { n: nodeTotal })}
+            </span>
+          </p>
         </div>
-        <div className="simple-head-actions">
-          <button
-            type="button"
-            className="btn-pill secondary"
+        <div className="header-actions simple-head-actions">
+          <GlassButton
+            variant="primary"
+            icon="⚡"
             disabled={testing || nodeTotal === 0}
             onClick={() => void onTestAll()}
+            title={t("nodes.testLatency")}
           >
-            {testing ? "测速中…" : "测速"}
-          </button>
-          <button
-            type="button"
-            className="btn-pill"
+            {testing ? t("nodes.testing") : t("nodes.testLatency")}
+          </GlassButton>
+          <GlassButton
             onClick={() => {
               setModalError(null);
               setModalInitial(null);
               setModalOpen(true);
             }}
           >
-            添加
-          </button>
+            {t("config.add")}
+          </GlassButton>
         </div>
       </header>
 
@@ -337,7 +350,7 @@ export function SimpleServersPage() {
         className="search simple-search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="搜索节点…"
+        placeholder={t("nodes.search")}
       />
 
       {error && <div className="banner error">{error}</div>}
@@ -351,10 +364,10 @@ export function SimpleServersPage() {
             onClick={() => setSubsCollapsed((v) => !v)}
           >
             <span className="simple-section-label muted">
-              订阅配置
+              {t("simple.subs")}
               {subsCollapsed && activeSubName
                 ? ` · ${activeSubName}`
-                : " · 点击切换"}
+                : ` · ${t("config.clickUse")}`}
             </span>
             <span
               className={`simple-collapse-caret muted ${subsCollapsed ? "collapsed" : ""}`}
@@ -368,28 +381,27 @@ export function SimpleServersPage() {
                 <button
                   key={s.id}
                   type="button"
-                  className={`simple-card simple-sub-row ${active ? "active" : ""}`}
+                  className={`card simple-sub-row ${active ? "active" : ""}`}
                   disabled={busy}
                   onClick={() => void onSelectSub(s.id)}
                   aria-pressed={active}
                 >
-                  <span className="simple-radio" aria-hidden>
+                  <span className="simple-radio node-dot" aria-hidden>
                     {active ? "●" : "○"}
                   </span>
                   <strong className="simple-sub-name">{s.name}</strong>
                   <span className="muted simple-sub-meta">
-                    {s.node_count}节点
-                    {s.auto_update ? " · 自动" : ""}
-                    {active ? " · 使用中" : ""}
+                    {t("config.nodes", { n: s.node_count })}
+                    {s.auto_update ? ` · ${t("common.enabled")}` : ""}
+                    {active ? ` · ${t("config.using")}` : ""}
                   </span>
-                  <button
-                    type="button"
-                    className="btn-pill secondary simple-sub-refresh"
+                  <GlassButton
+                    className="simple-sub-refresh"
                     disabled={busy}
                     onClick={(e) => void onRefreshSub(s.id, e)}
                   >
-                    刷新
-                  </button>
+                    {t("common.refresh")}
+                  </GlassButton>
                 </button>
               );
             })}
@@ -397,30 +409,22 @@ export function SimpleServersPage() {
       )}
 
       <section className="simple-section">
-        <div className="simple-section-label muted">
-          节点 · {nodeTotal}
-          {activeSubId
-            ? ` · ${subs.find((s) => s.id === activeSubId)?.name ?? ""}`
-            : ""}
-        </div>
         <div className="simple-sort-row">
-          <span className="muted simple-sort-label">排序</span>
+          <span className="dash-inline-label">{t("nodes.sortLatency")}</span>
           <GlassSeg
             value={sortMode}
-            ariaLabel="节点排序"
+            ariaLabel={t("nodes.sortLatency")}
             onChange={(v) => setSortMode(v as SortMode)}
             options={[
-              { value: "latency", label: "延迟" },
-              { value: "name", label: "名称" },
-              { value: "default", label: "默认" },
+              { value: "latency", label: t("nodes.sortLatency") },
+              { value: "name", label: t("nodes.sortName") },
+              { value: "default", label: t("nodes.sortDefault") },
             ]}
           />
         </div>
         {filtered.length === 0 ? (
-          <div className="simple-card empty muted">
-            {subs.length === 0
-              ? "暂无节点，请先添加订阅"
-              : "当前订阅无节点，点上方切换其他配置或刷新"}
+          <div className="empty card muted">
+            {subs.length === 0 ? t("nodes.empty") : t("nodes.empty")}
           </div>
         ) : (
           <ul
@@ -440,14 +444,14 @@ export function SimpleServersPage() {
                 <li key={n.id}>
                   <button
                     type="button"
-                    className={`simple-card simple-node-item ${active ? "active" : ""}`}
+                    className={`simple-node-item ${active ? "active" : ""}`}
                     disabled={busy}
                     onClick={() => void onSelectNode(n.id)}
                   >
-                    <span className="simple-radio" aria-hidden>
+                    <span className="simple-radio node-dot" aria-hidden>
                       {active ? "●" : "○"}
                     </span>
-                    <span className="pill target-proxy">
+                    <span className="simple-node-proto mono">
                       {n.protocol.toUpperCase()}
                     </span>
                     <span className="simple-node-item-name">{n.name}</span>
@@ -470,15 +474,18 @@ export function SimpleServersPage() {
           </ul>
         )}
         {nodes.length < nodeTotal && (
-          <button
-            type="button"
-            className="btn-pill secondary"
+          <GlassButton
             disabled={loadingMore}
             onClick={() => void reload(true)}
-            style={{ margin: "12px auto", display: "block" }}
+            className="simple-load-more"
           >
-            {loadingMore ? "加载中…" : `加载更多（${nodes.length}/${nodeTotal}）`}
-          </button>
+            {loadingMore
+              ? t("common.loading")
+              : t("simple.loadMore", {
+                  shown: nodes.length,
+                  total: nodeTotal,
+                })}
+          </GlassButton>
         )}
       </section>
 
