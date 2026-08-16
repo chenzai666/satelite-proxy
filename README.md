@@ -1,29 +1,66 @@
-# Satelite Proxy
-
-一个轻量、好看的 **sing-box** 桌面代理客户端，基于 **Tauri 2 + React + Rust** 构建，支持 **macOS** 与 **Windows**。
-
-导入机场订阅、切换节点、规则分流、智能 DNS、系统代理 / TUN，再到托盘常驻，日常使用所需的功能它都有。
+# Satelite
 
 <p align="center">
-  <img src="assets/index.png" alt="Satelite" width="720" />
+  <strong>卫星在轨，网络才稳。</strong><br/>
+  轻量、好看的 <a href="https://github.com/SagerNet/sing-box">sing-box</a> 桌面客户端<br/>
+</p>
+
+<p align="center">
+  <a href="https://github.com/zn0wii/satelite-proxy/stargazers"><img src="https://img.shields.io/github/stars/zn0wii/satelite-proxy?style=social" alt="Stars" /></a>
+  &nbsp;
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-111111?logo=apple&logoColor=white" alt="macOS" />
+  <img src="https://img.shields.io/badge/Windows-x64-0078D4?logo=windows&logoColor=white" alt="Windows" />
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white" alt="Tauri" />
+  <img src="https://img.shields.io/badge/Rust-%23000000?logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/License-Apache%202.0-green.svg" alt="License" />
+</p>
+
+导入订阅、切节点、规则分流、智能 DNS、系统代理 / TUN、托盘常驻——日常该有的都有。  
+它**足够轻、足够稳、也足够好看**。
+
+<p align="center">
+  <img src="assets/index.png" alt="Satelite 概览" width="760" />
 </p>
 
 ---
 
-## ✨ 主要功能
+## 为什么是 Satelite
 
-- **订阅导入**：支持 Clash 兼容订阅，链接导入、文件导入、以及浏览器一键导入（`clash://` / `sing-box://` 深链）
-- **节点切换**：支持 SS、VMess、VLESS、Trojan、Hysteria2、TUIC、SOCKS5、AnyTLS、Snell 等 9 种协议，一键测速、快速切换
-- **智能选节点**：可选「手动」「应用智能切换（自动避障）」「内核自动测速（urltest）」三种模式
-- **规则分流**：基于规则集（Rule Set）的分流，支持远程规则集自动缓存；可按规则 / 全局 / 直连三种模式切换
-- **智能 DNS**：支持 DoH、DoT、FakeIP，自定义 DNS 规则与 Hosts，还可测试 DNS 解析
-- **系统代理 / TUN**：系统代理一键开启，TUN 模式实现全局透明代理（支持 system / gvisor / mixed 栈）
-- **连接与流量监控**：实时查看活跃连接、已关闭连接、失败请求、流量走向，自动解析进程名
-- **日志查看**：运行日志与内核日志一目了然
-- **托盘常驻**：关闭窗口即最小化到托盘，后台保持连接；支持开机启动、静默启动
-- **两种界面风格**：「专业模式」功能齐全，「简洁模式」只留最常用的几项，按需切换
-- **内核自动管理**：自动下载并更新 sing-box 内核，无需手动配置
-- **多语言与主题**：中文 / 英文，浅色 / 深色主题，多种主题色
+代理客户端已经够多了。Satelite 不想再做一个「功能清单更长」的壳，而是把 **sing-box** 收成一颗真正能放在桌面上的卫星：
+
+| 你真正在意的 | Satelite 怎么做 |
+| --- | --- |
+| **体积与内存** | Tauri 2 + Rust，不是 Chromium 全家桶。开着托盘就该被忘掉，而不是占掉半条内存。 |
+| **节点会挂** | 三种选路：手动、内核 urltest、应用侧智能切换。智能模式靠连接日志被动感知 + 按需探测，自动避障，而不是一直狂扫全表。 |
+| **不想被配置淹没** | 「简洁模式」只留连接 / 节点 / 流量；「专业模式」打开规则、DNS、Hosts、日志。同一套内核，两套节奏。 |
+| **界面也是功能** | 玻璃拟态、浅色 / 深色、多种主题色。打开窗口的那一秒，就该知道这不是 2018 年的后台面板。 |
+| **开箱即用** | 内核自动下载更新；Clash 订阅、文件导入、`clash://` / `sing-box://` 浏览器一键导入。 |
+
+> 卫星绕着你转，而不是你围着 YAML 转。
+
+---
+
+## 它能做什么
+
+- **订阅导入**：Clash 兼容订阅，链接 / 文件 / 浏览器深链一键导入
+- **协议齐全**：SS、VMess、VLESS、Trojan、Hysteria2、TUIC、SOCKS5、AnyTLS、Snell，一键测速，秒切节点
+- **智能选路**：手动 · 应用智能避障 · 内核 urltest，按场景选，不绑死一种策略
+- **规则分流**：Rule Set 分流，远程规则集自动缓存；规则 / 全局 / 直连一键切换
+- **智能 DNS**：DoH / DoT / FakeIP，自定义 DNS 规则与 Hosts，还能测解析
+- **系统代理 / TUN**：系统代理一键接管；TUN 全局透明代理，支持 system / gvisor / mixed
+- **连接与流量**：活跃连接、已关闭、失败请求、流量走向，自动解析进程名
+- **托盘常驻**：关窗即托盘，开机启动、静默启动；内核在后台，窗口可消失
+- **内核自管**：自动拉取并更新 sing-box，不用自己找二进制、对版本
+- **中英双语文案**，浅色 / 深色，多种主题色
+
+<p align="center">
+  <img src="assets/1.png" alt="Windows 概览" width="380" />
+  &nbsp;
+  <img src="assets/3.png" alt="规则分流" width="380" />
+</p>
+<p align="center">
+  <img src="assets/2.png" alt="应用设置" width="760" />
+</p>
 
 ## 🖥 平台支持
 
@@ -82,6 +119,10 @@ pnpm tauri build
 ```powershell
 pwsh scripts/build-windows.ps1
 ```
+
+---
+
+用着顺手的话，点一颗 [Star](https://github.com/zn0wii/satelite-proxy)，卫星会飞得更稳一点。
 
 ## 友情链接
 
