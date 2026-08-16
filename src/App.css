@@ -2363,7 +2363,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2376,7 +2376,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -5037,13 +5037,6 @@ select:not([size]),
   min-width: 0;
 }
 
-.solid-select.solid-select-compact {
-  width: 6.75rem;
-  max-width: 6.75rem;
-  flex: 0 0 6.75rem;
-  align-self: center;
-}
-
 .solid-select.open {
   z-index: 40;
 }
@@ -6172,6 +6165,57 @@ button.simple-sub-row.active {
   font-size: 0.68rem;
   margin-top: 0.15rem;
   line-height: 1.35;
+}
+
+.simple-tray-icon-row {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tray-icon-picks {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.tray-icon-pick {
+  appearance: none !important;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0.18rem !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px !important;
+  background: var(--panel-elevated) !important;
+  color: inherit !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.tray-icon-pick:hover:not(:disabled) {
+  border-color: var(--muted) !important;
+  background: var(--panel-elevated) !important;
+  box-shadow: none !important;
+}
+
+.tray-icon-pick.active {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 2px var(--primary-muted) !important;
+}
+
+.tray-icon-pick:disabled {
+  cursor: default;
+}
+
+.tray-icon-pick img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
 }
 
 .simple-link-row {

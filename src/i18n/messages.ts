@@ -798,7 +798,7 @@ const zh: Record<MessageKey, string> = {
   "settings.closeToTray": "退出时最小化",
   "settings.closeToTrayDesc":
     "关闭窗口时保持托盘与内核（托盘「退出」可彻底退出）",
-  "settings.launchAtLogin": "自启动",
+  "settings.launchAtLogin": "开机启动",
   "settings.launchAtLoginDesc": "登录系统后自动启动本应用",
   "settings.silentStart": "静默启动",
   "settings.silentStartDesc": "启动时不显示主界面，仅保留托盘",
