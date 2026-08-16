@@ -30,8 +30,8 @@
 | 平台            | 状态   |
 | --------------- | ------ |
 | macOS Apple 芯片 | ✅ 支持 |
+| macOS Intel     | ✅ 支持 |
 | Windows         | ✅ 支持 |
-| macOS Intel     | 🚧 计划中 |
 | Linux           | 🚧 计划中 |
 
 > Satelite Proxy 仍在持续开发中，升级前请备份重要的配置文件。
@@ -54,6 +54,33 @@ pnpm tauri dev
 
 # 打包构建
 pnpm tauri build
+```
+
+### macOS DMG
+
+在 **macOS** 上执行（不必在本机对应架构上编：Apple 芯片可交叉编 Intel）：
+
+```bash
+# 按本机架构打包
+./scripts/build-dmg.sh
+
+# Apple Silicon
+./scripts/build-dmg.sh --arch arm64
+
+# Intel（x86_64）
+./scripts/build-dmg.sh --arch intel
+# 等价：
+./scripts/build-dmg-intel.sh
+```
+
+脚本会拉取对应架构的官方 sing-box 内核并打进安装包。产物在：
+
+`src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`
+
+### Windows 安装包
+
+```powershell
+pwsh scripts/build-windows.ps1
 ```
 
 ## 友情链接

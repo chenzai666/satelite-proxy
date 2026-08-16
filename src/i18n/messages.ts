@@ -236,7 +236,7 @@ const en = {
   "settings.coreUser": "user",
   "settings.coreUpdateAvail": "update",
   "settings.coreHint":
-    "macOS arm64 ships with bundled sing-box (resources/bin/darwin-arm64/). Download installs a user binary that takes priority; falls back to bundled when missing.",
+    "macOS (Apple Silicon and Intel) ships with bundled sing-box. Download installs a user binary that takes priority; falls back to bundled when missing.",
   "settings.savedRestart": "Saved. Restart proxy / toggle TUN to apply ports.",
   "settings.invalidMixed": "mixed port invalid",
   "settings.invalidApi": "api port invalid",
@@ -868,7 +868,7 @@ const zh: Record<MessageKey, string> = {
   "settings.coreUser": "用户下载",
   "settings.coreUpdateAvail": "可更新",
   "settings.coreHint":
-    "macOS arm64 已内置官方 sing-box。「下载到数据目录」会优先使用用户内核；无用户内核时回退内置。",
+    "macOS（Apple 芯片 / Intel）已内置官方 sing-box。「下载到数据目录」会优先使用用户内核；无用户内核时回退内置。",
   "settings.savedRestart": "已保存。重启代理 / 切换 TUN 后生效。",
   "settings.invalidMixed": "mixed 端口无效",
   "settings.invalidApi": "api 端口无效",
