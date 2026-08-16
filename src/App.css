@@ -2363,7 +2363,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument):not(.simple-spark) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2376,7 +2376,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument):not(.simple-spark):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -5551,15 +5551,15 @@ button.active-soft {
   border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
-/* Connect page fills the strip; orbit sits at the top like Overview. */
+/* Connect page fills the strip; keep it one screen, no scrollbar. */
 .simple-shell .simple-main:has(.simple-connect) {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   justify-content: flex-start;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
+  padding-bottom: 0.45rem;
 }
 
 .simple-shell .simple-main:has(.simple-connect) > .page-enter {
@@ -5616,8 +5616,9 @@ button.active-soft {
   flex: 1;
   justify-content: flex-start;
   align-items: stretch;
-  padding: 0 0 0.6rem;
-  gap: 0.75rem;
+  padding: 0 0 0.25rem;
+  gap: 0.4rem;
+  overflow: hidden;
 }
 
 .simple-dash-hero.dash-hero {
@@ -5626,10 +5627,11 @@ button.active-soft {
   align-items: center;
   text-align: center;
   grid-template-columns: none;
-  gap: 0.55rem;
-  padding: 0.35rem 0 0.4rem;
+  gap: 0.28rem;
+  padding: 0.05rem 0 0.1rem;
   margin-bottom: 0;
   width: 100%;
+  flex-shrink: 0;
 }
 
 .simple-dash-copy {
@@ -5641,11 +5643,11 @@ button.active-soft {
 }
 
 .simple-dash-copy .dash-kicker {
-  margin-bottom: 0.3rem;
+  margin-bottom: 0.12rem;
 }
 
 .simple-dash-copy .dash-hero-title {
-  font-size: 1.18rem;
+  font-size: 1.05rem;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5653,24 +5655,26 @@ button.active-soft {
 }
 
 .simple-dash-copy .dash-hero-desc {
-  margin-top: 0.28rem;
-  font-size: 0.74rem;
+  margin-top: 0.12rem;
+  font-size: 0.7rem;
 }
 
 .simple-instruments {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.55rem;
+  gap: 0.4rem;
+  flex-shrink: 0;
 }
 
 .simple-instrument.instrument {
   min-height: 0;
-  padding: 0.65rem 0.7rem;
+  padding: 0.45rem 0.55rem;
   appearance: none;
   font: inherit;
   color: inherit;
   text-align: left;
   width: 100%;
+  gap: 0.2rem;
 }
 
 .simple-instrument .instrument-value.sm {
@@ -5684,10 +5688,11 @@ button.active-soft {
 .simple-rail {
   display: flex;
   flex-direction: column;
-  gap: 0.7rem;
-  padding: 0.15rem 0 0;
+  gap: 0.4rem;
+  padding: 0.1rem 0 0;
   border-top: 1px solid var(--border-subtle);
-  padding-top: 0.7rem;
+  padding-top: 0.4rem;
+  flex-shrink: 0;
 }
 
 .simple-rail > .dash-inline-row {
@@ -5699,6 +5704,233 @@ button.active-soft {
   min-width: 0;
   width: 100%;
   display: flex;
+}
+
+.simple-spark {
+  appearance: none !important;
+  display: flex;
+  flex-direction: column;
+  margin-top: auto;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  padding: 0.38rem 0.4rem 0.3rem !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  background: var(--surface) !important;
+  color: inherit !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.simple-spark:hover {
+  border-color: var(--border-strong) !important;
+  background: var(--surface-2) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+.simple-spark-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.simple-spark-head .instrument-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0;
+}
+
+.simple-spark-legend {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.4rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+}
+
+.simple-spark-conns {
+  color: var(--accent-cyan);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+}
+
+.simple-spark-tag {
+  margin-left: 0.4rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.simple-spark-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0.28rem;
+}
+
+.simple-spark-flow {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr) 3rem;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+}
+
+.simple-spark-rail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.simple-spark-rail-kicker {
+  flex-shrink: 0;
+  padding: 0 0.05rem 0.04rem;
+  font-family: var(--mono);
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.simple-spark-rail.left .simple-spark-rail-kicker {
+  text-align: right;
+}
+
+.simple-spark-rail.right .simple-spark-rail-kicker {
+  text-align: left;
+}
+
+.simple-spark-mid {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.simple-spark-bg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  opacity: 0.48;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.simple-spark-col {
+  list-style: none;
+  margin: 0;
+  padding: 0.04rem 0 0.08rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.simple-spark-col.left {
+  align-items: flex-end;
+}
+
+.simple-spark-col.right {
+  align-items: flex-start;
+}
+
+.simple-spark-col li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.62rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--muted);
+  width: 100%;
+  max-width: 100%;
+}
+
+.simple-spark-col.left li {
+  text-align: right;
+}
+
+.simple-spark-col.right li {
+  text-align: left;
+}
+
+.simple-spark-arcs {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.simple-spark-arc {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 26%, transparent);
+  stroke-width: 1.15;
+  stroke-dasharray: 3.2 4.6;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.simple-spark-arc.hot {
+  stroke: color-mix(in srgb, var(--primary) 42%, transparent);
+}
+
+.simple-spark-area {
+  stroke: none;
+}
+
+.simple-spark-area.down {
+  fill: color-mix(in srgb, var(--download) 16%, transparent);
+}
+
+.simple-spark-area.up {
+  fill: color-mix(in srgb, var(--upload) 12%, transparent);
+}
+
+.simple-spark-line {
+  fill: none;
+  stroke-width: 1.25;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.simple-spark-line.down {
+  stroke: color-mix(in srgb, var(--download) 82%, transparent);
+}
+
+.simple-spark-line.up {
+  stroke: color-mix(in srgb, var(--upload) 78%, transparent);
+}
+
+.simple-spark-idle {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  pointer-events: none;
 }
 
 .simple-page-head {
@@ -5795,14 +6027,18 @@ button.active-soft {
 }
 
 .simple-orbit {
-  width: 168px;
-  height: 168px;
+  width: 128px;
+  height: 128px;
   margin: 0;
   pointer-events: none;
 }
 
+.simple-orbit .orbit-sat {
+  transform-origin: 4px 53px;
+}
+
 .simple-orbit-power {
-  font-size: 1.65rem;
+  font-size: 1.4rem;
   font-weight: 500;
   line-height: 1;
   color: rgba(255, 255, 255, 0.92);

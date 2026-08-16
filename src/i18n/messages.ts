@@ -40,6 +40,12 @@ const en = {
   "simple.stopping": "Stopping…",
   "simple.connected": "Connected",
   "simple.loadMore": "Load more ({shown}/{total})",
+  "simple.spark": "Activity",
+  "simple.sparkIdle": "Waiting for traffic",
+  "simple.sparkIdleConns": "Idle",
+  "simple.sparkConns": "{n} conns",
+  "simple.sparkApps": "Apps",
+  "simple.sparkNodes": "Nodes",
 
   // dashboard
   "dashboard.title": "Overview",
@@ -676,6 +682,12 @@ const zh: Record<MessageKey, string> = {
   "simple.stopping": "停止中…",
   "simple.connected": "已连接",
   "simple.loadMore": "加载更多（{shown}/{total}）",
+  "simple.spark": "实时活动",
+  "simple.sparkIdle": "等待流量",
+  "simple.sparkIdleConns": "空闲",
+  "simple.sparkConns": "{n} 连接",
+  "simple.sparkApps": "程序",
+  "simple.sparkNodes": "节点",
 
   "dashboard.title": "概览",
   "dashboard.desc": "启动代理后通过所选节点转发流量",

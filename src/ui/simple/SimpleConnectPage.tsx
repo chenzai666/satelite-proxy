@@ -14,6 +14,7 @@ import { GlassSeg } from "../../components/GlassSeg";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
+import { SimpleTrafficSpark } from "./SimpleTrafficSpark";
 import type {
   AutoSelectMode,
   OutboundMode,
@@ -63,6 +64,9 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [spark, setSpark] = useState<
+    { up: number; down: number; conns: number }[]
+  >([]);
 
   const reloadStatus = useCallback(async () => {
     try {
@@ -266,6 +270,14 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   const up = proxy?.upload_speed ?? 0;
   const down = proxy?.download_speed ?? 0;
+  const conns = proxy?.connections ?? 0;
+
+  useEffect(() => {
+    setSpark((prev) => {
+      const next = [...prev, { up, down, conns }];
+      return next.length > 60 ? next.slice(next.length - 60) : next;
+    });
+  }, [nowSec, up, down, conns]);
   const startedAt = proxy?.core_started_at ?? null;
   const uptimeLabel =
     running && startedAt != null && startedAt > 0
@@ -508,6 +520,19 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
           />
         </div>
       </aside>
+
+      <SimpleTrafficSpark
+        samples={spark}
+        up={up}
+        down={down}
+        conns={conns}
+        running={running}
+        label={t("simple.spark")}
+        idleLabel={t("simple.sparkIdle")}
+        idleConnsLabel={t("simple.sparkIdleConns")}
+        connsLabel={t("simple.sparkConns", { n: conns })}
+        onOpen={onGoTraffic}
+      />
     </div>
   );
 }
