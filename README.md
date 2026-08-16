@@ -54,9 +54,9 @@
 - **中英双语文案**，浅色 / 深色，多种主题色
 
 <p align="center">
-  <img src="assets/1.png" alt="Windows 概览" width="380" />
+  <img src="assets/1.png" alt="Windows 概览" width="760" />
   &nbsp;
-  <img src="assets/3.png" alt="规则分流" width="380" />
+  <img src="assets/3.png" alt="规则分流" width="760" />
 </p>
 <p align="center">
   <img src="assets/2.png" alt="应用设置" width="760" />
