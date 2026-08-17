@@ -162,6 +162,7 @@ pub fn get_subscription(
 
 #[tauri::command]
 pub async fn add_subscription_url(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     url: String,
@@ -198,11 +199,12 @@ pub async fn add_subscription_url(
         auto_update.unwrap_or(false),
         auto_update_interval_min.unwrap_or(1440),
     );
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
 pub async fn add_subscription_file(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     path: String,
@@ -211,32 +213,35 @@ pub async fn add_subscription_file(
 ) -> Result<ImportResult, String> {
     let _ = (auto_update, auto_update_interval_min);
     let outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
 pub async fn add_subscription_text(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     content: String,
 ) -> Result<ImportResult, String> {
     let outcome = import_text_blocking(name, content, None).await?;
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
 pub async fn add_subscription_node(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     uri: Option<String>,
     node: Option<ManualNodeDraft>,
 ) -> Result<ImportResult, String> {
     let outcome = import_node_blocking(name, uri, node, None).await?;
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
 pub async fn add_subscription_singbox(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     content: Option<String>,
@@ -244,7 +249,7 @@ pub async fn add_subscription_singbox(
 ) -> Result<ImportResult, String> {
     let body = load_inline_body(content, path).await?;
     let outcome = import_singbox_blocking(name, body, None).await?;
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
@@ -263,6 +268,7 @@ pub fn read_import_file(path: String) -> Result<String, String> {
 /// Update existing subscription. Keeps stable id. Re-imports nodes.
 #[tauri::command]
 pub async fn update_subscription(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     name: Option<String>,
@@ -383,16 +389,17 @@ pub async fn update_subscription(
         outcome.subscription.auto_update = false;
     }
 
-    persist_import_replacing(&state, outcome, replaced_id.as_deref())
+    persist_import_replacing(&app, &state, outcome, replaced_id.as_deref())
 }
 
 #[tauri::command]
 pub async fn refresh_subscription(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     via_proxy: Option<bool>,
 ) -> Result<ImportResult, String> {
-    refresh_subscription_inner(&state, id, via_proxy).await
+    refresh_subscription_inner(&app, &state, id, via_proxy).await
 }
 
 fn apply_auto_update_prefs(
@@ -406,13 +413,15 @@ fn apply_auto_update_prefs(
 
 /// Internal refresh used by the auto-update scheduler (no Tauri State).
 pub async fn refresh_subscription_by_id(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: &str,
 ) -> Result<ImportResult, String> {
-    refresh_subscription_inner(state, id.to_string(), None).await
+    refresh_subscription_inner(app, state, id.to_string(), None).await
 }
 
 async fn refresh_subscription_inner(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: String,
     via_proxy: Option<bool>,
@@ -420,13 +429,14 @@ async fn refresh_subscription_inner(
     match begin_refresh_flight(&id)? {
         RefreshFlight::Follower(receiver) => wait_for_refresh(receiver).await,
         RefreshFlight::Leader(leader) => {
-            let result = refresh_subscription_once(state, id, via_proxy).await;
+            let result = refresh_subscription_once(app, state, id, via_proxy).await;
             leader.finish(result)
         }
     }
 }
 
 async fn refresh_subscription_once(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: String,
     via_proxy: Option<bool>,
@@ -522,7 +532,7 @@ async fn refresh_subscription_once(
         latest.auto_update,
         latest.auto_update_interval_min,
     );
-    persist_import(state, outcome)
+    persist_import(app, state, outcome)
 }
 
 async fn import_file_blocking(
@@ -627,13 +637,15 @@ pub fn list_subscription_nodes(
 }
 
 fn persist_import(
+    app: &tauri::AppHandle,
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
 ) -> Result<ImportResult, String> {
-    persist_import_replacing(state, outcome, None)
+    persist_import_replacing(app, state, outcome, None)
 }
 
 fn persist_import_replacing(
+    app: &tauri::AppHandle,
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
     remove_id: Option<&str>,
@@ -649,9 +661,10 @@ fn persist_import_replacing(
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
-    let view = state
+    let (view, node_set_changed) = state
         .with_store_mut(|store| {
             let mut outcome = outcome;
+            let node_ids_before = store.enabled_node_ids_sorted();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
                 store
                     .subscriptions
@@ -668,13 +681,27 @@ fn persist_import_replacing(
             store.upsert_subscription(outcome.subscription, outcome.nodes)?;
             store.ensure_subscription_enable_policy();
             store.ensure_current_node_valid();
+            let node_ids_after = store.enabled_node_ids_sorted();
             let view = store
                 .get_subscription(&sub_id)
                 .map(|s| s.to_view())
                 .ok_or_else(|| crate::error::AppError::NotFound(sub_id.clone()))?;
-            Ok(view)
+            Ok((view, node_ids_before != node_ids_after))
         })
         .map_err(|e| e.to_string())?;
+    if node_set_changed {
+        // Node ids are content hashes, so a refreshed subscription may rename
+        // or rotate nodes. The running core still holds outbounds built from
+        // the old ids: without a rebuild, traffic rows lose their display
+        // names (raw node-… tags) and stale outbounds can dial servers the
+        // provider has already retired. Same debounced queue rule edits use —
+        // several subscriptions updating together produce one rebuild.
+        crate::app_log::info(
+            "subscription",
+            format!("{sub_id}: enabled node set changed; queued core rebuild"),
+        );
+        crate::rule_apply::request_restart(app.clone(), Vec::new());
+    }
     Ok(ImportResult {
         subscription: view,
         node_count,

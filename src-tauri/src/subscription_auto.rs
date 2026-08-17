@@ -146,7 +146,7 @@ fn spawn_auto_update(
 ) {
     updates.spawn(async move {
         let result = match app.try_state::<AppState>() {
-            Some(state) => refresh_subscription_by_id(&state, &id).await,
+            Some(state) => refresh_subscription_by_id(&app, &state, &id).await,
             None => Err("app state unavailable".into()),
         };
         (id, last_update, result)

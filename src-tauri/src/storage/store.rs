@@ -630,6 +630,28 @@ impl AppStore {
             .collect()
     }
 
+    /// Sorted ids of the nodes the generated config would include (same filter
+    /// as [`Self::enabled_nodes`]). Subscription imports compare this before
+    /// and after to decide whether the running core needs a rebuild — node ids
+    /// are content hashes, so a renamed or rotated node silently changes the
+    /// id set the running core was built from.
+    pub fn enabled_node_ids_sorted(&self) -> Vec<String> {
+        let enabled: std::collections::HashSet<_> = self
+            .subscriptions
+            .iter()
+            .filter(|s| s.enabled && s.source.contributes_nodes())
+            .map(|s| s.id.as_str())
+            .collect();
+        let mut ids: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|n| enabled.contains(n.subscription_id.as_str()))
+            .map(|n| n.node.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Exclusive (default): only one subscription enabled.
     /// Mix: multiple can be enabled.
     pub fn ensure_subscription_enable_policy(&mut self) {
@@ -1363,6 +1385,64 @@ mod tests {
             auto_update_interval_min: 1440,
             traffic: None,
         }
+    }
+
+    fn stored_node(sub_id: &str, node_id: &str) -> StoredNode {
+        StoredNode {
+            subscription_id: sub_id.into(),
+            node: crate::domain::ProxyNode {
+                id: node_id.into(),
+                name: node_id.into(),
+                protocol: crate::domain::Protocol::Trojan,
+                server: "example.com".into(),
+                port: 443,
+                tls: None,
+                transport: None,
+                udp: None,
+                config: crate::domain::ProtocolConfig::Trojan {
+                    password: "x".into(),
+                },
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            },
+        }
+    }
+
+    #[test]
+    fn enabled_node_ids_sorted_tracks_node_and_enable_changes() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("a");
+        let sub_id = sub.id.clone();
+        store.subscriptions.push(sub);
+        store.nodes.push(stored_node(&sub_id, "node-a"));
+
+        let before = store.enabled_node_ids_sorted();
+        assert_eq!(before, vec!["node-a".to_string()]);
+
+        // Identical refresh (same ids) keeps the fingerprint stable — no
+        // rebuild would be queued.
+        store.nodes.clear();
+        store.nodes.push(stored_node(&sub_id, "node-a"));
+        assert_eq!(store.enabled_node_ids_sorted(), before);
+
+        // Renamed node → new content-hash id → fingerprint changes.
+        store.nodes.clear();
+        store.nodes.push(stored_node(&sub_id, "node-b"));
+        assert_ne!(store.enabled_node_ids_sorted(), before);
+
+        // Disabling the subscription removes its nodes from the projection.
+        let with_node = store.enabled_node_ids_sorted();
+        store.subscriptions[0].enabled = false;
+        assert!(store.enabled_node_ids_sorted().is_empty());
+        assert_ne!(store.enabled_node_ids_sorted(), with_node);
+
+        // Singbox (custom config) subscriptions never contribute nodes.
+        store.subscriptions[0].enabled = true;
+        store.subscriptions[0].source = crate::domain::SubscriptionSource::Singbox {
+            content: "{}".into(),
+        };
+        assert!(store.enabled_node_ids_sorted().is_empty());
     }
 
     #[test]
