@@ -337,6 +337,10 @@ button {
     inset 0 -1px 0 rgba(255, 255, 255, 0.018);
   backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
   -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  /* Clip ::after glow. Without this, backdrop-filter promotes overflow to
+     auto and a hover scrollbar shoves the page down. */
+  overflow: hidden;
+  scrollbar-width: none;
 }
 
 /* Surface reflection: a strong white edge concentrated in the upper-left
@@ -429,6 +433,7 @@ button {
   align-items: center;
   gap: 0.12rem;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   min-width: 0;
   position: relative;
