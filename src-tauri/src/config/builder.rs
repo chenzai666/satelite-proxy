@@ -415,14 +415,6 @@ fn inline_rule_is_effective(rule: &Rule) -> bool {
     rule.enabled && !rule.payload.trim().is_empty() && rule.rule_type != RuleType::Geoip
 }
 
-fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
-    json!({
-        "type": "inline",
-        "tag": tag,
-        "rules": build_headless_rules(rules).unwrap_or_default(),
-    })
-}
-
 /// Headless rule bodies for one inline rule-set. `None` when nothing is
 /// matchable — sing-box rejects an empty rule body ("missing condition"), so
 /// the caller must drop the definition and everything referencing it.
@@ -2019,8 +2011,7 @@ mod tests {
             ),
             Rule::new(RuleType::DomainKeyword, "中文".into(), RuleTarget::Proxy, 2),
         ];
-        let built = build_inline_rule_set("test-set", &rules);
-        let headless = built["rules"].as_array().unwrap();
+        let headless = build_headless_rules(&rules).expect("non-empty headless body");
         let domain = headless
             .iter()
             .find(|r| r.get("domain").is_some())
