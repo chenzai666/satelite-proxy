@@ -325,15 +325,17 @@ function createParticleSphere(
 
   function applyOptions() {
     renderer.setClearColor(new THREE.Color("#000000"), 0);
-    material.uniforms.uDrift.value = reducedMotion ? 0 : Math.max(config.drift, 0);
     material.uniforms.uSize.value = Math.max(config.size, 0.1);
     material.uniforms.uVariance.value = Math.min(
       Math.max(config.sizeVariance, 0),
       1,
     );
     if (!motionReady) {
+      material.uniforms.uDrift.value = reducedMotion ? 0 : Math.max(config.drift, 0);
       logoMat.opacity = motion.logoOpacity;
       fitGroup.scale.setScalar(sceneScale());
+    } else if (reducedMotion) {
+      material.uniforms.uDrift.value = 0;
     }
   }
 
@@ -351,11 +353,16 @@ function createParticleSphere(
     logoOpacity: config.orbit > 0.2 ? 0.96 : 0.62,
   };
   let motionReady = false;
-  let burst = 0;
 
   function easeMotion(delta: number) {
-    const rising = config.orbit > motion.energy + 0.015;
-    const rate = reducedMotion ? 18 : rising ? 3.5 : 2.4;
+    const gap = config.orbit - motion.energy;
+    const rising = gap > 0.015;
+    // Wake eases in from rest; settle-down keeps the existing stop feel.
+    const rate = reducedMotion
+      ? 18
+      : rising
+        ? 0.85 + 2.15 * (1 - Math.min(Math.max(gap, 0), 1))
+        : 2.4;
     const t = 1 - Math.exp(-rate * delta);
     motion.energy += (config.orbit - motion.energy) * t;
     motion.orbitSpeed += (config.orbitSpeed - motion.orbitSpeed) * t;
@@ -371,7 +378,6 @@ function createParticleSphere(
     motion.logoOpacity += (logoTarget - motion.logoOpacity) * t;
     logoMat.opacity = motion.logoOpacity;
     material.uniforms.uDrift.value = reducedMotion ? 0 : motion.drift;
-    burst *= Math.exp(-(rising ? 2.1 : 3.6) * delta);
     fitGroup.scale.setScalar(sceneScale());
     motionReady = true;
   }
@@ -385,7 +391,7 @@ function createParticleSphere(
       Math.max(canvas.clientHeight, 1),
     );
     if (minSide < 8) return config.scale;
-    return config.scale * (viewRef / minSide) * (1 + burst * 0.08);
+    return config.scale * (viewRef / minSide);
   }
 
   function resize() {
@@ -550,7 +556,7 @@ function createParticleSphere(
     const decay = Math.exp(-dampingRate * delta);
     const swirl = Math.min(Math.max(motion.swirl, 0), 2);
     const orbit = reducedMotion ? 0 : Math.min(Math.max(motion.energy, 0), 1);
-    const orbitBase = motion.orbitSpeed * (1 + burst * 0.28) * orbit;
+    const orbitBase = motion.orbitSpeed * orbit;
 
     fields.length = 0;
     if (pointerActive && !reducedMotion && config.strength > 0) {
@@ -636,7 +642,7 @@ function createParticleSphere(
         vz += nz * pull;
       }
 
-      const homeMix = orbit > 0 ? 0.55 : 1;
+      const homeMix = 1 - 0.45 * orbit;
       vx += (h[ix] - p[ix]) * stiffness * homeMix * delta;
       vy += (h[iy] - p[iy]) * stiffness * homeMix * delta;
       vz += (h[iz] - p[iz]) * stiffness * homeMix * delta;
@@ -674,7 +680,7 @@ function createParticleSphere(
 
     if (!reducedMotion) {
       elapsed += delta * motion.floatSpeed;
-      spin += delta * motion.autoRotateSpeed * (0.18 + burst * 0.22);
+      spin += delta * motion.autoRotateSpeed * 0.18;
       floatGroup.rotation.x =
         (Math.cos(elapsed / 4) / 8) * motion.rotationIntensity;
       floatGroup.rotation.y =
@@ -718,13 +724,8 @@ function createParticleSphere(
 
   return {
     setOptions(next: Partial<SphereOptions>) {
-      const wasOrbit = config.orbit;
       Object.assign(config, next);
       applyOptions();
-      if (!reducedMotion && config.orbit > wasOrbit + 0.25) {
-        burst = 1;
-        kickOrbit();
-      }
       startLoop();
     },
     destroy() {
@@ -747,6 +748,15 @@ function createParticleSphere(
   };
 }
 
+function motionTarget(
+  state: ParticleSphereState,
+  lastSettled: ParticleSphereState,
+): ParticleSphereState {
+  if (state !== "switching") return state;
+  // Starting / stopping is one ease to the destination, not a third pose.
+  return lastSettled === "live" ? "stopped" : "live";
+}
+
 function optionsFor(
   state: ParticleSphereState,
   color: string,
@@ -754,26 +764,25 @@ function optionsFor(
   size: number,
 ): SphereOptions {
   const live = state === "live";
-  const switching = state === "switching";
   const stopped = state === "stopped";
   return {
     count,
     size,
     sizeVariance: 0.72,
     color,
-    radius: switching ? 130 : 100,
+    radius: 100,
     strength: stopped ? 0.65 : 1,
-    swirl: switching ? 1.05 : live ? 0.85 : 0.6,
-    spring: live ? 0.45 : switching ? 0.62 : 1,
-    damping: live ? 0.18 : switching ? 0.22 : 0.32,
-    drift: stopped ? 0.22 : switching ? 0.7 : live ? 0.55 : 0.45,
+    swirl: live ? 0.85 : 0.6,
+    spring: live ? 0.45 : 1,
+    damping: live ? 0.18 : 0.32,
+    drift: stopped ? 0.22 : live ? 0.55 : 0.45,
     scale: 3.861,
-    floatIntensity: stopped ? 0.45 : switching ? 1.25 : 1.05,
-    rotationIntensity: stopped ? 0.35 : switching ? 0.95 : 0.8,
-    floatSpeed: stopped ? 0.7 : switching ? 2.1 : live ? 1.5 : 1.1,
-    autoRotateSpeed: stopped ? 0.35 : switching ? 2.2 : live ? 0.45 : 0.7,
-    orbit: live ? 1 : switching ? 0.4 : 0,
-    orbitSpeed: live ? 2.2 : switching ? 3.2 : 0,
+    floatIntensity: stopped ? 0.45 : 1.05,
+    rotationIntensity: stopped ? 0.35 : 0.8,
+    floatSpeed: stopped ? 0.7 : live ? 1.5 : 1.1,
+    autoRotateSpeed: stopped ? 0.35 : live ? 0.45 : 0.7,
+    orbit: live ? 1 : 0,
+    orbitSpeed: live ? 2.2 : 0,
   };
 }
 
@@ -786,8 +795,13 @@ export function ParticleSphere({
 }: ParticleSphereProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const instanceRef = useRef<SphereInstance | null>(null);
+  const lastSettledRef = useRef<ParticleSphereState>(
+    state === "switching" ? "stopped" : state,
+  );
   const [failed, setFailed] = useState(false);
-  const [initial] = useState(() => optionsFor(state, color ?? "", count, size));
+  const [initial] = useState(() =>
+    optionsFor(motionTarget(state, lastSettledRef.current), color ?? "", count, size),
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -805,7 +819,9 @@ export function ParticleSphere({
   }, [initial]);
 
   useEffect(() => {
-    instanceRef.current?.setOptions(optionsFor(state, color ?? "", count, size));
+    const target = motionTarget(state, lastSettledRef.current);
+    if (state !== "switching") lastSettledRef.current = state;
+    instanceRef.current?.setOptions(optionsFor(target, color ?? "", count, size));
   }, [state, color, count, size]);
 
   if (failed) {

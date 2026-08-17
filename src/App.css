@@ -3978,8 +3978,19 @@ button.check.on {
   box-shadow: none !important;
 }
 
+.dash-hero .particle-orbit {
+  filter: saturate(1) brightness(1);
+  transition: filter 1.25s ease;
+}
+
 .dash-hero.is-stopped .particle-orbit {
   filter: saturate(0.55) brightness(0.88);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-hero .particle-orbit {
+    transition: none;
+  }
 }
 
 .dash-hero.is-stopped .orbit-core {
@@ -6342,6 +6353,18 @@ button.active-soft {
 .simple-connect-hero.is-stopped .orbit-core {
   filter: grayscale(0.55) brightness(0.85);
   box-shadow: none;
+}
+
+.simple-connect-hero .particle-orbit,
+.simple-connect-hero .orbit-core {
+  transition: filter 1.25s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .simple-connect-hero .particle-orbit,
+  .simple-connect-hero .orbit-core {
+    transition: none;
+  }
 }
 
 .simple-connect-hero.is-stopped .simple-orbit-power {
