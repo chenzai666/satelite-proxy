@@ -11,10 +11,38 @@ import { getSettings, updateSettings } from "../api";
 import type { HeroStyle, ThemeId } from "../types";
 import { applyAccentToDom, resolveAccent } from "./accents";
 
+const THEME_KEY = "satelite.theme";
+const ACCENT_KEY = "satelite.accent";
+
 export function normalizeTheme(raw: string | null | undefined): ThemeId {
   const t = (raw ?? "").trim().toLowerCase();
   if (t === "aerospace") return "aerospace";
   return "day";
+}
+
+export function readStoredTheme(): ThemeId {
+  try {
+    return normalizeTheme(localStorage.getItem(THEME_KEY));
+  } catch {
+    return "day";
+  }
+}
+
+export function readStoredAccent(): string {
+  try {
+    return resolveAccent(localStorage.getItem(ACCENT_KEY)).id;
+  } catch {
+    return "green";
+  }
+}
+
+function persistThemePref(theme: ThemeId, accent: string) {
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+    localStorage.setItem(ACCENT_KEY, accent);
+  } catch {
+    /* ignore */
+  }
 }
 
 export function normalizeHeroStyle(raw: string | null | undefined): HeroStyle {
@@ -29,6 +57,7 @@ export function applyThemeToDom(theme: ThemeId, accent: string) {
   document.documentElement.style.colorScheme =
     theme === "day" ? "light" : "dark";
   applyAccentToDom(accent, theme);
+  persistThemePref(theme, accent);
 }
 
 interface ThemeContextValue {
@@ -44,8 +73,8 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeId>("day");
-  const [accent, setAccentState] = useState<string>("green");
+  const [theme, setThemeState] = useState<ThemeId>(readStoredTheme);
+  const [accent, setAccentState] = useState<string>(readStoredAccent);
   const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
   const [ready, setReady] = useState(false);
 
@@ -63,7 +92,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         applyThemeToDom(nextTheme, nextAccent);
       })
       .catch(() => {
-        applyThemeToDom("day", "green");
+        applyThemeToDom(readStoredTheme(), readStoredAccent());
       })
       .finally(() => {
         if (!cancelled) setReady(true);

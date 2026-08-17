@@ -4,6 +4,8 @@ export {
   normalizeTheme,
   normalizeHeroStyle,
   applyThemeToDom,
+  readStoredTheme,
+  readStoredAccent,
 } from "./ThemeContext";
 
 export {
