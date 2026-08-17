@@ -6070,7 +6070,7 @@ button.active-soft {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 3rem minmax(0, 1fr) 3rem;
+  grid-template-columns: auto minmax(0, 1fr) 3rem;
   align-items: stretch;
   height: 100%;
   min-height: 0;
@@ -6084,6 +6084,11 @@ button.active-soft {
   background: transparent;
   border: none;
   box-shadow: none;
+}
+
+.simple-spark-rail.left {
+  width: max-content;
+  max-width: 5.5rem;
 }
 
 .simple-spark-rail-kicker {
@@ -6155,7 +6160,23 @@ button.active-soft {
 }
 
 .simple-spark-col.left li {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  width: max-content;
+  max-width: 100%;
   text-align: right;
+}
+
+.simple-spark-app-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.simple-spark-app-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .simple-spark-col.right li {

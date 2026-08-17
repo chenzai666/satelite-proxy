@@ -212,6 +212,15 @@ export function SimpleTrafficSpark({
   const empty = !running || (!hasTraffic && !hasConns);
 
   const links = useMemo(() => buildLinks(rows), [rows]);
+  const processCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of rows) {
+      if (r.closed) continue;
+      const process = shortProcess(r.process) || r.host || "—";
+      map.set(process, (map.get(process) ?? 0) + 1);
+    }
+    return map;
+  }, [rows]);
   const left = useMemo(
     () => uniqueKeep(links.map((l) => l.process)),
     [links],
@@ -311,18 +320,23 @@ export function SimpleTrafficSpark({
               {t("simple.sparkApps")}
             </div>
             <ul className="simple-spark-col left">
-              {left.map((name) => (
-                <li
-                  key={name}
-                  title={name}
-                  ref={(el) => {
-                    if (el) leftRefs.current.set(name, el);
-                    else leftRefs.current.delete(name);
-                  }}
-                >
-                  {name}
-                </li>
-              ))}
+              {left.map((name) => {
+                const count = processCounts.get(name) ?? 0;
+                const itemLabel = `${name}:${count}`;
+                return (
+                  <li
+                    key={name}
+                    title={itemLabel}
+                    ref={(el) => {
+                      if (el) leftRefs.current.set(name, el);
+                      else leftRefs.current.delete(name);
+                    }}
+                  >
+                    <span className="simple-spark-app-name">{name}</span>
+                    <span className="simple-spark-app-count">:{count}</span>
+                  </li>
+                );
+              })}
             </ul>
           </aside>
           <div className="simple-spark-mid">
