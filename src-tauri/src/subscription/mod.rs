@@ -1,10 +1,15 @@
 //! Subscription body → normalized [`ProxyNode`] list.
 
 mod clash;
+mod json_util;
+mod manual;
+mod singbox;
 mod uri;
 mod yaml_util;
 
 pub use clash::parse_clash_yaml;
+pub use manual::{node_to_draft, parse_manual_draft, parse_single_uri};
+pub use singbox::{looks_like_singbox_json, parse_singbox_json, validate_complete_singbox_config};
 pub use uri::parse_uri_list;
 
 use crate::domain::{ParseResult, SubscriptionFormat};
@@ -24,14 +29,45 @@ pub(super) fn ensure_entry_limit(count: usize) -> AppResult<()> {
     Ok(())
 }
 
-/// Detect format and parse subscription body (YAML / URI list / base64 URI list).
+/// Detect format and parse subscription / config body
+/// (sing-box JSON, Clash YAML/JSON, URI list, base64 URI list).
 pub fn parse_subscription(content: &str) -> AppResult<ParseResult> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return Err(AppError::EmptySubscription);
     }
 
-    // 1) Looks like Clash YAML
+    // 1) JSON: sing-box config / outbounds, or Clash-as-JSON
+    if looks_like_json(trimmed) {
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) => {
+                if looks_like_singbox_json(&value) {
+                    match parse_singbox_json(trimmed) {
+                        Ok(r) => return Ok(r),
+                        Err(e) => {
+                            if value.get("outbounds").is_some() {
+                                return Err(e);
+                            }
+                        }
+                    }
+                }
+                if value.get("proxies").is_some() {
+                    match parse_clash_from_json(&value) {
+                        Ok(r) => return Ok(r),
+                        Err(e) => return Err(e),
+                    }
+                }
+                if looks_like_singbox_json(&value) {
+                    return parse_singbox_json(trimmed);
+                }
+            }
+            Err(e) => {
+                return Err(AppError::SubscriptionParse(format!("invalid json: {e}")));
+            }
+        }
+    }
+
+    // 2) Looks like Clash YAML
     if looks_like_clash_yaml(trimmed) {
         match parse_clash_yaml(trimmed) {
             Ok(r) => return Ok(r),
@@ -44,14 +80,19 @@ pub fn parse_subscription(content: &str) -> AppResult<ParseResult> {
         }
     }
 
-    // 2) Plain URI lines
+    // 3) Plain URI lines
     if looks_like_uri_list(trimmed) {
         return parse_uri_list(trimmed, SubscriptionFormat::UriList);
     }
 
-    // 3) Whole-body base64 → decode → recurse-ish
+    // 4) Whole-body base64 → decode → recurse-ish
     if let Some(decoded) = try_decode_base64_body(trimmed) {
         let inner = decoded.trim();
+        if looks_like_json(inner) {
+            if let Ok(r) = parse_subscription(inner) {
+                return Ok(r);
+            }
+        }
         if looks_like_clash_yaml(inner) {
             if let Ok(r) = parse_clash_yaml(inner) {
                 return Ok(r);
@@ -66,19 +107,31 @@ pub fn parse_subscription(content: &str) -> AppResult<ParseResult> {
         }
     }
 
-    // 4) Last attempt: yaml without strong heuristic
+    // 5) Last attempt: yaml without strong heuristic
     if let Ok(r) = parse_clash_yaml(trimmed) {
         return Ok(r);
     }
 
-    // 5) Last attempt: treat as URI list
+    // 6) Last attempt: treat as URI list
     if let Ok(r) = parse_uri_list(trimmed, SubscriptionFormat::UriList) {
         return Ok(r);
     }
 
     Err(AppError::SubscriptionParse(
-        "unable to detect subscription format (expected Clash YAML or proxy URI list)".into(),
+        "unable to detect format (expected sing-box JSON, Clash YAML/JSON, or proxy URI list)"
+            .into(),
     ))
+}
+
+fn looks_like_json(s: &str) -> bool {
+    let t = s.trim_start();
+    t.starts_with('{') || t.starts_with('[')
+}
+
+fn parse_clash_from_json(value: &serde_json::Value) -> AppResult<ParseResult> {
+    let yaml = serde_yaml::to_string(value)
+        .map_err(|e| AppError::SubscriptionParse(format!("clash json: {e}")))?;
+    parse_clash_yaml(&yaml)
 }
 
 fn looks_like_clash_yaml(s: &str) -> bool {
@@ -198,5 +251,13 @@ proxies:
         let r = parse_subscription(plain).unwrap();
         assert_eq!(r.format, SubscriptionFormat::UriList);
         assert_eq!(r.nodes[0].name, "V1");
+    }
+
+    #[test]
+    fn detect_singbox_outbounds() {
+        let json = r#"{"outbounds":[{"type":"trojan","tag":"T1","server":"t.example.com","server_port":443,"password":"x"}]}"#;
+        let r = parse_subscription(json).unwrap();
+        assert_eq!(r.format, SubscriptionFormat::SingboxJson);
+        assert_eq!(r.nodes[0].name, "T1");
     }
 }

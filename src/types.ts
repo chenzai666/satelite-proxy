@@ -96,7 +96,7 @@ export interface SubscriptionTraffic {
 export interface SubscriptionView {
   id: string;
   name: string;
-  source_kind: "url" | "file" | string;
+  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
   source_display: string;
   last_update: number;
   node_count: number;
@@ -114,9 +114,12 @@ export interface SubscriptionView {
 export interface SubscriptionDetail {
   id: string;
   name: string;
-  source_kind: "url" | "file" | string;
+  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
   url?: string | null;
   path?: string | null;
+  content?: string | null;
+  uri?: string | null;
+  node?: ManualNodeDraft | null;
   last_update: number;
   node_count: number;
   enabled: boolean;
@@ -178,7 +181,59 @@ export interface LatencyBatchResult {
   method?: string;
 }
 
-export type AddSourceKind = "url" | "file";
+export type AddSourceKind = "url" | "file" | "text" | "node" | "singbox";
+
+export type ProfileKind = "subscription" | "local";
+export type LocalKind = "node" | "multi" | "singbox";
+export type ConfigInputMode = "paste" | "file";
+
+/** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
+export interface ManualNodeDraft {
+  protocol: string;
+  server: string;
+  port: number;
+  name?: string | null;
+  password?: string | null;
+  uuid?: string | null;
+  method?: string | null;
+  plugin?: string | null;
+  pluginOpts?: string | null;
+  alterId?: number | null;
+  security?: string | null;
+  flow?: string | null;
+  packetEncoding?: string | null;
+  username?: string | null;
+  path?: string | null;
+  upMbps?: number | null;
+  downMbps?: number | null;
+  obfs?: string | null;
+  obfsPassword?: string | null;
+  congestionControl?: string | null;
+  udpRelayMode?: string | null;
+  zeroRttHandshake?: boolean | null;
+  psk?: string | null;
+  version?: number | null;
+  user?: string | null;
+  privateKey?: string | null;
+  privateKeyPassphrase?: string | null;
+  peerPublicKey?: string | null;
+  localAddress?: string | null;
+  preSharedKey?: string | null;
+  mtu?: number | null;
+  quic?: boolean | null;
+  executablePath?: string | null;
+  tls?: boolean | null;
+  sni?: string | null;
+  insecure?: boolean | null;
+  alpn?: string | null;
+  fingerprint?: string | null;
+  realityPublicKey?: string | null;
+  realityShortId?: string | null;
+  network?: string | null;
+  host?: string | null;
+  serviceName?: string | null;
+  udp?: boolean | null;
+}
 
 /** Clash-style routing mode. */
 export type OutboundMode = "rule" | "global" | "direct";

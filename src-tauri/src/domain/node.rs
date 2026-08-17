@@ -68,6 +68,10 @@ impl Protocol {
             _ => None,
         }
     }
+
+    pub fn from_singbox_type(t: &str) -> Option<Self> {
+        Self::from_clash_type(t)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -310,6 +314,124 @@ impl ProxyNode {
         self.id = Self::compute_id(&self.name, &self.server, self.port, self.protocol);
         self
     }
+
+    /// Same outbound credentials — ignore display-name fragments.
+    pub fn identity_key(&self) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            self.protocol.as_str(),
+            self.server,
+            self.port,
+            config_identity(&self.config)
+        )
+    }
+
+    /// One selectable node: same backend *and* same display name.
+    /// Airport lists often reuse host/port/auth under different names.
+    pub fn instance_key(&self) -> String {
+        format!("{}|{}", self.identity_key(), self.name)
+    }
+}
+
+fn config_identity(config: &ProtocolConfig) -> String {
+    match config {
+        ProtocolConfig::Shadowsocks { password, method, .. } => {
+            format!("{method}|{password}")
+        }
+        ProtocolConfig::Vmess { uuid, .. } | ProtocolConfig::Vless { uuid, .. } => uuid.clone(),
+        ProtocolConfig::Trojan { password } | ProtocolConfig::AnyTls { password } => {
+            password.clone()
+        }
+        ProtocolConfig::Hysteria2 { password, .. } => password.clone(),
+        ProtocolConfig::Tuic { uuid, password, .. } => format!("{uuid}|{password}"),
+        ProtocolConfig::Socks5 { username, password }
+        | ProtocolConfig::Http {
+            username,
+            password,
+            ..
+        } => format!(
+            "{}|{}",
+            username.clone().unwrap_or_default(),
+            password.clone().unwrap_or_default()
+        ),
+        ProtocolConfig::Hysteria { auth, .. } => auth.clone(),
+        ProtocolConfig::ShadowTls { password, .. } => password.clone().unwrap_or_default(),
+        ProtocolConfig::Ssh {
+            user,
+            password,
+            private_key,
+            ..
+        } => format!(
+            "{user}|{}|{}",
+            password.clone().unwrap_or_default(),
+            private_key.clone().unwrap_or_default()
+        ),
+        ProtocolConfig::Naive {
+            username,
+            password,
+            ..
+        } => format!("{username}|{password}"),
+        ProtocolConfig::Tor { executable_path, .. } => executable_path.clone(),
+        ProtocolConfig::WireGuard {
+            private_key,
+            peer_public_key,
+            ..
+        } => format!("{private_key}|{peer_public_key}"),
+        ProtocolConfig::Snell { psk, version, .. } => format!("{version}|{psk}"),
+    }
+}
+
+/// Compact node facts for the config list and add-form preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeSummary {
+    pub protocol: String,
+    pub server: String,
+    pub port: u16,
+    pub tls: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra: Option<String>,
+}
+
+impl NodeSummary {
+    pub fn from_node(node: &ProxyNode) -> Self {
+        let tls = node.tls.as_ref().is_some_and(|t| t.enabled);
+        let transport = match &node.transport {
+            Some(Transport::Ws { .. }) => Some("ws".into()),
+            Some(Transport::Grpc { .. }) => Some("grpc".into()),
+            Some(Transport::Http { .. }) => Some("http".into()),
+            Some(Transport::HttpUpgrade { .. }) => Some("httpupgrade".into()),
+            Some(Transport::Tcp) | None => None,
+        };
+        let extra = node_extra(node);
+        Self {
+            protocol: node.protocol.as_str().to_string(),
+            server: node.server.clone(),
+            port: node.port,
+            tls,
+            transport,
+            extra,
+        }
+    }
+}
+
+fn node_extra(node: &ProxyNode) -> Option<String> {
+    if node
+        .tls
+        .as_ref()
+        .and_then(|t| t.reality_public_key.as_ref())
+        .is_some()
+    {
+        return Some("Reality".into());
+    }
+    match &node.config {
+        ProtocolConfig::Shadowsocks { method, .. } => Some(method.clone()),
+        ProtocolConfig::Vless { flow, .. } => flow.clone().filter(|s| !s.is_empty()),
+        ProtocolConfig::Vmess { security, .. } => Some(security.clone()),
+        ProtocolConfig::Snell { version, .. } => Some(format!("v{version}")),
+        _ => None,
+    }
 }
 
 /// Result of parsing a subscription body.
@@ -333,4 +455,100 @@ pub enum SubscriptionFormat {
     ClashYaml,
     UriList,
     Base64UriList,
+    SingboxJson,
+    Manual,
+}
+
+/// Flattened form payload for a manually entered node.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualNodeDraft {
+    #[serde(default)]
+    pub protocol: String,
+    #[serde(default)]
+    pub server: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_opts: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alter_id: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_encoding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub up_mbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub down_mbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obfs: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obfs_password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub congestion_control: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_relay_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_rtt_handshake: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psk: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_key_passphrase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_shared_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sni: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insecure: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpn: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality_public_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reality_short_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp: Option<bool>,
 }

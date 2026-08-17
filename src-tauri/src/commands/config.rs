@@ -257,6 +257,17 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
 }
 
 #[tauri::command]
+pub fn rename_node(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<ProxyNode, String> {
+    state
+        .with_store_mut(|store| store.rename_node(&id, name))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
         .with_store(|store| {

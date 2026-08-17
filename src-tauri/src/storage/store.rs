@@ -6,7 +6,9 @@ use crate::domain::{
     GENERAL_SET_NAME,
 };
 use crate::error::{AppError, AppResult};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,9 @@ const MAX_CORRUPT_SNAPSHOTS: usize = 3;
 pub struct AppStore {
     #[serde(default)]
     pub schema_version: u32,
+    #[serde(default)]
     pub subscriptions: Vec<Subscription>,
+    #[serde(default)]
     pub nodes: Vec<StoredNode>,
     #[serde(default)]
     pub settings: AppSettings,
@@ -34,6 +38,19 @@ pub struct AppStore {
     /// Legacy single-active field; migrated into `RuleSet.enabled`.
     #[serde(default)]
     pub active_rule_set_id: Option<String>,
+    /// User-assigned node names, keyed by `identity|parsed-name`.
+    #[serde(default)]
+    pub node_aliases: std::collections::BTreeMap<String, String>,
+    /// Items this build could not parse. Kept so save() writes them back
+    /// instead of dropping newer-schema data.
+    #[serde(skip)]
+    retained_subscriptions: Vec<Value>,
+    #[serde(skip)]
+    retained_nodes: Vec<Value>,
+    #[serde(skip)]
+    retained_rules: Vec<Value>,
+    #[serde(skip)]
+    retained_rule_sets: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +71,7 @@ impl AppStore {
         store.ensure_rule_sets(resource_dir);
         store.migrate_redundant_general_rule_set();
         store.migrate_remote_update_policy();
+        store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
         if schema_before < 5 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v5.backup.json");
@@ -72,18 +90,35 @@ impl AppStore {
     ) -> AppResult<(Self, Option<String>)> {
         match fs::read_to_string(path) {
             Ok(raw) => match parse_store(&raw) {
-                Ok(store) => Ok((store, Some(raw))),
+                Ok(store) => {
+                    if store.subscriptions.is_empty() {
+                        if let Some((richer, snapshot_raw, origin)) =
+                            load_richer_snapshot(path, 0)
+                        {
+                            crate::app_log::warn(
+                                "storage",
+                                format!(
+                                    "store.json had no profiles; restored {} subscriptions from {}",
+                                    richer.subscriptions.len(),
+                                    origin.display()
+                                ),
+                            );
+                            return Ok((richer, Some(snapshot_raw)));
+                        }
+                    }
+                    Ok((store, Some(raw)))
+                }
                 Err(primary_error) => {
                     quarantine_corrupt_store(path, &raw)?;
-                    if let Some((store, backup_raw)) = load_valid_backup(path) {
+                    if let Some((store, snapshot_raw, origin)) = load_valid_snapshot(path) {
                         crate::app_log::warn(
                             "storage",
                             format!(
                                 "store.json was invalid ({primary_error}); restored {}",
-                                backup_path(path).display()
+                                origin.display()
                             ),
                         );
-                        Ok((store, Some(backup_raw)))
+                        Ok((store, Some(snapshot_raw)))
                     } else {
                         crate::app_log::error(
                             "storage",
@@ -96,15 +131,15 @@ impl AppStore {
                 }
             },
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                if let Some((store, backup_raw)) = load_valid_backup(path) {
+                if let Some((store, snapshot_raw, origin)) = load_valid_snapshot(path) {
                     crate::app_log::warn(
                         "storage",
                         format!(
                             "store.json was missing; restored {}",
-                            backup_path(path).display()
+                            origin.display()
                         ),
                     );
-                    Ok((store, Some(backup_raw)))
+                    Ok((store, Some(snapshot_raw)))
                 } else {
                     Ok((Self::with_builtin_sets(resource_dir), None))
                 }
@@ -501,7 +536,7 @@ impl AppStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(self)
+        let raw = serialize_store(self)
             .map_err(|e| AppError::Storage(format!("serialize store: {e}")))?;
         if let Ok(previous_raw) = fs::read_to_string(path) {
             if parse_store(&previous_raw).is_ok() {
@@ -524,7 +559,8 @@ impl AppStore {
         } else {
             self.subscriptions.push(sub);
         }
-        for node in nodes {
+        for mut node in nodes {
+            self.apply_node_alias(&mut node);
             self.nodes.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
@@ -554,11 +590,33 @@ impl AppStore {
         self.subscriptions.iter().find(|s| s.id == id)
     }
 
+    /// Copy leftover path-based file profiles into stored text so we no longer
+    /// depend on an external path.
+    pub fn migrate_file_sources_to_copied_text(&mut self) {
+        for sub in &mut self.subscriptions {
+            let crate::domain::SubscriptionSource::File { path } = &sub.source else {
+                continue;
+            };
+            if path.is_empty() || path.starts_with("satelite:") {
+                continue;
+            }
+            match std::fs::read_to_string(path) {
+                Ok(content) if !content.is_empty() => {
+                    sub.source = crate::domain::SubscriptionSource::Text { content };
+                    sub.auto_update = false;
+                }
+                _ => {
+                    sub.auto_update = false;
+                }
+            }
+        }
+    }
+
     pub fn enabled_nodes(&self) -> Vec<ProxyNode> {
         let enabled: std::collections::HashSet<_> = self
             .subscriptions
             .iter()
-            .filter(|s| s.enabled)
+            .filter(|s| s.enabled && s.source.contributes_nodes())
             .map(|s| s.id.as_str())
             .collect();
         self.nodes
@@ -571,29 +629,49 @@ impl AppStore {
     /// Exclusive (default): only one subscription enabled.
     /// Mix: multiple can be enabled.
     pub fn ensure_subscription_enable_policy(&mut self) {
-        if self.subscriptions.is_empty() {
+        let generated: Vec<String> = self
+            .subscriptions
+            .iter()
+            .filter(|s| s.source.contributes_nodes())
+            .map(|s| s.id.clone())
+            .collect();
+        if generated.is_empty() {
             return;
         }
         if !self.settings.mix_mode {
             let enabled: Vec<String> = self
                 .subscriptions
                 .iter()
-                .filter(|s| s.enabled)
+                .filter(|s| s.enabled && s.source.contributes_nodes())
                 .map(|s| s.id.clone())
                 .collect();
             if enabled.len() > 1 {
                 let keep = enabled[0].clone();
                 for s in &mut self.subscriptions {
-                    s.enabled = s.id == keep;
+                    if s.source.contributes_nodes() {
+                        s.enabled = s.id == keep;
+                    }
                 }
             } else if enabled.is_empty() {
-                if let Some(first) = self.subscriptions.first_mut() {
-                    first.enabled = true;
+                if let Some(first) = generated.first() {
+                    for s in &mut self.subscriptions {
+                        if s.source.contributes_nodes() {
+                            s.enabled = s.id == *first;
+                        }
+                    }
                 }
             }
-        } else if !self.subscriptions.iter().any(|s| s.enabled) {
-            if let Some(first) = self.subscriptions.first_mut() {
-                first.enabled = true;
+        } else if !self
+            .subscriptions
+            .iter()
+            .any(|s| s.enabled && s.source.contributes_nodes())
+        {
+            if let Some(first) = generated.first() {
+                for s in &mut self.subscriptions {
+                    if s.id == *first {
+                        s.enabled = true;
+                    }
+                }
             }
         }
         self.ensure_current_node_valid();
@@ -601,8 +679,14 @@ impl AppStore {
 
     /// Click card: exclusive → enable only this; Mix → toggle this.
     pub fn activate_subscription(&mut self, id: &str) -> AppResult<()> {
-        if !self.subscriptions.iter().any(|s| s.id == id) {
-            return Err(AppError::NotFound(id.to_string()));
+        let contributes = self
+            .subscriptions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.source.contributes_nodes())
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        if !contributes {
+            return Ok(());
         }
         if self.settings.mix_mode {
             let currently = self
@@ -613,7 +697,11 @@ impl AppStore {
                 .unwrap_or(false);
             // Don't allow disabling the last enabled subscription.
             if currently {
-                let enabled_count = self.subscriptions.iter().filter(|s| s.enabled).count();
+                let enabled_count = self
+                    .subscriptions
+                    .iter()
+                    .filter(|s| s.enabled && s.source.contributes_nodes())
+                    .count();
                 if enabled_count <= 1 {
                     return Ok(());
                 }
@@ -656,10 +744,14 @@ impl AppStore {
 
     /// New subscription: enable only when no other is enabled (or none exist).
     pub fn prepare_new_subscription_enabled(&self, sub: &mut Subscription) {
+        if !sub.source.contributes_nodes() {
+            sub.enabled = false;
+            return;
+        }
         let any_enabled = self
             .subscriptions
             .iter()
-            .any(|s| s.enabled && s.id != sub.id);
+            .any(|s| s.enabled && s.id != sub.id && s.source.contributes_nodes());
         if any_enabled {
             sub.enabled = false;
         } else {
@@ -669,6 +761,52 @@ impl AppStore {
 
     pub fn find_node(&self, id: &str) -> Option<&ProxyNode> {
         self.nodes.iter().find(|n| n.node.id == id).map(|n| &n.node)
+    }
+
+    pub fn node_alias_key(node: &ProxyNode) -> String {
+        node.instance_key()
+    }
+
+    fn apply_node_alias(&self, node: &mut ProxyNode) {
+        if let Some(alias) = self.node_aliases.get(&Self::node_alias_key(node)) {
+            let alias = alias.trim();
+            if !alias.is_empty() {
+                node.name = alias.to_string();
+            }
+        }
+    }
+
+    pub fn rename_node(&mut self, id: &str, name: String) -> AppResult<ProxyNode> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(AppError::InvalidProxy {
+                name: id.to_string(),
+                reason: "name is required".into(),
+            });
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|n| n.node.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        let identity = node.node.identity_key();
+        let old_name = node.node.name.clone();
+        let parsed_key = format!("{identity}|{old_name}");
+        let prefix = format!("{identity}|");
+        let source_key = self
+            .node_aliases
+            .iter()
+            .find_map(|(key, value)| {
+                if key.starts_with(&prefix) && value == &old_name {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(parsed_key);
+        node.node.name = name.clone();
+        self.node_aliases.insert(source_key, name);
+        Ok(node.node.clone())
     }
 
     pub fn update_node_latency(
@@ -902,17 +1040,164 @@ fn same_rules_ignoring_storage_fields(left: &[Rule], right: &[Rule]) -> bool {
 }
 
 fn parse_store(raw: &str) -> Result<AppStore, serde_json::Error> {
-    serde_json::from_str(raw)
+    let value: Value = serde_json::from_str(raw)?;
+    Ok(store_from_json(value))
+}
+
+fn store_from_json(value: Value) -> AppStore {
+    let mut store = AppStore::default();
+    let Some(obj) = value.as_object() else {
+        crate::app_log::warn("storage", "store root is not an object; using defaults for missing fields");
+        return store;
+    };
+
+    if let Some(v) = obj.get("schema_version").and_then(Value::as_u64) {
+        store.schema_version = v as u32;
+    }
+
+    let (subs, retained_subs) = split_known_items::<Subscription>(obj.get("subscriptions"));
+    store.subscriptions = subs;
+    store.retained_subscriptions = retained_subs;
+
+    let (nodes, retained_nodes) = split_known_items::<StoredNode>(obj.get("nodes"));
+    store.nodes = nodes;
+    store.retained_nodes = retained_nodes;
+
+    let (rules, retained_rules) = split_known_items::<Rule>(obj.get("rules"));
+    store.rules = rules;
+    store.retained_rules = retained_rules;
+
+    let (rule_sets, retained_sets) = split_known_items::<RuleSet>(obj.get("rule_sets"));
+    store.rule_sets = rule_sets;
+    store.retained_rule_sets = retained_sets;
+
+    if let Some(settings) = obj.get("settings") {
+        match serde_json::from_value::<AppSettings>(settings.clone()) {
+            Ok(parsed) => store.settings = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable settings object ({error}); keeping defaults"),
+            ),
+        }
+    }
+    if let Some(dns) = obj.get("dns") {
+        match serde_json::from_value::<DnsSettings>(dns.clone()) {
+            Ok(parsed) => store.dns = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable dns object ({error}); keeping defaults"),
+            ),
+        }
+    }
+    store.active_rule_set_id = obj
+        .get("active_rule_set_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+
+    store
+}
+
+fn split_known_items<T: DeserializeOwned>(value: Option<&Value>) -> (Vec<T>, Vec<Value>) {
+    let Some(Value::Array(items)) = value else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut known = Vec::with_capacity(items.len());
+    let mut retained = Vec::new();
+    for item in items {
+        match serde_json::from_value::<T>(item.clone()) {
+            Ok(parsed) => known.push(parsed),
+            Err(error) => {
+                crate::app_log::warn(
+                    "storage",
+                    format!("ignored unrecognized store item ({error}); keeping it on disk"),
+                );
+                retained.push(item.clone());
+            }
+        }
+    }
+    (known, retained)
+}
+
+fn serialize_store(store: &AppStore) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(store)?;
+    if let Some(obj) = value.as_object_mut() {
+        merge_retained(obj, "subscriptions", &store.retained_subscriptions);
+        merge_retained(obj, "nodes", &store.retained_nodes);
+        merge_retained(obj, "rules", &store.retained_rules);
+        merge_retained(obj, "rule_sets", &store.retained_rule_sets);
+    }
+    serde_json::to_string_pretty(&value)
+}
+
+fn merge_retained(obj: &mut Map<String, Value>, key: &str, extra: &[Value]) {
+    if extra.is_empty() {
+        return;
+    }
+    let slot = obj.entry(key).or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(items) = slot {
+        items.extend(extra.iter().cloned());
+    }
+}
+
+fn snapshot_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut out = vec![backup_path(path)];
+    if let Some(directory) = path.parent() {
+        if let Ok(entries) = fs::read_dir(directory) {
+            let mut snapshots: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("store.corrupt-"))
+                })
+                .collect();
+            snapshots.sort_by_key(|entry| {
+                std::cmp::Reverse(
+                    entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok(),
+                )
+            });
+            out.extend(snapshots);
+        }
+    }
+    out
+}
+
+fn load_valid_snapshot(path: &Path) -> Option<(AppStore, String, PathBuf)> {
+    load_richer_snapshot(path, 0).or_else(|| {
+        for candidate in snapshot_candidates(path) {
+            let Ok(raw) = fs::read_to_string(&candidate) else {
+                continue;
+            };
+            if let Ok(store) = parse_store(&raw) {
+                return Some((store, raw, candidate));
+            }
+        }
+        None
+    })
+}
+
+fn load_richer_snapshot(path: &Path, min_subs: usize) -> Option<(AppStore, String, PathBuf)> {
+    for candidate in snapshot_candidates(path) {
+        let Ok(raw) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        let Ok(store) = parse_store(&raw) else {
+            continue;
+        };
+        if store.subscriptions.len() > min_subs {
+            return Some((store, raw, candidate));
+        }
+    }
+    None
 }
 
 fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(STORE_BACKUP_NAME)
-}
-
-fn load_valid_backup(path: &Path) -> Option<(AppStore, String)> {
-    let raw = fs::read_to_string(backup_path(path)).ok()?;
-    let store = parse_store(&raw).ok()?;
-    Some((store, raw))
 }
 
 fn quarantine_corrupt_store(path: &Path, raw: &str) -> AppResult<PathBuf> {
@@ -1039,6 +1324,25 @@ mod tests {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    fn sample_url_sub(name: &str) -> Subscription {
+        Subscription {
+            id: format!("id-{name}"),
+            name: name.into(),
+            source: crate::domain::SubscriptionSource::Url {
+                url: "https://example.com/sub".into(),
+            },
+            last_update: 1,
+            node_count: 0,
+            enabled: true,
+            format: None,
+            skipped_count: 0,
+            via_proxy: false,
+            auto_update: false,
+            auto_update_interval_min: 1440,
+            traffic: None,
+        }
+    }
+
     #[test]
     fn load_quarantines_a_corrupt_store_without_backup() {
         let path = test_store_path("defaults");
@@ -1052,6 +1356,140 @@ mod tests {
         );
         assert_eq!(corrupt_snapshots(&path).len(), 1);
         assert!(parse_store(&fs::read_to_string(&path).unwrap()).is_ok());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn skips_unknown_subscription_objects() {
+        let raw = r#"{
+          "schema_version": 5,
+          "subscriptions": [
+            {
+              "id": "keep",
+              "name": "ok",
+              "source": {"kind":"url","url":"https://example.com"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            },
+            12
+          ],
+          "nodes": []
+        }"#;
+        let store = parse_store(raw).unwrap();
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(store.subscriptions[0].id, "keep");
+        assert_eq!(store.retained_subscriptions.len(), 1);
+    }
+
+    #[test]
+    fn unknown_source_kind_is_ignored_and_written_back() {
+        let raw = r#"{
+          "schema_version": 5,
+          "subscriptions": [
+            {
+              "id": "keep",
+              "name": "ok",
+              "source": {"kind":"url","url":"https://example.com"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            },
+            {
+              "id": "future",
+              "name": "next-gen",
+              "source": {"kind":"quantum","payload":"x"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            }
+          ],
+          "nodes": []
+        }"#;
+        let store = parse_store(raw).unwrap();
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(store.subscriptions[0].id, "keep");
+        assert_eq!(store.retained_subscriptions.len(), 1);
+
+        let path = test_store_path("retain-unknown");
+        store.save(&path).unwrap();
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let kinds: Vec<&str> = written["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["source"]["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"url"));
+        assert!(kinds.contains(&"quantum"));
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn valid_json_with_unknown_kind_does_not_reset_or_quarantine() {
+        let path = test_store_path("no-wipe");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+              "schema_version": 5,
+              "settings": {"mixed_port": 2345, "api_port": 19090},
+              "subscriptions": [
+                {
+                  "id": "keep",
+                  "name": "ok",
+                  "source": {"kind":"url","url":"https://example.com"},
+                  "last_update": 1,
+                  "node_count": 0,
+                  "enabled": true,
+                  "skipped_count": 0
+                },
+                {
+                  "id": "future",
+                  "name": "next-gen",
+                  "source": {"kind":"quantum"},
+                  "last_update": 1,
+                  "node_count": 0,
+                  "enabled": true,
+                  "skipped_count": 0
+                }
+              ],
+              "nodes": []
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.subscriptions.len(), 1);
+        assert_eq!(loaded.subscriptions[0].name, "ok");
+        assert_eq!(loaded.settings.mixed_port, 2345);
+        assert!(corrupt_snapshots(&path).is_empty());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn empty_store_recovers_from_newer_corrupt_snapshot() {
+        let path = test_store_path("empty-recover");
+        AppStore::default().save(&path).unwrap();
+        let mut rich = AppStore::default();
+        rich.subscriptions.push(sample_url_sub("keep-me"));
+        let snapshot = path.with_file_name("store.corrupt-999.json");
+        fs::write(
+            &snapshot,
+            serde_json::to_string(&rich).unwrap(),
+        )
+        .unwrap();
+
+        let recovered = AppStore::load(&path, None).unwrap();
+        assert_eq!(recovered.subscriptions.len(), 1);
+        assert_eq!(recovered.subscriptions[0].name, "keep-me");
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -1294,5 +1732,52 @@ mod tests {
         );
         assert_eq!(store.rule_sets[0].id, remote.id);
         assert_eq!(store.rule_sets[1].id, local.id);
+    }
+
+    fn sample_hy2(id: &str, name: &str) -> ProxyNode {
+        use crate::domain::{Protocol, ProtocolConfig};
+        ProxyNode {
+            id: id.into(),
+            name: name.into(),
+            protocol: Protocol::Hysteria2,
+            server: "203.10.98.188".into(),
+            port: 443,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Hysteria2 {
+                password: "same".into(),
+                up_mbps: None,
+                down_mbps: None,
+                obfs: None,
+                obfs_password: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    #[test]
+    fn rename_does_not_alias_sibling_nodes_on_same_backend() {
+        let mut store = AppStore::default();
+        store
+            .upsert_subscription(
+                sample_url_sub("s"),
+                vec![sample_hy2("a", "HK-01"), sample_hy2("b", "HK-02")],
+            )
+            .unwrap();
+        store.rename_node("a", "Hong Kong".into()).unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
+        assert_eq!(store.find_node("b").unwrap().name, "HK-02");
+
+        store
+            .upsert_subscription(
+                sample_url_sub("s"),
+                vec![sample_hy2("a", "HK-01"), sample_hy2("b", "HK-02")],
+            )
+            .unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
+        assert_eq!(store.find_node("b").unwrap().name, "HK-02");
     }
 }

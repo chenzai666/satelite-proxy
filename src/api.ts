@@ -67,12 +67,50 @@ export function addSubscriptionFile(
   });
 }
 
+export function addSubscriptionText(name: string | null, content: string) {
+  return invoke<ImportResult>("add_subscription_text", {
+    name,
+    content,
+  });
+}
+
+export function addSubscriptionNode(
+  name: string | null,
+  uri: string | null,
+  node: import("./types").ManualNodeDraft | null,
+) {
+  return invoke<ImportResult>("add_subscription_node", {
+    name,
+    uri,
+    node,
+  });
+}
+
+export function addSubscriptionSingbox(
+  name: string | null,
+  content: string | null,
+  path: string | null = null,
+) {
+  return invoke<ImportResult>("add_subscription_singbox", {
+    name,
+    content,
+    path,
+  });
+}
+
+export function readImportFile(path: string) {
+  return invoke<string>("read_import_file", { path });
+}
+
 export function updateSubscription(input: {
   id: string;
   name: string | null;
-  kind: "url" | "file";
+  kind: "url" | "file" | "text" | "node" | "singbox";
   url?: string | null;
   path?: string | null;
+  content?: string | null;
+  uri?: string | null;
+  node?: import("./types").ManualNodeDraft | null;
   viaProxy?: boolean | null;
   autoUpdate?: boolean | null;
   autoUpdateIntervalMin?: number | null;
@@ -83,6 +121,9 @@ export function updateSubscription(input: {
     kind: input.kind,
     url: input.url ?? null,
     path: input.path ?? null,
+    content: input.content ?? null,
+    uri: input.uri ?? null,
+    node: input.node ?? null,
     viaProxy: input.viaProxy ?? null,
     autoUpdate: input.autoUpdate ?? null,
     autoUpdateIntervalMin: input.autoUpdateIntervalMin ?? null,
@@ -128,6 +169,10 @@ export function listNodesPage(query: string, sortMode: string, offset = 0, limit
 
 export function listNodeIds(query = "") {
   return invoke<string[]>("list_node_ids", { query });
+}
+
+export function renameNode(id: string, name: string) {
+  return invoke<ProxyNode>("rename_node", { id, name });
 }
 
 export function getSettings() {

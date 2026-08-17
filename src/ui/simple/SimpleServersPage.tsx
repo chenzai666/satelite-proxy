@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   activateSubscription,
   addSubscriptionFile,
+  addSubscriptionNode,
+  addSubscriptionSingbox,
+  addSubscriptionText,
   addSubscriptionUrl,
   getProxyStatus,
   getSettings,
@@ -98,6 +101,7 @@ export function SimpleServersPage() {
   const [modalInitial, setModalInitial] = useState<ConfigFormValues | null>(
     null,
   );
+
 
   const reload = useCallback(async (append = false) => {
     try {
@@ -284,12 +288,26 @@ export function SimpleServersPage() {
           !!payload.autoUpdate,
           payload.autoUpdateIntervalMin ?? 1440,
         );
-      } else {
+      } else if (payload.kind === "file") {
         await addSubscriptionFile(
           payload.name || null,
           payload.path ?? "",
           !!payload.autoUpdate,
           payload.autoUpdateIntervalMin ?? 1440,
+        );
+      } else if (payload.kind === "text") {
+        await addSubscriptionText(payload.name || null, payload.content ?? "");
+      } else if (payload.kind === "singbox") {
+        await addSubscriptionSingbox(
+          payload.name || null,
+          payload.content ?? "",
+          null,
+        );
+      } else {
+        await addSubscriptionNode(
+          payload.name || null,
+          payload.uri ?? null,
+          payload.node ?? null,
         );
       }
       setModalOpen(false);

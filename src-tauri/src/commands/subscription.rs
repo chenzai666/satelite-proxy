@@ -1,8 +1,12 @@
-use crate::domain::{ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView};
+use crate::domain::{
+    ManualNodeDraft, ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView,
+};
 use crate::services::import::{
-    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_url_with_id,
+    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
+    import_from_singbox, import_from_text, import_from_url_with_id,
 };
 use crate::state::AppState;
+use crate::subscription::node_to_draft;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -126,7 +130,7 @@ pub fn list_subscription_urls(
                         id: subscription.id.clone(),
                         url: url.clone(),
                     }),
-                    SubscriptionSource::File { .. } => None,
+                    _ => None,
                 })
                 .collect())
         })
@@ -140,10 +144,18 @@ pub fn get_subscription(
 ) -> Result<SubscriptionDetail, String> {
     state
         .with_store(|store| {
-            store
+            let mut detail = store
                 .get_subscription(&id)
                 .map(|s| s.to_detail())
-                .ok_or_else(|| crate::error::AppError::NotFound(id))
+                .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
+            if detail.source_kind == "node" {
+                detail.node = store
+                    .nodes
+                    .iter()
+                    .find(|n| n.subscription_id == id)
+                    .map(|n| node_to_draft(&n.node));
+            }
+            Ok(detail)
         })
         .map_err(|e| e.to_string())
 }
@@ -197,13 +209,55 @@ pub async fn add_subscription_file(
     auto_update: Option<bool>,
     auto_update_interval_min: Option<u32>,
 ) -> Result<ImportResult, String> {
-    let mut outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
-    apply_auto_update_prefs(
-        &mut outcome.subscription,
-        auto_update.unwrap_or(false),
-        auto_update_interval_min.unwrap_or(1440),
-    );
+    let _ = (auto_update, auto_update_interval_min);
+    let outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
     persist_import(&state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_text(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    content: String,
+) -> Result<ImportResult, String> {
+    let outcome = import_text_blocking(name, content, None).await?;
+    persist_import(&state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_node(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
+) -> Result<ImportResult, String> {
+    let outcome = import_node_blocking(name, uri, node, None).await?;
+    persist_import(&state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_singbox(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    content: Option<String>,
+    path: Option<String>,
+) -> Result<ImportResult, String> {
+    let body = load_inline_body(content, path).await?;
+    let outcome = import_singbox_blocking(name, body, None).await?;
+    persist_import(&state, outcome)
+}
+
+#[tauri::command]
+pub fn read_import_file(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() as usize > 8 * 1024 * 1024 {
+        return Err("file too large (max 8 MB)".into());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
 /// Update existing subscription. Keeps stable id. Re-imports nodes.
@@ -215,6 +269,9 @@ pub async fn update_subscription(
     kind: String,
     url: Option<String>,
     path: Option<String>,
+    content: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
     via_proxy: Option<bool>,
     auto_update: Option<bool>,
     auto_update_interval_min: Option<u32>,
@@ -290,16 +347,41 @@ pub async fn update_subscription(
             o.subscription.via_proxy = false;
             (o, None, false)
         }
-        _ => return Err("kind must be url or file".into()),
+        "text" => {
+            let content = content
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .ok_or_else(|| "content is required".to_string())?;
+            let mut o = import_text_blocking(Some(display_name), content, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        "node" => {
+            let mut o =
+                import_node_blocking(Some(display_name), uri, node, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        "singbox" => {
+            let body = load_inline_body(content, path).await?;
+            let mut o = import_singbox_blocking(Some(display_name), body, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        _ => return Err("kind must be url, file, text, node, or singbox".into()),
     };
 
     let mut outcome = outcome;
     outcome.subscription.enabled = existing.enabled || replaced_enabled;
-    apply_auto_update_prefs(
-        &mut outcome.subscription,
-        auto_update.unwrap_or(existing.auto_update),
-        auto_update_interval_min.unwrap_or(existing.auto_update_interval_min),
-    );
+    if outcome.subscription.source.is_remote() {
+        apply_auto_update_prefs(
+            &mut outcome.subscription,
+            auto_update.unwrap_or(existing.auto_update),
+            auto_update_interval_min.unwrap_or(existing.auto_update_interval_min),
+        );
+    } else {
+        outcome.subscription.auto_update = false;
+    }
 
     persist_import_replacing(&state, outcome, replaced_id.as_deref())
 }
@@ -381,6 +463,44 @@ async fn refresh_subscription_once(
             )
             .await?
         }
+        crate::domain::SubscriptionSource::Text { content } => {
+            import_text_blocking(
+                Some(existing.name.clone()),
+                content.clone(),
+                Some(id.clone()),
+            )
+            .await?
+        }
+        crate::domain::SubscriptionSource::Node { uri } => {
+            let draft = if uri.is_none() {
+                state
+                    .with_store(|store| {
+                        Ok(store
+                            .nodes
+                            .iter()
+                            .find(|n| n.subscription_id == id)
+                            .map(|n| node_to_draft(&n.node)))
+                    })
+                    .map_err(|e| e.to_string())?
+            } else {
+                None
+            };
+            import_node_blocking(
+                Some(existing.name.clone()),
+                uri.clone(),
+                draft,
+                Some(id.clone()),
+            )
+            .await?
+        }
+        crate::domain::SubscriptionSource::Singbox { content } => {
+            import_singbox_blocking(
+                Some(existing.name.clone()),
+                content.clone(),
+                Some(id.clone()),
+            )
+            .await?
+        }
     };
     let latest = state
         .with_store(|store| {
@@ -420,6 +540,64 @@ async fn import_file_blocking(
     })
     .await
     .map_err(|error| format!("subscription file task: {error}"))?
+}
+
+async fn import_text_blocking(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_text(name, content, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription text task: {error}"))?
+}
+
+async fn import_node_blocking(
+    name: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_node(name, uri, node, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription node task: {error}"))?
+}
+
+async fn import_singbox_blocking(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_singbox(name, content, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription singbox task: {error}"))?
+}
+
+async fn load_inline_body(
+    content: Option<String>,
+    path: Option<String>,
+) -> Result<String, String> {
+    if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
+        return Ok(content);
+    }
+    let path = path
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "content or path is required".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            return Err(format!("file not found: {}", path.display()));
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("read file task: {error}"))?
 }
 
 #[tauri::command]

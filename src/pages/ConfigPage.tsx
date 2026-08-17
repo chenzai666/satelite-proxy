@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   activateSubscription,
   addSubscriptionFile,
+  addSubscriptionNode,
+  addSubscriptionSingbox,
+  addSubscriptionText,
   addSubscriptionUrl,
   getSettings,
   getSubscription,
@@ -16,6 +19,7 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../components/AddConfigModal";
+import { EditLocalNodesModal } from "../components/EditLocalNodesModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { useImportIntent } from "../ImportIntentContext";
@@ -220,6 +224,39 @@ function TrafficBlock({ traffic }: { traffic?: SubscriptionTraffic | null }) {
   return null;
 }
 
+function kindLabel(
+  kind: string,
+  t: (key: import("../i18n").MessageKey) => string,
+) {
+  if (kind === "url") return t("config.url");
+  if (kind === "node") return t("config.manual");
+  if (kind === "singbox") return t("config.singbox");
+  return t("config.parse");
+}
+
+function ConfigGroup({
+  title,
+  empty,
+  items,
+  renderCard,
+}: {
+  title: string;
+  empty: string;
+  items: SubscriptionView[];
+  renderCard: (item: SubscriptionView) => ReactNode;
+}) {
+  return (
+    <section className="config-group">
+      <h2 className="config-group-title">{title}</h2>
+      {items.length === 0 ? (
+        <p className="config-group-empty muted">{empty}</p>
+      ) : (
+        <div className="sub-grid">{items.map((item) => renderCard(item))}</div>
+      )}
+    </section>
+  );
+}
+
 export function ConfigPage() {
   const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
@@ -238,6 +275,9 @@ export function ConfigPage() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [menuId, setMenuId] = useState<string | null>(null);
+  const [renameProfile, setRenameProfile] = useState<SubscriptionView | null>(
+    null,
+  );
 
   const busy = refreshingAll || actionId != null;
 
@@ -351,11 +391,23 @@ export function ConfigPage() {
     try {
       const d = await getSubscription(id);
       setEditId(id);
+      const kind =
+        d.source_kind === "file" ||
+        d.source_kind === "text" ||
+        d.source_kind === "node" ||
+        d.source_kind === "singbox"
+          ? d.source_kind
+          : "url";
+      const isUriOnlyNode =
+        kind === "node" && !!(d.uri && !(d.node && d.node.server));
       setEditInitial({
         name: d.name,
-        kind: d.source_kind === "file" ? "file" : "url",
+        kind: isUriOnlyNode ? "text" : kind,
         url: d.url ?? "",
         path: d.path ?? "",
+        content: d.content ?? (isUriOnlyNode ? (d.uri ?? "") : ""),
+        uri: d.uri ?? "",
+        node: isUriOnlyNode ? undefined : (d.node ?? undefined),
         viaProxy: d.via_proxy,
         autoUpdate: !!d.auto_update,
         autoUpdateIntervalMin: d.auto_update_interval_min ?? 1440,
@@ -382,6 +434,9 @@ export function ConfigPage() {
           kind: payload.kind,
           url: payload.url ?? null,
           path: payload.path ?? null,
+          content: payload.content ?? null,
+          uri: payload.uri ?? null,
+          node: payload.node ?? null,
           viaProxy: payload.viaProxy ?? false,
           autoUpdate,
           autoUpdateIntervalMin,
@@ -394,12 +449,22 @@ export function ConfigPage() {
           autoUpdate,
           autoUpdateIntervalMin,
         );
-      } else {
+      } else if (payload.kind === "file") {
         await addSubscriptionFile(
           name,
           payload.path ?? "",
           autoUpdate,
           autoUpdateIntervalMin,
+        );
+      } else if (payload.kind === "text") {
+        await addSubscriptionText(name, payload.content ?? "");
+      } else if (payload.kind === "singbox") {
+        await addSubscriptionSingbox(name, payload.content ?? "", null);
+      } else {
+        await addSubscriptionNode(
+          name,
+          payload.uri ?? null,
+          payload.node ?? null,
         );
       }
       setModalOpen(false);
@@ -429,19 +494,20 @@ export function ConfigPage() {
 
   /** Refresh subscriptions in a bounded pool to avoid request and parse bursts. */
   async function onRefreshAll() {
-    if (items.length === 0 || refreshingAll) return;
+    const remotes = items.filter((item) => item.source_kind === "url");
+    if (remotes.length === 0 || refreshingAll) return;
     setRefreshingAll(true);
     setListError(null);
     try {
       const results = await settleWithConcurrency(
-        items,
+        remotes,
         REFRESH_ALL_CONCURRENCY,
         (item) => refreshSubscription(item.id),
       );
       const failed: string[] = [];
       results.forEach((r, i) => {
         if (r.status === "rejected") {
-          const name = items[i]?.name ?? items[i]?.id ?? "?";
+          const name = remotes[i]?.name ?? remotes[i]?.id ?? "?";
           const reason =
             typeof r.reason === "string"
               ? r.reason
@@ -476,6 +542,175 @@ export function ConfigPage() {
     }
   }
 
+  function renderCard(item: SubscriptionView) {
+    const generated = item.source_kind !== "singbox";
+    return (
+      <article
+        key={item.id}
+        className={`sub-card${item.enabled && generated ? " enabled" : ""}${
+          generated ? "" : " readonly"
+        }`}
+        role={generated ? "button" : "article"}
+        tabIndex={generated ? 0 : undefined}
+        title={
+          generated
+            ? mixMode
+              ? item.enabled
+                ? t("config.clickDisable")
+                : t("config.clickEnable")
+              : item.enabled
+                ? t("config.using")
+                : t("config.clickUse")
+            : t("config.singboxReadonly")
+        }
+        onClick={generated ? () => void onActivate(item.id) : undefined}
+        onKeyDown={
+          generated
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  void onActivate(item.id);
+                }
+              }
+            : undefined
+        }
+      >
+        <div className="sub-card-main">
+          <div className="sub-card-top">
+            {generated ? (
+              <span
+                className="node-dot"
+                title={item.enabled ? t("common.enabled") : t("common.disabled")}
+                aria-label={
+                  item.enabled ? t("common.enabled") : t("common.disabled")
+                }
+              >
+                {item.enabled ? "●" : "○"}
+              </span>
+            ) : null}
+            <h3 title={item.name}>{item.name}</h3>
+            <div className="sub-card-top-right">
+              <div
+                className="sub-menu"
+                data-sub-menu
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="sub-menu-trigger"
+                  aria-label={t("common.actions")}
+                  aria-haspopup="menu"
+                  aria-expanded={menuId === item.id}
+                  disabled={busy && menuId !== item.id}
+                  onClick={() =>
+                    setMenuId((id) => (id === item.id ? null : item.id))
+                  }
+                >
+                  {actionId === item.id ||
+                  (refreshingAll && menuId === item.id)
+                    ? "…"
+                    : "⋮"}
+                </button>
+                {menuId === item.id && (
+                  <div className="sub-menu-pop" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="sub-menu-item"
+                      disabled={busy}
+                      onClick={() => {
+                        setMenuId(null);
+                        void openEdit(item.id);
+                      }}
+                    >
+                      {t("config.menuEdit")}
+                    </button>
+                    {item.source_kind === "url" && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="sub-menu-item"
+                        disabled={busy}
+                        onClick={() => {
+                          setMenuId(null);
+                          void onRefresh(item.id);
+                        }}
+                      >
+                        {t("config.menuUpdate")}
+                      </button>
+                    )}
+                    {item.source_kind !== "url" &&
+                      item.source_kind !== "singbox" && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="sub-menu-item"
+                          disabled={busy}
+                          onClick={() => {
+                            setMenuId(null);
+                            setRenameProfile(item);
+                          }}
+                        >
+                          {t("config.menuRenameNodes")}
+                        </button>
+                      )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="sub-menu-item danger"
+                      disabled={busy}
+                      onClick={() => {
+                        setMenuId(null);
+                        void onRemove(item.id);
+                      }}
+                    >
+                      {t("config.menuDelete")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="sub-card-meta">
+            {generated ? (
+              <span>{t("config.nodes", { n: item.node_count })}</span>
+            ) : (
+              <span>{t("config.singboxReadonly")}</span>
+            )}
+            {item.skipped_count > 0 && (
+              <span className="warn">
+                {t("config.skipped", { n: item.skipped_count })}
+              </span>
+            )}
+            {item.auto_update && (
+              <span
+                className="muted"
+                title={t("config.autoUpdateHint", {
+                  n: item.auto_update_interval_min ?? 1440,
+                })}
+              >
+                {t("config.autoUpdateBadge", {
+                  n: item.auto_update_interval_min ?? 1440,
+                })}
+              </span>
+            )}
+            <span className="muted" title={item.source_display}>
+              {kindLabel(item.source_kind, t)}
+            </span>
+          </div>
+          <TrafficBlock traffic={item.traffic} />
+          <div
+            className="sub-card-foot muted"
+            title={formatTime(item.last_update)}
+          >
+            {formatRelative(item.last_update, t)}
+          </div>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <div className="page config-page">
       <header className="page-header">
@@ -496,7 +731,7 @@ export function ConfigPage() {
           />
           <GlassButton
             icon="↻"
-            disabled={busy || items.length === 0}
+            disabled={busy || items.every((item) => item.source_kind !== "url")}
             onClick={() => void onRefreshAll()}
             title={t("config.refreshAll")}
           >
@@ -527,141 +762,19 @@ export function ConfigPage() {
           </GlassButton>
         </div>
       ) : (
-        <div className="sub-grid">
-          {items.map((item) => (
-            <article
-              key={item.id}
-              className={`sub-card${item.enabled ? " enabled" : ""}`}
-              role="button"
-              tabIndex={0}
-              title={
-                mixMode
-                  ? item.enabled
-                    ? t("config.clickDisable")
-                    : t("config.clickEnable")
-                  : item.enabled
-                    ? t("config.using")
-                    : t("config.clickUse")
-              }
-              onClick={() => void onActivate(item.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  void onActivate(item.id);
-                }
-              }}
-            >
-              <div className="sub-card-main">
-                <div className="sub-card-top">
-                  <span
-                    className="node-dot"
-                    title={item.enabled ? t("common.enabled") : t("common.disabled")}
-                    aria-label={item.enabled ? t("common.enabled") : t("common.disabled")}
-                  >
-                    {item.enabled ? "●" : "○"}
-                  </span>
-                  <h3 title={item.name}>{item.name}</h3>
-                  <div className="sub-card-top-right">
-                    <div
-                      className="sub-menu"
-                      data-sub-menu
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="sub-menu-trigger"
-                        aria-label={t("common.actions")}
-                        aria-haspopup="menu"
-                        aria-expanded={menuId === item.id}
-                        disabled={busy && menuId !== item.id}
-                        onClick={() =>
-                          setMenuId((id) => (id === item.id ? null : item.id))
-                        }
-                      >
-                        {actionId === item.id ||
-                        (refreshingAll && menuId === item.id)
-                          ? "…"
-                          : "⋮"}
-                      </button>
-                      {menuId === item.id && (
-                        <div className="sub-menu-pop" role="menu">
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="sub-menu-item"
-                            disabled={busy}
-                            onClick={() => {
-                              setMenuId(null);
-                              void openEdit(item.id);
-                            }}
-                          >
-                            {t("config.menuEdit")}
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="sub-menu-item"
-                            disabled={busy}
-                            onClick={() => {
-                              setMenuId(null);
-                              void onRefresh(item.id);
-                            }}
-                          >
-                            {t("config.menuUpdate")}
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="sub-menu-item danger"
-                            disabled={busy}
-                            onClick={() => {
-                              setMenuId(null);
-                              void onRemove(item.id);
-                            }}
-                          >
-                            {t("config.menuDelete")}
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="sub-card-meta">
-                  <span>{t("config.nodes", { n: item.node_count })}</span>
-                  {item.skipped_count > 0 && (
-                    <span className="warn">
-                      {t("config.skipped", { n: item.skipped_count })}
-                    </span>
-                  )}
-                  {item.auto_update && (
-                    <span
-                      className="muted"
-                      title={t("config.autoUpdateHint", {
-                        n: item.auto_update_interval_min ?? 1440,
-                      })}
-                    >
-                      {t("config.autoUpdateBadge", {
-                        n: item.auto_update_interval_min ?? 1440,
-                      })}
-                    </span>
-                  )}
-                  <span className="muted" title={item.source_display}>
-                    {item.source_kind === "url"
-                      ? t("config.url")
-                      : t("config.file")}
-                  </span>
-                </div>
-                <TrafficBlock traffic={item.traffic} />
-                <div
-                  className="sub-card-foot muted"
-                  title={formatTime(item.last_update)}
-                >
-                  {formatRelative(item.last_update, t)}
-                </div>
-              </div>
-            </article>
-          ))}
+        <div className="config-groups">
+          <ConfigGroup
+            title={t("config.groupSubscription")}
+            empty={t("config.groupSubscriptionEmpty")}
+            items={items.filter((item) => item.source_kind === "url")}
+            renderCard={(item) => renderCard(item)}
+          />
+          <ConfigGroup
+            title={t("config.groupLocal")}
+            empty={t("config.groupLocalEmpty")}
+            items={items.filter((item) => item.source_kind !== "url")}
+            renderCard={(item) => renderCard(item)}
+          />
         </div>
       )}
 
@@ -682,6 +795,12 @@ export function ConfigPage() {
           dismiss();
         }}
         onSubmit={(p) => void handleSubmit(p)}
+      />
+      <EditLocalNodesModal
+        open={!!renameProfile}
+        profileId={renameProfile?.id ?? null}
+        profileName={renameProfile?.name ?? ""}
+        onClose={() => setRenameProfile(null)}
       />
     </div>
   );
