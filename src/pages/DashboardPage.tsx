@@ -45,20 +45,17 @@ function fmtSpeed(bps: number) {
 }
 
 function fmtBytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-const ASCII_BAR_W = 10;
-
-function asciiBar(ratio: number, width = ASCII_BAR_W) {
-  const filled = Math.round(Math.min(1, Math.max(0, ratio)) * width);
-  return {
-    filled: "█".repeat(filled),
-    empty: "░".repeat(width - filled),
-  };
+  if (!Number.isFinite(n) || n < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  if (i === 0) return `${Math.round(v)} B`;
+  const text = v >= 100 ? String(Math.round(v)) : v.toFixed(1);
+  return `${text} ${units[i]}`;
 }
 
 function quotaParts(tr: SubscriptionTraffic | null | undefined) {
@@ -80,6 +77,20 @@ function quotaParts(tr: SubscriptionTraffic | null | undefined) {
 function fmtLatency(ms?: number | null) {
   if (ms == null || ms < 0) return "—";
   return `${ms} ms`;
+}
+
+function latencyClass(ms?: number | null) {
+  if (ms == null || ms < 0) return "lat-none";
+  if (ms < 200) return "lat-good";
+  if (ms < 300) return "lat-ok";
+  return "lat-slow";
+}
+
+function latencyLevel(ms?: number | null) {
+  if (ms == null || ms < 0) return null;
+  if (ms < 200) return "good";
+  if (ms < 300) return "ok";
+  return "slow";
 }
 
 export function DashboardPage({
@@ -525,8 +536,6 @@ export function DashboardPage({
     return empty;
   }, [t, visibleSubs]);
 
-  const quotaBar =
-    subQuota.ratio != null ? asciiBar(subQuota.ratio) : null;
   const quotaPct =
     subQuota.ratio != null ? Math.round(subQuota.ratio * 100) : null;
   const quotaLevel =
@@ -544,6 +553,25 @@ export function DashboardPage({
       : outboundMode === "global"
         ? t("dashboard.modeGlobal")
         : t("dashboard.modeDirect");
+
+  const currentLatency = currentNode?.latency_ms;
+  const qualityLevel = latencyLevel(currentLatency);
+  const qualityTag =
+    qualityLevel === "good"
+      ? "GOOD"
+      : qualityLevel === "ok"
+        ? "OK"
+        : qualityLevel === "slow"
+          ? "SLOW"
+          : "—";
+  const qualityTagClass =
+    qualityLevel === "good"
+      ? " ok"
+      : qualityLevel === "ok"
+        ? " warn"
+        : qualityLevel === "slow"
+          ? " err"
+          : "";
 
   return (
     <div className="page dashboard-page">
@@ -821,16 +849,38 @@ export function DashboardPage({
         <article className="instrument accent-green">
           <header className="instrument-head">
             <span className="instrument-label">{t("dashboard.cardCore")}</span>
-            <span className={`instrument-tag ${running ? "ok" : ""}`}>
-              {running ? "ONLINE" : switching ? "…" : "IDLE"}
+            <span
+              className={`instrument-tag ${running ? "ok" : isError ? "err" : ""}`}
+            >
+              {running
+                ? "ONLINE"
+                : switching
+                  ? "…"
+                  : isError
+                    ? "ERR"
+                    : "IDLE"}
             </span>
           </header>
-          <div className="instrument-value sm">
+          <div
+            className={`instrument-value readout${
+              running
+                ? ""
+                : switching
+                  ? " state-busy"
+                  : isError
+                    ? " state-error"
+                    : " state-off"
+            }`}
+          >
             {running
               ? t("dashboard.coreRunning")
-              : isError
-                ? t("dashboard.coreError")
-                : t("dashboard.coreStopped")}
+              : switching
+                ? stateLabel === "stopping"
+                  ? t("dashboard.coreStopping")
+                  : t("dashboard.coreStarting")
+                : isError
+                  ? t("dashboard.coreError")
+                  : t("dashboard.coreStopped")}
           </div>
           <div className="instrument-kv mono">
             <div>
@@ -923,20 +973,16 @@ export function DashboardPage({
             <span className="instrument-label">
               {t("dashboard.cardQuality")}
             </span>
-            <span className="instrument-tag">
-              {latencyStats.n > 0 ? `${latencyStats.n}` : "—"}
+            <span className={`instrument-tag${qualityTagClass}`}>
+              {qualityTag}
             </span>
           </header>
-          <div className="instrument-value sm mono">
-            {fmtLatency(currentNode?.latency_ms)}
+          <div
+            className={`instrument-value readout mono ${latencyClass(currentLatency)}`}
+          >
+            {fmtLatency(currentLatency)}
           </div>
           <div className="instrument-kv mono">
-            <div>
-              <span className="kv-k">{t("dashboard.latencyNow")}</span>
-              <span className="kv-v">
-                {fmtLatency(currentNode?.latency_ms)}
-              </span>
-            </div>
             <div>
               <span className="kv-k">{t("dashboard.latencyAvg")}</span>
               <span className="kv-v">{fmtLatency(latencyStats.avg)}</span>
@@ -970,35 +1016,30 @@ export function DashboardPage({
             </span>
           </header>
           <div
-            className="instrument-value sm instrument-subscription-names"
+            className={`instrument-value readout instrument-subscription-names${
+              visibleSubs.length > 1 || (activeSubNames?.length ?? 0) > 12
+                ? " wrap"
+                : ""
+            }`}
             title={activeSubNames || undefined}
           >
-            {activeSubNames || t("dashboard.noSub")}
+            <span>{activeSubNames || t("dashboard.noSub")}</span>
           </div>
-          {quotaBar && quotaPct != null ? (
-            <div
-              className={`instrument-ascii-bar ${quotaLevel}`}
-              title={subQuota.label}
-              aria-label={`${quotaPct}%`}
-            >
-              <span className="ascii-track">
-                <span className="ascii-fill">{quotaBar.filled}</span>
-                <span className="ascii-empty">{quotaBar.empty}</span>
-              </span>
-              <span className="ascii-pct">{quotaPct}%</span>
-            </div>
-          ) : null}
           <div className="instrument-kv mono">
-            <div>
-              <span className="kv-k">{t("config.mix")}</span>
-              <span className="kv-v">
-                {mixMode
-                  ? `${t("dashboard.enabled")} · ${enabledSubs.length}/${subCount}`
-                  : t("dashboard.disabled")}
-              </span>
-            </div>
-            <div>
+            <div className="instrument-quota-row">
               <span className="kv-k">{t("dashboard.quota")}</span>
+              {quotaPct != null ? (
+                <span
+                  className={`instrument-quota-bar ${quotaLevel}`}
+                  title={`${quotaPct}%`}
+                  aria-label={`${quotaPct}%`}
+                >
+                  <span
+                    className="instrument-quota-fill"
+                    style={{ width: `${quotaPct}%` }}
+                  />
+                </span>
+              ) : null}
               <span className="kv-v">{subQuota.label}</span>
             </div>
             <div>
@@ -1027,27 +1068,25 @@ export function DashboardPage({
             <span className="instrument-label">
               {t("dashboard.cardSystem")}
             </span>
-            <span className="instrument-tag">I/O</span>
+            <span
+              className={`instrument-tag${envCopied ? " ok" : ""}`}
+              aria-hidden
+            >
+              {envCopied ? "✓" : "⧉"}
+            </span>
           </header>
-          <div className="instrument-value sm mono">
-            mixed :{mixedPort}
-          </div>
-          <div className="instrument-hint mono">
-            {envCopied ? t("dashboard.envCopied") : t("dashboard.copyEnvHint")}
-          </div>
+          <div className="instrument-value readout mono">:{mixedPort}</div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">API</span>
-              <span className="kv-v">:{settingsPorts.api}</span>
+              <span className="kv-k">PROXY</span>
+              <span className="kv-v">http://127.0.0.1:{mixedPort}</span>
             </div>
             <div>
-              <span className="kv-k">{t("dashboard.capture")}</span>
+              <span className="kv-k">ENV</span>
               <span className="kv-v">
-                {proxy?.tun_enabled
-                  ? t("dashboard.captureTun")
-                  : proxy?.system_proxy
-                    ? t("dashboard.captureSystem")
-                    : t("dashboard.captureOff")}
+                {envCopied
+                  ? t("dashboard.envCopied")
+                  : t("dashboard.copyEnvHint")}
               </span>
             </div>
           </div>

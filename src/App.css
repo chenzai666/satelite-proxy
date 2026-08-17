@@ -4537,6 +4537,18 @@ button.check.on {
   background: rgba(85, 200, 154, 0.1);
 }
 
+.instrument-tag.err {
+  color: var(--danger);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+.instrument-tag.warn {
+  color: var(--accent-yellow);
+  border-color: color-mix(in srgb, var(--accent-yellow) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
+}
+
 .instrument-value {
   font-size: 1.75rem;
   font-weight: 700;
@@ -4546,6 +4558,24 @@ button.check.on {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.instrument-value.readout {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.instrument-value.state-off {
+  color: var(--muted);
+}
+
+.instrument-value.state-busy {
+  color: var(--accent-yellow);
+}
+
+.instrument-value.state-error {
+  color: var(--danger);
 }
 
 .instrument-value.sm {
@@ -4560,40 +4590,56 @@ button.check.on {
   width: 100%;
 }
 
-.instrument-ascii-bar {
+.instrument-subscription-names.wrap {
+  font-size: 1.12rem;
+  line-height: 1.22;
+  white-space: normal;
+}
+
+.instrument-subscription-names.wrap > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.instrument-quota-row {
   display: flex;
-  align-items: baseline;
-  gap: 0.45rem;
-  margin-top: 0.05rem;
-  font-family: var(--mono);
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-  color: var(--accent-green);
+  align-items: center;
+  min-width: 0;
 }
 
-.instrument-ascii-bar.warn {
-  color: var(--accent-yellow);
+.instrument-quota-bar {
+  flex: 0 0 2.4rem;
+  height: 3px;
+  margin-right: 0.4rem;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--faint) 28%, transparent);
+  overflow: hidden;
 }
 
-.instrument-ascii-bar.critical {
-  color: var(--danger);
+.instrument-quota-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent-green);
 }
 
-.instrument-ascii-bar .ascii-track {
-  flex: 0 0 auto;
+.instrument-quota-bar.warn .instrument-quota-fill {
+  background: var(--accent-yellow);
 }
 
-.instrument-ascii-bar .ascii-empty {
-  color: var(--faint);
-  opacity: 0.55;
+.instrument-quota-bar.critical .instrument-quota-fill {
+  background: var(--danger);
 }
 
-.instrument-ascii-bar .ascii-pct {
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-  color: var(--text);
+.instrument-quota-row .kv-v {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .instrument-sub {
@@ -4606,6 +4652,8 @@ button.check.on {
   font-size: 0.68rem;
   color: var(--faint);
 }
+
+
 
 .sys-proxy-row.mode-row.first {
   margin-top: 0;
