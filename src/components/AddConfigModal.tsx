@@ -229,33 +229,40 @@ export function AddConfigModal({
           <div className="field">
             <span>类型</span>
             <GlassSeg
-              value={profile}
+              value={
+                profile === "local"
+                  ? localKind === "node"
+                    ? "manual"
+                    : "parse"
+                  : profile
+              }
               ariaLabel="配置类型"
               disabled={busy}
-              onChange={(v) => setProfile(v as ProfileKind)}
+              onChange={(v) => {
+                if (v === "subscription" || v === "singbox") {
+                  setProfile(v);
+                } else {
+                  setProfile("local");
+                  setLocalKind(v === "manual" ? "node" : "multi");
+                }
+              }}
               options={[
                 { value: "subscription", label: "订阅" },
-                { value: "local", label: "本地配置" },
-                { value: "singbox", label: "sing-box" },
+                { value: "manual", label: "手动填写" },
+                { value: "parse", label: "链接解析" },
+                { value: "singbox", label: "自写配置" },
               ]}
             />
+            <span className="field-hint muted">
+              {profile === "subscription"
+                ? "从订阅链接下载并解析节点"
+                : profile === "singbox"
+                  ? "自己手写或已有现成 sing-box 配置文件，按原文启动内核；应用内节点 / 路由 / DNS 停用"
+                  : localKind === "node"
+                    ? "按协议表单添加单条手动节点"
+                    : "粘贴协议链接或 Clash / sing-box 订阅内容提取节点"}
+            </span>
           </div>
-
-          {profile === "local" && (
-            <div className="field">
-              <span>本地类型</span>
-              <GlassSeg
-                value={localKind}
-                ariaLabel="本地配置类型"
-                disabled={busy}
-                onChange={(v) => setLocalKind(v as LocalKind)}
-                options={[
-                  { value: "node", label: "手动填写" },
-                  { value: "multi", label: "链接解析" },
-                ]}
-              />
-            </div>
-          )}
 
           <label className="field">
             <span>名称</span>
@@ -408,7 +415,7 @@ export function AddConfigModal({
                 ? "保存时会重新拉取并解析节点（保留配置 id）。"
                 : "提交后将下载订阅并解析节点。"
               : profile === "singbox"
-                ? "只接受完整 sing-box 配置。点卡片选中后，首页连接会用这份文件启动内核；应用内节点 / 路由 / DNS 会禁用。"
+                ? "点卡片选中后，首页连接会用这份文件启动内核。"
                 : localKind === "node"
                   ? "按协议填写字段，添加一条手动节点。协议链接请用「链接解析」。"
                   : "支持单行或多行协议链接，也能从 Clash / sing-box 订阅里提取节点。本地文件会拷贝进应用。"}
