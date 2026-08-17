@@ -29,4 +29,11 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  build: {
+    // three.js 已 tree-shaken 仍约 530 kB(WebGLRenderer 是硬底),且
+    // ParticleSphere 走 React.lazy 按需分包,仅仪表盘挂载时才加载解析。
+    // Tauri 资源由本地磁盘提供,500 kB 的网络告警阈值不适用,放宽到 1024。
+    chunkSizeWarningLimit: 1024,
+  },
 }));
