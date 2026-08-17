@@ -618,6 +618,9 @@ impl Runtime {
 
         ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
         ensure_listen_port_available(store.settings.api_port, "Clash API")?;
+        for inb in &store.settings.extra_inbounds {
+            ensure_listen_port_available(inb.port, "Inbound")?;
+        }
 
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
@@ -628,6 +631,7 @@ impl Runtime {
             &BuildOptions {
                 mixed_port: store.settings.mixed_port,
                 api_port: store.settings.api_port,
+                extra_inbounds: store.settings.extra_inbounds.clone(),
                 api_secret: secret.clone(),
                 current_node_id: store.settings.current_node_id.clone(),
                 log_level: "info".into(),
@@ -660,6 +664,12 @@ impl Runtime {
             &log_dir,
             store.settings.mixed_port,
             Some(store.settings.api_port),
+            &store
+                .settings
+                .extra_inbounds
+                .iter()
+                .map(|inb| inb.port)
+                .collect::<Vec<_>>(),
             elevated,
             resource_dir,
         )?;
@@ -785,6 +795,7 @@ impl Runtime {
             &log_dir,
             insight.inbound_port.unwrap_or(0),
             insight.clash_api_port,
+            &[],
             elevated,
             resource_dir,
         )?;

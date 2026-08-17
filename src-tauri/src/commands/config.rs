@@ -50,6 +50,7 @@ pub fn update_settings(
     state: State<'_, AppState>,
     mixed_port: Option<u16>,
     api_port: Option<u16>,
+    extra_inbounds: Option<Vec<crate::domain::ExtraInbound>>,
     probe_url: Option<String>,
     tun_enabled: Option<bool>,
     tun_stack: Option<String>,
@@ -83,6 +84,32 @@ pub fn update_settings(
             }
             if let Some(p) = api_port {
                 store.settings.api_port = p;
+            }
+            if let Some(list) = &extra_inbounds {
+                if list.len() > 10 {
+                    return Err(AppError::Config("额外入站监听最多 10 个".into()));
+                }
+                let mut seen = std::collections::HashSet::new();
+                seen.insert(store.settings.mixed_port);
+                seen.insert(store.settings.api_port);
+                for inb in list {
+                    if inb.kind != "mixed" && inb.kind != "http" {
+                        return Err(AppError::Config(format!(
+                            "入站类型无效：{kind}（仅支持 mixed / http）",
+                            kind = inb.kind
+                        )));
+                    }
+                    if inb.port == 0 {
+                        return Err(AppError::Config("入站端口无效".into()));
+                    }
+                    if !seen.insert(inb.port) {
+                        return Err(AppError::Config(format!(
+                            "端口 {} 与其他监听端口冲突",
+                            inb.port
+                        )));
+                    }
+                }
+                store.settings.extra_inbounds = list.clone();
             }
             if let Some(u) = probe_url {
                 if !u.trim().is_empty() {
@@ -541,6 +568,7 @@ pub async fn generate_singbox_config(
             &BuildOptions {
                 mixed_port: settings.mixed_port,
                 api_port: settings.api_port,
+                extra_inbounds: settings.extra_inbounds.clone(),
                 api_secret: worker_secret,
                 current_node_id: settings.current_node_id.clone(),
                 log_level: "info".into(),
@@ -625,6 +653,7 @@ pub async fn preview_singbox_config(
             &BuildOptions {
                 mixed_port: settings.mixed_port,
                 api_port: settings.api_port,
+                extra_inbounds: settings.extra_inbounds.clone(),
                 api_secret: secret,
                 current_node_id: settings.current_node_id.clone(),
                 log_level: "info".into(),

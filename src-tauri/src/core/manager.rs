@@ -285,6 +285,7 @@ impl CoreManager {
         log_dir: &Path,
         mixed_port: u16,
         api_port: Option<u16>,
+        extra_ports: &[u16],
         elevated: bool,
         _resource_dir: Option<&Path>,
     ) -> AppResult<()> {
@@ -302,6 +303,11 @@ impl CoreManager {
         if let Some(api) = api_port {
             if api != 0 && api != mixed_port {
                 ports.push(api);
+            }
+        }
+        for &p in extra_ports {
+            if p != 0 && !ports.contains(&p) {
+                ports.push(p);
             }
         }
         if !ports.is_empty() {

@@ -107,7 +107,11 @@ export function DashboardPage({
   const [currentNode, setCurrentNode] = useState<ProxyNode | null>(null);
   /** settings.current_node_id — available before full node list. */
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
-  const [settingsPorts, setSettingsPorts] = useState({ mixed: 2080, api: 19090 });
+  const [settingsPorts, setSettingsPorts] = useState({
+    mixed: 2080,
+    api: 19090,
+    extras: [] as import("../types").ExtraInbound[],
+  });
   const [mixMode, setMixMode] = useState(false);
   const [coreLabel, setCoreLabel] = useState("—");
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
@@ -162,7 +166,11 @@ export function DashboardPage({
       ]);
 
       const [settings, status] = await statusP;
-      setSettingsPorts({ mixed: settings.mixed_port, api: settings.api_port });
+      setSettingsPorts({
+        mixed: settings.mixed_port,
+        api: settings.api_port,
+        extras: settings.extra_inbounds ?? [],
+      });
       setMixMode(!!settings.mix_mode);
       setCurrentNodeId(settings.current_node_id ?? null);
       setProxy(status);
@@ -442,6 +450,12 @@ export function DashboardPage({
   const canStart =
     customRuntime || nodeCount > 0 || (!!currentNodeId && statusReady);
   const mixedPort = proxy?.mixed_port ?? settingsPorts.mixed;
+  // Multi-listen ports only matter for the generated config (custom mode
+  // launches the user's own file; its inbound shows on the config card).
+  const extraInbounds = customRuntime ? [] : settingsPorts.extras;
+  const extraListenTooltip = extraInbounds
+    .map((e) => `${e.kind} ${e.allow_lan ? "0.0.0.0" : "127.0.0.1"}:${e.port}`)
+    .join("  ·  ");
 
   const switching =
     stateLabel === "starting" || stateLabel === "stopping" || busy;
@@ -1230,11 +1244,21 @@ export function DashboardPage({
               {envCopied ? "✓" : "⧉"}
             </span>
           </header>
-          <div className="instrument-value readout mono">:{mixedPort}</div>
+          <div
+            className={`instrument-value readout mono${extraInbounds.length ? " multi" : ""}`}
+            title={extraInbounds.length ? extraListenTooltip : undefined}
+          >
+            :{mixedPort}
+            {extraInbounds.map((e) => ` :${e.port}`)}
+          </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">PROXY</span>
-              <span className="kv-v">http://127.0.0.1:{mixedPort}</span>
+              <span className="kv-k">{t("dashboard.multiPort")}</span>
+              <span className="kv-v">
+                {extraInbounds.length > 0
+                  ? t("dashboard.multiPortOn")
+                  : t("dashboard.multiPortOff")}
+              </span>
             </div>
             <div>
               <span className="kv-k">ENV</span>

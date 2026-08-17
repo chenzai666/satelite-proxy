@@ -238,9 +238,21 @@ export interface ManualNodeDraft {
 /** Clash-style routing mode. */
 export type OutboundMode = "rule" | "global" | "direct";
 
+/** Extra sing-box inbound listener (settings-managed). */
+export interface ExtraInbound {
+  id: string;
+  /** mixed | http */
+  kind: "mixed" | "http";
+  port: number;
+  /** true → listen 0.0.0.0, false → 127.0.0.1 */
+  allow_lan?: boolean;
+}
+
 export interface AppSettings {
   mixed_port: number;
   api_port: number;
+  /** Additional mixed/http listeners emitted into the generated config. */
+  extra_inbounds?: ExtraInbound[];
   current_node_id?: string | null;
   clash_api_secret?: string | null;
   probe_url: string;

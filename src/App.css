@@ -2893,6 +2893,41 @@ code {
   line-height: 1.35;
 }
 
+/* Unsaved drafts in the network card: pulsing glow on the Save button.
+   Pure box-shadow — no layout shift. Tooltip carries the explanation. */
+.save-pulse {
+  animation: save-pulse 1.8s ease-out infinite;
+}
+
+@keyframes save-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .save-pulse {
+    animation: none;
+  }
+}
+
+/* Multi-listen ports table inside the network card (settings · 端口与网络) */
+.inbound-table-wrap {
+  /* Narrow table never scrolls; visible overflow keeps the ⋮ menu unclipped
+     (same reason rules-table-wrap overrides the default). */
+  overflow: visible;
+}
+
+.inbound-empty {
+  text-align: center;
+  padding: 1.1rem 0.55rem;
+  font-size: 0.78rem;
+}
+
 .settings-network-card-head button {
   flex-shrink: 0;
 }
@@ -4219,6 +4254,16 @@ button.check.on {
   min-width: 4.2rem;
   color: var(--faint);
   margin-right: 0.35rem;
+}
+
+/* Multi-listen ports listed inline in the value line — smaller so a few fit,
+   CSS ellipsis ("…") when they don't. Tooltip carries the full listen list. */
+.instrument-value.multi {
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .instrument-kv .kv-k.down {
   color: var(--download);

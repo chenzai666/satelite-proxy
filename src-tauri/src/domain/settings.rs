@@ -138,12 +138,33 @@ impl TrayIconStyle {
     }
 }
 
+/// Extra inbound listener for the generated sing-box config.
+/// `kind`: `mixed` | `http`; `allow_lan` decides the listen host
+/// (0.0.0.0 vs 127.0.0.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtraInbound {
+    /// Stable row id (UI key / list identity).
+    pub id: String,
+    #[serde(default = "default_extra_inbound_kind")]
+    pub kind: String,
+    pub port: u16,
+    #[serde(default)]
+    pub allow_lan: bool,
+}
+
+fn default_extra_inbound_kind() -> String {
+    "mixed".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// mixed inbound listen port
     pub mixed_port: u16,
     /// clash_api controller port
     pub api_port: u16,
+    /// Additional inbound listeners emitted into the generated config.
+    #[serde(default)]
+    pub extra_inbounds: Vec<ExtraInbound>,
     /// Last selected node id (ProxyNode.id)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node_id: Option<String>,
@@ -304,6 +325,7 @@ impl Default for AppSettings {
         Self {
             mixed_port: 2080,
             api_port: 19090,
+            extra_inbounds: Vec::new(),
             current_node_id: None,
             clash_api_secret: None,
             probe_url: default_probe_url(),
@@ -418,5 +440,26 @@ mod tests {
         assert!(settings.runtime_source().is_custom());
         settings.set_runtime_source(RuntimeSource::Generated);
         assert!(!settings.runtime_source().is_custom());
+    }
+
+    #[test]
+    fn extra_inbounds_default_when_missing_and_roundtrip() {
+        // Old store JSON without the field loads with an empty list.
+        let legacy = r#"{"mixed_port":2080,"api_port":19090}"#;
+        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(settings.extra_inbounds.is_empty());
+
+        // New entries survive a serde round-trip; kind defaults to mixed.
+        let raw = r#"{"id":"i1","port":2081,"allow_lan":true}"#;
+        let inbound: ExtraInbound = serde_json::from_str(raw).unwrap();
+        assert_eq!(inbound.kind, "mixed");
+        let settings = AppSettings {
+            extra_inbounds: vec![inbound],
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.extra_inbounds, settings.extra_inbounds);
+        assert!(json.contains("\"allow_lan\":true"));
     }
 }

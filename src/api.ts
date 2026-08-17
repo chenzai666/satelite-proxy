@@ -192,6 +192,8 @@ export function getSettings() {
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   apiPort?: number | null;
+  /** Some(list) replaces the whole extra-inbound list. */
+  extraInbounds?: import("./types").ExtraInbound[] | null;
   probeUrl?: string | null;
   tunEnabled?: boolean | null;
   tunStack?: string | null;
@@ -238,6 +240,7 @@ function scheduleSettingsWrite() {
     void invoke<AppSettings>("update_settings", {
       mixedPort: payload.mixedPort ?? null,
       apiPort: payload.apiPort ?? null,
+      extraInbounds: payload.extraInbounds ?? null,
       probeUrl: payload.probeUrl ?? null,
       tunEnabled: payload.tunEnabled ?? null,
       tunStack: payload.tunStack ?? null,

@@ -21,6 +21,7 @@ import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  ExtraInbound,
   HeroStyle,
   ThemeId,
 } from "../types";
@@ -59,6 +60,16 @@ export function SettingsPage() {
   const [api, setApi] = useState("19090");
   const [probe, setProbe] = useState("");
   const [tunStack, setTunStack] = useState("mixed");
+  /** Extra inbound drafts — applied on card save (needs core restart). */
+  const [extra, setExtra] = useState<ExtraInbound[]>([]);
+  // Extra-inbound editor modal (add / edit share one form).
+  const [inboundOpen, setInboundOpen] = useState(false);
+  const [inboundEditId, setInboundEditId] = useState<string | null>(null);
+  const [inboundKind, setInboundKind] = useState<"mixed" | "http">("mixed");
+  const [inboundPort, setInboundPort] = useState("");
+  const [inboundLan, setInboundLan] = useState(false);
+  const [inboundError, setInboundError] = useState<string | null>(null);
+  const [menuInboundId, setMenuInboundId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -147,6 +158,7 @@ export function SettingsPage() {
         setApi(String(s.api_port));
         setProbe(s.probe_url);
         setTunStack(s.tun_stack || "mixed");
+        setExtra(s.extra_inbounds ?? []);
       })
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
     void reloadCore();
@@ -158,6 +170,25 @@ export function SettingsPage() {
       .then((status) => setCoreProxyAvailable(status.running))
       .catch(() => setCoreProxyAvailable(false));
   }, [tab]);
+
+  // Close the inbound-row ⋮ menu on outside pointer-down / Escape.
+  useEffect(() => {
+    if (!menuInboundId) return;
+    function onDocPointerDown(e: PointerEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.("[data-inbound-menu]")) return;
+      setMenuInboundId(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuInboundId(null);
+    }
+    document.addEventListener("pointerdown", onDocPointerDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDocPointerDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuInboundId]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -182,9 +213,18 @@ export function SettingsPage() {
       if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
         throw new Error(t("settings.invalidApi"));
       }
+      const seen = new Set<number>([mixedPort, apiPort]);
+      const extraInbounds = extra.map((row) => {
+        if (seen.has(row.port)) {
+          throw new Error(t("settings.dupPort", { n: row.port }));
+        }
+        seen.add(row.port);
+        return row;
+      });
       const s = await updateSettings({
         mixedPort,
         apiPort,
+        extraInbounds,
         probeUrl: probe.trim() || null,
         tunStack: tunStack.trim() || "mixed",
       });
@@ -199,6 +239,61 @@ export function SettingsPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // —— Extra inbound listeners (draft rows + modal editor) ——
+
+  function openAddInbound() {
+    setInboundEditId(null);
+    setInboundKind("mixed");
+    setInboundPort("");
+    setInboundLan(false);
+    setInboundError(null);
+    setInboundOpen(true);
+  }
+
+  function openEditInbound(row: ExtraInbound) {
+    setInboundEditId(row.id);
+    setInboundKind(row.kind);
+    setInboundPort(String(row.port));
+    setInboundLan(!!row.allow_lan);
+    setInboundError(null);
+    setInboundOpen(true);
+  }
+
+  /** Validate in the modal, then commit to the draft list (saved on 保存). */
+  function saveInbound() {
+    const port = Number(inboundPort);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+      setInboundError(t("settings.invalidExtraPort"));
+      return;
+    }
+    const others = extra.filter((r) => r.id !== inboundEditId);
+    const taken = new Set<number>([
+      ...others.map((r) => r.port),
+      settings?.mixed_port ?? 0,
+      settings?.api_port ?? 0,
+    ]);
+    if (taken.has(port)) {
+      setInboundError(t("settings.dupPort", { n: port }));
+      return;
+    }
+    const entry: ExtraInbound = {
+      id: inboundEditId ?? `in-${Math.random().toString(36).slice(2, 10)}`,
+      kind: inboundKind,
+      port,
+      allow_lan: inboundLan,
+    };
+    setExtra((prev) =>
+      inboundEditId == null
+        ? [...prev, entry]
+        : prev.map((r) => (r.id === inboundEditId ? entry : r)),
+    );
+    setInboundOpen(false);
+  }
+
+  function removeInbound(id: string) {
+    setExtra((prev) => prev.filter((r) => r.id !== id));
   }
 
   async function onDownloadCore() {
@@ -269,6 +364,15 @@ export function SettingsPage() {
   }
 
   const customRuntime = (settings?.runtime_source ?? "").startsWith("singbox:");
+
+  /** Any unsaved draft in the 端口与网络 card (ports / probe / stack / listeners)? */
+  const networkDirty =
+    settings != null &&
+    (String(settings.mixed_port) !== mixed.trim() ||
+      String(settings.api_port) !== api.trim() ||
+      (settings.probe_url ?? "") !== probe ||
+      (settings.tun_stack || "mixed") !== tunStack ||
+      !sameInbounds(settings.extra_inbounds ?? [], extra));
 
   useEffect(() => {
     if (customRuntime && CUSTOM_BLOCKED_TABS.has(tab)) {
@@ -507,9 +611,14 @@ export function SettingsPage() {
               <GlassButton
                 variant="primary"
                 icon="↻"
+                className={networkDirty ? "save-pulse" : undefined}
+                title={
+                  networkDirty
+                    ? t("settings.unsavedChanges")
+                    : t("settings.saveRestartCore")
+                }
                 disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onClick={() => void onSaveNetwork()}
-                title={t("settings.saveRestartCore")}
               >
                 {busy ? t("common.saving") : t("settings.saveRestartCore")}
               </GlassButton>
@@ -569,6 +678,103 @@ export function SettingsPage() {
                     ? t("common.enabled")
                     : t("common.disabled")}
                 </span>
+              </span>
+            </div>
+            <div className="field field-span-2">
+              <span>{t("settings.extraInbounds")}</span>
+              <div className="table-wrap inbound-table-wrap">
+                <table className="inbound-table">
+                  <colgroup>
+                    <col style={{ width: 100 }} />
+                    <col />
+                    <col style={{ width: 60 }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>{t("settings.inboundType")}</th>
+                      <th>{t("settings.inboundAddr")}</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {extra.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="muted inbound-empty">
+                          {t("settings.extraInboundsEmpty")}
+                        </td>
+                      </tr>
+                    ) : (
+                      extra.map((row) => (
+                        <tr key={row.id}>
+                          <td>
+                            <code>{row.kind}</code>
+                          </td>
+                          <td className="mono">
+                            {row.allow_lan ? "0.0.0.0" : "127.0.0.1"}:{row.port}
+                          </td>
+                          <td>
+                            <div className="rule-menu" data-inbound-menu>
+                              <button
+                                type="button"
+                                className="rule-menu-trigger"
+                                aria-label={t("common.edit")}
+                                aria-haspopup="menu"
+                                aria-expanded={menuInboundId === row.id}
+                                disabled={busy}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMenuInboundId((id) =>
+                                    id === row.id ? null : row.id,
+                                  );
+                                }}
+                              >
+                                ⋮
+                              </button>
+                              {menuInboundId === row.id && (
+                                <div className="rule-menu-pop" role="menu">
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="rule-menu-item"
+                                    onClick={() => {
+                                      setMenuInboundId(null);
+                                      openEditInbound(row);
+                                    }}
+                                  >
+                                    {t("common.edit")}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    className="rule-menu-item danger"
+                                    onClick={() => {
+                                      setMenuInboundId(null);
+                                      removeInbound(row.id);
+                                    }}
+                                  >
+                                    {t("common.delete")}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div>
+                <GlassButton
+                  icon="+"
+                  disabled={busy || customRuntime || extra.length >= 10}
+                  onClick={openAddInbound}
+                >
+                  {t("settings.addInboundPort")}
+                </GlassButton>
+              </div>
+              <span className="field-hint muted">
+                {t("settings.extraInboundsDesc")}
               </span>
             </div>
           </div>
@@ -714,9 +920,102 @@ export function SettingsPage() {
           </div>
         </section>
       )}
+
+      {inboundOpen && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <header className="modal-header">
+              <h2>
+                {inboundEditId
+                  ? t("settings.editInboundTitle")
+                  : t("settings.addInboundPort")}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setInboundOpen(false)}
+                disabled={busy}
+                aria-label={t("common.cancel")}
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="modal-body"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveInbound();
+              }}
+            >
+              <div className="field">
+                <span>{t("settings.inboundType")}</span>
+                <GlassSeg
+                  value={inboundKind}
+                  ariaLabel={t("settings.inboundType")}
+                  disabled={busy}
+                  onChange={(v) => setInboundKind(v as "mixed" | "http")}
+                  options={[
+                    { value: "mixed", label: "mixed" },
+                    { value: "http", label: "http" },
+                  ]}
+                />
+              </div>
+              <label className="field">
+                <span>{t("settings.portLabel")}</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="mono"
+                  value={inboundPort}
+                  onChange={(e) => setInboundPort(e.target.value)}
+                  placeholder="8080"
+                  disabled={busy}
+                  autoFocus
+                />
+              </label>
+              <div className="via-proxy-row">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.allowLan")}</div>
+                  <div className="sys-proxy-desc">{t("settings.allowLanDesc")}</div>
+                </div>
+                <GlassSwitchControl
+                  checked={inboundLan}
+                  title={t("settings.allowLan")}
+                  disabled={busy}
+                  onChange={setInboundLan}
+                />
+              </div>
+              {inboundError && <div className="form-error">{inboundError}</div>}
+              <footer className="modal-footer">
+                <GlassButton onClick={() => setInboundOpen(false)} disabled={busy}>
+                  {t("common.cancel")}
+                </GlassButton>
+                <GlassButton type="submit" variant="primary" disabled={busy}>
+                  {busy ? t("common.saving") : t("common.save")}
+                </GlassButton>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
+}
+
+/** Order-sensitive equality for the extra-inbound draft list. */
+function sameInbounds(a: ExtraInbound[], b: ExtraInbound[]) {
+  if (a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    return (
+      x.id === y.id &&
+      x.kind === y.kind &&
+      x.port === y.port &&
+      !!x.allow_lan === !!y.allow_lan
+    );
+  });
 }
 
 function AppToggle({

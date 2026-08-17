@@ -3,8 +3,8 @@
 use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
 use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
-    AutoSelectMode, DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet,
-    RuleSetStrategy, RuleTarget, RuleType, TlsConfig, Transport,
+    AutoSelectMode, DnsSettings, ExtraInbound, OutboundMode, Protocol, ProtocolConfig, ProxyNode,
+    Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256};
 pub struct BuildOptions {
     pub mixed_port: u16,
     pub api_port: u16,
+    /// Additional mixed/http listeners (settings-managed).
+    pub extra_inbounds: Vec<ExtraInbound>,
     pub api_secret: String,
     /// Preferred node id; falls back to first node.
     pub current_node_id: Option<String>,
@@ -181,6 +183,15 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         "listen_port": opts.mixed_port
     })];
 
+    for inb in &opts.extra_inbounds {
+        inbounds.push(json!({
+            "type": inb.kind,
+            "tag": format!("in-{}-{}", inb.kind, inb.port),
+            "listen": if inb.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+            "listen_port": inb.port
+        }));
+    }
+
     if opts.tun_enabled {
         // strict_route is mainly a Windows multi-homed DNS workaround; on macOS it
         // can break host → 127.0.0.1 (clash_api / mixed) while TUN is up.
@@ -296,7 +307,17 @@ fn build_grouped_rule_sets(
                 "path": path,
             }));
         } else {
-            definitions.push(build_inline_rule_set(&set.id, &set.rules));
+            // sing-box rejects an inline rule-set whose body is empty, so an
+            // enabled-but-empty set is dropped together with every route/DNS
+            // rule that would reference it.
+            let Some(headless) = build_headless_rules(&set.rules) else {
+                continue;
+            };
+            definitions.push(json!({
+                "type": "inline",
+                "tag": set.id,
+                "rules": headless,
+            }));
         }
 
         match set.strategy {
@@ -315,7 +336,7 @@ fn build_grouped_rule_sets(
                 let mut sorted: Vec<Rule> = set
                     .rules
                     .iter()
-                    .filter(|rule| rule.enabled)
+                    .filter(|rule| inline_rule_is_effective(rule))
                     .cloned()
                     .collect();
                 sorted.sort_by_key(|rule| rule.ord);
@@ -333,7 +354,14 @@ fn build_grouped_rule_sets(
                 }
                 for (index, (key, rules)) in groups.into_iter().enumerate() {
                     let tag = format!("{}-route-{index}", set.id);
-                    definitions.push(build_inline_rule_set(&tag, &rules));
+                    let Some(headless) = build_headless_rules(&rules) else {
+                        continue;
+                    };
+                    definitions.push(json!({
+                        "type": "inline",
+                        "tag": tag,
+                        "rules": headless,
+                    }));
                     if key == "reject" {
                         route_rules.push(json!({ "rule_set": [tag], "action": "reject" }));
                     } else {
@@ -362,13 +390,46 @@ fn build_grouped_rule_sets(
     (definitions, route_rules, dns_rules)
 }
 
+/// Whether a set contributes nothing to the generated sing-box config: no
+/// matchable local rules, or a remote set whose cache file is missing. Must
+/// stay in sync with what `build_grouped_rule_sets` registers — callers use
+/// this to skip core restarts for edits that cannot change the config.
+pub fn rule_set_is_empty_for_config(set: &RuleSet) -> bool {
+    match &set.remote {
+        Some(remote) => match remote
+            .local_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            Some(path) => !std::path::Path::new(path).is_file(),
+            None => true,
+        },
+        None => build_headless_rules(&set.rules).is_none(),
+    }
+}
+
+/// Whether a rule contributes at least one matchable payload to an inline
+/// rule-set (enabled, non-empty payload, non-deprecated type).
+fn inline_rule_is_effective(rule: &Rule) -> bool {
+    rule.enabled && !rule.payload.trim().is_empty() && rule.rule_type != RuleType::Geoip
+}
+
 fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
+    json!({
+        "type": "inline",
+        "tag": tag,
+        "rules": build_headless_rules(rules).unwrap_or_default(),
+    })
+}
+
+/// Headless rule bodies for one inline rule-set. `None` when nothing is
+/// matchable — sing-box rejects an empty rule body ("missing condition"), so
+/// the caller must drop the definition and everything referencing it.
+fn build_headless_rules(rules: &[Rule]) -> Option<Vec<Value>> {
     let mut buckets: [Vec<String>; 5] = Default::default();
-    for rule in rules.iter().filter(|rule| rule.enabled) {
+    for rule in rules.iter().filter(|rule| inline_rule_is_effective(rule)) {
         let payload = rule.payload.trim();
-        if payload.is_empty() || rule.rule_type == RuleType::Geoip {
-            continue;
-        }
         let index = match rule.rule_type {
             RuleType::Domain => 0,
             RuleType::DomainSuffix => 1,
@@ -388,6 +449,11 @@ fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
             RuleType::Domain | RuleType::DomainSuffix => to_ascii_domain(normalized),
             _ => normalized.to_string(),
         };
+        // Payloads like "*" or "." normalize to nothing and would produce an
+        // empty condition entry, which the kernel also rejects.
+        if value.is_empty() {
+            continue;
+        }
         buckets[index].push(value);
     }
     let keys = [
@@ -402,7 +468,7 @@ fn build_inline_rule_set(tag: &str, rules: &[Rule]) -> Value {
         .zip(buckets)
         .filter_map(|(key, values)| (!values.is_empty()).then(|| json!({ (*key): values })))
         .collect();
-    json!({ "type": "inline", "tag": tag, "rules": headless })
+    (!headless.is_empty()).then_some(headless)
 }
 
 fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
@@ -526,7 +592,10 @@ fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[Strin
     let mut seen = std::collections::HashSet::new();
     for r in rules
         .iter()
-        .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
+        // Empty-payload rules never reach a route rule-set, so their selector
+        // would be a dead outbound — skipping keeps "empty set ⇒ no config
+        // output" true for restart-skipping decisions.
+        .filter(|r| r.enabled && !r.payload.trim().is_empty() && matches!(r.target, RuleTarget::Smart))
     {
         let group = r.smart_outbound_tag();
         if !seen.insert(group.clone()) {
@@ -1203,6 +1272,261 @@ mod tests {
     }
 
     #[test]
+    fn empty_local_rule_sets_are_dropped_entirely() {
+        let mut no_rules = RuleSet::new_user("空集", vec![]);
+        no_rules.strategy = RuleSetStrategy::Proxy;
+
+        let mut disabled_only = RuleSet::new_user(
+            "全停用",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "example.com".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+        disabled_only.rules[0].enabled = false;
+
+        // Rule::new trims payloads, so both variants below store "".
+        let blank_payload = RuleSet::new_user(
+            "空载荷",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "  ".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+
+        let wildcard_only = RuleSet::new_user(
+            "仅通配符",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "*".into(),
+                RuleTarget::Block,
+                10,
+            )],
+        );
+
+        for set in [no_rules, disabled_only, blank_payload, wildcard_only] {
+            let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+            assert!(definitions.is_empty(), "empty set must not be registered");
+            assert!(routes.is_empty(), "empty set must not be routed");
+            assert!(dns.is_empty(), "empty set must not get DNS rules");
+        }
+    }
+
+    #[test]
+    fn empty_smart_rule_sets_emit_no_child_definitions_or_dns_rules() {
+        let mut set = RuleSet::new_user(
+            "空智能集",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "  ".into(),
+                    RuleTarget::Smart,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainKeyword,
+                    "chrome".into(),
+                    RuleTarget::Block,
+                    20,
+                ),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Smart;
+        // Both rules are uneffective → the whole set must vanish.
+        set.rules[1].enabled = false;
+
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        assert!(definitions.is_empty());
+        assert!(routes.is_empty());
+        assert!(dns.is_empty());
+    }
+
+    #[test]
+    fn smart_set_partitions_only_effective_rules() {
+        let mut set = RuleSet::new_user(
+            "智能集",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "openai.com".into(),
+                    RuleTarget::Smart,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "  ".into(),
+                    RuleTarget::Smart,
+                    20,
+                ),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Smart;
+
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        // Parent (DNS) + exactly one non-empty child route set.
+        assert_eq!(definitions.len(), 2);
+        assert!(!definitions[0]["rules"].as_array().unwrap().is_empty());
+        assert!(!definitions[1]["rules"].as_array().unwrap().is_empty());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(dns.len(), 1);
+    }
+
+    #[test]
+    fn empty_rule_set_keeps_generated_config_valid() {
+        let nodes = vec![sample_ss()];
+        let empty_set = RuleSet::new_user("空集", vec![]);
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                extra_inbounds: vec![],
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                rule_sets: vec![empty_set],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+            },
+        )
+        .unwrap();
+
+        let rule_sets = built.value["route"]["rule_set"].as_array().unwrap();
+        assert!(
+            rule_sets.is_empty(),
+            "empty set must not reach the kernel config"
+        );
+        let route_rules = built.value["route"]["rules"].as_array().unwrap();
+        assert!(route_rules.iter().all(|rule| rule.get("rule_set").is_none()));
+    }
+
+    #[test]
+    fn rule_set_is_empty_for_config_matches_builder_registration() {
+        // Local sets: emptiness follows the inline headless body.
+        let empty = RuleSet::new_user("空", vec![]);
+        assert!(rule_set_is_empty_for_config(&empty));
+
+        let mut disabled_only = RuleSet::new_user(
+            "全停用",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "example.com".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+        disabled_only.rules[0].enabled = false;
+        assert!(rule_set_is_empty_for_config(&disabled_only));
+
+        let contributing = RuleSet::new_user(
+            "有规则",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "example.com".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+        assert!(!rule_set_is_empty_for_config(&contributing));
+
+        // Remote sets: emptiness follows the downloaded cache file.
+        let mut undownloaded =
+            RuleSet::new_remote("Remote", "https://example.com/r.json", RuleTarget::Proxy);
+        assert!(rule_set_is_empty_for_config(&undownloaded));
+        undownloaded.remote.as_mut().unwrap().local_path =
+            Some("Z:/definitely/missing/file.srs".into());
+        assert!(rule_set_is_empty_for_config(&undownloaded));
+        undownloaded.remote.as_mut().unwrap().local_path = Some(
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+        assert!(!rule_set_is_empty_for_config(&undownloaded));
+
+        // The predicate must agree with what the builder actually registers.
+        for set in [&empty, &disabled_only, &contributing] {
+            let (definitions, routes, dns) = build_grouped_rule_sets(
+                &[set.clone()],
+                &[],
+                &[],
+            );
+            let registered =
+                !definitions.is_empty() && !routes.is_empty() && !dns.is_empty();
+            assert_eq!(
+                registered,
+                !rule_set_is_empty_for_config(set),
+                "predicate and builder disagree for {}",
+                set.name
+            );
+        }
+    }
+
+    #[test]
+    fn builds_extra_inbounds_after_mixed_before_tun() {
+        let nodes = vec![sample_ss()];
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                extra_inbounds: vec![
+                    crate::domain::ExtraInbound {
+                        id: "i1".into(),
+                        kind: "http".into(),
+                        port: 2081,
+                        allow_lan: false,
+                    },
+                    crate::domain::ExtraInbound {
+                        id: "i2".into(),
+                        kind: "mixed".into(),
+                        port: 2082,
+                        allow_lan: true,
+                    },
+                ],
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                rule_sets: vec![],
+                tun_enabled: true,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+            },
+        )
+        .unwrap();
+        let inbounds = built.value["inbounds"].as_array().unwrap();
+        assert_eq!(inbounds.len(), 4);
+        assert_eq!(inbounds[0]["tag"], "mixed-in");
+        assert_eq!(inbounds[1]["type"], "http");
+        assert_eq!(inbounds[1]["tag"], "in-http-2081");
+        assert_eq!(inbounds[1]["listen"], "127.0.0.1");
+        assert_eq!(inbounds[1]["listen_port"], 2081);
+        assert_eq!(inbounds[2]["type"], "mixed");
+        assert_eq!(inbounds[2]["tag"], "in-mixed-2082");
+        assert_eq!(inbounds[2]["listen"], "0.0.0.0");
+        assert_eq!(inbounds[2]["listen_port"], 2082);
+        // TUN stays last even with extras present.
+        assert_eq!(inbounds[3]["type"], "tun");
+    }
+
+    #[test]
     fn builds_selector() {
         let nodes = vec![sample_ss()];
         let built = build_singbox_config(
@@ -1210,6 +1534,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1268,6 +1593,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1302,6 +1628,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1341,6 +1668,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1424,6 +1752,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "x".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1451,6 +1780,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1479,6 +1809,7 @@ mod tests {
                 &BuildOptions {
                     mixed_port: 2080,
                     api_port: 19090,
+                    extra_inbounds: vec![],
                     api_secret: "test".into(),
                     current_node_id: None,
                     log_level: "info".into(),
@@ -1508,6 +1839,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1553,6 +1885,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1594,6 +1927,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
@@ -1639,6 +1973,7 @@ mod tests {
             &BuildOptions {
                 mixed_port: 2080,
                 api_port: 19090,
+                extra_inbounds: vec![],
                 api_secret: "test".into(),
                 current_node_id: None,
                 log_level: "info".into(),
