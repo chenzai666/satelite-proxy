@@ -146,6 +146,11 @@ export function activateSubscription(id: string) {
   return invoke<SubscriptionView[]>("activate_subscription", { id });
 }
 
+/** Homepage launch source: `generated` or `singbox:<id>`. Restarts if running. */
+export function setRuntimeSource(source: string) {
+  return invoke<AppSettings>("set_runtime_source", { source });
+}
+
 export function setMixMode(mix: boolean) {
   return invoke<AppSettings>("set_mix_mode", { mix });
 }
@@ -169,6 +174,11 @@ export function listNodesPage(query: string, sortMode: string, offset = 0, limit
 
 export function listNodeIds(query = "") {
   return invoke<string[]>("list_node_ids", { query });
+}
+
+/** Read-only nodes extracted from the selected custom sing-box config (custom mode). */
+export function listCustomConfigNodes() {
+  return invoke<ProxyNode[]>("list_custom_config_nodes");
 }
 
 export function renameNode(id: string, name: string) {
@@ -366,6 +376,15 @@ export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | nul
     timeout_ms: timeoutMs ?? null,
   };
   return invoke<LatencyBatchResult>("test_nodes_latency", args);
+}
+
+/** Same TCP probe, for nodes extracted from the selected custom sing-box config (results not persisted). */
+export function testCustomNodesLatency(timeoutMs?: number | null) {
+  const args: Record<string, unknown> = {
+    timeoutMs: timeoutMs ?? null,
+    timeout_ms: timeoutMs ?? null,
+  };
+  return invoke<LatencyBatchResult>("test_custom_nodes_latency", args);
 }
 
 export function getProxyStatus() {

@@ -220,6 +220,51 @@ pub struct AppSettings {
     /// Legacy bool (pre auto_select). Migrated on store load; not re-written.
     #[serde(default, skip_serializing)]
     pub smart_switch: bool,
+    /// Which config the kernel should run: `generated` or `singbox:<profile_id>`.
+    #[serde(default = "default_runtime_source")]
+    pub runtime_source: String,
+}
+
+fn default_runtime_source() -> String {
+    "generated".into()
+}
+
+/// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeSource {
+    Generated,
+    Singbox { id: String },
+}
+
+impl RuntimeSource {
+    pub fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if let Some(id) = raw.strip_prefix("singbox:") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Self::Singbox { id: id.to_string() };
+            }
+        }
+        Self::Generated
+    }
+
+    pub fn as_store_value(&self) -> String {
+        match self {
+            Self::Generated => "generated".into(),
+            Self::Singbox { id } => format!("singbox:{id}"),
+        }
+    }
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Singbox { .. })
+    }
+
+    pub fn singbox_id(&self) -> Option<&str> {
+        match self {
+            Self::Singbox { id } => Some(id.as_str()),
+            Self::Generated => None,
+        }
+    }
 }
 
 fn default_probe_url() -> String {
@@ -282,11 +327,20 @@ impl Default for AppSettings {
             auto_select: AutoSelectMode::Off,
             find_process: true,
             smart_switch: false,
+            runtime_source: default_runtime_source(),
         }
     }
 }
 
 impl AppSettings {
+    pub fn runtime_source(&self) -> RuntimeSource {
+        RuntimeSource::parse(&self.runtime_source)
+    }
+
+    pub fn set_runtime_source(&mut self, source: RuntimeSource) {
+        self.runtime_source = source.as_store_value();
+    }
+
     /// Infer the new capture preference from the legacy persisted TUN flag.
     pub fn migrate_capture_mode(&mut self) {
         if self.tun_enabled && self.capture_mode == CaptureMode::Off {
@@ -349,5 +403,20 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
         assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
         assert_eq!(TrayIconStyle::parse("nope"), None);
+    }
+
+    #[test]
+    fn runtime_source_roundtrip() {
+        assert_eq!(RuntimeSource::parse(""), RuntimeSource::Generated);
+        assert_eq!(RuntimeSource::parse("generated"), RuntimeSource::Generated);
+        assert_eq!(
+            RuntimeSource::parse("singbox:abc"),
+            RuntimeSource::Singbox { id: "abc".into() }
+        );
+        let mut settings = AppSettings::default();
+        settings.set_runtime_source(RuntimeSource::Singbox { id: "p1".into() });
+        assert!(settings.runtime_source().is_custom());
+        settings.set_runtime_source(RuntimeSource::Generated);
+        assert!(!settings.runtime_source().is_custom());
     }
 }

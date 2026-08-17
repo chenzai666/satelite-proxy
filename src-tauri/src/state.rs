@@ -643,6 +643,13 @@ impl AppState {
         if !self.is_core_running() {
             return Ok(None);
         }
+        let custom = self
+            .with_store(|store| Ok(store.settings.runtime_source().is_custom()))
+            .unwrap_or(false);
+        if custom {
+            // Never rebuild active.json or rewrite the user file.
+            return Ok(None);
+        }
         Ok(Some(self.restart_proxy(resource_dir)?))
     }
 
@@ -883,6 +890,11 @@ impl AppState {
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
         let (tag, should_close) = self.with_store(|store| {
+            if store.settings.runtime_source().is_custom() {
+                return Err(crate::error::AppError::Core(
+                    "自写配置模式下无法切换节点".into(),
+                ));
+            }
             if !manual && !store.settings.auto_select.is_smart() {
                 return Err(crate::error::AppError::Core("智能切换已关闭".into()));
             }
@@ -1104,6 +1116,11 @@ impl AppState {
         let mut store = self.lock_store();
         runtime.core.poll();
 
+        if store.settings.runtime_source().is_custom() && mode == crate::domain::CaptureMode::Tun {
+            return Err(crate::error::AppError::Core(
+                "自写配置模式下无法改写 TUN，请在配置文件里自行声明".into(),
+            ));
+        }
         let want_tun = mode == crate::domain::CaptureMode::Tun;
         let want_sys = mode == crate::domain::CaptureMode::System;
         let tun_now = store.settings.tun_enabled;
@@ -1171,6 +1188,11 @@ impl AppState {
         let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
 
+        if store.settings.runtime_source().is_custom() {
+            return Err(crate::error::AppError::Core(
+                "自写配置模式下无法切换规则 / 全局 / 直连".into(),
+            ));
+        }
         if store.settings.outbound_mode == mode {
             let status = runtime.status(&store);
             self.cache_status(&status);

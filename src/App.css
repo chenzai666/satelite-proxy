@@ -4071,6 +4071,59 @@ button.check.on {
   box-shadow: none !important;
 }
 
+.dash-more-sub {
+  position: relative;
+}
+
+.dash-more-sub > button {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.dash-more-caret {
+  opacity: 0.55;
+  font-size: 0.95em;
+}
+
+.dash-more-submenu {
+  position: absolute;
+  right: calc(100% + 4px);
+  top: 0;
+  z-index: 31;
+  min-width: 11rem;
+  max-width: 16rem;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: var(--panel-solid) !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-elevated);
+}
+
+.dash-more-submenu button {
+  display: flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.dash-more-submenu button.is-selected {
+  color: var(--accent) !important;
+}
+
+.dash-more-check {
+  width: 0.85rem;
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+}
+
 .dash-hero .particle-orbit {
   filter: saturate(1) brightness(1);
   transition: filter 1.25s ease;
@@ -6539,6 +6592,17 @@ button.simple-link-row {
   font: inherit;
   color: inherit;
   cursor: pointer;
+}
+
+/* Higher specificity so disabled beats the `cursor: pointer` above.
+   Plain arrow — disabled rows read as inert content, not "forbidden". */
+button.simple-card:disabled,
+button.simple-node-item:disabled,
+button.simple-node-card:disabled,
+button.simple-link-row:disabled,
+button.simple-sub-row:disabled,
+button.node-card:disabled {
+  cursor: default;
 }
 
 button.simple-card:hover:not(:disabled),

@@ -264,6 +264,7 @@ export function ConfigPage() {
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [mixMode, setMixModeState] = useState(false);
+  const [runtimeSource, setRuntimeSource] = useState("generated");
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -290,6 +291,7 @@ export function ConfigPage() {
       ]);
       setItems(list);
       setMixModeState(!!settings.mix_mode);
+      setRuntimeSource(settings.runtime_source || "generated");
     } catch (e) {
       setListError(typeof e === "string" ? e : String(e));
     } finally {
@@ -544,28 +546,36 @@ export function ConfigPage() {
 
   function renderCard(item: SubscriptionView) {
     const generated = item.source_kind !== "singbox";
+    // Custom mode: switching the active profile is a runtime-source change
+    // (homepage picker) — subscription / local cards become read-only.
+    const clickable = generated && runtimeSource === "generated";
+    const customActive =
+      !generated && runtimeSource === `singbox:${item.id}`;
+    const generatedActive = clickable && item.enabled;
     return (
       <article
         key={item.id}
-        className={`sub-card${item.enabled && generated ? " enabled" : ""}${
-          generated ? "" : " readonly"
+        className={`sub-card${generatedActive || customActive ? " enabled" : ""}${
+          clickable ? "" : " readonly"
         }`}
-        role={generated ? "button" : "article"}
-        tabIndex={generated ? 0 : undefined}
+        role={clickable ? "button" : "article"}
+        tabIndex={clickable ? 0 : undefined}
         title={
           generated
-            ? mixMode
-              ? item.enabled
-                ? t("config.clickDisable")
-                : t("config.clickEnable")
-              : item.enabled
-                ? t("config.using")
-                : t("config.clickUse")
+            ? clickable
+              ? mixMode
+                ? item.enabled
+                  ? t("config.clickDisable")
+                  : t("config.clickEnable")
+                : item.enabled
+                  ? t("config.using")
+                  : t("config.clickUse")
+              : t("config.customDisabled")
             : t("config.singboxReadonly")
         }
-        onClick={generated ? () => void onActivate(item.id) : undefined}
+        onClick={clickable ? () => void onActivate(item.id) : undefined}
         onKeyDown={
-          generated
+          clickable
             ? (e) => {
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
@@ -725,7 +735,7 @@ export function ConfigPage() {
             onChange={() => void onToggleMix()}
             label={t("config.mix")}
             title={mixMode ? t("config.mixEnabled") : t("config.mixDisabled")}
-            disabled={loading || busy}
+            disabled={loading || busy || runtimeSource.startsWith("singbox:")}
             capsule
             size="sm"
           />
@@ -772,7 +782,16 @@ export function ConfigPage() {
           <ConfigGroup
             title={t("config.groupLocal")}
             empty={t("config.groupLocalEmpty")}
-            items={items.filter((item) => item.source_kind !== "url")}
+            items={items.filter(
+              (item) =>
+                item.source_kind !== "url" && item.source_kind !== "singbox",
+            )}
+            renderCard={(item) => renderCard(item)}
+          />
+          <ConfigGroup
+            title={t("config.groupSingbox")}
+            empty={t("config.groupSingboxEmpty")}
+            items={items.filter((item) => item.source_kind === "singbox")}
             renderCard={(item) => renderCard(item)}
           />
         </div>

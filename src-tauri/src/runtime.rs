@@ -2,8 +2,10 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
-    build_singbox_config, generate_api_secret, outbound_tag, write_active_config, BuildOptions,
+    build_singbox_config, generate_api_secret, inspect_singbox_config, outbound_tag,
+    write_active_config, write_custom_config, BuildOptions,
 };
+use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::resolve_core_bin;
 use crate::error::{AppError, AppResult};
@@ -47,6 +49,19 @@ pub struct ProxyStatus {
     /// Unix seconds when the core last entered running state (for uptime UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_started_at: Option<i64>,
+    /// `generated` or `singbox`.
+    #[serde(default)]
+    pub runtime_source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_profile_name: Option<String>,
+    #[serde(default)]
+    pub custom_has_clash_api: bool,
+    #[serde(default)]
+    pub custom_has_tun: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_inbound_port: Option<u16>,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -116,6 +131,10 @@ pub struct Runtime {
     journal_seq: u64,
     /// Wall-clock start of current core session (unix secs).
     core_started_at: Option<i64>,
+    /// Listen port taken from a user sing-box file (never from settings).
+    custom_inbound_port: Option<u16>,
+    custom_has_clash_api: bool,
+    custom_has_tun: bool,
 }
 
 impl Runtime {
@@ -140,6 +159,9 @@ impl Runtime {
             last_sample_at: None,
             journal_seq: 0,
             core_started_at: None,
+            custom_inbound_port: None,
+            custom_has_clash_api: false,
+            custom_has_tun: false,
         }
     }
 
@@ -164,7 +186,9 @@ impl Runtime {
             tun_enabled: store.settings.tun_enabled,
             capture_mode: store.settings.capture_mode.as_str().to_string(),
             outbound_mode: store.settings.outbound_mode.as_str().to_string(),
-            mixed_port: store.settings.mixed_port,
+            mixed_port: self
+                .custom_inbound_port
+                .unwrap_or(store.settings.mixed_port),
             api_port: store.settings.api_port,
             current_node_id: store.settings.current_node_id.clone(),
             error: self.core.last_error().map(|s| s.to_string()),
@@ -196,6 +220,25 @@ impl Runtime {
             smart_switch: store.settings.auto_select.is_smart(),
             auto_select: store.settings.auto_select.as_str().to_string(),
             core_started_at: self.core_started_at,
+            runtime_source: match store.settings.runtime_source() {
+                crate::domain::RuntimeSource::Generated => "generated".into(),
+                crate::domain::RuntimeSource::Singbox { .. } => "singbox".into(),
+            },
+            runtime_profile_id: store
+                .settings
+                .runtime_source()
+                .singbox_id()
+                .map(ToString::to_string),
+            runtime_profile_name: store.settings.runtime_source().singbox_id().and_then(|id| {
+                store
+                    .subscriptions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.name.clone())
+            }),
+            custom_has_clash_api: self.custom_has_clash_api,
+            custom_has_tun: self.custom_has_tun,
+            custom_inbound_port: self.custom_inbound_port,
         }
     }
 
@@ -549,6 +592,23 @@ impl Runtime {
             return Ok(self.status(store));
         }
 
+        match store.settings.runtime_source() {
+            RuntimeSource::Singbox { id } => {
+                return self.start_custom_proxy(
+                    app_data_dir,
+                    resource_dir,
+                    store,
+                    &id,
+                    enable_system_proxy,
+                );
+            }
+            RuntimeSource::Generated => {}
+        }
+
+        self.custom_inbound_port = None;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = false;
+
         let nodes = store.enabled_nodes();
         if nodes.is_empty() {
             return Err(AppError::Core(
@@ -684,6 +744,129 @@ impl Runtime {
         Ok(self.status(store))
     }
 
+    fn start_custom_proxy(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        profile_id: &str,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        let (name, content) = store
+            .subscriptions
+            .iter()
+            .find(|s| s.id == profile_id)
+            .and_then(|s| match &s.source {
+                SubscriptionSource::Singbox { content } => Some((s.name.clone(), content.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| AppError::Core("selected sing-box profile was not found".into()))?;
+        let _ = name;
+
+        crate::subscription::validate_complete_singbox_config(&content)?;
+        let insight = inspect_singbox_config(&content);
+        let config_path = write_custom_config(app_data_dir, profile_id, &content)?;
+
+        if let Some(port) = insight.inbound_port {
+            ensure_listen_port_available(port, "Inbound")?;
+        }
+        if let Some(port) = insight.clash_api_port {
+            ensure_listen_port_available(port, "Clash API")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
+        let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = insight.has_tun;
+        self.core.start_with_ports(
+            &bin,
+            &config_path,
+            &log_dir,
+            insight.inbound_port.unwrap_or(0),
+            insight.clash_api_port,
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+        self.custom_inbound_port = insight.inbound_port;
+        self.custom_has_clash_api = insight.has_clash_api();
+        self.custom_has_tun = insight.has_tun;
+
+        if insight.has_clash_api() {
+            let host = insight
+                .clash_api_host
+                .as_deref()
+                .unwrap_or("127.0.0.1");
+            let port = insight.clash_api_port.unwrap_or(9090);
+            let secret = insight.clash_api_secret.clone().unwrap_or_default();
+            let api = ClashApi::new(host, port, &secret);
+            let max_wait = if elevated {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_secs(6)
+            };
+            let wait_started = Instant::now();
+            let mut ok = false;
+            while wait_started.elapsed() < max_wait {
+                if api.health_ok() {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                self.core.poll();
+                if !self.core.is_running() {
+                    break;
+                }
+            }
+            if !ok {
+                let _ = self.core.stop();
+                return Err(AppError::Core(format!(
+                    "sing-box started but clash_api not responding at {host}:{port}"
+                )));
+            }
+            self.api = Some(api);
+            store.settings.clash_api_secret = if secret.is_empty() {
+                None
+            } else {
+                Some(secret)
+            };
+        } else {
+            self.api = None;
+            let wait_started = Instant::now();
+            let mut ok = false;
+            while wait_started.elapsed() < Duration::from_secs(4) {
+                self.core.poll();
+                if self.core.is_running() {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if !ok {
+                let log_hint = self.core.last_error().unwrap_or_default();
+                return Err(AppError::Core(format!(
+                    "sing-box failed to stay running{hint}",
+                    hint = if log_hint.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {log_hint}")
+                    }
+                )));
+            }
+        }
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            if insight.inbound_port.is_some() {
+                let _ = self.set_system_proxy(store, true);
+            }
+        }
+
+        Ok(self.status(store))
+    }
+
     /// Toggle system HTTP(S)/SOCKS proxy independently of core running state.
     pub fn set_system_proxy(&mut self, store: &AppStore, enabled: bool) -> AppResult<ProxyStatus> {
         self.core.poll();
@@ -691,9 +874,16 @@ impl Runtime {
             return Ok(self.status(store));
         }
         if enabled {
-            let snap = self
-                .system_proxy
-                .enable("127.0.0.1", store.settings.mixed_port)?;
+            let port = if store.settings.runtime_source().is_custom() {
+                self.custom_inbound_port.ok_or_else(|| {
+                    AppError::Core(
+                        "当前自写配置没有 mixed/http/socks inbound，无法开启系统代理".into(),
+                    )
+                })?
+            } else {
+                store.settings.mixed_port
+            };
+            let snap = self.system_proxy.enable("127.0.0.1", port)?;
             self.proxy_snapshot = Some(snap);
             self.system_proxy_on = true;
         } else {

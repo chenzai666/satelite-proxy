@@ -3,10 +3,12 @@ import {
   getCoreInfo,
   getProxyStatus,
   getSettings,
+  getSubscription,
   listAllNodes,
   listSubscriptions,
   previewSingboxConfig,
   restartProxy,
+  setRuntimeSource,
   setOutboundMode,
   startProxy,
   smartSwitchNow,
@@ -124,6 +126,7 @@ export function DashboardPage({
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
@@ -232,6 +235,7 @@ export function DashboardPage({
     function onDoc(e: MouseEvent) {
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
         setMoreOpen(false);
+        setConfigMenuOpen(false);
       }
     }
     document.addEventListener("mousedown", onDoc);
@@ -372,13 +376,50 @@ export function DashboardPage({
     }
   }
 
+  const customProfiles = useMemo(
+    () => subs.filter((s) => s.source_kind === "singbox"),
+    [subs],
+  );
+  const selectedCustomId =
+    proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
+
+  async function onPickRuntime(source: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setMoreOpen(false);
+    setConfigMenuOpen(false);
+    try {
+      await setRuntimeSource(source);
+      const s = await getProxyStatus();
+      setProxy(s);
+      await reload();
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onPreview() {
     setBusy(true);
     setError(null);
     setMoreOpen(false);
     try {
-      const r = await previewSingboxConfig();
-      setResult(r);
+      if (proxy?.runtime_source === "singbox" && proxy.runtime_profile_id) {
+        const detail = await getSubscription(proxy.runtime_profile_id);
+        setResult({
+          path: proxy.config_path ?? "",
+          selected_tag: "",
+          outbound_count: 0,
+          mixed_port: proxy.mixed_port,
+          api_port: proxy.api_port,
+          preview: detail.content ?? "",
+        });
+      } else {
+        const r = await previewSingboxConfig();
+        setResult(r);
+      }
       setShowPreview(true);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -397,8 +438,9 @@ export function DashboardPage({
   const nodeCount = nodes.length;
   const subCount = subs.length;
   // Allow start once we know a node id, even if full list is still loading.
+  const customRuntime = proxy?.runtime_source === "singbox";
   const canStart =
-    nodeCount > 0 || (!!currentNodeId && statusReady);
+    customRuntime || nodeCount > 0 || (!!currentNodeId && statusReady);
   const mixedPort = proxy?.mixed_port ?? settingsPorts.mixed;
 
   const switching =
@@ -433,19 +475,25 @@ export function DashboardPage({
 
   const heroTitle = !detailsReady && running
     ? null // skeleton
-    : running
-      ? currentNode?.name ?? t("dashboard.disconnected")
-      : isError
-        ? t("dashboard.errorTitle")
-        : t("dashboard.disconnected");
+    : customRuntime
+      ? t("dashboard.customMode", {
+          name: proxy?.runtime_profile_name || t("config.singbox"),
+        })
+      : running
+        ? currentNode?.name ?? t("dashboard.disconnected")
+        : isError
+          ? t("dashboard.errorTitle")
+          : t("dashboard.disconnected");
 
   const heroSub = !detailsReady && running
     ? null
-    : running
-      ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
-          .filter(Boolean)
-          .join(" · ")
-      : t("dashboard.desc");
+    : customRuntime
+      ? t("config.singboxReadonly")
+      : running
+        ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
+            .filter(Boolean)
+            .join(" · ")
+        : t("dashboard.desc");
 
   /** Best / avg among nodes that have a successful latency sample. */
   const latencyStats = useMemo(() => {
@@ -479,6 +527,14 @@ export function DashboardPage({
   }
 
   const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
+
+  const selectedCustom = useMemo(
+    () =>
+      customRuntime
+        ? (subs.find((s) => s.id === proxy?.runtime_profile_id) ?? null)
+        : null,
+    [customRuntime, proxy?.runtime_profile_id, subs],
+  );
 
   const activeSub = enabledSubs[0] ?? subs[0] ?? null;
 
@@ -693,11 +749,66 @@ export function DashboardPage({
                   >
                     {t("common.preview")}
                   </button>
+                  <div className="dash-more-sub">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={configMenuOpen}
+                      disabled={busy}
+                      onClick={() => setConfigMenuOpen((v) => !v)}
+                    >
+                      <span>{t("dashboard.pickConfig")}</span>
+                      <span className="dash-more-caret" aria-hidden>
+                        ›
+                      </span>
+                    </button>
+                    {configMenuOpen && (
+                      <div className="dash-more-submenu card glass" role="menu">
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={!selectedCustomId}
+                          className={!selectedCustomId ? "is-selected" : ""}
+                          disabled={busy}
+                          onClick={() => void onPickRuntime("generated")}
+                        >
+                          <span className="dash-more-check" aria-hidden>
+                            {!selectedCustomId ? "●" : "○"}
+                          </span>
+                          {t("dashboard.pickConfigDefault")}
+                        </button>
+                        {customProfiles.map((profile) => {
+                          const selected = selectedCustomId === profile.id;
+                          return (
+                            <button
+                              key={profile.id}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              className={selected ? "is-selected" : ""}
+                              disabled={busy}
+                              title={profile.name}
+                              onClick={() =>
+                                void onPickRuntime(`singbox:${profile.id}`)
+                              }
+                            >
+                              <span className="dash-more-check" aria-hidden>
+                                {selected ? "●" : "○"}
+                              </span>
+                              {profile.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
                     role="menuitem"
                     onClick={() => {
                       setMoreOpen(false);
+                      setConfigMenuOpen(false);
                       onGoSettings?.();
                     }}
                   >
@@ -718,7 +829,7 @@ export function DashboardPage({
               value={outboundMode}
               ready={statusReady}
               ariaLabel={t("dashboard.routing")}
-              disabled={controlsBusy || !statusReady}
+              disabled={controlsBusy || !statusReady || customRuntime}
               onChange={(v) => void onSetMode(v as OutboundMode)}
               options={[
                 { value: "rule", label: t("dashboard.modeRule") },
@@ -749,7 +860,7 @@ export function DashboardPage({
               value={autoSelectMode}
               ready={statusReady}
               ariaLabel={t("dashboard.autoSelect")}
-              disabled={modeBusy || !statusReady}
+              disabled={modeBusy || !statusReady || customRuntime}
               disabledValues={
                 new Set(
                   [
@@ -806,7 +917,12 @@ export function DashboardPage({
               disabledValues={
                 new Set(
                   [
-                    nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
+                    customRuntime || (nodeCount === 0 && captureMode !== "tun")
+                      ? "tun"
+                      : null,
+                    customRuntime && !proxy?.custom_inbound_port
+                      ? "system"
+                      : null,
                   ].filter((v): v is string => v != null),
                 )
               }
@@ -1005,49 +1121,88 @@ export function DashboardPage({
         >
           <header className="instrument-head">
             <span className="instrument-label">
-              {t("dashboard.cardSub")}
+              {customRuntime
+                ? t("dashboard.cardCustom")
+                : t("dashboard.cardSub")}
             </span>
-            <span className={`instrument-tag${mixMode ? " ok" : ""}`}>
-              {subCount === 0
-                ? "—"
-                : mixMode
-                  ? `${t("config.mix")} ${enabledSubs.length}/${subCount}`
-                  : "ACTIVE"}
+            <span
+              className={`instrument-tag${
+                customRuntime || mixMode ? " ok" : ""
+              }`}
+            >
+              {customRuntime
+                ? "CUSTOM"
+                : subCount === 0
+                  ? "—"
+                  : mixMode
+                    ? `${t("config.mix")} ${enabledSubs.length}/${subCount}`
+                    : "ACTIVE"}
             </span>
           </header>
           <div
             className={`instrument-value readout instrument-subscription-names${
-              visibleSubs.length > 1 || (activeSubNames?.length ?? 0) > 12
-                ? " wrap"
-                : ""
+              customRuntime
+                ? (selectedCustom?.name.length ?? 0) > 12
+                  ? " wrap"
+                  : ""
+                : visibleSubs.length > 1 || (activeSubNames?.length ?? 0) > 12
+                  ? " wrap"
+                  : ""
             }`}
-            title={activeSubNames || undefined}
+            title={
+              customRuntime
+                ? (selectedCustom?.name ?? undefined)
+                : activeSubNames || undefined
+            }
           >
-            <span>{activeSubNames || t("dashboard.noSub")}</span>
+            <span>
+              {customRuntime
+                ? selectedCustom?.name || t("dashboard.noSub")
+                : activeSubNames || t("dashboard.noSub")}
+            </span>
           </div>
           <div className="instrument-kv mono">
-            <div className="instrument-quota-row">
-              <span className="kv-k">{t("dashboard.quota")}</span>
-              {quotaPct != null ? (
-                <span
-                  className={`instrument-quota-bar ${quotaLevel}`}
-                  title={`${quotaPct}%`}
-                  aria-label={`${quotaPct}%`}
-                >
-                  <span
-                    className="instrument-quota-fill"
-                    style={{ width: `${quotaPct}%` }}
-                  />
-                </span>
-              ) : null}
-              <span className="kv-v">{subQuota.label}</span>
-            </div>
-            <div>
-              <span className="kv-k">{t("dashboard.profiles")}</span>
-              <span className="kv-v">
-                {subCount} · {nodeCount} {t("dashboard.nodes").toLowerCase()}
-              </span>
-            </div>
+            {customRuntime ? (
+              <>
+                <div>
+                  <span className="kv-k">{t("config.singbox")}</span>
+                  <span className="kv-v">{t("config.singboxReadonly")}</span>
+                </div>
+                <div>
+                  <span className="kv-k">IN</span>
+                  <span className="kv-v">
+                    {proxy?.custom_inbound_port
+                      ? `:${proxy.custom_inbound_port}`
+                      : "—"}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="instrument-quota-row">
+                  <span className="kv-k">{t("dashboard.quota")}</span>
+                  {quotaPct != null ? (
+                    <span
+                      className={`instrument-quota-bar ${quotaLevel}`}
+                      title={`${quotaPct}%`}
+                      aria-label={`${quotaPct}%`}
+                    >
+                      <span
+                        className="instrument-quota-fill"
+                        style={{ width: `${quotaPct}%` }}
+                      />
+                    </span>
+                  ) : null}
+                  <span className="kv-v">{subQuota.label}</span>
+                </div>
+                <div>
+                  <span className="kv-k">{t("dashboard.profiles")}</span>
+                  <span className="kv-v">
+                    {subCount} · {nodeCount} {t("dashboard.nodes").toLowerCase()}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
         </article>
 

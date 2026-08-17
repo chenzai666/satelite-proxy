@@ -40,13 +40,13 @@ const AUTO_UPDATE_MINUTES: Record<Exclude<AutoUpdateInterval, "disabled">, numbe
 };
 
 function kindToProfile(kind: AddSourceKind): ProfileKind {
-  return kind === "url" ? "subscription" : "local";
+  if (kind === "url") return "subscription";
+  if (kind === "singbox") return "singbox";
+  return "local";
 }
 
 function kindToLocal(kind: AddSourceKind, hasManualForm?: boolean): LocalKind {
-  if (kind === "singbox") return "singbox";
   if (kind === "node" && hasManualForm) return "node";
-  if (kind === "node") return "multi";
   return "multi";
 }
 
@@ -155,8 +155,8 @@ export function AddConfigModal({
 
   function currentKind(): AddSourceKind {
     if (profile === "subscription") return "url";
+    if (profile === "singbox") return "singbox";
     if (localKind === "node") return "node";
-    if (localKind === "singbox") return "singbox";
     return "text";
   }
 
@@ -236,6 +236,7 @@ export function AddConfigModal({
               options={[
                 { value: "subscription", label: "订阅" },
                 { value: "local", label: "本地配置" },
+                { value: "singbox", label: "sing-box" },
               ]}
             />
           </div>
@@ -251,7 +252,6 @@ export function AddConfigModal({
                 options={[
                   { value: "node", label: "手动填写" },
                   { value: "multi", label: "链接解析" },
-                  { value: "singbox", label: "sing-box" },
                 ]}
               />
             </div>
@@ -268,10 +268,10 @@ export function AddConfigModal({
               placeholder={
                 profile === "subscription"
                   ? "例如：机场 A"
-                  : localKind === "node"
-                    ? "必填，例如：家宽备用"
-                    : localKind === "singbox"
-                      ? "例如：自用完整配置"
+                  : profile === "singbox"
+                    ? "例如：自用完整配置"
+                    : localKind === "node"
+                      ? "必填，例如：家宽备用"
                       : "例如：自建节点组 / 协议链接"
               }
               disabled={busy}
@@ -340,8 +340,8 @@ export function AddConfigModal({
             />
           )}
 
-          {profile === "local" &&
-            (localKind === "multi" || localKind === "singbox") && (
+          {(profile === "singbox" ||
+            (profile === "local" && localKind === "multi")) && (
               <>
                 <div className="field">
                   <span>输入方式</span>
@@ -379,7 +379,7 @@ export function AddConfigModal({
                 )}
                 <label className="field">
                   <span>
-                    {localKind === "singbox"
+                    {profile === "singbox"
                       ? "完整 sing-box JSON"
                       : "配置内容"}
                   </span>
@@ -391,12 +391,12 @@ export function AddConfigModal({
                     value={content}
                     onChange={(e) => setContent(e.target.value)}
                     placeholder={
-                      localKind === "singbox"
-                        ? "必须是含 inbounds + outbounds 的完整 sing-box JSON，导入后只读，不走应用生成配置"
+                      profile === "singbox"
+                        ? "必须是含 inbounds + outbounds 的完整 sing-box JSON。启动时按原文拉起内核，应用不会改这份文件。"
                         : "一行一个协议链接（vless://…），也可粘贴 Clash / sing-box 订阅内容以提取节点"
                     }
                     disabled={busy}
-                    rows={localKind === "singbox" ? 12 : 8}
+                    rows={profile === "singbox" ? 12 : 8}
                   />
                 </label>
               </>
@@ -407,10 +407,10 @@ export function AddConfigModal({
               ? isEdit
                 ? "保存时会重新拉取并解析节点（保留配置 id）。"
                 : "提交后将下载订阅并解析节点。"
-              : localKind === "node"
-                ? "按协议填写字段，添加一条手动节点。协议链接请用「链接解析」。"
-                : localKind === "singbox"
-                  ? "只接受完整 sing-box 配置。不会提取节点，也不会参与应用生成配置；后续可在首页用这份配置直接启动。"
+              : profile === "singbox"
+                ? "只接受完整 sing-box 配置。点卡片选中后，首页连接会用这份文件启动内核；应用内节点 / 路由 / DNS 会禁用。"
+                : localKind === "node"
+                  ? "按协议填写字段，添加一条手动节点。协议链接请用「链接解析」。"
                   : "支持单行或多行协议链接，也能从 Clash / sing-box 订阅里提取节点。本地文件会拷贝进应用。"}
           </p>
 

@@ -181,6 +181,7 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   const autoSelectMode = resolveAutoSelect();
   const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
+  const customRuntime = proxy?.runtime_source === "singbox";
 
   async function onToggle() {
     if (busy || connecting) return;
@@ -287,19 +288,25 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   const heroTitle = !nodeReady && running
     ? null
-    : running
-      ? node?.name ?? t("dashboard.disconnected")
-      : isError
-        ? t("dashboard.errorTitle")
-        : t("dashboard.disconnected");
+    : customRuntime
+      ? t("dashboard.customMode", {
+          name: proxy?.runtime_profile_name || t("config.singbox"),
+        })
+      : running
+        ? node?.name ?? t("dashboard.disconnected")
+        : isError
+          ? t("dashboard.errorTitle")
+          : t("dashboard.disconnected");
 
   const heroSub = !nodeReady && running
     ? null
-    : running
-      ? [node?.protocol?.toUpperCase(), testing ? "…" : fmtLatency(node?.latency_ms)]
-          .filter(Boolean)
-          .join(" · ")
-      : t("dashboard.desc");
+    : customRuntime
+      ? t("config.singboxReadonly")
+      : running
+        ? [node?.protocol?.toUpperCase(), testing ? "…" : fmtLatency(node?.latency_ms)]
+            .filter(Boolean)
+            .join(" · ")
+        : t("dashboard.desc");
 
   return (
     <div className="simple-page simple-connect">
@@ -417,7 +424,7 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
             value={outboundMode}
             ready={!!proxy}
             ariaLabel={t("dashboard.routing")}
-            disabled={busy || !proxy}
+            disabled={busy || !proxy || customRuntime}
             onChange={(v) => void onSetMode(v as OutboundMode)}
             options={[
               { value: "rule", label: t("dashboard.modeRule") },
@@ -443,7 +450,7 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
             value={autoSelectMode}
             ready={!!proxy}
             ariaLabel={t("dashboard.autoSelect")}
-            disabled={busy || !proxy}
+            disabled={busy || !proxy || customRuntime}
             disabledValues={
               new Set(
                 [
@@ -491,7 +498,10 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
             disabledValues={
               new Set(
                 [
-                  nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
+                  customRuntime || (nodeCount === 0 && captureMode !== "tun")
+                    ? "tun"
+                    : null,
+                  customRuntime && !proxy?.custom_inbound_port ? "system" : null,
                 ].filter((v): v is string => v != null),
               )
             }

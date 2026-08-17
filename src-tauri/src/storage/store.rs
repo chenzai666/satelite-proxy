@@ -576,6 +576,10 @@ impl AppStore {
             return Err(AppError::NotFound(id.to_string()));
         }
         self.nodes.retain(|n| n.subscription_id != id);
+        if self.settings.runtime_source().singbox_id() == Some(id) {
+            self.settings
+                .set_runtime_source(crate::domain::RuntimeSource::Generated);
+        }
         // If removed was the only enabled, enable first remaining.
         if !self.subscriptions.iter().any(|s| s.enabled) {
             if let Some(first) = self.subscriptions.first_mut() {
@@ -677,7 +681,25 @@ impl AppStore {
         self.ensure_current_node_valid();
     }
 
+    /// Homepage ··· menu: `generated` or a stored complete sing-box archive.
+    pub fn set_runtime_source(
+        &mut self,
+        source: crate::domain::RuntimeSource,
+    ) -> AppResult<()> {
+        if let crate::domain::RuntimeSource::Singbox { id } = &source {
+            let ok = self.subscriptions.iter().any(|s| {
+                s.id == *id && matches!(s.source, crate::domain::SubscriptionSource::Singbox { .. })
+            });
+            if !ok {
+                return Err(AppError::NotFound(id.clone()));
+            }
+        }
+        self.settings.set_runtime_source(source);
+        Ok(())
+    }
+
     /// Click card: exclusive → enable only this; Mix → toggle this.
+    /// Does not change which file the kernel launches.
     pub fn activate_subscription(&mut self, id: &str) -> AppResult<()> {
         let contributes = self
             .subscriptions
@@ -1779,5 +1801,22 @@ mod tests {
             .unwrap();
         assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
         assert_eq!(store.find_node("b").unwrap().name, "HK-02");
+    }
+
+    #[test]
+    fn set_runtime_source_selects_custom_and_falls_back_on_delete() {
+        let mut store = AppStore::default();
+        let mut sub = sample_url_sub("s");
+        sub.id = "sb1".into();
+        sub.source = crate::domain::SubscriptionSource::Singbox {
+            content: r#"{"inbounds":[{"type":"mixed","listen_port":1}],"outbounds":[{"type":"direct"}]}"#.into(),
+        };
+        store.upsert_subscription(sub, Vec::new()).unwrap();
+        store
+            .set_runtime_source(crate::domain::RuntimeSource::Singbox { id: "sb1".into() })
+            .unwrap();
+        assert_eq!(store.settings.runtime_source, "singbox:sb1");
+        store.remove_subscription("sb1").unwrap();
+        assert_eq!(store.settings.runtime_source, "generated");
     }
 }

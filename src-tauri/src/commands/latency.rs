@@ -3,6 +3,8 @@ use crate::state::AppState;
 use serde::Serialize;
 use tauri::State;
 
+use super::config::custom_config_nodes;
+
 #[derive(Debug, Serialize)]
 pub struct LatencyBatchResult {
     pub results: Vec<LatencyResult>,
@@ -62,6 +64,46 @@ pub async fn test_nodes_latency(
             }
             Ok(())
         })
+        .map_err(|e| e.to_string())?;
+
+    let ok = results.iter().filter(|r| r.latency_ms.is_some()).count();
+    let failed = results.len() - ok;
+    Ok(LatencyBatchResult {
+        tested: results.len(),
+        ok,
+        failed,
+        results,
+        method: "tcp".into(),
+    })
+}
+
+/// Same direct-TCP probe as [`test_nodes_latency`], but for the read-only
+/// nodes extracted from the selected custom sing-box config. Results are
+/// NOT persisted — custom nodes do not live in the node store, so the UI
+/// keeps them for the session only. Empty when not in custom runtime mode.
+#[tauri::command]
+pub async fn test_custom_nodes_latency(
+    state: State<'_, AppState>,
+    timeout_ms: Option<u64>,
+) -> Result<LatencyBatchResult, String> {
+    let nodes: Vec<_> = custom_config_nodes(&state)?
+        .into_iter()
+        .map(|listed| listed.node)
+        .collect();
+
+    if nodes.is_empty() {
+        return Ok(LatencyBatchResult {
+            results: vec![],
+            tested: 0,
+            ok: 0,
+            failed: 0,
+            method: "none".into(),
+        });
+    }
+
+    // Always TCP — same rationale as test_nodes_latency.
+    let results = probe_nodes(&nodes, timeout_ms, Some(30), None, String::new())
+        .await
         .map_err(|e| e.to_string())?;
 
     let ok = results.iter().filter(|r| r.latency_ms.is_some()).count();

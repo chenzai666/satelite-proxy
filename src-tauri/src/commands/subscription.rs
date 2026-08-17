@@ -604,7 +604,9 @@ async fn load_inline_body(
 pub fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .with_store_mut(|store| store.remove_subscription(&id))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::config::remove_custom_config(&state.app_data_dir, &id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -636,6 +638,14 @@ fn persist_import_replacing(
     outcome: crate::services::import::ImportOutcome,
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
+    if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
+        crate::config::write_custom_config(
+            &state.app_data_dir,
+            &outcome.subscription.id,
+            content,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
@@ -670,6 +680,46 @@ fn persist_import_replacing(
         node_count,
         skipped_count,
     })
+}
+
+/// Homepage ··· → 指定配置. `source` is `generated` or `singbox:<id>`.
+/// Restarts the core when it is already running so the new file takes effect.
+#[tauri::command]
+pub async fn set_runtime_source(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+) -> Result<crate::domain::AppSettings, String> {
+    use crate::domain::RuntimeSource;
+    use tauri::Manager;
+
+    let parsed = RuntimeSource::parse(&source);
+    state
+        .with_store_mut(|store| {
+            store.set_runtime_source(parsed)?;
+            Ok(store.settings.clone())
+        })
+        .map_err(|e| e.to_string())?;
+
+    if state.is_core_running() {
+        let resource_dir = app.path().resource_dir().ok();
+        let worker = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = worker
+                .try_state::<AppState>()
+                .ok_or_else(|| "app state unavailable".to_string())?;
+            state
+                .restart_proxy(resource_dir.as_deref())
+                .map_err(|e| e.to_string())?;
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| format!("switch config task: {e}"))??;
+    }
+
+    state
+        .with_store(|store| Ok(store.settings.clone()))
+        .map_err(|e| e.to_string())
 }
 
 /// Click a config card: exclusive enable (default) or Mix toggle.

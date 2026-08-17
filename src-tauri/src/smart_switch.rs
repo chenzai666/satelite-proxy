@@ -290,6 +290,23 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         });
     }
 
+    // Custom sing-box configs manage their own outbounds — nothing to switch.
+    if state
+        .with_store(|s| Ok(s.settings.runtime_source().is_custom()))
+        .unwrap_or(false)
+    {
+        app_log::warn("smart_switch", "bootstrap skipped: custom runtime mode");
+        return Ok(SmartSwitchNowResult {
+            switched: false,
+            from_id: None,
+            to_id: None,
+            to_name: None,
+            latency_ms: None,
+            probed: 0,
+            message: "custom runtime".into(),
+        });
+    }
+
     {
         let mut c = ctrl();
         c.clear_eject_if_expired();
@@ -534,10 +551,16 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
 }
 
 async fn tick(state: &AppState) -> Result<(), String> {
-    let enabled = state
-        .with_store(|s| Ok(s.settings.auto_select.is_smart()))
-        .unwrap_or(false);
-    if !enabled || !state.is_core_running() {
+    let (enabled, custom) = state
+        .with_store(|s| {
+            Ok((
+                s.settings.auto_select.is_smart(),
+                s.settings.runtime_source().is_custom(),
+            ))
+        })
+        .unwrap_or((false, false));
+    // Custom sing-box configs manage their own outbounds — nothing to switch.
+    if !enabled || custom || !state.is_core_running() {
         return Ok(());
     }
 

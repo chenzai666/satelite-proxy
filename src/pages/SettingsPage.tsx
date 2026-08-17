@@ -30,6 +30,8 @@ import { HostsPage } from "./HostsPage";
 
 type SettingsTab = "app" | "rules" | "dns" | "hosts" | "core";
 
+const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
+
 // Accent preset names are picked from the i18n catalog rather than
 // AccentPreset.name (theme/accents.ts), which is display data only and not
 // locale-aware.
@@ -266,12 +268,23 @@ export function SettingsPage() {
     }
   }
 
-  const needsSettings = tab === "app" || tab === "core";
+  const customRuntime = (settings?.runtime_source ?? "").startsWith("singbox:");
+
+  useEffect(() => {
+    if (customRuntime && CUSTOM_BLOCKED_TABS.has(tab)) {
+      setTab("app");
+    }
+  }, [customRuntime, tab]);
+
+  const visibleTab =
+    customRuntime && CUSTOM_BLOCKED_TABS.has(tab) ? "app" : tab;
+
+  const needsSettings = visibleTab === "app" || visibleTab === "core";
   if (needsSettings && !settings && !error) {
     return <div className="page empty">{t("common.loading")}</div>;
   }
 
-  const activeTab = tabs.find((x) => x.id === tab)!;
+  const activeTab = tabs.find((x) => x.id === visibleTab)!;
 
   return (
     <div className="page settings-page settings-wide">
@@ -283,29 +296,45 @@ export function SettingsPage() {
       </header>
 
       <GlassSeg
-        value={tab}
+        value={visibleTab}
         ariaLabel="Settings sections"
         onChange={(v) => {
+          if (customRuntime && CUSTOM_BLOCKED_TABS.has(v)) return;
           setTab(v as SettingsTab);
           setError(null);
         }}
+        disabledValues={customRuntime ? CUSTOM_BLOCKED_TABS : undefined}
+        titles={
+          customRuntime
+            ? {
+                rules: t("config.customDisabled"),
+                dns: t("config.customDisabled"),
+                hosts: t("config.customDisabled"),
+              }
+            : undefined
+        }
         options={tabs.map((x) => ({ value: x.id, label: x.label }))}
       />
 
-      {error && tab !== "rules" && tab !== "dns" && tab !== "hosts" && (
+      {error &&
+        visibleTab !== "rules" &&
+        visibleTab !== "dns" &&
+        visibleTab !== "hosts" && (
         <div className="banner error">{error}</div>
       )}
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
       <div
-        className={`page-enter${tab === "app" ? " settings-app-network-page" : ""}`}
-        key={tab}
+        className={`page-enter${visibleTab === "app" ? " settings-app-network-page" : ""}`}
+        key={visibleTab}
       >
-        {tab === "rules" && <RulesPage embedded />}
+        {!customRuntime && visibleTab === "rules" && <RulesPage embedded />}
 
-        {tab === "dns" && <DnsPage embedded section="settings" />}
-        {tab === "hosts" && <HostsPage embedded />}
-      {tab === "app" && settings && (
+        {!customRuntime && visibleTab === "dns" && (
+          <DnsPage embedded section="settings" />
+        )}
+        {!customRuntime && visibleTab === "hosts" && <HostsPage embedded />}
+      {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">
             <div className="settings-app-prefs">
@@ -451,14 +480,14 @@ export function SettingsPage() {
                 title={t("settings.closeOnSwitch")}
                 desc={t("settings.closeOnSwitchDesc")}
                 checked={settings?.close_connections_on_switch !== false}
-                disabled={busy}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
               />
               <AppToggle
                 title={t("settings.findProcess")}
                 desc={t("settings.findProcessDesc")}
                 checked={settings?.find_process !== false}
-                disabled={busy}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(v) => void patchApp({ findProcess: v })}
               />
             </div>
@@ -467,7 +496,7 @@ export function SettingsPage() {
         </section>
       )}
 
-      {tab === "app" && settings && (
+      {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Network">
           <div className="card settings-form settings-form-grid">
             <div className="settings-network-card-head field-span-2">
@@ -478,7 +507,7 @@ export function SettingsPage() {
               <GlassButton
                 variant="primary"
                 icon="↻"
-                disabled={busy}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onClick={() => void onSaveNetwork()}
                 title={t("settings.saveRestartCore")}
               >
@@ -493,6 +522,7 @@ export function SettingsPage() {
                 spellCheck={false}
                 className="mono"
                 value={mixed}
+                disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(e) => setMixed(e.target.value)}
               />
             </label>
@@ -504,6 +534,7 @@ export function SettingsPage() {
                 spellCheck={false}
                 className="mono"
                 value={api}
+                disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(e) => setApi(e.target.value)}
               />
             </label>
@@ -544,7 +575,7 @@ export function SettingsPage() {
         </section>
       )}
 
-      {tab === "core" && (
+      {visibleTab === "core" && (
         <section className="settings-panel" aria-label="Core">
           {coreError && <div className="banner error">{coreError}</div>}
 

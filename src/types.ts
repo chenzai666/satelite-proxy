@@ -183,8 +183,8 @@ export interface LatencyBatchResult {
 
 export type AddSourceKind = "url" | "file" | "text" | "node" | "singbox";
 
-export type ProfileKind = "subscription" | "local";
-export type LocalKind = "node" | "multi" | "singbox";
+export type ProfileKind = "subscription" | "local" | "singbox";
+export type LocalKind = "node" | "multi";
 export type ConfigInputMode = "paste" | "file";
 
 /** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
@@ -284,6 +284,8 @@ export interface AppSettings {
   find_process?: boolean;
   /** @deprecated derived from auto_select === "smart" */
   smart_switch?: boolean;
+  /** `generated` or `singbox:<profile_id>`. */
+  runtime_source?: string;
 }
 
 /** Manual / app smart switch / sing-box urltest. */
@@ -365,6 +367,13 @@ export interface ProxyStatus {
   auto_select?: AutoSelectMode | string;
   /** Unix seconds when core last started (uptime = now - this). */
   core_started_at?: number | null;
+  /** `generated` or `singbox`. */
+  runtime_source?: string;
+  runtime_profile_id?: string | null;
+  runtime_profile_name?: string | null;
+  custom_has_clash_api?: boolean;
+  custom_has_tun?: boolean;
+  custom_inbound_port?: number | null;
 }
 
 export type RuleType =

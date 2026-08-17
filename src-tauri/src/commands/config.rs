@@ -2,8 +2,10 @@ use crate::config::{
     active_config_path, build_singbox_config, generate_api_secret, write_active_config,
     BuildOptions,
 };
-use crate::domain::{AppSettings, ProxyNode};
+use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
+use crate::error::AppError;
 use crate::state::AppState;
+use crate::subscription::parse_singbox_json;
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager, State};
@@ -410,6 +412,109 @@ pub fn list_node_ids(
         .map_err(|e| e.to_string())
 }
 
+/// Nodes extracted read-only from a stored custom sing-box config body.
+/// A config whose outbounds are all groups (selector / urltest / direct / …)
+/// is valid but has nothing to show — returns an empty list, not an error.
+fn extract_custom_nodes(
+    content: &str,
+    sub_id: &str,
+    sub_name: &str,
+) -> Result<Vec<ListedNode>, String> {
+    match parse_singbox_json(content) {
+        Ok(parsed) => Ok(parsed
+            .nodes
+            .into_iter()
+            .map(|node| ListedNode {
+                node,
+                subscription_id: sub_id.to_string(),
+                subscription_name: sub_name.to_string(),
+            })
+            .collect()),
+        Err(AppError::NoProxies) => Ok(Vec::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Read-only node list extracted from the selected custom sing-box config.
+/// Custom profiles never feed the node store, so the stored config body is
+/// parsed on demand. Empty when not in custom runtime mode.
+#[tauri::command]
+pub fn list_custom_config_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
+    custom_config_nodes(&state)
+}
+
+/// Shared body of [`list_custom_config_nodes`]; also feeds the custom-mode
+/// latency probe (`test_custom_nodes_latency`).
+pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, String> {
+    // Copy only what parsing needs while the store lock is held; the JSON
+    // pass runs outside so a large config cannot stall other commands.
+    let (custom, tag_names) = state
+        .with_store(|store| {
+            let id = match store.settings.runtime_source() {
+                RuntimeSource::Singbox { id } => id,
+                RuntimeSource::Generated => return Ok((None, HashMap::new())),
+            };
+            // Display names for tags emitted by app-generated configs
+            // (see restore_generated_tag_names).
+            let tag_names: HashMap<String, String> = store
+                .nodes
+                .iter()
+                .map(|n| {
+                    (
+                        n.node.id[..n.node.id.len().min(16)].to_string(),
+                        n.node.name.clone(),
+                    )
+                })
+                .collect();
+            Ok((
+                store
+                    .subscriptions
+                    .iter()
+                    .find(|s| s.id == id)
+                    .and_then(|s| match &s.source {
+                        SubscriptionSource::Singbox { content } => {
+                            Some((s.id.clone(), s.name.clone(), content.clone()))
+                        }
+                        _ => None,
+                    }),
+                tag_names,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    match custom {
+        Some((id, name, content)) => {
+            let mut nodes = extract_custom_nodes(&content, &id, &name)?;
+            restore_generated_tag_names(&mut nodes, &tag_names);
+            Ok(nodes)
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Outbound tags in app-generated sing-box configs are internal
+/// `node-{id[..16]}` hashes (`config::builder::outbound_tag`), not display
+/// names. When such a config is re-imported as a custom profile the display
+/// names only exist in the node store — recover them by matching the id
+/// prefix embedded in the tag. Ids are left untouched so latency results
+/// stay stable across calls.
+fn restore_generated_tag_names(
+    nodes: &mut [ListedNode],
+    prefix_names: &HashMap<String, String>,
+) {
+    for listed in nodes.iter_mut() {
+        let Some(suffix) = listed.node.name.strip_prefix("node-") else {
+            continue;
+        };
+        if suffix.len() != 16 || !suffix.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        if let Some(display) = prefix_names.get(suffix) {
+            listed.node.name = display.clone();
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn generate_singbox_config(
     state: State<'_, AppState>,
@@ -548,4 +653,94 @@ pub async fn preview_singbox_config(
     })
     .await
     .map_err(|e| format!("preview config task: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"{
+        "inbounds": [{"type": "mixed", "listen_port": 7890}],
+        "outbounds": [
+            {"type": "selector", "tag": "route", "outbounds": ["a", "b", "direct"]},
+            {"type": "shadowsocks", "tag": "a", "server": "a.example.com", "server_port": 8388,
+             "method": "aes-128-gcm", "password": "pw"},
+            {"type": "trojan", "tag": "b", "server": "b.example.com", "server_port": 443,
+             "password": "pw"},
+            {"type": "direct", "tag": "direct"}
+        ]
+    }"#;
+
+    #[test]
+    fn extract_custom_nodes_maps_outbounds() {
+        let nodes = extract_custom_nodes(SAMPLE, "sub1", "My Config").unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes.iter().all(|n| n.subscription_id == "sub1"));
+        assert!(nodes.iter().all(|n| n.subscription_name == "My Config"));
+        let names: Vec<&str> = nodes.iter().map(|n| n.node.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn extract_custom_nodes_all_groups_is_empty() {
+        let content = r#"{
+            "inbounds": [{"type": "mixed", "listen_port": 7890}],
+            "outbounds": [
+                {"type": "selector", "tag": "route", "outbounds": ["direct"]},
+                {"type": "direct", "tag": "direct"}
+            ]
+        }"#;
+        assert!(extract_custom_nodes(content, "sub1", "x").unwrap().is_empty());
+    }
+
+    #[test]
+    fn extract_custom_nodes_invalid_json_errors() {
+        assert!(extract_custom_nodes("{ not json", "sub1", "x").is_err());
+    }
+
+    #[test]
+    fn restore_generated_tag_names_recovers_display_names() {
+        // Round-trip: a generated-style config carries internal `node-{id16}`
+        // tags; the display name is recovered via the embedded id prefix.
+        use crate::domain::Protocol;
+        let id = ProxyNode::compute_id("香港 01", "a.example.com", 8388, Protocol::Shadowsocks);
+        let tag = format!("node-{}", &id[..16]);
+        let content = format!(
+            r#"{{
+                "inbounds": [{{"type": "mixed", "listen_port": 7890}}],
+                "outbounds": [
+                    {{"type": "shadowsocks", "tag": "{tag}", "server": "a.example.com",
+                      "server_port": 8388, "method": "aes-128-gcm", "password": "pw"}}
+                ]
+            }}"#
+        );
+        let mut nodes = extract_custom_nodes(&content, "sub1", "My Config").unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node.name, tag);
+
+        let mut map = HashMap::new();
+        map.insert(id[..16].to_string(), "香港 01".to_string());
+        restore_generated_tag_names(&mut nodes, &map);
+        assert_eq!(nodes[0].node.name, "香港 01");
+    }
+
+    #[test]
+    fn restore_generated_tag_names_only_matches_id_prefixes() {
+        let content = r#"{
+            "inbounds": [{"type": "mixed", "listen_port": 7890}],
+            "outbounds": [
+                {"type": "shadowsocks", "tag": "node-short", "server": "s1.example.com",
+                 "server_port": 8388, "method": "aes-128-gcm", "password": "pw"},
+                {"type": "shadowsocks", "tag": "node-aabbccddeeff0011", "server": "s2.example.com",
+                 "server_port": 8388, "method": "aes-128-gcm", "password": "pw"}
+            ]
+        }"#;
+        let mut nodes = extract_custom_nodes(content, "sub1", "x").unwrap();
+        let mut map = HashMap::new();
+        map.insert("0011aabbccddeeff".to_string(), "其他节点".to_string());
+        restore_generated_tag_names(&mut nodes, &map);
+        let names: Vec<&str> = nodes.iter().map(|n| n.node.name.as_str()).collect();
+        // Wrong shape ("short") and unknown 16-hex prefix stay untouched.
+        assert_eq!(names, ["node-short", "node-aabbccddeeff0011"]);
+    }
 }
