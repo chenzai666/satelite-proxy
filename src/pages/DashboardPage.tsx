@@ -101,6 +101,30 @@ function fmtUptime(startedAt?: number | null) {
   return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
+/** Keep an element on a single line by shrinking its font until the content
+ *  fits (never wraps; ellipsis is the last resort below the size floor).
+ *  Re-fits when the text changes or the window resizes. */
+function useSingleLineFit<T extends HTMLElement>(text: string) {
+  const ref = useRef<T | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      // Drop any previous override so the CSS clamp() sets the start size.
+      el.style.fontSize = "";
+      let size = parseFloat(getComputedStyle(el).fontSize);
+      while (size > 12 && el.scrollWidth > el.clientWidth) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [text]);
+  return ref;
+}
+
 export function DashboardPage({
   onGoProfiles,
   onGoNodes,
@@ -535,6 +559,9 @@ export function DashboardPage({
             .join(" · ")
         : t("dashboard.desc");
 
+  // Long node names shrink to one line instead of wrapping the hero.
+  const heroTitleRef = useSingleLineFit<HTMLHeadingElement>(heroTitle ?? "");
+
   /** Best / avg among nodes that have a successful latency sample. */
   const latencyStats = useMemo(() => {
     const samples: number[] = nodes
@@ -669,7 +696,7 @@ export function DashboardPage({
             SATELITE {appVersion ?? "—"}
           </div>
 
-          <h1 className="dash-hero-title">
+          <h1 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (
@@ -1194,10 +1221,8 @@ export function DashboardPage({
                   <span className="kv-v">{subQuota.label}</span>
                 </div>
                 <div>
-                  <span className="kv-k">{t("dashboard.profiles")}</span>
-                  <span className="kv-v">
-                    {subCount} · {nodeCount} {t("dashboard.nodes").toLowerCase()}
-                  </span>
+                  <span className="kv-k">{t("dashboard.nodeCount")}</span>
+                  <span className="kv-v">{nodeCount}</span>
                 </div>
               </>
             )}

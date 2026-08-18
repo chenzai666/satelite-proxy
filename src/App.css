@@ -4582,6 +4582,11 @@ button.check.on {
   letter-spacing: -0.03em;
   line-height: 1.15;
   color: var(--text);
+  /* Long node names shrink to fit via useSingleLineFit; nowrap + ellipsis
+     are the hard guarantee that the hero never grows a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dash-hero-desc {
@@ -4825,7 +4830,7 @@ button.check.on {
 }
 
 .instrument-quota-bar {
-  flex: 0 0 2.4rem;
+  flex: 0 0 4.8rem;
   height: 3px;
   margin-right: 0.4rem;
   border-radius: 99px;
