@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   getCoreInfo,
   getProxyStatus,
@@ -13,6 +14,7 @@ import {
   startProxy,
   smartSwitchNow,
   stopProxy,
+  testNodesLatency,
   updateSettings,
 } from "../api";
 import {
@@ -88,11 +90,14 @@ function latencyClass(ms?: number | null) {
   return "lat-slow";
 }
 
-function latencyLevel(ms?: number | null) {
-  if (ms == null || ms < 0) return null;
-  if (ms < 200) return "good";
-  if (ms < 300) return "ok";
-  return "slow";
+/** Uptime from core_started_at (unix secs) to now, as "HH:MM:SS". */
+function fmtUptime(startedAt?: number | null) {
+  if (startedAt == null) return "—";
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - startedAt));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
 export function DashboardPage({
@@ -112,9 +117,8 @@ export function DashboardPage({
     api: 19090,
     extras: [] as import("../types").ExtraInbound[],
   });
-  const [mixMode, setMixMode] = useState(false);
-  const [coreLabel, setCoreLabel] = useState("—");
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
   /** false until status wave lands; details (nodes/subs) may still be loading. */
   const [statusReady, setStatusReady] = useState(false);
@@ -127,6 +131,7 @@ export function DashboardPage({
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
   const [modeBusy, setModeBusy] = useState(false);
+  const [latencyProbing, setLatencyProbing] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
@@ -171,7 +176,6 @@ export function DashboardPage({
         api: settings.api_port,
         extras: settings.extra_inbounds ?? [],
       });
-      setMixMode(!!settings.mix_mode);
       setCurrentNodeId(settings.current_node_id ?? null);
       setProxy(status);
       pushSpark(status);
@@ -187,17 +191,9 @@ export function DashboardPage({
       setCurrentNode(cur);
       if (core?.installed) {
         const ver = (core.version ?? "ok").replace(/^v/, "");
-        const tag =
-          core.source === "bundled"
-            ? t("settings.coreBundled")
-            : core.source === "downloaded"
-              ? t("settings.coreUser")
-              : "";
         setCoreVersion(ver);
-        setCoreLabel(tag ? `${ver} · ${tag}` : ver);
       } else {
         setCoreVersion(null);
-        setCoreLabel(t("settings.coreMissing"));
       }
       setDetailsReady(true);
     } catch (e) {
@@ -210,6 +206,12 @@ export function DashboardPage({
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => undefined);
+  }, []);
 
   const onCaptureError = useCallback((msg: string) => {
     setError(msg);
@@ -436,6 +438,25 @@ export function DashboardPage({
     }
   }
 
+  async function onProbeLatency() {
+    if (!currentNode || latencyProbing) return;
+    setLatencyProbing(true);
+    setError(null);
+    try {
+      const batch = await testNodesLatency([currentNode.id], 3000);
+      const r = batch.results.find((r) => r.id === currentNode.id);
+      if (r) {
+        setCurrentNode((n) =>
+          n ? { ...n, latency_ms: r.latency_ms ?? null } : n,
+        );
+      }
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setLatencyProbing(false);
+    }
+  }
+
   const running = proxy?.running ?? false;
   const stateLabel = proxy?.core_state ?? "stopped";
   const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
@@ -617,31 +638,7 @@ export function DashboardPage({
           ? "warn"
           : "ok";
 
-  const modeLabel =
-    outboundMode === "rule"
-      ? t("dashboard.modeRule")
-      : outboundMode === "global"
-        ? t("dashboard.modeGlobal")
-        : t("dashboard.modeDirect");
-
   const currentLatency = currentNode?.latency_ms;
-  const qualityLevel = latencyLevel(currentLatency);
-  const qualityTag =
-    qualityLevel === "good"
-      ? "GOOD"
-      : qualityLevel === "ok"
-        ? "OK"
-        : qualityLevel === "slow"
-          ? "SLOW"
-          : "—";
-  const qualityTagClass =
-    qualityLevel === "good"
-      ? " ok"
-      : qualityLevel === "ok"
-        ? " warn"
-        : qualityLevel === "slow"
-          ? " err"
-          : "";
 
   return (
     <div className="page dashboard-page">
@@ -664,7 +661,7 @@ export function DashboardPage({
             <span className={`status-dot ${dotClass}`} />
             {stateUpper}
             <span className="dash-kicker-sep">·</span>
-            SING-BOX {coreVersion ?? coreLabel}
+            SATELITE {appVersion ?? "—"}
           </div>
 
           <h1 className="dash-hero-title">
@@ -979,17 +976,6 @@ export function DashboardPage({
         <article className="instrument accent-green">
           <header className="instrument-head">
             <span className="instrument-label">{t("dashboard.cardCore")}</span>
-            <span
-              className={`instrument-tag ${running ? "ok" : isError ? "err" : ""}`}
-            >
-              {running
-                ? "ONLINE"
-                : switching
-                  ? "…"
-                  : isError
-                    ? "ERR"
-                    : "IDLE"}
-            </span>
           </header>
           <div
             className={`instrument-value readout${
@@ -1003,7 +989,7 @@ export function DashboardPage({
             }`}
           >
             {running
-              ? t("dashboard.coreRunning")
+              ? fmtUptime(proxy?.core_started_at)
               : switching
                 ? stateLabel === "stopping"
                   ? t("dashboard.coreStopping")
@@ -1018,8 +1004,12 @@ export function DashboardPage({
               <span className="kv-v">{coreVersion ?? "—"}</span>
             </div>
             <div>
-              <span className="kv-k">{t("dashboard.routing")}</span>
-              <span className="kv-v">{modeLabel}</span>
+              <span className="kv-k">{t("dashboard.memory")}</span>
+              <span className="kv-v">
+                {running && proxy?.core_memory_bytes != null
+                  ? fmtBytes(proxy.core_memory_bytes)
+                  : "—"}
+              </span>
             </div>
           </div>
         </article>
@@ -1048,10 +1038,7 @@ export function DashboardPage({
         >
           <header className="instrument-head">
             <span className="instrument-label">
-              {t("dashboard.cardTraffic")} · {t("dashboard.cardConns")}
-            </span>
-            <span className="instrument-tag">
-              {proxy?.connections ?? 0}
+              {t("dashboard.cardTrafficStats")}
             </span>
           </header>
           <div className="instrument-traffic-cols">
@@ -1094,23 +1081,28 @@ export function DashboardPage({
           className="instrument accent-cyan instrument-click"
           role="button"
           tabIndex={0}
-          onClick={() => onGoNodes?.()}
+          title={t("dashboard.probeLatencyHint")}
+          onClick={() => void onProbeLatency()}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") onGoNodes?.();
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              void onProbeLatency();
+            }
           }}
         >
           <header className="instrument-head">
             <span className="instrument-label">
               {t("dashboard.cardQuality")}
             </span>
-            <span className={`instrument-tag${qualityTagClass}`}>
-              {qualityTag}
-            </span>
           </header>
           <div
             className={`instrument-value readout mono ${latencyClass(currentLatency)}`}
           >
-            {fmtLatency(currentLatency)}
+            {latencyProbing ? (
+              <span className="lat-spinner" aria-label={t("dashboard.probeLatencyRunning")} />
+            ) : (
+              fmtLatency(currentLatency)
+            )}
           </div>
           <div className="instrument-kv mono">
             <div>
@@ -1138,19 +1130,6 @@ export function DashboardPage({
               {customRuntime
                 ? t("dashboard.cardCustom")
                 : t("dashboard.cardSub")}
-            </span>
-            <span
-              className={`instrument-tag${
-                customRuntime || mixMode ? " ok" : ""
-              }`}
-            >
-              {customRuntime
-                ? "CUSTOM"
-                : subCount === 0
-                  ? "—"
-                  : mixMode
-                    ? `${t("config.mix")} ${enabledSubs.length}/${subCount}`
-                    : "ACTIVE"}
             </span>
           </header>
           <div
@@ -1236,12 +1215,6 @@ export function DashboardPage({
           <header className="instrument-head">
             <span className="instrument-label">
               {t("dashboard.cardSystem")}
-            </span>
-            <span
-              className={`instrument-tag${envCopied ? " ok" : ""}`}
-              aria-hidden
-            >
-              {envCopied ? "✓" : "⧉"}
             </span>
           </header>
           <div

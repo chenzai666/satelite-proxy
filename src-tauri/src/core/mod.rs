@@ -6,7 +6,10 @@ mod job;
 #[cfg(target_os = "macos")]
 mod macos_auth;
 pub mod manager;
+mod memory;
 mod paths;
+
+pub use memory::read_process_rss_bytes;
 
 pub use download::{
     download_latest_core, download_latest_core_with_progress, fetch_latest_release_with_proxy,

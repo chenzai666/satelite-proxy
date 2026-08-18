@@ -103,6 +103,9 @@ export function TopNav({ active, onChange }: Props) {
   return (
     <header className="topnav-wrap">
       <div className="topnav" role="navigation" aria-label="Main">
+        {/* Clips the ::after glow to the capsule. Must be its own layer —
+            overflow on .topnav itself would clip the ⋯ menu popup. */}
+        <span className="topnav-glow" aria-hidden />
         <div className="topnav-brand" title="Satelite">
           <span className="topnav-mark" aria-hidden>
             ◈

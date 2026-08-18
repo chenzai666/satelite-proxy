@@ -7,6 +7,7 @@ use crate::config::{
 };
 use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
+use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
@@ -62,6 +63,9 @@ pub struct ProxyStatus {
     pub custom_has_tun: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_inbound_port: Option<u16>,
+    /// Resident memory (bytes) of the core process, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_memory_bytes: Option<u64>,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -135,6 +139,9 @@ pub struct Runtime {
     custom_inbound_port: Option<u16>,
     custom_has_clash_api: bool,
     custom_has_tun: bool,
+    /// Cached (pid, value, fetched-at) from the last successful `ps`/`tasklist`
+    /// memory read — throttled since it shells out to a subprocess.
+    core_memory_cache: Option<(u32, u64, Instant)>,
 }
 
 impl Runtime {
@@ -162,6 +169,7 @@ impl Runtime {
             custom_inbound_port: None,
             custom_has_clash_api: false,
             custom_has_tun: false,
+            core_memory_cache: None,
         }
     }
 
@@ -179,6 +187,7 @@ impl Runtime {
             // Recover if we missed setting it (e.g. process still up after soft restart path).
             self.core_started_at = Some(now_unix_secs());
         }
+        let core_memory_bytes = self.core_memory_bytes();
         ProxyStatus {
             running: self.core.is_running(),
             core_state: self.core.state(),
@@ -239,7 +248,29 @@ impl Runtime {
             custom_has_clash_api: self.custom_has_clash_api,
             custom_has_tun: self.custom_has_tun,
             custom_inbound_port: self.custom_inbound_port,
+            core_memory_bytes,
         }
+    }
+
+    /// RSS of the core process, if running and a PID is known.
+    ///
+    /// Read through `core::memory` — the OS's own process-table surface per
+    /// platform, so it works even when sing-box runs elevated for TUN and an
+    /// unprivileged parent could not open a handle/task port for it.
+    ///
+    /// Throttled to once every 5s since a read is non-trivial work on some
+    /// platforms; callers poll far more often than that, so we serve the
+    /// cached value in between.
+    fn core_memory_bytes(&mut self) -> Option<u64> {
+        let pid = self.core.pid()?;
+        if let Some((cached_pid, bytes, at)) = self.core_memory_cache {
+            if cached_pid == pid && at.elapsed() < Duration::from_secs(5) {
+                return Some(bytes);
+            }
+        }
+        let bytes = read_process_rss_bytes(pid)?;
+        self.core_memory_cache = Some((pid, bytes, Instant::now()));
+        Some(bytes)
     }
 
     /// Passive health for smart switch from connection journal (no MITM / no HTTP codes).

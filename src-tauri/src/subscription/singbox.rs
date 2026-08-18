@@ -329,6 +329,7 @@ fn parse_ss(
             password,
             plugin: get_str(map, &["plugin"]),
             plugin_opts: get_str(map, &["plugin_opts", "plugin-opts"]),
+            shadow_tls: None,
         },
     ))
 }

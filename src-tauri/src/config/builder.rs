@@ -81,8 +81,13 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
 
     for node in nodes {
         match node_to_outbound(node) {
-            Ok((tag, outbound)) => {
+            Ok((tag, outbound, extra_outbounds)) => {
                 tags.push(tag);
+                // Detour outbounds (e.g. shadowtls) aren't user-selectable
+                // nodes, so they're appended to the outbounds list but kept
+                // out of `tags`. They must precede the outbound that
+                // references them via `detour`.
+                node_outbounds.extend(extra_outbounds);
                 if matches!(node.protocol, Protocol::WireGuard) {
                     node_endpoints.push(outbound);
                 } else {
@@ -608,8 +613,9 @@ fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[Strin
     out
 }
 
-fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
+fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value, Vec<Value>)> {
     let tag = outbound_tag(node);
+    let mut extra_outbounds = Vec::new();
     let mut ob = match (&node.protocol, &node.config) {
         (
             Protocol::Shadowsocks,
@@ -618,6 +624,7 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
                 password,
                 plugin,
                 plugin_opts,
+                shadow_tls,
             },
         ) => {
             let mut o = json!({
@@ -633,6 +640,34 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
             }
             if let Some(opts) = plugin_opts {
                 o["plugin_opts"] = json!(opts);
+            }
+            if let Some(st) = shadow_tls {
+                // sing-box has no SIP003 arg-string form for shadow-tls: it's
+                // a separate `shadowtls` outbound the ss outbound detours
+                // through (mirrors xmdhs/clash2singbox's shadowTls()). The
+                // shadowtls outbound is intentionally excluded from `tags`
+                // (the selector's outbound list) since it isn't a node the
+                // user can pick directly.
+                let detour_tag = format!("{tag}-shadowtls");
+                o["server"] = json!("");
+                o["server_port"] = json!(0);
+                o["detour"] = json!(detour_tag.clone());
+                let mut tls = json!({
+                    "enabled": true,
+                    "server_name": st.host,
+                });
+                if let Some(fp) = &st.fingerprint {
+                    tls["utls"] = json!({ "enabled": true, "fingerprint": fp });
+                }
+                extra_outbounds.push(json!({
+                    "type": "shadowtls",
+                    "tag": detour_tag,
+                    "server": node.server,
+                    "server_port": node.port,
+                    "version": st.version,
+                    "password": st.password,
+                    "tls": tls,
+                }));
             }
             o
         }
@@ -993,7 +1028,7 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value)> {
         }
     }
 
-    Ok((tag, ob))
+    Ok((tag, ob, extra_outbounds))
 }
 
 /// Only emit known uTLS profile names (ignore hex pins / garbage from subscriptions).
@@ -1141,11 +1176,103 @@ mod tests {
                 password: "secret".into(),
                 plugin: None,
                 plugin_opts: None,
+                shadow_tls: None,
             },
             source: Some("ss".into()),
             latency_ms: None,
             latency_at: None,
         }
+    }
+
+    #[test]
+    fn shadow_tls_ss_node_produces_ss_outbound_detoured_through_shadowtls_outbound() {
+        let mut node = sample_ss();
+        node.config = ProtocolConfig::Shadowsocks {
+            method: "aes-256-gcm".into(),
+            password: "secret".into(),
+            plugin: Some("shadow-tls".into()),
+            plugin_opts: None,
+            shadow_tls: Some(crate::domain::ShadowTlsOpts {
+                host: "www.bing.com".into(),
+                password: "tls-pass".into(),
+                version: 3,
+                fingerprint: Some("chrome".into()),
+            }),
+        };
+        let (tag, ob, extra) = node_to_outbound(&node).unwrap();
+
+        // The ss outbound no longer dials the real server directly; it
+        // detours through the shadowtls outbound instead.
+        assert_eq!(ob["type"], "shadowsocks");
+        assert_eq!(ob["server"], "");
+        assert_eq!(ob["server_port"], 0);
+        let detour_tag = ob["detour"].as_str().unwrap().to_string();
+        assert_eq!(detour_tag, format!("{tag}-shadowtls"));
+
+        assert_eq!(extra.len(), 1);
+        let sl = &extra[0];
+        assert_eq!(sl["type"], "shadowtls");
+        assert_eq!(sl["tag"], detour_tag);
+        assert_eq!(sl["server"], node.server);
+        assert_eq!(sl["server_port"], node.port);
+        assert_eq!(sl["version"], 3);
+        assert_eq!(sl["password"], "tls-pass");
+        assert_eq!(sl["tls"]["enabled"], true);
+        assert_eq!(sl["tls"]["server_name"], "www.bing.com");
+        assert_eq!(sl["tls"]["utls"]["fingerprint"], "chrome");
+    }
+
+    // The shadowtls detour outbound isn't a user-selectable node, so it must
+    // not appear in the selector's outbound tag list.
+    #[test]
+    fn shadow_tls_detour_outbound_is_excluded_from_selectable_tags() {
+        let mut node = sample_ss();
+        node.config = ProtocolConfig::Shadowsocks {
+            method: "aes-256-gcm".into(),
+            password: "secret".into(),
+            plugin: Some("shadow-tls".into()),
+            plugin_opts: None,
+            shadow_tls: Some(crate::domain::ShadowTlsOpts {
+                host: "www.bing.com".into(),
+                password: "tls-pass".into(),
+                version: 3,
+                fingerprint: None,
+            }),
+        };
+        let built = build_singbox_config(
+            &[node],
+            &BuildOptions {
+                mixed_port: 2080,
+                api_port: 19090,
+                extra_inbounds: vec![],
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                rule_sets: vec![],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+            },
+        )
+        .unwrap();
+        let outbounds = built.value["outbounds"].as_array().unwrap();
+        let types: Vec<&str> = outbounds
+            .iter()
+            .map(|o| o["type"].as_str().unwrap_or_default())
+            .collect();
+        assert!(types.contains(&"shadowtls"), "types: {types:?}");
+        assert!(types.contains(&"shadowsocks"), "types: {types:?}");
+        assert!(
+            !built.outbound_tags.iter().any(|t| t.ends_with("-shadowtls")),
+            "outbound_tags: {:?}",
+            built.outbound_tags
+        );
     }
 
     #[test]
@@ -1732,7 +1859,7 @@ mod tests {
             latency_ms: None,
             latency_at: None,
         };
-        let (_, ob) = node_to_outbound(&node).unwrap();
+        let (_, ob, _) = node_to_outbound(&node).unwrap();
         assert_eq!(ob["type"], "vmess");
         assert_eq!(ob["transport"]["type"], "ws");
     }

@@ -1,12 +1,13 @@
 //! Parse Clash YAML `proxies:` list into normalized [`ProxyNode`]s.
 
 use crate::domain::{
-    ParseResult, Protocol, ProtocolConfig, ProxyNode, SkippedProxy, SubscriptionFormat, TlsConfig,
-    Transport,
+    ParseResult, Protocol, ProtocolConfig, ProxyNode, ShadowTlsOpts, SkippedProxy,
+    SubscriptionFormat, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use crate::subscription::yaml_util::{
-    as_mapping, get_bool, get_map, get_str, get_u16, get_u32, map_to_string_map, value_to_string,
+    as_mapping, get_bool, get_map, get_str, get_str_list, get_u16, get_u32, map_to_string_map,
+    value_to_string,
 };
 use serde_yaml::Value;
 
@@ -121,14 +122,47 @@ fn parse_ss(
     let method =
         get_str(map, &["cipher", "method"]).ok_or_else(|| "ss: missing cipher".to_string())?;
     let password = get_str(map, &["password"]).ok_or_else(|| "ss: missing password".to_string())?;
-    let plugin = get_str(map, &["plugin"]);
-    let plugin_opts = get_map(map, &["plugin-opts", "plugin_opts"]).map(|m| {
-        // Clash uses nested map; sing-box often wants semicolon opts or structured later.
-        m.iter()
-            .filter_map(|(k, v)| Some(format!("{}={}", value_to_string(k)?, value_to_string(v)?)))
-            .collect::<Vec<_>>()
-            .join(";")
+
+    // Clash names the obfs SIP003 plugin "obfs"; sing-box's built-in registry
+    // keys it as "obfs-local" (transport/sip003/plugin.go RegisterPlugin
+    // calls). Passing "obfs" through verbatim causes sing-box to fail with
+    // "plugin not found: obfs". v2ray-plugin's name is shared by both.
+    let plugin = get_str(map, &["plugin"]).map(|p| match p.as_str() {
+        "obfs" => "obfs-local".to_string(),
+        _ => p,
     });
+    // shadow-tls has no equivalent in sing-box's SIP003 plugin_opts grammar:
+    // sing-box models it as a separate `shadowtls` outbound that the ss
+    // outbound detours through, not as an arg string on the ss outbound
+    // itself (see xmdhs/clash2singbox's shadowTls()). Parse it into a
+    // dedicated field instead of falling through to the generic key=value
+    // join, which would silently produce a node that looks converted but
+    // can't actually connect.
+    let shadow_tls = if plugin.as_deref() == Some("shadow-tls") {
+        let opts = get_map(map, &["plugin-opts", "plugin_opts"])
+            .ok_or_else(|| "ss: shadow-tls missing plugin-opts".to_string())?;
+        let host =
+            get_str(opts, &["host"]).ok_or_else(|| "ss: shadow-tls missing host".to_string())?;
+        let tls_password = get_str(opts, &["password"])
+            .ok_or_else(|| "ss: shadow-tls missing password".to_string())?;
+        // mihomo defaults shadow-tls to protocol version 3 when unset.
+        let version = get_u16(opts, &["version"]).map(|v| v as u8).unwrap_or(3);
+        let fingerprint = get_str(map, &["client-fingerprint", "client_fingerprint"])
+            .and_then(|s| normalize_utls_fingerprint(&s));
+        Some(ShadowTlsOpts {
+            host,
+            password: tls_password,
+            version,
+            fingerprint,
+        })
+    } else {
+        None
+    };
+    let plugin_opts = if shadow_tls.is_some() {
+        None
+    } else {
+        get_map(map, &["plugin-opts", "plugin_opts"]).map(|m| build_plugin_opts(plugin.as_deref(), m))
+    };
 
     Ok((
         None,
@@ -138,8 +172,146 @@ fn parse_ss(
             password,
             plugin,
             plugin_opts,
+            shadow_tls,
         },
     ))
+}
+
+/// Build a SIP003 `plugin_opts` string for sing-box from Clash's nested
+/// `plugin-opts` map.
+///
+/// Clash/mihomo models plugin options as typed struct fields (bool/int/string)
+/// decoded from YAML, then re-serializes loosely for its own plugin
+/// implementations. sing-box's built-in `obfs-local` and `v2ray-plugin`
+/// instead parse a flat SIP003 arg string (`transport/sip003/args.go`,
+/// ported from the reference parser in shadowsocks/v2ray-plugin's own
+/// `args.go`) where each flag is either `key=value` or a bare `key` — a bare
+/// key is stored as value `"1"` by the parser itself, which is also why
+/// sing-box's `tls`/`mux` checks only care whether the key is present, not
+/// what (if anything) follows `=`. `tls=false` and `tls=true` are therefore
+/// BOTH "enabled" to sing-box. Naively joining Clash's typed values as
+/// `key=value` produces strings sing-box misinterprets rather than rejects,
+/// which is worse than a parse error. This maps each known key explicitly
+/// instead of doing a blind key=value join, and backslash-escapes `;`, `=`,
+/// and `\` in values per the same reference parser (unescaped occurrences
+/// would silently split the string into the wrong fields).
+fn build_plugin_opts(plugin: Option<&str>, m: &serde_yaml::Mapping) -> String {
+    let get = |key: &str| -> Option<String> {
+        m.get(Value::String(key.into())).and_then(value_to_string)
+    };
+    let get_flag = |key: &str| -> Option<bool> {
+        match m.get(Value::String(key.into())) {
+            Some(Value::Bool(b)) => Some(*b),
+            Some(v) => value_to_string(v).and_then(|s| match s.to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => Some(true),
+                "false" | "0" | "no" => Some(false),
+                _ => None,
+            }),
+            None => None,
+        }
+    };
+    // Backslash-escape '=', ';', '\' — SIP003's args grammar requires it
+    // (shadowsocks/v2ray-plugin args.go: backslashEscape) since those bytes
+    // are the field/kv delimiters in the joined string.
+    let escape = |s: &str| -> String {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if c == '\\' || c == '=' || c == ';' {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+
+    match plugin {
+        Some("obfs-local") => {
+            // sing-box: transport/sip003/obfs.go reads only "obfs" (mode:
+            // http|tls) and "obfs-host". Clash's YAML key for mode is
+            // `mode`; rename it to sing-box's `obfs`.
+            if let Some(mode) = get("mode") {
+                if !mode.is_empty() {
+                    parts.push(format!("obfs={}", escape(&mode)));
+                }
+            }
+            if let Some(host) = get("host") {
+                if !host.is_empty() {
+                    parts.push(format!("obfs-host={}", escape(&host)));
+                }
+            }
+        }
+        Some("v2ray-plugin") => {
+            // sing-box: transport/sip003/v2ray.go.
+            if let Some(mode) = get("mode") {
+                if !mode.is_empty() {
+                    parts.push(format!("mode={}", escape(&mode)));
+                }
+            }
+            if let Some(host) = get("host") {
+                if !host.is_empty() {
+                    parts.push(format!("host={}", escape(&host)));
+                }
+            }
+            if let Some(path) = get("path") {
+                if !path.is_empty() {
+                    parts.push(format!("path={}", escape(&path)));
+                }
+            }
+            // sing-box only checks whether "tls" is present in the arg
+            // string, never its value — so a bare key is the only way to
+            // express "enabled" and the key must be omitted entirely to
+            // express "disabled". Emitting "tls=false" would turn TLS ON.
+            if get_flag("tls") == Some(true) {
+                parts.push("tls".to_string());
+            }
+            // sing-box parses "mux" with strconv.Atoi and defaults to 1
+            // (enabled) when the key is absent entirely — so disabling mux
+            // requires an explicit "mux=0"; enabling it can use the bare-key
+            // form ("1" is what the reference parser stores for a bare key
+            // anyway, so `mux` and `mux=1` are equivalent, but the bare form
+            // matches the SIP003 convention other plugins/tools emit).
+            match m.get(Value::String("mux".into())) {
+                Some(Value::Bool(true)) => parts.push("mux".to_string()),
+                Some(Value::Bool(false)) => parts.push("mux=0".to_string()),
+                Some(v) => {
+                    if let Some(s) = value_to_string(v) {
+                        match s.to_ascii_lowercase().as_str() {
+                            "true" | "yes" => parts.push("mux".to_string()),
+                            "false" | "no" => parts.push("mux=0".to_string()),
+                            _ if s.parse::<i64>().is_ok() => parts.push(format!("mux={s}")),
+                            _ => {}
+                        }
+                    }
+                }
+                None => {}
+            }
+            // The following mihomo plugin-opts keys have no sing-box
+            // equivalent in its built-in v2ray-plugin (transport/sip003/v2ray.go
+            // reads only tls/cert/certRaw/mode/host/path/mux) and are
+            // dropped rather than passed through:
+            // - skip-cert-verify: sing-box's plugin-private TLS client
+            //   never reads an insecure/skip flag, so this option cannot be
+            //   honored at all here, not just mis-transcribed.
+            // - headers, ech-opts, fingerprint, certificate, private-key,
+            //   name-cert-verify, v2ray-http-upgrade(-fast-open): mihomo-only
+            //   extensions sing-box's implementation does not parse.
+        }
+        _ => {
+            // Unknown/custom plugin: fall back to a best-effort key=value
+            // join (previous behavior) since we don't know its arg schema.
+            parts.extend(m.iter().filter_map(|(k, v)| {
+                Some(format!(
+                    "{}={}",
+                    escape(&value_to_string(k)?),
+                    escape(&value_to_string(v)?)
+                ))
+            }));
+        }
+    }
+
+    parts.join(";")
 }
 
 fn parse_vmess(
@@ -350,9 +522,7 @@ fn parse_tuic(
         tls.server_name = get_str(map, &["sni", "servername"]);
     }
     if tls.alpn.is_none() {
-        if let Some(alpn) = get_str(map, &["alpn"]) {
-            tls.alpn = Some(alpn.split(',').map(|s| s.trim().to_string()).collect());
-        }
+        tls.alpn = get_str_list(map, &["alpn"]);
     }
 
     Ok((
@@ -509,6 +679,19 @@ fn parse_tor(
     ))
 }
 
+/// sing-box wireguard `address` entries must be CIDR prefixes (`netip.Prefix`).
+/// Clash yaml typically gives a bare IP; pad it with /32 (IPv4) or /128 (IPv6).
+fn normalize_cidr(addr: String) -> String {
+    if addr.contains('/') {
+        return addr;
+    }
+    if addr.contains(':') {
+        format!("{addr}/128")
+    } else {
+        format!("{addr}/32")
+    }
+}
+
 fn parse_wireguard(
     map: &serde_yaml::Mapping,
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
@@ -526,6 +709,10 @@ fn parse_wireguard(
             _ => value_to_string(v).into_iter().collect(),
         })
         .unwrap_or_default();
+    let mut local_address: Vec<String> = local_address.into_iter().map(normalize_cidr).collect();
+    if let Some(ipv6) = get_str(map, &["ipv6"]) {
+        local_address.push(normalize_cidr(ipv6));
+    }
     if local_address.is_empty() {
         return Err("wireguard: missing local address".into());
     }
@@ -580,12 +767,7 @@ fn parse_tls_common(map: &serde_yaml::Mapping, default_enabled: bool) -> Option<
         .or_else(|| get_str(map, &["fingerprint"]))
         .and_then(|s| normalize_utls_fingerprint(&s));
 
-    let alpn = get_str(map, &["alpn"]).map(|s| {
-        s.split(',')
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect()
-    });
+    let alpn = get_str_list(map, &["alpn"]);
 
     let mut tls = TlsConfig {
         enabled: enabled || has_reality,
@@ -870,5 +1052,363 @@ proxies:
 "#;
         let result = parse_clash_yaml(yaml).unwrap();
         assert_eq!(result.nodes.len(), 1);
+    }
+
+    // sing-box's built-in obfs plugin is registered under the name
+    // "obfs-local" (transport/sip003/plugin.go). Clash's `plugin: obfs`
+    // passed straight through causes sing-box to fail with
+    // "plugin not found: obfs" at runtime instead of a parse-time error, so
+    // this must be caught here rather than surfacing much later.
+    #[test]
+    fn renames_clash_obfs_plugin_to_obfs_local() {
+        let yaml = r#"
+- name: "SS-Obfs"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: obfs
+  plugin-opts:
+    mode: http
+    host: www.bing.com
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks {
+                plugin, plugin_opts, ..
+            } => {
+                assert_eq!(plugin.as_deref(), Some("obfs-local"));
+                // obfs-local reads "obfs" (not "mode") and "obfs-host" (not
+                // "host") — transport/sip003/obfs.go.
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                assert!(opts.contains("obfs=http"), "opts: {opts}");
+                assert!(opts.contains("obfs-host=www.bing.com"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // sing-box has no SIP003 arg-string equivalent for shadow-tls (it's a
+    // separate `shadowtls` outbound + detour instead), so a shadow-tls node
+    // must be skipped at parse time rather than silently emitting a
+    // plugin_opts string sing-box can't use. Other nodes in the same
+    // subscription must still parse normally.
+    #[test]
+    fn parses_shadow_tls_plugin_into_dedicated_field() {
+        let yaml = r#"
+- name: "SS-ShadowTLS"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: shadow-tls
+  plugin-opts:
+    host: www.bing.com
+    password: tls-pass
+    version: 3
+  client-fingerprint: chrome
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(result.nodes.len(), 1);
+        assert!(result.skipped.is_empty());
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks {
+                plugin,
+                plugin_opts,
+                shadow_tls,
+                ..
+            } => {
+                // shadow-tls has no SIP003 arg-string form, so plugin/plugin_opts
+                // must stay unset — it's carried in the dedicated field instead.
+                assert_eq!(plugin.as_deref(), Some("shadow-tls"));
+                assert!(plugin_opts.is_none());
+                let st = shadow_tls.as_ref().expect("shadow_tls opts");
+                assert_eq!(st.host, "www.bing.com");
+                assert_eq!(st.password, "tls-pass");
+                assert_eq!(st.version, 3);
+                assert_eq!(st.fingerprint.as_deref(), Some("chrome"));
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // mihomo defaults shadow-tls to protocol version 3 when the field is absent.
+    #[test]
+    fn defaults_shadow_tls_version_to_3() {
+        let yaml = r#"
+- name: "SS-ShadowTLS"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: shadow-tls
+  plugin-opts:
+    host: www.bing.com
+    password: tls-pass
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { shadow_tls, .. } => {
+                assert_eq!(shadow_tls.as_ref().unwrap().version, 3);
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // Clash models v2ray-plugin's `mux` as a bool; sing-box parses it with
+    // strconv.Atoi and errors out on anything non-numeric
+    // (transport/sip003/v2ray.go: `E.Cause(err, "parse mux value")`).
+    // Emitting the Clash bool verbatim ("mux=true") reproduces that crash —
+    // this is the bug this whole conversion path exists to prevent. The
+    // reference SIP003 parser (shadowsocks/v2ray-plugin args.go) stores a
+    // bare key as value "1", so a bare `mux` is what sing-box actually
+    // expects for "enabled", not `mux=1`.
+    #[test]
+    fn converts_v2ray_plugin_mux_bool_to_sing_box_bare_key() {
+        let yaml = r#"
+- name: "SS-V2ray-Mux"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    mux: true
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { plugin_opts, .. } => {
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                assert!(
+                    opts.split(';').any(|p| p == "mux"),
+                    "expected bare `mux` key, got: {opts}"
+                );
+                assert!(!opts.contains("mux=true"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // sing-box's v2ray-plugin only checks whether the "tls" key is present
+    // in the plugin_opts string at all — it never inspects the value after
+    // "=" (transport/sip003/v2ray.go: `if _, loaded := pluginOpts.Get("tls");
+    // loaded { tlsOptions.Enabled = true }`). So a naive key=value transcription
+    // of Clash's `tls: false` would produce "tls=false", which sing-box reads
+    // as TLS *enabled* — the opposite of what was configured. The only way to
+    // express "disabled" is to omit the key entirely.
+    #[test]
+    fn omits_v2ray_plugin_tls_key_when_disabled() {
+        let yaml = r#"
+- name: "SS-V2ray-NoTls"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: false
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { plugin_opts, .. } => {
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                assert!(!opts.contains("tls"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    #[test]
+    fn emits_bare_v2ray_plugin_tls_key_when_enabled() {
+        let yaml = r#"
+- name: "SS-V2ray-Tls"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: true
+    host: cdn.example.com
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { plugin_opts, .. } => {
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                // Must be a bare key, not "tls=true" — sing-box's arg parser
+                // doesn't reject the latter, but writing it as bare matches
+                // sing-box's own emitted format and avoids relying on the
+                // "value is ignored anyway" quirk.
+                assert!(
+                    opts.split(';').any(|p| p == "tls"),
+                    "expected bare `tls` key, got: {opts}"
+                );
+                assert!(opts.contains("host=cdn.example.com"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // skip-cert-verify has no equivalent in sing-box's built-in v2ray-plugin:
+    // its plugin-private TLS client (transport/sip003/v2ray.go) never sets
+    // an Insecure/skip field on the option.OutboundTLSOptions it builds, and
+    // the outbound's own top-level `tls.insecure` isn't consulted by the
+    // plugin either. So this Clash option cannot be honored at all through
+    // sing-box's plugin_opts — it must be dropped rather than mis-transcribed
+    // into something that looks like it works but silently doesn't.
+    #[test]
+    fn drops_unsupported_skip_cert_verify_from_v2ray_plugin_opts() {
+        let yaml = r#"
+- name: "SS-V2ray-Insecure"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    tls: true
+    skip-cert-verify: true
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { plugin_opts, .. } => {
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                assert!(!opts.contains("skip-cert-verify"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // The SIP003 arg grammar (shadowsocks/v2ray-plugin args.go) uses `;` to
+    // separate key=value pairs and `=` to separate key from value, with `\`
+    // as the escape character — so any of those three bytes appearing
+    // unescaped inside a value corrupts the split for every field after it.
+    // A `path` containing `;` is a realistic case (query strings, multiple
+    // ws sub-paths some servers configure).
+    #[test]
+    fn escapes_delimiter_characters_in_v2ray_plugin_opts() {
+        let yaml = r#"
+- name: "SS-V2ray-Escape"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket
+    path: "/a;b=c"
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { plugin_opts, .. } => {
+                let opts = plugin_opts.as_deref().unwrap_or_default();
+                assert!(opts.contains(r"path=/a\;b\=c"), "opts: {opts}");
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // mihomo's standard `alpn` form is a YAML sequence (`alpn: [h2, http/1.1]`),
+    // not a comma-joined string. get_str (String/Number/Bool only) can't see
+    // a Value::Sequence, so this used to silently drop the field.
+    #[test]
+    fn parses_alpn_as_yaml_sequence() {
+        let yaml = r#"
+- name: "Trojan-Alpn"
+  type: trojan
+  server: a.com
+  port: 443
+  password: p
+  alpn: [h2, "http/1.1"]
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        let tls = result.nodes[0].tls.as_ref().expect("tls");
+        assert_eq!(
+            tls.alpn.as_deref(),
+            Some(&["h2".to_string(), "http/1.1".to_string()][..])
+        );
+    }
+
+    // sing-box's wireguard `address` entries are netip.Prefix and require a
+    // CIDR suffix; Clash's `ip:` is normally a bare address.
+    #[test]
+    fn normalizes_wireguard_address_to_cidr() {
+        let yaml = r#"
+- name: "WG"
+  type: wireguard
+  server: a.com
+  port: 51820
+  private-key: "cHJpdmF0ZQ=="
+  public-key: "cHVibGlj"
+  ip: 10.0.0.2
+  ipv6: "fd00::2"
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::WireGuard { local_address, .. } => {
+                assert_eq!(local_address, &["10.0.0.2/32".to_string(), "fd00::2/128".to_string()]);
+            }
+            _ => panic!("expected wireguard config"),
+        }
+    }
+
+    // A `/`-suffixed address must be left untouched rather than double-padded.
+    #[test]
+    fn leaves_wireguard_address_with_existing_cidr_untouched() {
+        let yaml = r#"
+- name: "WG"
+  type: wireguard
+  server: a.com
+  port: 51820
+  private-key: "cHJpdmF0ZQ=="
+  public-key: "cHVibGlj"
+  ip: 10.0.0.2/24
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::WireGuard { local_address, .. } => {
+                assert_eq!(local_address, &["10.0.0.2/24".to_string()]);
+            }
+            _ => panic!("expected wireguard config"),
+        }
+    }
+
+    // clash2singbox's anyToMbps: plain numbers pass through as Mbps; unit
+    // suffixes (K/M/G/T, lower-case b or upper-case B) scale relative to
+    // Mbps, with bytes (B) multiplied by 8. A naive "take leading digits"
+    // parse mistakes "1Gbps" (1000 Mbps) for 1 Mbps.
+    #[test]
+    fn converts_hysteria_rate_units_to_mbps() {
+        let yaml = r#"
+- name: "Hy2"
+  type: hysteria2
+  server: a.com
+  port: 443
+  password: p
+  up: "1Gbps"
+  down: "100 Mbps"
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Hysteria2 {
+                up_mbps, down_mbps, ..
+            } => {
+                assert_eq!(*up_mbps, Some(1000));
+                assert_eq!(*down_mbps, Some(100));
+            }
+            _ => panic!("expected hysteria2 config"),
+        }
     }
 }

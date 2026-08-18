@@ -122,10 +122,36 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         (TrayIconStyle::Mark, true) => (include_bytes!("../icons/tray/mark-on.png"), false),
         // Transparent flat mark: black silhouette, macOS tints for the menu bar.
         (TrayIconStyle::Mark, false) => (include_bytes!("../icons/tray/mark-off.png"), true),
-        (TrayIconStyle::Ghost, true) => (include_bytes!("../icons/tray/ghost-on.png"), false),
-        (TrayIconStyle::Ghost, false) => (include_bytes!("../icons/tray/ghost-off.png"), false),
-        (TrayIconStyle::Buddy, true) => (include_bytes!("../icons/tray/buddy-on.png"), false),
-        (TrayIconStyle::Buddy, false) => (include_bytes!("../icons/tray/buddy-off.png"), false),
+        (TrayIconStyle::Ghost, true) => {
+            (include_bytes!("../icons/tray/ghost-on.png"), false)
+        }
+        (TrayIconStyle::Ghost, false) => {
+            (include_bytes!("../icons/tray/ghost-off.png"), false)
+        }
+        (TrayIconStyle::Buddy, true) => {
+            (include_bytes!("../icons/tray/buddy-on.png"), false)
+        }
+        (TrayIconStyle::Buddy, false) => {
+            (include_bytes!("../icons/tray/buddy-off.png"), false)
+        }
+        (TrayIconStyle::Danger, true) => {
+            (include_bytes!("../icons/tray/danger-on.png"), false)
+        }
+        (TrayIconStyle::Danger, false) => {
+            (include_bytes!("../icons/tray/danger-off.png"), false)
+        }
+        (TrayIconStyle::Danger2, true) => {
+            (include_bytes!("../icons/tray/danger2-on.png"), false)
+        }
+        (TrayIconStyle::Danger2, false) => {
+            (include_bytes!("../icons/tray/danger2-off.png"), false)
+        }
+        (TrayIconStyle::Ghost2, true) => {
+            (include_bytes!("../icons/tray/ghost2-on.png"), false)
+        }
+        (TrayIconStyle::Ghost2, false) => {
+            (include_bytes!("../icons/tray/ghost2-off.png"), false)
+        }
     }
 }
 

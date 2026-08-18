@@ -1,8 +1,8 @@
 //! Build / flatten a single proxy node from the add-config form.
 
 use crate::domain::{
-    ManualNodeDraft, ParseResult, Protocol, ProtocolConfig, ProxyNode, SubscriptionFormat,
-    TlsConfig, Transport,
+    ManualNodeDraft, ParseResult, Protocol, ProtocolConfig, ProxyNode, ShadowTlsOpts,
+    SubscriptionFormat, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use std::collections::BTreeMap;
@@ -217,14 +217,70 @@ fn req(s: &Option<String>, field: &str) -> Result<String, String> {
     opt_nonempty(s).ok_or_else(|| format!("missing {field}"))
 }
 
+/// Parse the `host=..;password=..;version=..;fingerprint=..` string the edit
+/// form shows for a shadow-tls plugin (the format `node_to_draft` renders)
+/// back into structured opts. Mirrors the clash parser's defaults: version 3,
+/// host and password required.
+fn parse_shadow_tls_opts(opts: Option<&str>) -> Result<ShadowTlsOpts, String> {
+    let raw = opts.ok_or("ss: shadow-tls missing plugin_opts (host/password)")?;
+    let mut host = None;
+    let mut password = None;
+    let mut version = 3u8;
+    let mut fingerprint = None;
+    for pair in raw.split(';') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| "ss: shadow-tls plugin_opts must be k=v pairs".to_string())?;
+        let value = value.trim();
+        match key.trim() {
+            "host" => host = Some(value.to_string()),
+            "password" => password = Some(value.to_string()),
+            "version" => {
+                version = value
+                    .parse()
+                    .map_err(|_| format!("ss: shadow-tls invalid version {value}"))?;
+            }
+            "fingerprint" => fingerprint = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if !(1..=3).contains(&version) {
+        return Err(format!("ss: shadow-tls version must be 1, 2, or 3 (got {version})"));
+    }
+    Ok(ShadowTlsOpts {
+        host: host.ok_or("ss: shadow-tls missing host")?,
+        password: password.ok_or("ss: shadow-tls missing password")?,
+        version,
+        fingerprint: fingerprint.filter(|f| !f.is_empty()),
+    })
+}
+
 fn build_config(draft: &ManualNodeDraft, protocol: Protocol) -> Result<ProtocolConfig, String> {
     match protocol {
-        Protocol::Shadowsocks => Ok(ProtocolConfig::Shadowsocks {
-            method: opt_nonempty(&draft.method).unwrap_or_else(|| "aes-256-gcm".into()),
-            password: req(&draft.password, "password")?,
-            plugin: opt_nonempty(&draft.plugin),
-            plugin_opts: opt_nonempty(&draft.plugin_opts),
-        }),
+        Protocol::Shadowsocks => {
+            let plugin = opt_nonempty(&draft.plugin);
+            let plugin_opts = opt_nonempty(&draft.plugin_opts);
+            // sing-box has no SIP003 form for shadow-tls (see clash.rs): when
+            // the form names that plugin, lift the opts string into the
+            // dedicated field so the builder emits the shadowtls detour.
+            let (plugin, plugin_opts, shadow_tls) = if plugin.as_deref() == Some("shadow-tls") {
+                let st = parse_shadow_tls_opts(plugin_opts.as_deref())?;
+                (Some("shadow-tls".into()), None, Some(st))
+            } else {
+                (plugin, plugin_opts, None)
+            };
+            Ok(ProtocolConfig::Shadowsocks {
+                method: opt_nonempty(&draft.method).unwrap_or_else(|| "aes-256-gcm".into()),
+                password: req(&draft.password, "password")?,
+                plugin,
+                plugin_opts,
+                shadow_tls,
+            })
+        }
         Protocol::Vmess => Ok(ProtocolConfig::Vmess {
             uuid: req(&draft.uuid, "uuid")?,
             alter_id: draft.alter_id.unwrap_or(0),
@@ -385,11 +441,24 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
             password,
             plugin,
             plugin_opts,
+            shadow_tls,
         } => {
             draft.method = Some(method.clone());
             draft.password = Some(password.clone());
-            draft.plugin = plugin.clone();
-            draft.plugin_opts = plugin_opts.clone();
+            if let Some(st) = shadow_tls {
+                // Mirror the structured opts back into the SIP003-style
+                // strings the form edits; build_config parses them out again.
+                let mut opts =
+                    format!("host={};password={};version={}", st.host, st.password, st.version);
+                if let Some(fp) = &st.fingerprint {
+                    opts.push_str(&format!(";fingerprint={fp}"));
+                }
+                draft.plugin = Some("shadow-tls".into());
+                draft.plugin_opts = Some(opts);
+            } else {
+                draft.plugin = plugin.clone();
+                draft.plugin_opts = plugin_opts.clone();
+            }
         }
         ProtocolConfig::Vmess {
             uuid,
@@ -534,6 +603,53 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ss_shadow_tls_plugin_roundtrip_through_structured_opts() {
+        let draft = ManualNodeDraft {
+            protocol: "shadowsocks".into(),
+            server: "ss.example.com".into(),
+            port: 8388,
+            method: Some("aes-256-gcm".into()),
+            password: Some("secret".into()),
+            plugin: Some("shadow-tls".into()),
+            plugin_opts: Some("host=www.bing.com;password=tls-pass;version=3;fingerprint=chrome".into()),
+            ..Default::default()
+        };
+        let node = draft_to_node(&draft, None).unwrap();
+        let ProtocolConfig::Shadowsocks { shadow_tls, .. } = &node.config else {
+            panic!("expected shadowsocks config");
+        };
+        let st = shadow_tls.as_ref().expect("structured shadow_tls opts");
+        assert_eq!(st.host, "www.bing.com");
+        assert_eq!(st.password, "tls-pass");
+        assert_eq!(st.version, 3);
+        assert_eq!(st.fingerprint.as_deref(), Some("chrome"));
+
+        // The edit form renders the structured opts back as the same strings.
+        let back = node_to_draft(&node);
+        assert_eq!(back.plugin.as_deref(), Some("shadow-tls"));
+        assert_eq!(
+            back.plugin_opts.as_deref(),
+            Some("host=www.bing.com;password=tls-pass;version=3;fingerprint=chrome")
+        );
+    }
+
+    #[test]
+    fn ss_shadow_tls_plugin_requires_host_and_password() {
+        let draft = ManualNodeDraft {
+            protocol: "shadowsocks".into(),
+            server: "ss.example.com".into(),
+            port: 8388,
+            method: Some("aes-256-gcm".into()),
+            password: Some("secret".into()),
+            plugin: Some("shadow-tls".into()),
+            plugin_opts: Some("version=3".into()),
+            ..Default::default()
+        };
+        let err = draft_to_node(&draft, None).unwrap_err().to_string();
+        assert!(err.contains("shadow-tls missing host"), "err: {err}");
+    }
 
     #[test]
     fn vless_form_roundtrip() {

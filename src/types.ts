@@ -307,7 +307,7 @@ export type ThemeId = "aerospace" | "day";
 
 export type HeroStyle = "particle" | "classic";
 
-export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy";
+export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2";
 
 export interface GenerateConfigResult {
   path: string;
@@ -386,6 +386,8 @@ export interface ProxyStatus {
   custom_has_clash_api?: boolean;
   custom_has_tun?: boolean;
   custom_inbound_port?: number | null;
+  /** Resident memory (bytes) of the core process, when known. */
+  core_memory_bytes?: number | null;
 }
 
 export type RuleType =

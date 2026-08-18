@@ -121,6 +121,19 @@ pub enum Transport {
     },
 }
 
+/// Parameters for the shadow-tls SIP003 plugin (Clash `plugin-opts` under
+/// `plugin: shadow-tls`). Rendered as a separate sing-box `shadowtls`
+/// outbound the ss outbound detours through, not as a plugin_opts string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShadowTlsOpts {
+    pub host: String,
+    pub password: String,
+    /// shadow-tls protocol version (1-3); mihomo defaults to 3 when absent.
+    pub version: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
 /// Protocol-specific fields needed to build a sing-box outbound later.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "protocol", rename_all = "lowercase")]
@@ -132,6 +145,11 @@ pub enum ProtocolConfig {
         plugin: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         plugin_opts: Option<String>,
+        /// sing-box has no SIP003 arg-string form for shadow-tls: it's a
+        /// separate `shadowtls` outbound that this ss outbound detours
+        /// through. Kept out of `plugin`/`plugin_opts` for that reason.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        shadow_tls: Option<ShadowTlsOpts>,
     },
     Vmess {
         uuid: String,
