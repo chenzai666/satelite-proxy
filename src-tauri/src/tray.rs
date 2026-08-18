@@ -138,6 +138,24 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         (TrayIconStyle::Buddy, false) => {
             (include_bytes!("../icons/tray/buddy-off.png"), false)
         }
+        (TrayIconStyle::Danger, true) => {
+            (include_bytes!("../icons/tray/danger-on.png"), false)
+        }
+        (TrayIconStyle::Danger, false) => {
+            (include_bytes!("../icons/tray/danger-off.png"), false)
+        }
+        (TrayIconStyle::Danger2, true) => {
+            (include_bytes!("../icons/tray/danger2-on.png"), false)
+        }
+        (TrayIconStyle::Danger2, false) => {
+            (include_bytes!("../icons/tray/danger2-off.png"), false)
+        }
+        (TrayIconStyle::Ghost2, true) => {
+            (include_bytes!("../icons/tray/ghost2-on.png"), false)
+        }
+        (TrayIconStyle::Ghost2, false) => {
+            (include_bytes!("../icons/tray/ghost2-off.png"), false)
+        }
     }
 }
 

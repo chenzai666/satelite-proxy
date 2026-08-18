@@ -115,6 +115,12 @@ pub enum TrayIconStyle {
     Ghost,
     /// head.jpg buddy; black shades off, green shades on.
     Buddy,
+    /// Danger mark; dim off, red-alert on.
+    Danger,
+    /// Danger mark on transparent bg (luminance-as-alpha).
+    Danger2,
+    /// Pac-Man sheet ghost, recolored: white/green body, black eyes.
+    Ghost2,
 }
 
 impl TrayIconStyle {
@@ -124,6 +130,9 @@ impl TrayIconStyle {
             Self::Mark => "mark",
             Self::Ghost => "ghost",
             Self::Buddy => "buddy",
+            Self::Danger => "danger",
+            Self::Danger2 => "danger2",
+            Self::Ghost2 => "ghost2",
         }
     }
 
@@ -133,6 +142,9 @@ impl TrayIconStyle {
             "mark" | "white" | "flat" | "legacy" | "transparent" => Some(Self::Mark),
             "ghost" => Some(Self::Ghost),
             "buddy" | "cool" | "laoyou" | "head" => Some(Self::Buddy),
+            "danger" | "warning" | "alert" => Some(Self::Danger),
+            "danger2" => Some(Self::Danger2),
+            "ghost2" => Some(Self::Ghost2),
             _ => None,
         }
     }
@@ -348,6 +360,9 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("ghost"), Some(TrayIconStyle::Ghost));
         assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
         assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
+        assert_eq!(TrayIconStyle::parse("warning"), Some(TrayIconStyle::Danger));
+        assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
+        assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("nope"), None);
     }
 }

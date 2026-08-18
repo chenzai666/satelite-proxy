@@ -194,7 +194,10 @@ const en = {
   "settings.trayIconBadge": "Black",
   "settings.trayIconMark": "Transparent",
   "settings.trayIconGhost": "Ghost",
+  "settings.trayIconGhost2": "Ghost (recolor)",
   "settings.trayIconBuddy": "Buddy",
+  "settings.trayIconDanger": "Danger",
+  "settings.trayIconDanger2": "Danger (transparent)",
   "settings.unloadUi": "Low memory mode",
   "settings.unloadUiDesc":
     "Destroy the UI when closing to tray to free memory. Reopening recreates the window and may show a black screen briefly",
@@ -839,7 +842,10 @@ const zh: Record<MessageKey, string> = {
   "settings.trayIconBadge": "黑底",
   "settings.trayIconMark": "透明",
   "settings.trayIconGhost": "幽灵",
+  "settings.trayIconGhost2": "幽灵(变色)",
   "settings.trayIconBuddy": "佬友",
+  "settings.trayIconDanger": "危险",
+  "settings.trayIconDanger2": "危险(透明)",
   "settings.unloadUi": "低内存模式",
   "settings.unloadUiDesc":
     "关闭到托盘时销毁界面以节省内存。再次打开会重建窗口，可能短暂黑屏",
