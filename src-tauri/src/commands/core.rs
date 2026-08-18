@@ -61,7 +61,7 @@ pub async fn check_core_update(
         .await
         .map_err(|e| e.to_string())?;
     let update_available = match &local_version {
-        Some(local) => normalize_cmp(local) != normalize_cmp(&latest.version),
+        Some(local) => is_newer_version(&latest.version, local),
         None => true,
     };
     Ok(CoreUpdateInfo {
@@ -117,4 +117,48 @@ fn current_download_proxy(state: &AppState) -> Result<Option<String>, String> {
 
 fn normalize_cmp(v: &str) -> String {
     v.trim().trim_start_matches('v').to_string()
+}
+
+/// Numeric semver-ish comparison: true only if `latest` is strictly newer
+/// than `local` (not merely different) — e.g. a bundled core ahead of the
+/// latest published release should not be flagged as "update available".
+fn is_newer_version(latest: &str, local: &str) -> bool {
+    parse_version(latest) > parse_version(local)
+}
+
+fn parse_version(v: &str) -> Vec<u32> {
+    normalize_cmp(v)
+        .split(['.', '-', '+'])
+        .map(|part| part.parse::<u32>().unwrap_or(0))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_newer_version;
+
+    #[test]
+    fn bundled_ahead_of_latest_release_is_not_an_update() {
+        // Regression: a bundled core (v1.13.18) can ship ahead of the latest
+        // published GitHub release (v1.13.15) if releases lag the bundle.
+        // String-diff comparison used to flag this as "update available"
+        // even though downgrading would be wrong.
+        assert!(!is_newer_version("v1.13.15", "v1.13.18"));
+    }
+
+    #[test]
+    fn strictly_newer_release_is_an_update() {
+        assert!(is_newer_version("v1.14.0", "v1.13.18"));
+    }
+
+    #[test]
+    fn identical_versions_are_not_an_update() {
+        assert!(!is_newer_version("v1.13.18", "v1.13.18"));
+    }
+
+    #[test]
+    fn differing_segment_counts_compare_numerically() {
+        assert!(is_newer_version("v1.13.2", "v1.13"));
+        assert!(!is_newer_version("v1.13", "v1.13.2"));
+    }
 }
