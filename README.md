@@ -1,7 +1,7 @@
 # Satelite
 
 <p align="center">
-  <strong>卫星在轨，网络才稳。</strong><br/>
+  <strong>卫星飞天，连接无限。</strong><br/>
   轻量、好看的 <a href="https://github.com/SagerNet/sing-box">sing-box</a> 桌面客户端<br/>
 </p>
 
