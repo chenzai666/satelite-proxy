@@ -337,9 +337,8 @@ button {
     inset 0 -1px 0 rgba(255, 255, 255, 0.018);
   backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
   -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
-  /* Clip ::after glow. Without this, backdrop-filter promotes overflow to
-     auto and a hover scrollbar shoves the page down. */
-  overflow: hidden;
+  /* No overflow: hidden here — it would clip the ⋯ menu popup that drops
+     below the capsule (glow is clipped by .topnav-glow instead). */
   scrollbar-width: none;
 }
 
@@ -370,10 +369,22 @@ button {
     );
 }
 
-/* Soft light source bleeding onto the glass from the upper-left. Kept inside
-   the capsule bounds (no negative offsets) so it never clips the tool group's
-   shadow or the wrapper padding. */
-.topnav::after {
+/* Glow clipper: inset layer that clips the ::after light source to the
+   capsule. Clipping here instead of on .topnav keeps the ⋯ menu popup
+   (absolute, drops below the pill) unclipped. */
+.topnav-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Soft light source bleeding onto the glass from the upper-left. Clipped by
+   .topnav-glow — without a clipper, backdrop-filter promotes overflow to
+   auto and a hover scrollbar shoves the page down. */
+.topnav-glow::after {
   content: "";
   position: absolute;
   width: 220px;
