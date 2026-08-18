@@ -6,7 +6,8 @@ use crate::domain::{
 };
 use crate::error::{AppError, AppResult};
 use crate::subscription::yaml_util::{
-    as_mapping, get_bool, get_map, get_str, get_u16, get_u32, map_to_string_map, value_to_string,
+    as_mapping, get_bool, get_map, get_str, get_str_list, get_u16, get_u32, map_to_string_map,
+    value_to_string,
 };
 use serde_yaml::Value;
 
@@ -130,6 +131,15 @@ fn parse_ss(
         "obfs" => "obfs-local".to_string(),
         _ => p,
     });
+    // shadow-tls has no equivalent in sing-box's SIP003 plugin_opts grammar:
+    // sing-box models it as a separate `shadowtls` outbound that the ss
+    // outbound detours through, not as an arg string on the ss outbound
+    // itself (see xmdhs/clash2singbox's shadowTls()). Falling through to
+    // the generic key=value join below would silently produce a node that
+    // looks converted but can't actually connect, so skip it instead.
+    if plugin.as_deref() == Some("shadow-tls") {
+        return Err("ss: shadow-tls plugin is not supported".to_string());
+    }
     let plugin_opts = get_map(map, &["plugin-opts", "plugin_opts"])
         .map(|m| build_plugin_opts(plugin.as_deref(), m));
 
@@ -490,9 +500,7 @@ fn parse_tuic(
         tls.server_name = get_str(map, &["sni", "servername"]);
     }
     if tls.alpn.is_none() {
-        if let Some(alpn) = get_str(map, &["alpn"]) {
-            tls.alpn = Some(alpn.split(',').map(|s| s.trim().to_string()).collect());
-        }
+        tls.alpn = get_str_list(map, &["alpn"]);
     }
 
     Ok((
@@ -649,6 +657,19 @@ fn parse_tor(
     ))
 }
 
+/// sing-box wireguard `address` entries must be CIDR prefixes (`netip.Prefix`).
+/// Clash yaml typically gives a bare IP; pad it with /32 (IPv4) or /128 (IPv6).
+fn normalize_cidr(addr: String) -> String {
+    if addr.contains('/') {
+        return addr;
+    }
+    if addr.contains(':') {
+        format!("{addr}/128")
+    } else {
+        format!("{addr}/32")
+    }
+}
+
 fn parse_wireguard(
     map: &serde_yaml::Mapping,
 ) -> Result<(Option<TlsConfig>, Option<Transport>, ProtocolConfig), String> {
@@ -666,6 +687,10 @@ fn parse_wireguard(
             _ => value_to_string(v).into_iter().collect(),
         })
         .unwrap_or_default();
+    let mut local_address: Vec<String> = local_address.into_iter().map(normalize_cidr).collect();
+    if let Some(ipv6) = get_str(map, &["ipv6"]) {
+        local_address.push(normalize_cidr(ipv6));
+    }
     if local_address.is_empty() {
         return Err("wireguard: missing local address".into());
     }
@@ -720,12 +745,7 @@ fn parse_tls_common(map: &serde_yaml::Mapping, default_enabled: bool) -> Option<
         .or_else(|| get_str(map, &["fingerprint"]))
         .and_then(|s| normalize_utls_fingerprint(&s));
 
-    let alpn = get_str(map, &["alpn"]).map(|s| {
-        s.split(',')
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect()
-    });
+    let alpn = get_str_list(map, &["alpn"]);
 
     let mut tls = TlsConfig {
         enabled: enabled || has_reality,
@@ -1047,6 +1067,44 @@ proxies:
         }
     }
 
+    // sing-box has no SIP003 arg-string equivalent for shadow-tls (it's a
+    // separate `shadowtls` outbound + detour instead), so a shadow-tls node
+    // must be skipped at parse time rather than silently emitting a
+    // plugin_opts string sing-box can't use. Other nodes in the same
+    // subscription must still parse normally.
+    #[test]
+    fn skips_shadow_tls_plugin_node() {
+        let yaml = r#"
+- name: "SS-ShadowTLS"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: shadow-tls
+  plugin-opts:
+    host: www.bing.com
+    password: tls-pass
+    version: 3
+- name: "SS-Plain"
+  type: ss
+  server: b.com
+  port: 2
+  cipher: aes-256-gcm
+  password: p
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(result.nodes.len(), 1);
+        assert_eq!(result.nodes[0].name, "SS-Plain");
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].name.as_deref(), Some("SS-ShadowTLS"));
+        assert!(
+            result.skipped[0].reason.contains("shadow-tls"),
+            "reason: {}",
+            result.skipped[0].reason
+        );
+    }
+
     // Clash models v2ray-plugin's `mux` as a bool; sing-box parses it with
     // strconv.Atoi and errors out on anything non-numeric
     // (transport/sip003/v2ray.go: `E.Cause(err, "parse mux value")`).
@@ -1206,6 +1264,98 @@ proxies:
                 assert!(opts.contains(r"path=/a\;b\=c"), "opts: {opts}");
             }
             _ => panic!("expected ss config"),
+        }
+    }
+
+    // mihomo's standard `alpn` form is a YAML sequence (`alpn: [h2, http/1.1]`),
+    // not a comma-joined string. get_str (String/Number/Bool only) can't see
+    // a Value::Sequence, so this used to silently drop the field.
+    #[test]
+    fn parses_alpn_as_yaml_sequence() {
+        let yaml = r#"
+- name: "Trojan-Alpn"
+  type: trojan
+  server: a.com
+  port: 443
+  password: p
+  alpn: [h2, "http/1.1"]
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        let tls = result.nodes[0].tls.as_ref().expect("tls");
+        assert_eq!(
+            tls.alpn.as_deref(),
+            Some(&["h2".to_string(), "http/1.1".to_string()][..])
+        );
+    }
+
+    // sing-box's wireguard `address` entries are netip.Prefix and require a
+    // CIDR suffix; Clash's `ip:` is normally a bare address.
+    #[test]
+    fn normalizes_wireguard_address_to_cidr() {
+        let yaml = r#"
+- name: "WG"
+  type: wireguard
+  server: a.com
+  port: 51820
+  private-key: "cHJpdmF0ZQ=="
+  public-key: "cHVibGlj"
+  ip: 10.0.0.2
+  ipv6: "fd00::2"
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::WireGuard { local_address, .. } => {
+                assert_eq!(local_address, &["10.0.0.2/32".to_string(), "fd00::2/128".to_string()]);
+            }
+            _ => panic!("expected wireguard config"),
+        }
+    }
+
+    // A `/`-suffixed address must be left untouched rather than double-padded.
+    #[test]
+    fn leaves_wireguard_address_with_existing_cidr_untouched() {
+        let yaml = r#"
+- name: "WG"
+  type: wireguard
+  server: a.com
+  port: 51820
+  private-key: "cHJpdmF0ZQ=="
+  public-key: "cHVibGlj"
+  ip: 10.0.0.2/24
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::WireGuard { local_address, .. } => {
+                assert_eq!(local_address, &["10.0.0.2/24".to_string()]);
+            }
+            _ => panic!("expected wireguard config"),
+        }
+    }
+
+    // clash2singbox's anyToMbps: plain numbers pass through as Mbps; unit
+    // suffixes (K/M/G/T, lower-case b or upper-case B) scale relative to
+    // Mbps, with bytes (B) multiplied by 8. A naive "take leading digits"
+    // parse mistakes "1Gbps" (1000 Mbps) for 1 Mbps.
+    #[test]
+    fn converts_hysteria_rate_units_to_mbps() {
+        let yaml = r#"
+- name: "Hy2"
+  type: hysteria2
+  server: a.com
+  port: 443
+  password: p
+  up: "1Gbps"
+  down: "100 Mbps"
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Hysteria2 {
+                up_mbps, down_mbps, ..
+            } => {
+                assert_eq!(*up_mbps, Some(1000));
+                assert_eq!(*down_mbps, Some(100));
+            }
+            _ => panic!("expected hysteria2 config"),
         }
     }
 }
