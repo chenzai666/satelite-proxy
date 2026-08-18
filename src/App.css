@@ -1465,7 +1465,8 @@ tr.row-active {
   border: 0;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证 960 下节点卡仍 4 列只变窄不换行 */
+@media (max-width: 900px) {
   .node-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2858,31 +2859,56 @@ code {
   align-items: start;
 }
 
-/* Application and network options share one tab and use the available width. */
-.settings-app-network-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
-  gap: 0.75rem;
-  align-items: start;
+/* App tab alone since the ports card moved to its own tab: cap the
+   preferences card near its old width in the former two-column layout. */
+.settings-app-page .settings-panel {
+  max-width: 46rem;
 }
 
-.settings-app-network-page .settings-form-grid {
+/* Ports tab: shared toolbar on top (save applies to both columns), then the
+   main port form (left) beside the extra-listeners panel (right). */
+.settings-ports-toolbar {
+  max-width: 56rem;
+}
+
+.settings-ports-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 0.75rem;
+  align-items: start;
+  max-width: 56rem;
+}
+
+.settings-ports-page .settings-form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
+  padding: 0.85rem;
   max-width: none;
+}
+
+.settings-ports-page .settings-inbounds-card {
   padding: 0.85rem;
 }
 
-.settings-app-network-page > .settings-panel,
-.settings-app-network-page .settings-form-grid .field {
+.settings-ports-page .settings-form-grid .field {
   min-width: 0;
 }
 
-.settings-app-network-page .settings-form-grid input,
-.settings-app-network-page .settings-form-grid .solid-select {
+.settings-ports-page .settings-form-grid input,
+.settings-ports-page .settings-form-grid .solid-select {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
+}
+
+@media (max-width: 700px) {
+  .settings-ports-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-ports-page .settings-form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-network-card-head {
@@ -2904,28 +2930,6 @@ code {
   line-height: 1.35;
 }
 
-/* Unsaved drafts in the network card: pulsing glow on the Save button.
-   Pure box-shadow — no layout shift. Tooltip carries the explanation. */
-.save-pulse {
-  animation: save-pulse 1.8s ease-out infinite;
-}
-
-@keyframes save-pulse {
-  0% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 55%, transparent);
-  }
-  70%,
-  100% {
-    box-shadow: 0 0 0 7px color-mix(in srgb, var(--primary) 0%, transparent);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .save-pulse {
-    animation: none;
-  }
-}
-
 /* Multi-listen ports table inside the network card (settings · 端口与网络) */
 .inbound-table-wrap {
   /* Narrow table never scrolls; visible overflow keeps the ⋮ menu unclipped
@@ -2941,12 +2945,6 @@ code {
 
 .settings-network-card-head button {
   flex-shrink: 0;
-}
-
-@media (max-width: 700px) {
-  .settings-app-network-page {
-    grid-template-columns: 1fr;
-  }
 }
 
 .dns-cell-general {
@@ -3921,7 +3919,8 @@ button.check.on {
   overflow: visible;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证首页 hero 三列布局不折叠 */
+@media (max-width: 900px) {
   .dash-hero {
     grid-template-columns: minmax(140px, 180px) 1fr;
   }
@@ -4664,7 +4663,7 @@ button.check.on {
 
 .instrument-grid.instrument-grid-6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: 10.5rem;
+  grid-auto-rows: 9.5rem;
 }
 
 .instrument-grid.instrument-grid-6 > .instrument,
@@ -4677,7 +4676,8 @@ button.check.on {
   box-sizing: border-box;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证首页仪表卡仍 3 列只变窄不换行 */
+@media (max-width: 900px) {
   .instrument-grid,
   .instrument-grid.instrument-grid-6 {
     grid-template-columns: repeat(2, minmax(0, 1fr));

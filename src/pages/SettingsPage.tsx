@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   checkCoreUpdate,
@@ -29,7 +29,7 @@ import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 import { HostsPage } from "./HostsPage";
 
-type SettingsTab = "app" | "rules" | "dns" | "hosts" | "core";
+type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "core";
 
 const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
 
@@ -57,6 +57,8 @@ export function SettingsPage() {
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [mixed, setMixed] = useState("2080");
+  /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
+  const [allowLan, setAllowLan] = useState(false);
   const [api, setApi] = useState("19090");
   const [probe, setProbe] = useState("");
   const [tunStack, setTunStack] = useState("mixed");
@@ -88,6 +90,11 @@ export function SettingsPage() {
           id: "app" as const,
           label: t("settings.tabApp"),
           hint: t("settings.hintApp"),
+        },
+        {
+          id: "ports" as const,
+          label: t("settings.tabPorts"),
+          hint: t("settings.hintPorts"),
         },
         {
           id: "rules" as const,
@@ -155,6 +162,7 @@ export function SettingsPage() {
       .then((s) => {
         setSettings(s);
         setMixed(String(s.mixed_port));
+        setAllowLan(!!s.allow_lan);
         setApi(String(s.api_port));
         setProbe(s.probe_url);
         setTunStack(s.tun_stack || "mixed");
@@ -201,30 +209,53 @@ export function SettingsPage() {
     return () => unlisten?.();
   }, []);
 
-  async function onSaveNetwork() {
+  /** Latest auto-apply fn (called from the debounced effect and re-queued
+   * from its own finally when the user edited mid-flight). */
+  const autoApplyRef = useRef<() => Promise<void>>(async () => {});
+  const applyingRef = useRef(false);
+
+  /** Auto-commit the ports tab: save every draft (ports / LAN / probe /
+   * stack / listeners) and restart the core when it is running. Drafts that
+   * are still invalid (mid-typing) are skipped until they become valid. */
+  const autoApplyNetwork = useCallback(async () => {
+    if (applyingRef.current || !settings) return;
+    const dirty =
+      String(settings.mixed_port) !== mixed.trim() ||
+      !!settings.allow_lan !== allowLan ||
+      String(settings.api_port) !== api.trim() ||
+      (settings.probe_url ?? "") !== probe ||
+      (settings.tun_stack || "mixed") !== tunStack ||
+      !sameInbounds(settings.extra_inbounds ?? [], extra);
+    if (!dirty) return;
+    // Invalid drafts (mid-typing or left behind): surface why we can't apply
+    // yet; the banner clears on the next successful auto-commit.
+    const mixedPort = Number(mixed);
+    const apiPort = Number(api);
+    if (!Number.isFinite(mixedPort) || mixedPort < 1 || mixedPort > 65535) {
+      setError(t("settings.invalidMixed"));
+      return;
+    }
+    if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
+      setError(t("settings.invalidApi"));
+      return;
+    }
+    const seen = new Set<number>([mixedPort, apiPort]);
+    for (const row of extra) {
+      if (seen.has(row.port)) {
+        setError(t("settings.dupPort", { n: row.port }));
+        return;
+      }
+      seen.add(row.port);
+    }
+    applyingRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      const mixedPort = Number(mixed);
-      const apiPort = Number(api);
-      if (!Number.isFinite(mixedPort) || mixedPort < 1 || mixedPort > 65535) {
-        throw new Error(t("settings.invalidMixed"));
-      }
-      if (!Number.isFinite(apiPort) || apiPort < 1 || apiPort > 65535) {
-        throw new Error(t("settings.invalidApi"));
-      }
-      const seen = new Set<number>([mixedPort, apiPort]);
-      const extraInbounds = extra.map((row) => {
-        if (seen.has(row.port)) {
-          throw new Error(t("settings.dupPort", { n: row.port }));
-        }
-        seen.add(row.port);
-        return row;
-      });
       const s = await updateSettings({
         mixedPort,
+        allowLan,
         apiPort,
-        extraInbounds,
+        extraInbounds: extra,
         probeUrl: probe.trim() || null,
         tunStack: tunStack.trim() || "mixed",
       });
@@ -237,9 +268,24 @@ export function SettingsPage() {
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      applyingRef.current = false;
       setBusy(false);
+      // Pick up edits made while we were applying.
+      void autoApplyRef.current();
     }
-  }
+  }, [allowLan, api, extra, mixed, probe, settings, t, tunStack]);
+
+  autoApplyRef.current = autoApplyNetwork;
+
+  // Debounce so typing a port number doesn't restart the core per keystroke;
+  // toggles / selects / modal saves settle within the same short window.
+  useEffect(() => {
+    if (!settings) return;
+    const timer = setTimeout(() => void autoApplyRef.current(), 600);
+    return () => clearTimeout(timer);
+    // Fire on any draft change; autoApplyNetwork itself decides if there is
+    // anything valid and dirty to commit.
+  }, [settings, mixed, allowLan, api, probe, tunStack, extra]);
 
   // —— Extra inbound listeners (draft rows + modal editor) ——
 
@@ -261,7 +307,8 @@ export function SettingsPage() {
     setInboundOpen(true);
   }
 
-  /** Validate in the modal, then commit to the draft list (saved on 保存). */
+  /** Validate in the modal, then commit to the list (auto-applied + core
+   * restart via the debounced effect). */
   function saveInbound() {
     const port = Number(inboundPort);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
@@ -365,15 +412,6 @@ export function SettingsPage() {
 
   const customRuntime = (settings?.runtime_source ?? "").startsWith("singbox:");
 
-  /** Any unsaved draft in the 端口与网络 card (ports / probe / stack / listeners)? */
-  const networkDirty =
-    settings != null &&
-    (String(settings.mixed_port) !== mixed.trim() ||
-      String(settings.api_port) !== api.trim() ||
-      (settings.probe_url ?? "") !== probe ||
-      (settings.tun_stack || "mixed") !== tunStack ||
-      !sameInbounds(settings.extra_inbounds ?? [], extra));
-
   useEffect(() => {
     if (customRuntime && CUSTOM_BLOCKED_TABS.has(tab)) {
       setTab("app");
@@ -383,7 +421,8 @@ export function SettingsPage() {
   const visibleTab =
     customRuntime && CUSTOM_BLOCKED_TABS.has(tab) ? "app" : tab;
 
-  const needsSettings = visibleTab === "app" || visibleTab === "core";
+  const needsSettings =
+    visibleTab === "app" || visibleTab === "ports" || visibleTab === "core";
   if (needsSettings && !settings && !error) {
     return <div className="page empty">{t("common.loading")}</div>;
   }
@@ -429,7 +468,13 @@ export function SettingsPage() {
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
       <div
-        className={`page-enter${visibleTab === "app" ? " settings-app-network-page" : ""}`}
+        className={`page-enter${
+          visibleTab === "app"
+            ? " settings-app-page"
+            : visibleTab === "ports"
+              ? " settings-ports-page"
+              : ""
+        }`}
         key={visibleTab}
       >
         {!customRuntime && visibleTab === "rules" && <RulesPage embedded />}
@@ -600,88 +645,104 @@ export function SettingsPage() {
         </section>
       )}
 
-      {visibleTab === "app" && settings && (
-        <section className="settings-panel" aria-label="Network">
-          <div className="card settings-form settings-form-grid">
-            <div className="settings-network-card-head field-span-2">
-              <div>
-                <strong>{t("settings.networkOptions")}</strong>
-                <div className="muted">{t("settings.networkSaveNote")}</div>
+      {visibleTab === "ports" && settings && (
+        <section className="settings-panel" aria-label="Ports">
+          {/* Note only — every change auto-commits below (and restarts a
+            running core); there is no save button on this tab. */}
+          <div className="settings-network-card-head settings-ports-toolbar">
+            <div>
+              <strong>{t("settings.networkOptions")}</strong>
+              <div className="muted">{t("settings.networkSaveNote")}</div>
+            </div>
+          </div>
+          <div className="settings-ports-columns">
+            <div className="card settings-form settings-form-grid">
+              <label className="field">
+                <span>{t("settings.mixedPort")}</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="mono"
+                  value={mixed}
+                  disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
+                  onChange={(e) => setMixed(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>{t("settings.apiPort")}</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="mono"
+                  value={api}
+                  disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
+                  onChange={(e) => setApi(e.target.value)}
+                />
+              </label>
+              <div className="via-proxy-row field-span-2">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.allowLan")}</div>
+                  <div className="sys-proxy-desc">
+                    {t("settings.allowLanDesc")}
+                  </div>
+                </div>
+                <GlassSwitchControl
+                  checked={allowLan}
+                  title={t("settings.allowLan")}
+                  disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                  onChange={setAllowLan}
+                />
               </div>
-              <GlassButton
-                variant="primary"
-                icon="↻"
-                className={networkDirty ? "save-pulse" : undefined}
-                title={
-                  networkDirty
-                    ? t("settings.unsavedChanges")
-                    : t("settings.saveRestartCore")
-                }
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onClick={() => void onSaveNetwork()}
-              >
-                {busy ? t("common.saving") : t("settings.saveRestartCore")}
-              </GlassButton>
-            </div>
-            <label className="field">
-              <span>{t("settings.mixedPort")}</span>
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="mono"
-                value={mixed}
-                disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(e) => setMixed(e.target.value)}
-              />
-            </label>
-            <label className="field">
-              <span>{t("settings.apiPort")}</span>
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="mono"
-                value={api}
-                disabled={(settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(e) => setApi(e.target.value)}
-              />
-            </label>
-            <label className="field field-span-2">
-              <span>{t("settings.probeUrl")}</span>
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                className="mono"
-                value={probe}
-                onChange={(e) => setProbe(e.target.value)}
-                placeholder="https://…"
-              />
-            </label>
-            <div className="field field-span-2">
-              <span>{t("settings.tunStack")}</span>
-              <SolidSelect
-                value={tunStack}
-                onChange={setTunStack}
-                aria-label={t("settings.tunStack")}
-                options={[
-                  { value: "mixed", label: "mixed" },
-                  { value: "system", label: "system" },
-                  { value: "gvisor", label: "gvisor" },
-                ]}
-              />
-              <span className="field-hint muted">
-                {t("settings.tunStackHint")}{" "}
-                <span className="mono">
-                  {settings?.tun_enabled
-                    ? t("common.enabled")
-                    : t("common.disabled")}
+              <label className="field field-span-2">
+                <span>{t("settings.probeUrl")}</span>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className="mono"
+                  value={probe}
+                  onChange={(e) => setProbe(e.target.value)}
+                  placeholder="https://…"
+                />
+              </label>
+              <div className="field field-span-2">
+                <span>{t("settings.tunStack")}</span>
+                <SolidSelect
+                  value={tunStack}
+                  onChange={setTunStack}
+                  aria-label={t("settings.tunStack")}
+                  options={[
+                    { value: "mixed", label: "mixed" },
+                    { value: "system", label: "system" },
+                    { value: "gvisor", label: "gvisor" },
+                  ]}
+                />
+                <span className="field-hint muted">
+                  {t("settings.tunStackHint")}{" "}
+                  <span className="mono">
+                    {settings?.tun_enabled
+                      ? t("common.enabled")
+                      : t("common.disabled")}
+                  </span>
                 </span>
-              </span>
+              </div>
             </div>
-            <div className="field field-span-2">
-              <span>{t("settings.extraInbounds")}</span>
+            <div className="card settings-form settings-inbounds-card">
+              <div className="settings-network-card-head">
+                <div>
+                  <strong>{t("settings.extraInbounds")}</strong>
+                  <div className="muted">{t("settings.extraInboundsDesc")}</div>
+                </div>
+                <GlassButton
+                  icon="+"
+                  disabled={busy || customRuntime || extra.length >= 10}
+                  onClick={openAddInbound}
+                >
+                  {t("settings.addInboundPort")}
+                </GlassButton>
+              </div>
               <div className="table-wrap inbound-table-wrap">
                 <table className="inbound-table">
                   <colgroup>
@@ -764,18 +825,6 @@ export function SettingsPage() {
                   </tbody>
                 </table>
               </div>
-              <div>
-                <GlassButton
-                  icon="+"
-                  disabled={busy || customRuntime || extra.length >= 10}
-                  onClick={openAddInbound}
-                >
-                  {t("settings.addInboundPort")}
-                </GlassButton>
-              </div>
-              <span className="field-hint muted">
-                {t("settings.extraInboundsDesc")}
-              </span>
             </div>
           </div>
         </section>

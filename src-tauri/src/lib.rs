@@ -350,6 +350,7 @@ pub fn run() {
             commands::preview_singbox_config,
             commands::get_active_config_path,
             commands::get_core_info,
+            commands::get_lan_ip,
             commands::check_core_update,
             commands::download_core,
             commands::fetch_core_latest,

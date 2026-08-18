@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 /// Matches frontend `windowLayout.ts` (logical px).
-const PRO_SIZE: (f64, f64) = (1024.0, 760.0);
-const SIMPLE_SIZE: (f64, f64) = (420.0, 760.0);
+const PRO_SIZE: (f64, f64) = (960.0, 720.0);
+const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
 
 fn ui_mode_file(app_data_dir: &std::path::Path) -> PathBuf {
     app_data_dir.join("data").join("ui_mode")
@@ -75,7 +75,7 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     } else {
-        // Use last persisted UI mode so we don't flash pro (1024) then shrink to simple.
+        // Use last persisted UI mode so we don't flash pro (960) then shrink to simple.
         let mode = app
             .try_state::<AppState>()
             .map(|s| read_ui_mode(&s.app_data_dir).to_string())

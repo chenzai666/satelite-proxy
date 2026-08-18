@@ -250,6 +250,8 @@ export interface ExtraInbound {
 
 export interface AppSettings {
   mixed_port: number;
+  /** Main mixed inbound listens on 0.0.0.0 instead of 127.0.0.1. */
+  allow_lan?: boolean;
   api_port: number;
   /** Additional mixed/http listeners emitted into the generated config. */
   extra_inbounds?: ExtraInbound[];

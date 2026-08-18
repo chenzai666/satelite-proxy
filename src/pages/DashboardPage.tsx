@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getCoreInfo,
+  getLanIp,
   getProxyStatus,
   getSettings,
   getSubscription,
@@ -117,6 +118,8 @@ export function DashboardPage({
     api: 19090,
     extras: [] as import("../types").ExtraInbound[],
   });
+  /** LAN IPv4 for the listen card (null until fetched / offline). */
+  const [lanIp, setLanIp] = useState<string | null>(null);
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
@@ -168,6 +171,7 @@ export function DashboardPage({
         listSubscriptions(),
         listAllNodes(),
         getCoreInfo().catch(() => null),
+        getLanIp().catch(() => null),
       ]);
 
       const [settings, status] = await statusP;
@@ -181,9 +185,10 @@ export function DashboardPage({
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, core] = await detailP;
+      const [subList, nodeList, core, lan] = await detailP;
       setSubs(subList);
       setNodes(nodeList);
+      setLanIp(lan ?? null);
       const cur =
         nodeList.find((n) => n.id === settings.current_node_id) ??
         nodeList[0] ??
@@ -1226,12 +1231,8 @@ export function DashboardPage({
           </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">{t("dashboard.multiPort")}</span>
-              <span className="kv-v">
-                {extraInbounds.length > 0
-                  ? t("dashboard.multiPortOn")
-                  : t("dashboard.multiPortOff")}
-              </span>
+              <span className="kv-k">{t("dashboard.lanIp")}</span>
+              <span className="kv-v">{lanIp ?? "—"}</span>
             </div>
             <div>
               <span className="kv-k">ENV</span>

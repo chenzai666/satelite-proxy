@@ -191,6 +191,8 @@ export function getSettings() {
 
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
+  /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
+  allowLan?: boolean | null;
   apiPort?: number | null;
   /** Some(list) replaces the whole extra-inbound list. */
   extraInbounds?: import("./types").ExtraInbound[] | null;
@@ -346,6 +348,11 @@ export function getActiveConfigPath() {
 /** Local only — no network. Use for first paint. */
 export function getCoreInfo() {
   return invoke<CoreInfo>("get_core_info");
+}
+
+/** Machine's LAN IPv4 (default-route interface). Null when offline. */
+export function getLanIp() {
+  return invoke<string | null>("get_lan_ip");
 }
 
 export function checkCoreUpdate(localVersion?: string | null) {

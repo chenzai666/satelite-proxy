@@ -661,6 +661,7 @@ impl Runtime {
             &nodes,
             &BuildOptions {
                 mixed_port: store.settings.mixed_port,
+                allow_lan: store.settings.allow_lan,
                 api_port: store.settings.api_port,
                 extra_inbounds: store.settings.extra_inbounds.clone(),
                 api_secret: secret.clone(),

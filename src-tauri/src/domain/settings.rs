@@ -172,6 +172,9 @@ fn default_extra_inbound_kind() -> String {
 pub struct AppSettings {
     /// mixed inbound listen port
     pub mixed_port: u16,
+    /// Mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
+    #[serde(default)]
+    pub allow_lan: bool,
     /// clash_api controller port
     pub api_port: u16,
     /// Additional inbound listeners emitted into the generated config.
@@ -336,6 +339,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             mixed_port: 2080,
+            allow_lan: false,
             api_port: 19090,
             extra_inbounds: Vec::new(),
             current_node_id: None,

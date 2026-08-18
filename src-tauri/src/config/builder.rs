@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 pub struct BuildOptions {
     pub mixed_port: u16,
+    /// Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
+    pub allow_lan: bool,
     pub api_port: u16,
     /// Additional mixed/http listeners (settings-managed).
     pub extra_inbounds: Vec<ExtraInbound>,
@@ -184,7 +186,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     let mut inbounds = vec![json!({
         "type": "mixed",
         "tag": "mixed-in",
-        "listen": "127.0.0.1",
+        "listen": if opts.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
         "listen_port": opts.mixed_port
     })];
 
@@ -1243,6 +1245,7 @@ mod tests {
             &[node],
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1502,6 +1505,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1599,6 +1603,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![
                     crate::domain::ExtraInbound {
@@ -1646,12 +1651,55 @@ mod tests {
     }
 
     #[test]
+    fn allow_lan_switches_main_mixed_listen_host() {
+        let nodes = vec![sample_ss()];
+        let base = || BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+        };
+
+        let localhost = build_singbox_config(&nodes, &base()).unwrap();
+        assert_eq!(
+            localhost.value["inbounds"][0]["listen"],
+            "127.0.0.1",
+            "main mixed inbound defaults to loopback"
+        );
+
+        let lan = build_singbox_config(&nodes, &BuildOptions {
+            allow_lan: true,
+            ..base()
+        })
+        .unwrap();
+        assert_eq!(
+            lan.value["inbounds"][0]["listen"],
+            "0.0.0.0",
+            "allow_lan opens the main mixed inbound to the LAN"
+        );
+    }
+
+    #[test]
     fn builds_selector() {
         let nodes = vec![sample_ss()];
         let built = build_singbox_config(
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1711,6 +1759,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1746,6 +1795,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1786,6 +1836,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1870,6 +1921,7 @@ mod tests {
             &[],
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "x".into(),
@@ -1898,6 +1950,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -1927,6 +1980,7 @@ mod tests {
                 &nodes,
                 &BuildOptions {
                     mixed_port: 2080,
+                    allow_lan: false,
                     api_port: 19090,
                     extra_inbounds: vec![],
                     api_secret: "test".into(),
@@ -1957,6 +2011,7 @@ mod tests {
             &nodes,
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -2003,6 +2058,7 @@ mod tests {
             &[node],
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -2045,6 +2101,7 @@ mod tests {
             &[node],
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),
@@ -2091,6 +2148,7 @@ mod tests {
             &[hk, sg.clone()],
             &BuildOptions {
                 mixed_port: 2080,
+                allow_lan: false,
                 api_port: 19090,
                 extra_inbounds: vec![],
                 api_secret: "test".into(),

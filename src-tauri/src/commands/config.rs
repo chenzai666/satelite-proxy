@@ -49,6 +49,7 @@ pub fn update_settings(
     app: AppHandle,
     state: State<'_, AppState>,
     mixed_port: Option<u16>,
+    allow_lan: Option<bool>,
     api_port: Option<u16>,
     extra_inbounds: Option<Vec<crate::domain::ExtraInbound>>,
     probe_url: Option<String>,
@@ -81,6 +82,9 @@ pub fn update_settings(
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
                 store.settings.mixed_port = p;
+            }
+            if let Some(v) = allow_lan {
+                store.settings.allow_lan = v;
             }
             if let Some(p) = api_port {
                 store.settings.api_port = p;
@@ -567,6 +571,7 @@ pub async fn generate_singbox_config(
             &nodes,
             &BuildOptions {
                 mixed_port: settings.mixed_port,
+                allow_lan: settings.allow_lan,
                 api_port: settings.api_port,
                 extra_inbounds: settings.extra_inbounds.clone(),
                 api_secret: worker_secret,
@@ -652,6 +657,7 @@ pub async fn preview_singbox_config(
             &nodes,
             &BuildOptions {
                 mixed_port: settings.mixed_port,
+                allow_lan: settings.allow_lan,
                 api_port: settings.api_port,
                 extra_inbounds: settings.extra_inbounds.clone(),
                 api_secret: secret,
