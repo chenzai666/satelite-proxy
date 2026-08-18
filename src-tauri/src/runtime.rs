@@ -47,6 +47,9 @@ pub struct ProxyStatus {
     /// Unix seconds when the core last entered running state (for uptime UI).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_started_at: Option<i64>,
+    /// Resident memory (bytes) of the core process, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_memory_bytes: Option<u64>,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -116,6 +119,9 @@ pub struct Runtime {
     journal_seq: u64,
     /// Wall-clock start of current core session (unix secs).
     core_started_at: Option<i64>,
+    /// Cached (pid, value, fetched-at) from the last successful `ps`/`tasklist`
+    /// memory read — throttled since it shells out to a subprocess.
+    core_memory_cache: Option<(u32, u64, Instant)>,
 }
 
 impl Runtime {
@@ -140,6 +146,7 @@ impl Runtime {
             last_sample_at: None,
             journal_seq: 0,
             core_started_at: None,
+            core_memory_cache: None,
         }
     }
 
@@ -157,6 +164,7 @@ impl Runtime {
             // Recover if we missed setting it (e.g. process still up after soft restart path).
             self.core_started_at = Some(now_unix_secs());
         }
+        let core_memory_bytes = self.core_memory_bytes();
         ProxyStatus {
             running: self.core.is_running(),
             core_state: self.core.state(),
@@ -196,7 +204,37 @@ impl Runtime {
             smart_switch: store.settings.auto_select.is_smart(),
             auto_select: store.settings.auto_select.as_str().to_string(),
             core_started_at: self.core_started_at,
+            core_memory_bytes,
         }
+    }
+
+    /// RSS of the core process, if running and a PID is known.
+    ///
+    /// sing-box may run setuid-root (TUN mode) while we stay an unprivileged
+    /// user process — `sysinfo`'s mach `task_info` query silently returns 0
+    /// for a higher-euid process on macOS, so we shell out to `ps`/`tasklist`
+    /// instead, which read from the same sysctl/WTS surface the OS's own
+    /// Activity Monitor / Task Manager use and are not privilege-gated.
+    /// RSS of the core process, if running and a PID is known.
+    ///
+    /// sing-box may run setuid-root (TUN mode) while we stay an unprivileged
+    /// user process — `sysinfo`'s mach `task_info` query silently returns 0
+    /// for a higher-euid process on macOS, so we shell out to `ps`/`tasklist`
+    /// instead, which read from the same sysctl/WTS surface the OS's own
+    /// Activity Monitor / Task Manager use and are not privilege-gated.
+    ///
+    /// Throttled to once every 5s since it forks a subprocess; callers poll
+    /// far more often than that, so we serve the cached value in between.
+    fn core_memory_bytes(&mut self) -> Option<u64> {
+        let pid = self.core.pid()?;
+        if let Some((cached_pid, bytes, at)) = self.core_memory_cache {
+            if cached_pid == pid && at.elapsed() < Duration::from_secs(5) {
+                return Some(bytes);
+            }
+        }
+        let bytes = read_process_rss_bytes(pid)?;
+        self.core_memory_cache = Some((pid, bytes, Instant::now()));
+        Some(bytes)
     }
 
     /// Passive health for smart switch from connection journal (no MITM / no HTTP codes).
@@ -806,6 +844,49 @@ impl Runtime {
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Read a process's resident memory (RSS, bytes) via the OS's own process
+/// inspector — works across privilege boundaries (e.g. our setuid-root
+/// sing-box) where `sysinfo`'s mach/task_info query is silently denied and
+/// returns 0.
+fn read_process_rss_bytes(pid: u32) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        text.trim().parse::<u64>().ok().map(|kb| kb * 1024)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // CSV, no header: "Image Name","PID","Session Name","Session#","Mem Usage"
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.lines().next()?;
+        let mem_field = line.rsplit(',').next()?;
+        let digits: String = mem_field
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        digits.parse::<u64>().ok().map(|kb| kb * 1024)
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pid;
+        None
     }
 }
 

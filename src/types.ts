@@ -310,6 +310,8 @@ export interface ProxyStatus {
   auto_select?: AutoSelectMode | string;
   /** Unix seconds when core last started (uptime = now - this). */
   core_started_at?: number | null;
+  /** Resident memory (bytes) of the core process, when known. */
+  core_memory_bytes?: number | null;
 }
 
 export type RuleType =

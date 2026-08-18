@@ -95,6 +95,15 @@ impl CoreManager {
         matches!(self.state, CoreState::Running)
     }
 
+    /// PID of the running core process, however it's owned (sidecar child or elevated).
+    pub fn pid(&self) -> Option<u32> {
+        match self.run_mode {
+            RunMode::Sidecar => self.child.as_ref().map(|c| c.id()),
+            RunMode::ElevatedPid => self.elevated_pid,
+            RunMode::None => None,
+        }
+    }
+
     /// Reap child if it exited; update state with log tail when possible.
     pub fn poll(&mut self) {
         if let Some(pid) = self.elevated_pid {
