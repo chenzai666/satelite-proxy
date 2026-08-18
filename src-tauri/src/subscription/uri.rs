@@ -388,6 +388,7 @@ fn parse_ss_uri(line: &str) -> Result<ProxyNode, String> {
             password: percent_decode(password),
             plugin: None,
             plugin_opts: None,
+            shadow_tls: None,
         },
         source: Some("ss".into()),
         latency_ms: None,

@@ -1,8 +1,8 @@
 //! Parse Clash YAML `proxies:` list into normalized [`ProxyNode`]s.
 
 use crate::domain::{
-    ParseResult, Protocol, ProtocolConfig, ProxyNode, SkippedProxy, SubscriptionFormat, TlsConfig,
-    Transport,
+    ParseResult, Protocol, ProtocolConfig, ProxyNode, ShadowTlsOpts, SkippedProxy,
+    SubscriptionFormat, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use crate::subscription::yaml_util::{
@@ -134,14 +134,35 @@ fn parse_ss(
     // shadow-tls has no equivalent in sing-box's SIP003 plugin_opts grammar:
     // sing-box models it as a separate `shadowtls` outbound that the ss
     // outbound detours through, not as an arg string on the ss outbound
-    // itself (see xmdhs/clash2singbox's shadowTls()). Falling through to
-    // the generic key=value join below would silently produce a node that
-    // looks converted but can't actually connect, so skip it instead.
-    if plugin.as_deref() == Some("shadow-tls") {
-        return Err("ss: shadow-tls plugin is not supported".to_string());
-    }
-    let plugin_opts = get_map(map, &["plugin-opts", "plugin_opts"])
-        .map(|m| build_plugin_opts(plugin.as_deref(), m));
+    // itself (see xmdhs/clash2singbox's shadowTls()). Parse it into a
+    // dedicated field instead of falling through to the generic key=value
+    // join, which would silently produce a node that looks converted but
+    // can't actually connect.
+    let shadow_tls = if plugin.as_deref() == Some("shadow-tls") {
+        let opts = get_map(map, &["plugin-opts", "plugin_opts"])
+            .ok_or_else(|| "ss: shadow-tls missing plugin-opts".to_string())?;
+        let host =
+            get_str(opts, &["host"]).ok_or_else(|| "ss: shadow-tls missing host".to_string())?;
+        let tls_password = get_str(opts, &["password"])
+            .ok_or_else(|| "ss: shadow-tls missing password".to_string())?;
+        // mihomo defaults shadow-tls to protocol version 3 when unset.
+        let version = get_u16(opts, &["version"]).map(|v| v as u8).unwrap_or(3);
+        let fingerprint = get_str(map, &["client-fingerprint", "client_fingerprint"])
+            .and_then(|s| normalize_utls_fingerprint(&s));
+        Some(ShadowTlsOpts {
+            host,
+            password: tls_password,
+            version,
+            fingerprint,
+        })
+    } else {
+        None
+    };
+    let plugin_opts = if shadow_tls.is_some() {
+        None
+    } else {
+        get_map(map, &["plugin-opts", "plugin_opts"]).map(|m| build_plugin_opts(plugin.as_deref(), m))
+    };
 
     Ok((
         None,
@@ -151,6 +172,7 @@ fn parse_ss(
             password,
             plugin,
             plugin_opts,
+            shadow_tls,
         },
     ))
 }
@@ -1073,7 +1095,7 @@ proxies:
     // plugin_opts string sing-box can't use. Other nodes in the same
     // subscription must still parse normally.
     #[test]
-    fn skips_shadow_tls_plugin_node() {
+    fn parses_shadow_tls_plugin_into_dedicated_field() {
         let yaml = r#"
 - name: "SS-ShadowTLS"
   type: ss
@@ -1086,23 +1108,54 @@ proxies:
     host: www.bing.com
     password: tls-pass
     version: 3
-- name: "SS-Plain"
-  type: ss
-  server: b.com
-  port: 2
-  cipher: aes-256-gcm
-  password: p
+  client-fingerprint: chrome
 "#;
         let result = parse_clash_yaml(yaml).unwrap();
         assert_eq!(result.nodes.len(), 1);
-        assert_eq!(result.nodes[0].name, "SS-Plain");
-        assert_eq!(result.skipped.len(), 1);
-        assert_eq!(result.skipped[0].name.as_deref(), Some("SS-ShadowTLS"));
-        assert!(
-            result.skipped[0].reason.contains("shadow-tls"),
-            "reason: {}",
-            result.skipped[0].reason
-        );
+        assert!(result.skipped.is_empty());
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks {
+                plugin,
+                plugin_opts,
+                shadow_tls,
+                ..
+            } => {
+                // shadow-tls has no SIP003 arg-string form, so plugin/plugin_opts
+                // must stay unset — it's carried in the dedicated field instead.
+                assert_eq!(plugin.as_deref(), Some("shadow-tls"));
+                assert!(plugin_opts.is_none());
+                let st = shadow_tls.as_ref().expect("shadow_tls opts");
+                assert_eq!(st.host, "www.bing.com");
+                assert_eq!(st.password, "tls-pass");
+                assert_eq!(st.version, 3);
+                assert_eq!(st.fingerprint.as_deref(), Some("chrome"));
+            }
+            _ => panic!("expected ss config"),
+        }
+    }
+
+    // mihomo defaults shadow-tls to protocol version 3 when the field is absent.
+    #[test]
+    fn defaults_shadow_tls_version_to_3() {
+        let yaml = r#"
+- name: "SS-ShadowTLS"
+  type: ss
+  server: a.com
+  port: 1
+  cipher: aes-256-gcm
+  password: p
+  plugin: shadow-tls
+  plugin-opts:
+    host: www.bing.com
+    password: tls-pass
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        match &result.nodes[0].config {
+            ProtocolConfig::Shadowsocks { shadow_tls, .. } => {
+                assert_eq!(shadow_tls.as_ref().unwrap().version, 3);
+            }
+            _ => panic!("expected ss config"),
+        }
     }
 
     // Clash models v2ray-plugin's `mux` as a bool; sing-box parses it with
