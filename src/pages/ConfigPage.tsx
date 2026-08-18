@@ -6,6 +6,7 @@ import {
   getSettings,
   getSubscription,
   listSubscriptions,
+  listSubscriptionUrls,
   refreshSubscription,
   removeSubscription,
   setMixMode,
@@ -19,7 +20,38 @@ import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
-import type { SubscriptionTraffic, SubscriptionView } from "../types";
+import type {
+  SubscriptionTraffic,
+  SubscriptionUrlEntry,
+  SubscriptionView,
+} from "../types";
+
+const REFRESH_ALL_CONCURRENCY = 4;
+
+async function settleWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  task: (value: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = new Array<PromiseSettledResult<R>>(values.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      try {
+        results[index] = {
+          status: "fulfilled",
+          value: await task(values[index] as T),
+        };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+  const workerCount = Math.min(Math.max(1, concurrency), values.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
 
 function formatTime(ts: number) {
   if (!ts) return "—";
@@ -201,6 +233,7 @@ export function ConfigPage() {
   const [editInitial, setEditInitial] = useState<ConfigFormValues | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [existingUrls, setExistingUrls] = useState<SubscriptionUrlEntry[]>([]);
 
   const [actionId, setActionId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -227,6 +260,23 @@ export function ConfigPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    let cancelled = false;
+    setExistingUrls([]);
+    void listSubscriptionUrls()
+      .then((entries) => {
+        if (cancelled) return;
+        setExistingUrls(entries);
+      })
+      .catch(() => {
+        if (!cancelled) setExistingUrls([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [modalOpen, items.length]);
 
   // One-click subscribe deep link → open add modal with URL/name filled.
   useEffect(() => {
@@ -377,14 +427,16 @@ export function ConfigPage() {
     }
   }
 
-  /** Concurrently refresh every subscription (URL fetch / file re-read). */
+  /** Refresh subscriptions in a bounded pool to avoid request and parse bursts. */
   async function onRefreshAll() {
     if (items.length === 0 || refreshingAll) return;
     setRefreshingAll(true);
     setListError(null);
     try {
-      const results = await Promise.allSettled(
-        items.map((item) => refreshSubscription(item.id)),
+      const results = await settleWithConcurrency(
+        items,
+        REFRESH_ALL_CONCURRENCY,
+        (item) => refreshSubscription(item.id),
       );
       const failed: string[] = [];
       results.forEach((r, i) => {
@@ -501,11 +553,15 @@ export function ConfigPage() {
             >
               <div className="sub-card-main">
                 <div className="sub-card-top">
+                  <span
+                    className="node-dot"
+                    title={item.enabled ? t("common.enabled") : t("common.disabled")}
+                    aria-label={item.enabled ? t("common.enabled") : t("common.disabled")}
+                  >
+                    {item.enabled ? "●" : "○"}
+                  </span>
                   <h3 title={item.name}>{item.name}</h3>
                   <div className="sub-card-top-right">
-                    {item.enabled && (
-                      <span className="pill active-pill">{t("config.inUse")}</span>
-                    )}
                     <div
                       className="sub-menu"
                       data-sub-menu
@@ -615,6 +671,9 @@ export function ConfigPage() {
         error={importError}
         isEdit={!!editId}
         initial={editInitial}
+        existingUrls={existingUrls
+          .filter((item) => item.id !== editId)
+          .map((item) => item.url)}
         onClose={() => {
           if (importing) return;
           setModalOpen(false);

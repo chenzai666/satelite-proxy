@@ -4,7 +4,7 @@ use crate::domain::RuleSet;
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -13,8 +13,34 @@ use tauri::{AppHandle, Emitter, Manager};
 const EVENT: &str = "remote-rule-set-status";
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const TICK_SECS: u64 = 60;
+const AUTO_UPDATE_CONCURRENCY: usize = 3;
 
 static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+struct ActiveDownload {
+    id: String,
+}
+
+impl ActiveDownload {
+    fn acquire(id: &str) -> Result<Self, String> {
+        let mut active = ACTIVE
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "remote rule download lock poisoned".to_string())?;
+        if !active.insert(id.to_string()) {
+            return Err("该远程规则集正在下载".into());
+        }
+        Ok(Self { id: id.into() })
+    }
+}
+
+impl Drop for ActiveDownload {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+            active.remove(&self.id);
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum RuleSetFileFormat {
@@ -66,22 +92,45 @@ fn emit(app: &AppHandle, id: &str, status: &str, error: Option<String>) {
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
+        match cleanup_orphaned_cache(&app).await {
+            Ok(removed) if removed > 0 => crate::app_log::info(
+                "remote_rules",
+                format!("removed {removed} orphaned cache file(s)"),
+            ),
+            Err(error) => crate::app_log::warn(
+                "remote_rules",
+                format!("orphaned cache cleanup failed: {error}"),
+            ),
+            _ => {}
+        }
         loop {
             let due = due_ids(&app);
             let mut changed = false;
             let mut cleanup_after_apply = Vec::new();
-            for id in due {
-                match refresh_download(app.clone(), id.clone()).await {
-                    Ok(downloaded) => {
+            let mut pending = due.into_iter();
+            let mut downloads = tokio::task::JoinSet::new();
+            for _ in 0..AUTO_UPDATE_CONCURRENCY {
+                if let Some(id) = pending.next() {
+                    spawn_auto_download(&mut downloads, app.clone(), id);
+                }
+            }
+            while let Some(joined) = downloads.join_next().await {
+                match joined {
+                    Ok((_, Ok(downloaded))) => {
                         changed = true;
                         cleanup_after_apply.extend(downloaded.cleanup_after_apply);
                     }
-                    Err(error) => {
-                        crate::app_log::warn(
-                            "remote_rules",
-                            format!("refresh {id} failed: {error}"),
-                        );
-                    }
+                    Ok((id, Err(error))) => crate::app_log::warn(
+                        "remote_rules",
+                        format!("refresh {id} failed: {error}"),
+                    ),
+                    Err(error) => crate::app_log::warn(
+                        "remote_rules",
+                        format!("refresh task failed: {error}"),
+                    ),
+                }
+                if let Some(id) = pending.next() {
+                    spawn_auto_download(&mut downloads, app.clone(), id);
                 }
             }
             // Apply the entire due set with one restart instead of restarting
@@ -91,6 +140,71 @@ pub fn spawn(app: AppHandle) {
             }
             tokio::time::sleep(Duration::from_secs(TICK_SECS)).await;
         }
+    });
+}
+
+async fn cleanup_orphaned_cache(app: &AppHandle) -> Result<usize, String> {
+    let cache_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("remote-rule-sets");
+    let referenced = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "app state unavailable".to_string())?
+        .with_store(|store| {
+            Ok(store
+                .rule_sets
+                .iter()
+                .filter_map(|set| set.remote.as_ref()?.local_path.as_ref())
+                .map(PathBuf::from)
+                .collect::<HashSet<_>>())
+        })
+        .map_err(|error| error.to_string())?;
+
+    tauri::async_runtime::spawn_blocking(move || cleanup_cache_dir(&cache_dir, &referenced))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn cleanup_cache_dir(cache_dir: &Path, referenced: &HashSet<PathBuf>) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(cache_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_rule_cache = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| matches!(extension, "json" | "srs"));
+        if !is_rule_cache || referenced.contains(&path) || !path.is_file() {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(error) => crate::app_log::warn(
+                "remote_rules",
+                format!(
+                    "failed to remove orphaned cache {}: {error}",
+                    path.display()
+                ),
+            ),
+        }
+    }
+    Ok(removed)
+}
+
+fn spawn_auto_download(
+    downloads: &mut tokio::task::JoinSet<(String, Result<DownloadedRule, String>)>,
+    app: AppHandle,
+    id: String,
+) {
+    downloads.spawn(async move {
+        let result = refresh_download(app, id.clone()).await;
+        (id, result)
     });
 }
 
@@ -132,21 +246,8 @@ struct DownloadedRule {
 }
 
 async fn refresh_download(app: AppHandle, id: String) -> Result<DownloadedRule, String> {
-    {
-        let mut active = ACTIVE
-            .get_or_init(|| Mutex::new(HashSet::new()))
-            .lock()
-            .map_err(|_| "remote rule download lock poisoned".to_string())?;
-        if !active.insert(id.clone()) {
-            return Err("该远程规则集正在下载".into());
-        }
-    }
-
-    let result = refresh_inner(&app, &id).await;
-    if let Ok(mut active) = ACTIVE.get_or_init(|| Mutex::new(HashSet::new())).lock() {
-        active.remove(&id);
-    }
-    result
+    let _active = ActiveDownload::acquire(&id)?;
+    refresh_inner(&app, &id).await
 }
 
 async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, String> {
@@ -311,14 +412,8 @@ async fn download(url: &str, proxy_port: Option<u16>) -> Result<Vec<u8>, String>
         .map_err(|error| error.to_string())?
         .error_for_status()
         .map_err(|error| error.to_string())?;
-    if response.content_length().unwrap_or(0) > MAX_BYTES as u64 {
-        return Err("远程规则集超过 32 MB".into());
-    }
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    if bytes.len() > MAX_BYTES {
-        return Err("远程规则集超过 32 MB".into());
-    }
-    Ok(bytes.to_vec())
+    crate::services::http_body::read_limited(response, MAX_BYTES, "远程规则集超过 32 MB".into())
+        .await
 }
 
 fn validate_source(bytes: &[u8]) -> Result<u32, String> {
@@ -399,6 +494,49 @@ fn fail<T>(app: &AppHandle, id: &str, error: String) -> Result<T, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removes_only_unreferenced_rule_cache_files() {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "satelite-rule-cache-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let referenced_path = cache_dir.join("referenced.json");
+        let orphaned_path = cache_dir.join("orphaned.srs");
+        let unrelated_path = cache_dir.join("keep.txt");
+        std::fs::write(&referenced_path, b"{}").unwrap();
+        std::fs::write(&orphaned_path, b"SRS").unwrap();
+        std::fs::write(&unrelated_path, b"keep").unwrap();
+
+        let referenced = HashSet::from([referenced_path.clone()]);
+        assert_eq!(cleanup_cache_dir(&cache_dir, &referenced), Ok(1));
+        assert!(referenced_path.exists());
+        assert!(!orphaned_path.exists());
+        assert!(unrelated_path.exists());
+
+        std::fs::remove_dir_all(cache_dir).unwrap();
+    }
+
+    #[test]
+    fn active_download_guard_releases_id_when_dropped() {
+        let id = format!(
+            "remote-download-guard-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let guard = ActiveDownload::acquire(&id).expect("first download acquires id");
+        assert!(ActiveDownload::acquire(&id).is_err());
+        drop(guard);
+        assert!(ActiveDownload::acquire(&id).is_ok());
+    }
 
     #[test]
     fn accepts_sing_box_source_json() {

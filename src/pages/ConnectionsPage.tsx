@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { getProxyStatus, listConnections } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getProxyStatus, listConnectionChanges } from "../api";
 import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
+import { applyConnectionChanges } from "../connectionChanges";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -34,15 +35,17 @@ export function ConnectionsPage({ embedded = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<TrafficScope>("all");
+  const revisionRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [status, list] = await Promise.all([
+      const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnections(),
+        listConnectionChanges(revisionRef.current),
       ]);
       setRunning(!!status?.running);
-      setRows(list);
+      revisionRef.current = batch.revision;
+      if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -54,9 +57,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   }, [reload]);
 
   // Live list: 1.5s while visible only (history filled by backend journal).
-  useVisibleInterval(() => {
-    void reload();
-  }, 1500);
+  useVisibleInterval(() => reload(), 1500);
 
   const q = query.trim().toLowerCase();
   const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);

@@ -17,6 +17,9 @@ pub enum AppError {
     #[error("no proxies found in subscription")]
     NoProxies,
 
+    #[error("订阅包含的代理条目超过上限 {max}")]
+    SubscriptionTooLarge { max: usize },
+
     #[error("fetch failed: {0}")]
     Fetch(String),
 

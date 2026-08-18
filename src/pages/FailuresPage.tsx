@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   clearRequestHistory,
   createRuleSet,
@@ -66,16 +66,51 @@ export function FailuresPage({ embedded = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [scope, setScope] = useState<TrafficScope>("all");
+  const cursorRef = useRef(0);
+  const generationRef = useRef(0);
+  const fullReloadGenerationRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
+    const generation = ++generationRef.current;
+    fullReloadGenerationRef.current = generation;
     try {
-      const list = await listRequestFailures(query.trim() || null, 800);
-      setRows(list);
+      const batch = await listRequestFailures(query.trim() || null, 800);
+      if (generation !== generationRef.current) return;
+      cursorRef.current = batch.cursor;
+      setRows(batch.entries);
       setError(null);
     } catch (e) {
+      if (generation !== generationRef.current) return;
       setError(typeof e === "string" ? e : String(e));
     } finally {
-      setLoading(false);
+      if (generation === generationRef.current) setLoading(false);
+      if (fullReloadGenerationRef.current === generation) {
+        fullReloadGenerationRef.current = null;
+      }
+    }
+  }, [query]);
+
+  const loadIncremental = useCallback(async () => {
+    const generation = generationRef.current;
+    if (fullReloadGenerationRef.current === generation) return;
+    try {
+      const batch = await listRequestFailures(
+        query.trim() || null,
+        800,
+        cursorRef.current,
+      );
+      if (generation !== generationRef.current) return;
+      cursorRef.current = batch.cursor;
+      if (batch.entries.length > 0) {
+        setRows((current) => [
+          ...batch.entries.slice().reverse(),
+          ...current,
+        ].slice(0, 800));
+      }
+      setError(null);
+    } catch (e) {
+      if (generation !== generationRef.current) return;
+      setError(typeof e === "string" ? e : String(e));
     }
   }, [query]);
 
@@ -83,14 +118,14 @@ export function FailuresPage({ embedded = false }: Props) {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 2500);
+  useVisibleInterval(() => loadIncremental(), 2500);
 
   async function onClear() {
     if (!confirm(t("req.clearConfirm"))) return;
     try {
       await clearRequestHistory();
+      generationRef.current += 1;
+      cursorRef.current = 0;
       setRows([]);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -335,8 +370,8 @@ export function FailuresPage({ embedded = false }: Props) {
   );
 
   const modal = addOpen && (
-    <div className="modal-backdrop" onClick={() => !addBusy && setAddOpen(false)}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop">
+      <div className="modal">
         <header className="modal-header">
           <h2>{t("fails.addRuleTitle")}</h2>
           <button

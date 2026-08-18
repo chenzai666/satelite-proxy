@@ -8,13 +8,47 @@ import {
   type ReactNode,
 } from "react";
 import { getSettings, updateSettings } from "../api";
-import type { ThemeId } from "../types";
+import type { HeroStyle, ThemeId } from "../types";
 import { applyAccentToDom, resolveAccent } from "./accents";
+
+const THEME_KEY = "satelite.theme";
+const ACCENT_KEY = "satelite.accent";
 
 export function normalizeTheme(raw: string | null | undefined): ThemeId {
   const t = (raw ?? "").trim().toLowerCase();
   if (t === "aerospace") return "aerospace";
   return "day";
+}
+
+export function readStoredTheme(): ThemeId {
+  try {
+    return normalizeTheme(localStorage.getItem(THEME_KEY));
+  } catch {
+    return "day";
+  }
+}
+
+export function readStoredAccent(): string {
+  try {
+    return resolveAccent(localStorage.getItem(ACCENT_KEY)).id;
+  } catch {
+    return "green";
+  }
+}
+
+function persistThemePref(theme: ThemeId, accent: string) {
+  try {
+    localStorage.setItem(THEME_KEY, theme);
+    localStorage.setItem(ACCENT_KEY, accent);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function normalizeHeroStyle(raw: string | null | undefined): HeroStyle {
+  const t = (raw ?? "").trim().toLowerCase();
+  if (t === "classic") return "classic";
+  return "particle";
 }
 
 export function applyThemeToDom(theme: ThemeId, accent: string) {
@@ -23,6 +57,7 @@ export function applyThemeToDom(theme: ThemeId, accent: string) {
   document.documentElement.style.colorScheme =
     theme === "day" ? "light" : "dark";
   applyAccentToDom(accent, theme);
+  persistThemePref(theme, accent);
 }
 
 interface ThemeContextValue {
@@ -30,14 +65,17 @@ interface ThemeContextValue {
   setTheme: (next: ThemeId) => Promise<void>;
   accent: string;
   setAccent: (next: string) => Promise<void>;
+  heroStyle: HeroStyle;
+  setHeroStyle: (next: HeroStyle) => Promise<void>;
   ready: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeId>("day");
-  const [accent, setAccentState] = useState<string>("green");
+  const [theme, setThemeState] = useState<ThemeId>(readStoredTheme);
+  const [accent, setAccentState] = useState<string>(readStoredAccent);
+  const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -47,12 +85,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         const nextTheme = normalizeTheme(s.theme);
         const nextAccent = resolveAccent(s.accent).id;
+        const nextHero = normalizeHeroStyle(s.hero_style);
         setThemeState(nextTheme);
         setAccentState(nextAccent);
+        setHeroStyleState(nextHero);
         applyThemeToDom(nextTheme, nextAccent);
       })
       .catch(() => {
-        applyThemeToDom("day", "green");
+        applyThemeToDom(readStoredTheme(), readStoredAccent());
       })
       .finally(() => {
         if (!cancelled) setReady(true);
@@ -89,9 +129,27 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [theme],
   );
 
+  const setHeroStyle = useCallback(async (next: HeroStyle) => {
+    const style = normalizeHeroStyle(next);
+    setHeroStyleState(style);
+    try {
+      await updateSettings({ heroStyle: style });
+    } catch {
+      /* UI already switched */
+    }
+  }, []);
+
   const value = useMemo(
-    () => ({ theme, setTheme, accent, setAccent, ready }),
-    [theme, setTheme, accent, setAccent, ready],
+    () => ({
+      theme,
+      setTheme,
+      accent,
+      setAccent,
+      heroStyle,
+      setHeroStyle,
+      ready,
+    }),
+    [theme, setTheme, accent, setAccent, heroStyle, setHeroStyle, ready],
   );
 
   return (

@@ -6,7 +6,7 @@ use crate::domain::{AppSettings, ProxyNode};
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 #[derive(Debug, Serialize)]
 pub struct GenerateConfigResult {
@@ -26,6 +26,13 @@ pub struct ListedNode {
     pub node: ProxyNode,
     pub subscription_id: String,
     pub subscription_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NodePage {
+    pub nodes: Vec<ListedNode>,
+    pub total: usize,
+    pub offset: usize,
 }
 
 #[tauri::command]
@@ -52,6 +59,7 @@ pub fn update_settings(
     locale: Option<String>,
     theme: Option<String>,
     accent: Option<String>,
+    hero_style: Option<String>,
     tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
@@ -130,6 +138,12 @@ pub fn update_settings(
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
                 ) {
                     store.settings.accent = ac;
+                }
+            }
+            if let Some(hs) = hero_style {
+                let hs = hs.trim().to_ascii_lowercase();
+                if matches!(hs.as_str(), "particle" | "classic") {
+                    store.settings.hero_style = hs;
                 }
             }
             if let Some(raw) = tray_icon {
@@ -224,42 +238,22 @@ pub fn update_settings(
 }
 
 #[tauri::command]
-pub fn set_current_node(
-    state: State<'_, AppState>,
-    node_id: String,
-) -> Result<AppSettings, String> {
-    let (settings, close_conns) = state
-        .with_store_mut(|store| {
-            if store.find_node(&node_id).is_none() {
-                return Err(crate::error::AppError::NotFound(node_id.clone()));
-            }
-            store.settings.current_node_id = Some(node_id.clone());
-            Ok((
-                store.settings.clone(),
-                store.settings.close_connections_on_switch,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-
-    // Hot-switch selector when core is running (no restart).
-    if state.is_core_running() {
-        if let Ok(tag) = state.with_store(|store| {
-            store
-                .find_node(&node_id)
-                .map(crate::config::outbound_tag)
-                .ok_or_else(|| crate::error::AppError::NotFound(node_id.clone()))
-        }) {
-            let runtime = state.lock_runtime();
-            let _ = runtime.select_node_live(&tag);
-            if close_conns {
-                if let Some(api) = runtime.clash_api_clone() {
-                    let _ = api.close_all_connections();
-                }
-            }
+pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSettings, String> {
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        let (settings, was_kernel, _) = state
+            .select_current_node_serialized(&node_id, true, true)
+            .map_err(|e| e.to_string())?;
+        if was_kernel {
+            crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
         }
-    }
-
-    Ok(settings)
+        Ok(settings)
+    })
+    .await
+    .map_err(|e| format!("select node task: {e}"))?
 }
 
 #[tauri::command]
@@ -296,8 +290,121 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 }
 
 #[tauri::command]
-pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
+pub fn list_nodes_page(
+    state: State<'_, AppState>,
+    query: Option<String>,
+    sort_mode: Option<String>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> Result<NodePage, String> {
+    state
+        .with_store(|store| {
+            let names: HashMap<&str, &str> = store
+                .subscriptions
+                .iter()
+                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .collect();
+            let enabled: std::collections::HashSet<&str> = store
+                .subscriptions
+                .iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.id.as_str())
+                .collect();
+            let query = query.unwrap_or_default().trim().to_lowercase();
+            let mut nodes: Vec<ListedNode> = store
+                .nodes
+                .iter()
+                .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| {
+                    query.is_empty()
+                        || n.node.name.to_lowercase().contains(&query)
+                        || n.node.server.to_lowercase().contains(&query)
+                        || n.node.protocol.as_str().to_lowercase().contains(&query)
+                        || names
+                            .get(n.subscription_id.as_str())
+                            .is_some_and(|name| name.to_lowercase().contains(&query))
+                })
+                .map(|n| ListedNode {
+                    node: n.node.clone(),
+                    subscription_id: n.subscription_id.clone(),
+                    subscription_name: names
+                        .get(n.subscription_id.as_str())
+                        .copied()
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect();
+            match sort_mode.as_deref() {
+                Some("name") => nodes.sort_by_cached_key(|n| n.node.name.to_lowercase()),
+                Some("latency") => nodes.sort_by(|a, b| {
+                    let score = |n: &ListedNode| match n.node.latency_ms {
+                        Some(ms) => (0u8, ms as u64),
+                        None if n.node.latency_at.is_some() => (1, 0),
+                        None => (2, 0),
+                    };
+                    score(a)
+                        .cmp(&score(b))
+                        .then_with(|| a.node.name.to_lowercase().cmp(&b.node.name.to_lowercase()))
+                }),
+                _ => {}
+            }
+            let total = nodes.len();
+            let offset = offset.unwrap_or(0).min(total);
+            let limit = limit.unwrap_or(200).clamp(1, 500);
+            let nodes = nodes.into_iter().skip(offset).take(limit).collect();
+            Ok(NodePage {
+                nodes,
+                total,
+                offset,
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_node_ids(
+    state: State<'_, AppState>,
+    query: Option<String>,
+) -> Result<Vec<String>, String> {
+    state
+        .with_store(|store| {
+            let enabled: std::collections::HashSet<&str> = store
+                .subscriptions
+                .iter()
+                .filter(|s| s.enabled)
+                .map(|s| s.id.as_str())
+                .collect();
+            let names: HashMap<&str, &str> = store
+                .subscriptions
+                .iter()
+                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .collect();
+            let query = query.unwrap_or_default().trim().to_lowercase();
+            Ok(store
+                .nodes
+                .iter()
+                .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| {
+                    query.is_empty()
+                        || n.node.name.to_lowercase().contains(&query)
+                        || n.node.server.to_lowercase().contains(&query)
+                        || n.node.protocol.as_str().to_lowercase().contains(&query)
+                        || names
+                            .get(n.subscription_id.as_str())
+                            .is_some_and(|name| name.to_lowercase().contains(&query))
+                })
+                .map(|n| n.node.id.clone())
+                .collect())
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn generate_singbox_config(
+    state: State<'_, AppState>,
+) -> Result<GenerateConfigResult, String> {
     let secret = generate_api_secret();
+    let app_data_dir = state.app_data_dir.clone();
 
     let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
@@ -311,29 +418,42 @@ pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateCon
         })
         .map_err(|e| e.to_string())?;
 
-    let built = build_singbox_config(
-        &nodes,
-        &BuildOptions {
+    let worker_secret = secret.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: settings.mixed_port,
+                api_port: settings.api_port,
+                api_secret: worker_secret,
+                current_node_id: settings.current_node_id.clone(),
+                log_level: "info".into(),
+                rules,
+                rule_sets: remote_rule_sets,
+                tun_enabled: settings.tun_enabled,
+                tun_stack: settings.tun_stack.clone(),
+                dns,
+                outbound_mode: settings.outbound_mode,
+                route_final: settings.route_final.clone(),
+                auto_select: settings.auto_select,
+                probe_url: settings.probe_url.clone(),
+                find_process: settings.find_process,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
+        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+        Ok::<_, String>(GenerateConfigResult {
+            path: path.display().to_string(),
+            selected_tag: built.selected_tag,
+            outbound_count: built.outbound_tags.len(),
             mixed_port: settings.mixed_port,
             api_port: settings.api_port,
-            api_secret: secret.clone(),
-            current_node_id: settings.current_node_id.clone(),
-            log_level: "info".into(),
-            rules,
-            rule_sets: remote_rule_sets,
-            tun_enabled: settings.tun_enabled,
-            tun_stack: settings.tun_stack.clone(),
-            dns,
-            outbound_mode: settings.outbound_mode,
-            route_final: settings.route_final.clone(),
-            auto_select: settings.auto_select,
-            probe_url: settings.probe_url.clone(),
-            find_process: settings.find_process,
-        },
-    )
-    .map_err(|e| e.to_string())?;
-
-    let path = write_active_config(&state.app_data_dir, &built).map_err(|e| e.to_string())?;
+            preview,
+        })
+    })
+    .await
+    .map_err(|e| format!("generate config task: {e}"))??;
 
     // persist secret + ensure current node set if missing
     state
@@ -348,16 +468,7 @@ pub fn generate_singbox_config(state: State<'_, AppState>) -> Result<GenerateCon
         })
         .map_err(|e| e.to_string())?;
 
-    let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-
-    Ok(GenerateConfigResult {
-        path: path.display().to_string(),
-        selected_tag: built.selected_tag,
-        outbound_count: built.outbound_tags.len(),
-        mixed_port: settings.mixed_port,
-        api_port: settings.api_port,
-        preview,
-    })
+    Ok(result)
 }
 
 #[tauri::command]
@@ -371,7 +482,9 @@ pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<Strin
 }
 
 #[tauri::command]
-pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConfigResult, String> {
+pub async fn preview_singbox_config(
+    state: State<'_, AppState>,
+) -> Result<GenerateConfigResult, String> {
     let (nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
@@ -389,37 +502,39 @@ pub fn preview_singbox_config(state: State<'_, AppState>) -> Result<GenerateConf
         .clone()
         .unwrap_or_else(generate_api_secret);
 
-    let built = build_singbox_config(
-        &nodes,
-        &BuildOptions {
+    let path = active_config_path(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: settings.mixed_port,
+                api_port: settings.api_port,
+                api_secret: secret,
+                current_node_id: settings.current_node_id.clone(),
+                log_level: "info".into(),
+                rules,
+                rule_sets: remote_rule_sets,
+                tun_enabled: settings.tun_enabled,
+                tun_stack: settings.tun_stack.clone(),
+                dns,
+                outbound_mode: settings.outbound_mode,
+                route_final: settings.route_final.clone(),
+                auto_select: settings.auto_select,
+                probe_url: settings.probe_url.clone(),
+                find_process: settings.find_process,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+        Ok::<_, String>(GenerateConfigResult {
+            path: path.display().to_string(),
+            selected_tag: built.selected_tag,
+            outbound_count: built.outbound_tags.len(),
             mixed_port: settings.mixed_port,
             api_port: settings.api_port,
-            api_secret: secret,
-            current_node_id: settings.current_node_id.clone(),
-            log_level: "info".into(),
-            rules,
-            rule_sets: remote_rule_sets,
-            tun_enabled: settings.tun_enabled,
-            tun_stack: settings.tun_stack.clone(),
-            dns,
-            outbound_mode: settings.outbound_mode,
-            route_final: settings.route_final.clone(),
-            auto_select: settings.auto_select,
-            probe_url: settings.probe_url.clone(),
-            find_process: settings.find_process,
-        },
-    )
-    .map_err(|e| e.to_string())?;
-
-    let path = active_config_path(&state.app_data_dir);
-    let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-
-    Ok(GenerateConfigResult {
-        path: path.display().to_string(),
-        selected_tag: built.selected_tag,
-        outbound_count: built.outbound_tags.len(),
-        mixed_port: settings.mixed_port,
-        api_port: settings.api_port,
-        preview,
+            preview,
+        })
     })
+    .await
+    .map_err(|e| format!("preview config task: {e}"))?
 }

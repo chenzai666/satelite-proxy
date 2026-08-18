@@ -103,6 +103,11 @@ impl ClashApi {
         self.active.load(Ordering::Acquire)
     }
 
+    /// Clones from one core session share the same activity token.
+    pub fn same_session(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.active, &other.active)
+    }
+
     /// Fast readiness probe (short timeout). Used while waiting for core start.
     pub fn health_ok(&self) -> bool {
         shared_agent()
@@ -347,7 +352,7 @@ struct RawMetadata {
     process: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ConnectionInfo {
     pub id: String,
     /// e.g. www.google.com:443 or 1.2.3.4:443
@@ -464,6 +469,9 @@ pub struct TrafficTotals {
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestRecord {
     pub id: String,
+    /// Monotonic sequence assigned whenever the request becomes closed/history-visible.
+    #[serde(default)]
+    pub history_seq: u64,
     pub destination: String,
     pub host: String,
     pub network: String,
@@ -491,6 +499,7 @@ impl RequestRecord {
     pub fn from_connection(c: &ConnectionInfo, now_ms: i64) -> Self {
         Self {
             id: c.id.clone(),
+            history_seq: 0,
             destination: c.destination.clone(),
             host: c.host.clone(),
             network: c.network.clone(),

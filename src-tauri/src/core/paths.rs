@@ -192,6 +192,23 @@ pub fn resolve_core_bin(
     (None, CoreSource::Missing)
 }
 
+/// Inspect the available core without copying or executing anything.
+/// UI status paths must use this instead of `resolve_core_bin`, which stages
+/// a bundled binary and may perform additional platform-specific filesystem work.
+pub fn inspect_core_bin(
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+) -> (Option<PathBuf>, CoreSource) {
+    let downloaded = core_bin_path(app_data_dir);
+    if downloaded.is_file() {
+        return (Some(downloaded), CoreSource::Downloaded);
+    }
+    match find_bundled_core(resource_dir) {
+        Some(bundled) => (Some(bundled), CoreSource::Bundled),
+        None => (None, CoreSource::Missing),
+    }
+}
+
 pub fn installed_core_version(app_data_dir: &Path) -> Option<String> {
     let vf = version_file_path(app_data_dir);
     if let Ok(s) = std::fs::read_to_string(vf) {
@@ -233,17 +250,12 @@ pub fn bundled_core_version(resource_dir: Option<&Path>) -> Option<String> {
 
 /// Resolve version for whatever core is active (file metadata only; no `sing-box version`).
 pub fn active_core_version(app_data_dir: &Path, resource_dir: Option<&Path>) -> Option<String> {
-    let (_path, source) = resolve_core_bin(app_data_dir, resource_dir);
+    let (_path, source) = inspect_core_bin(app_data_dir, resource_dir);
     match source {
         CoreSource::Downloaded => installed_core_version(app_data_dir),
         CoreSource::Bundled => bundled_core_version(resource_dir),
         CoreSource::Missing => None,
     }
-}
-
-pub fn read_core_version_via_binary(app_data_dir: &Path) -> AppResult<String> {
-    let bin = core_bin_path(app_data_dir);
-    read_version_of_binary(&bin)
 }
 
 pub fn read_version_of_binary(bin: &Path) -> AppResult<String> {
@@ -298,4 +310,39 @@ pub fn write_version_file(app_data_dir: &Path, version: &str) -> AppResult<()> {
     std::fs::create_dir_all(&dir)?;
     std::fs::write(version_file_path(app_data_dir), normalize_version(version))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn inspection_never_stages_bundled_core() {
+        let root = std::env::temp_dir().join(format!(
+            "satelite-core-inspect-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let app_data = root.join("app-data");
+        let resources = root.join("resources-root");
+        let platform = detect_platform().expect("supported test platform");
+        let bundled_dir = resources.join("bin").join(platform.asset_suffix);
+        std::fs::create_dir_all(&bundled_dir).expect("create fake resource directory");
+        std::fs::write(bundled_dir.join(binary_name()), b"fake-core")
+            .expect("write fake bundled core");
+        std::fs::write(bundled_dir.join("version.txt"), b"v-test").expect("write fake version");
+
+        let (path, source) = inspect_core_bin(&app_data, Some(&resources));
+        assert!(path.is_some());
+        assert_eq!(source, CoreSource::Bundled);
+        assert!(!core_bin_path(&app_data).exists());
+
+        let _ = active_core_version(&app_data, Some(&resources));
+        assert!(!core_bin_path(&app_data).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

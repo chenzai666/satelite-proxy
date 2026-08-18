@@ -4,6 +4,7 @@ import { GlassButton } from "./GlassButton";
 import { GlassSeg } from "./GlassSeg";
 import { GlassSwitchControl } from "./GlassSwitchControl";
 import type { AddSourceKind } from "../types";
+import { canonicalSubscriptionUrl } from "../subscriptionUrl";
 
 export interface ConfigFormValues {
   name: string;
@@ -39,6 +40,8 @@ interface Props {
   isEdit?: boolean;
   title?: string;
   submitLabel?: string;
+  /** Raw URLs belonging to other profiles, used for duplicate feedback. */
+  existingUrls?: string[];
   onClose: () => void;
   onSubmit: (payload: ConfigFormValues) => void;
 }
@@ -51,6 +54,7 @@ export function AddConfigModal({
   isEdit = false,
   title,
   submitLabel,
+  existingUrls = [],
   onClose,
   onSubmit,
 }: Props) {
@@ -136,15 +140,23 @@ export function AddConfigModal({
     !busy &&
     ((kind === "url" && url.trim().length > 0) ||
       (kind === "file" && path.trim().length > 0));
+  const normalizedUrl = url.trim();
+  const canonicalUrl = canonicalSubscriptionUrl(normalizedUrl);
+  const duplicateUrl =
+    kind === "url" &&
+    normalizedUrl.length > 0 &&
+    existingUrls.some(
+      (existingUrl) =>
+        canonicalUrl != null && canonicalSubscriptionUrl(existingUrl) === canonicalUrl,
+    );
 
   return (
-    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+    <div className="modal-backdrop">
       <div
         className="modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-modal-title"
-        onClick={(e) => e.stopPropagation()}
       >
         <header className="modal-header">
           <h2 id="config-modal-title">
@@ -203,6 +215,11 @@ export function AddConfigModal({
                   disabled={busy}
                   autoFocus
                 />
+                {duplicateUrl && (
+                  <span className="field-warning" role="status">
+                    订阅已存在，保存会覆盖已有配置
+                  </span>
+                )}
               </label>
               <div className="via-proxy-row">
                 <div>

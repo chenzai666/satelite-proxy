@@ -16,7 +16,7 @@ use crate::domain::{ProxyNode, Rule, RuleSetStrategy, RuleTarget};
 use crate::services::latency::probe_nodes;
 use crate::state::AppState;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -166,7 +166,16 @@ impl Controller {
 
     fn clear_eject_if_expired(&mut self) {
         let now = Instant::now();
-        self.ejected.retain(|_, until| *until > now);
+        let expired: Vec<_> = self
+            .ejected
+            .iter()
+            .filter(|(_, until)| **until <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            self.ejected.remove(&id);
+            self.eject_counts.remove(&id);
+        }
     }
 
     fn ejected_ids(&self) -> Vec<String> {
@@ -505,32 +514,17 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
         (outbound_tag(node), node.name.clone())
     };
 
-    let close_conns = state
-        .with_store(|s| Ok(s.settings.close_connections_on_switch))
-        .unwrap_or(true);
-
-    {
-        let runtime = state.lock_runtime();
-        if let Err(e) = runtime.select_node_live(&tag) {
+    match state.select_current_node_serialized(best_id, false, hard_fail) {
+        Ok((_, _, true)) => {}
+        Ok((_, _, false)) => return Err("core not running".into()),
+        Err(e) => {
             app_log::error(
                 "smart_switch",
                 format!("select_node_live failed for {name} ({tag}): {e}"),
             );
             return Err(e.to_string());
         }
-        if close_conns && hard_fail {
-            if let Some(api) = runtime.clash_api_clone() {
-                let _ = api.close_all_connections();
-            }
-        }
     }
-
-    state
-        .with_store_mut(|store| {
-            store.settings.current_node_id = Some(best_id.to_string());
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?;
 
     app_log::debug(
         "smart_switch",
@@ -888,6 +882,11 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
     let rules = collect_enabled_smart_rules(state);
+    let active_rule_ids: HashSet<_> = rules.iter().map(|rule| rule.id.as_str()).collect();
+    RULE_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .retain(|rule_id, _| active_rule_ids.contains(rule_id.as_str()));
     if rules.is_empty() {
         return Ok(());
     }
@@ -1036,12 +1035,14 @@ async fn maintain_smart_rule(
             .ok_or_else(|| format!("node {best_id} missing"))?
     };
 
-    let selected = {
-        let runtime = state.lock_runtime();
-        runtime
-            .select_group_live(&group, &tag)
-            .map_err(|e| e.to_string())
-    };
+    let selected = state
+        .select_group_live_serialized(&group, &tag, false)
+        .and_then(|selected| {
+            selected
+                .then_some(())
+                .ok_or_else(|| crate::error::AppError::Core("core not running".into()))
+        })
+        .map_err(|e| e.to_string());
     if let Err(e) = selected {
         record_rule_probe_failure(&rule.id);
         return Err(e);
@@ -1115,6 +1116,21 @@ mod probe_schedule_tests {
             .map(|fails| rule_probe_interval(fails).as_secs())
             .collect();
         assert_eq!(seconds, vec![60, 120, 240, 480, 600, 600, 600]);
+    }
+
+    #[test]
+    fn expired_ejection_resets_failure_escalation() {
+        let mut controller = Controller::default();
+        controller.ejected.insert(
+            "recovered-node".into(),
+            Instant::now() - Duration::from_secs(1),
+        );
+        controller.eject_counts.insert("recovered-node".into(), 4);
+
+        controller.clear_eject_if_expired();
+
+        assert!(!controller.ejected.contains_key("recovered-node"));
+        assert!(!controller.eject_counts.contains_key("recovered-node"));
     }
 }
 

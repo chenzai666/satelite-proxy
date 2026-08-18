@@ -24,11 +24,22 @@ const DEFAULT_CONCURRENCY: usize = 30;
 const GLOBAL_CONCURRENCY: usize = 30;
 const CACHE_TTL: Duration = Duration::from_secs(90);
 const FAILURE_CACHE_TTL: Duration = Duration::from_secs(15);
+const MAX_CACHE_ENTRIES: usize = 4096;
+const CACHE_TRIM_TO: usize = 3072;
 
 static GLOBAL_SEMAPHORE: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(GLOBAL_CONCURRENCY)));
-static PROBE_CACHE: LazyLock<Mutex<HashMap<String, (Instant, LatencyResult)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+struct ProbeCache {
+    entries: HashMap<String, (Instant, LatencyResult)>,
+    last_prune: Instant,
+}
+
+static PROBE_CACHE: LazyLock<Mutex<ProbeCache>> = LazyLock::new(|| {
+    Mutex::new(ProbeCache {
+        entries: HashMap::new(),
+        last_prune: Instant::now(),
+    })
+});
 static PROBE_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -53,44 +64,27 @@ pub async fn probe_nodes(
 ) -> AppResult<Vec<LatencyResult>> {
     let timeout_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
     let concurrency = concurrency.unwrap_or(DEFAULT_CONCURRENCY).max(1);
-    let batch_sem = Arc::new(Semaphore::new(concurrency));
-    let mut handles = Vec::with_capacity(nodes.len());
-
-    for node in nodes {
-        let id = node.id.clone();
-        let name = node.name.clone();
-        let server = node.server.clone();
-        let port = node.port;
-        let tag = outbound_tag(node);
-        let batch_sem = Arc::clone(&batch_sem);
-        let clash = clash.clone();
-        let probe_url = probe_url.clone();
-        handles.push(tokio::spawn(async move {
-            let _batch_permit = batch_sem.acquire().await.expect("batch semaphore");
-            let key = if let Some(api) = &clash {
-                format!(
-                    "clash|{}|{}|{id}|{tag}|{probe_url}|{timeout_ms}",
-                    api.base, api.secret
-                )
-            } else {
-                format!("tcp|{id}|{server}|{port}|{timeout_ms}")
-            };
-            probe_coalesced(key, move || async move {
-                if let Some(api) = clash {
-                    probe_clash(api, id, name, tag, probe_url, timeout_ms).await
-                } else {
-                    probe_tcp(id, name, &server, port, timeout_ms).await
-                }
-            })
-            .await
-        }));
+    let mut pending = nodes.iter().cloned().enumerate();
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..concurrency.min(nodes.len()) {
+        if let Some((index, node)) = pending.next() {
+            spawn_probe_task(
+                &mut tasks,
+                index,
+                node,
+                timeout_ms,
+                clash.clone(),
+                probe_url.clone(),
+            );
+        }
     }
 
-    let mut results = Vec::with_capacity(handles.len());
-    for h in handles {
-        match h.await {
-            Ok(r) => results.push(r),
-            Err(e) => results.push(LatencyResult {
+    let mut indexed_results = Vec::with_capacity(nodes.len());
+    let mut task_errors = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(result) => indexed_results.push(result),
+            Err(e) => task_errors.push(LatencyResult {
                 id: String::new(),
                 name: String::new(),
                 latency_ms: None,
@@ -99,8 +93,58 @@ pub async fn probe_nodes(
                 method: "error".into(),
             }),
         }
+        if let Some((index, node)) = pending.next() {
+            spawn_probe_task(
+                &mut tasks,
+                index,
+                node,
+                timeout_ms,
+                clash.clone(),
+                probe_url.clone(),
+            );
+        }
     }
+    indexed_results.sort_unstable_by_key(|(index, _)| *index);
+    let mut results: Vec<_> = indexed_results
+        .into_iter()
+        .map(|(_, result)| result)
+        .collect();
+    results.append(&mut task_errors);
     Ok(results)
+}
+
+fn spawn_probe_task(
+    tasks: &mut tokio::task::JoinSet<(usize, LatencyResult)>,
+    index: usize,
+    node: ProxyNode,
+    timeout_ms: u64,
+    clash: Option<ClashApi>,
+    probe_url: String,
+) {
+    tasks.spawn(async move {
+        let id = node.id.clone();
+        let name = node.name.clone();
+        let server = node.server.clone();
+        let port = node.port;
+        let tag = outbound_tag(&node);
+        let key = if let Some(api) = &clash {
+            format!(
+                "clash|{}|{}|{id}|{tag}|{probe_url}|{timeout_ms}",
+                api.base, api.secret
+            )
+        } else {
+            format!("tcp|{id}|{server}|{port}|{timeout_ms}")
+        };
+        let result = probe_coalesced(key, move || async move {
+            if let Some(api) = clash {
+                probe_clash(api, id, name, tag, probe_url, timeout_ms).await
+            } else {
+                probe_tcp(id, name, &server, port, timeout_ms).await
+            }
+        })
+        .await;
+        (index, result)
+    });
 }
 
 async fn probe_coalesced<F, Fut>(key: String, probe: F) -> LatencyResult
@@ -129,11 +173,7 @@ where
         .await
         .expect("global probe semaphore");
     let result = probe().await;
-    {
-        let mut cache = PROBE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-        cache.retain(|_, (at, result)| at.elapsed() < cache_ttl(result));
-        cache.insert(key.clone(), (Instant::now(), result.clone()));
-    }
+    cache_result(key.clone(), result.clone());
     let mut locks = PROBE_LOCKS.lock().unwrap_or_else(|p| p.into_inner());
     if locks
         .get(&key)
@@ -147,14 +187,40 @@ where
 
 fn cached_result(key: &str) -> Option<LatencyResult> {
     let mut cache = PROBE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-    match cache.get(key) {
+    match cache.entries.get(key) {
         Some((at, result)) if at.elapsed() < cache_ttl(result) => Some(result.clone()),
         Some(_) => {
-            cache.remove(key);
+            cache.entries.remove(key);
             None
         }
         None => None,
     }
+}
+
+fn cache_result(key: String, result: LatencyResult) {
+    let mut cache = PROBE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    if cache.last_prune.elapsed() >= FAILURE_CACHE_TTL
+        || (cache.entries.len() >= MAX_CACHE_ENTRIES && !cache.entries.contains_key(&key))
+    {
+        cache
+            .entries
+            .retain(|_, (at, cached)| at.elapsed() < cache_ttl(cached));
+        cache.last_prune = now;
+    }
+    if cache.entries.len() >= MAX_CACHE_ENTRIES && !cache.entries.contains_key(&key) {
+        let remove_count = cache.entries.len().saturating_sub(CACHE_TRIM_TO) + 1;
+        let mut oldest: Vec<_> = cache
+            .entries
+            .iter()
+            .map(|(entry_key, (at, _))| (entry_key.clone(), *at))
+            .collect();
+        oldest.sort_unstable_by_key(|(_, at)| *at);
+        for (entry_key, _) in oldest.into_iter().take(remove_count) {
+            cache.entries.remove(&entry_key);
+        }
+    }
+    cache.entries.insert(key, (now, result));
 }
 
 fn cache_ttl(result: &LatencyResult) -> Duration {

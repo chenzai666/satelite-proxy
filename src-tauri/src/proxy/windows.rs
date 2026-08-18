@@ -26,10 +26,12 @@ type PHKEY = *mut HKEY;
 type LPCWSTR = *const u16;
 
 const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
+const KEY_QUERY_VALUE: DWORD = 0x0001;
 const KEY_SET_VALUE: DWORD = 0x0002;
 const REG_SZ: DWORD = 1;
 const REG_DWORD: DWORD = 4;
 const ERROR_SUCCESS: LONG = 0;
+const ERROR_FILE_NOT_FOUND: LONG = 2;
 
 const INTERNET_OPTION_SETTINGS_CHANGED: DWORD = 39;
 const INTERNET_OPTION_REFRESH: DWORD = 37;
@@ -50,6 +52,14 @@ extern "system" {
         dwType: DWORD,
         lpData: *const u8,
         cbData: DWORD,
+    ) -> LONG;
+    fn RegQueryValueExW(
+        hKey: HKEY,
+        lpValueName: LPCWSTR,
+        lpReserved: *mut DWORD,
+        lpType: *mut DWORD,
+        lpData: *mut u8,
+        lpcbData: *mut DWORD,
     ) -> LONG;
     fn RegCloseKey(hKey: HKEY) -> LONG;
 }
@@ -81,7 +91,7 @@ fn open_internet_settings() -> AppResult<HKEY> {
             HKEY_CURRENT_USER,
             sub.as_ptr(),
             0,
-            KEY_SET_VALUE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
             &mut h as *mut HKEY,
         )
     };
@@ -91,6 +101,98 @@ fn open_internet_settings() -> AppResult<HKEY> {
         )));
     }
     Ok(h)
+}
+
+fn query_dword(h: HKEY, name: &str) -> AppResult<Option<DWORD>> {
+    let name = wide(name);
+    let mut kind = 0;
+    let mut value = 0;
+    let mut size = core::mem::size_of::<DWORD>() as DWORD;
+    let rc = unsafe {
+        RegQueryValueExW(
+            h,
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            &mut kind,
+            (&mut value as *mut DWORD).cast::<u8>(),
+            &mut size,
+        )
+    };
+    if rc == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if rc != ERROR_SUCCESS || kind != REG_DWORD {
+        return Err(AppError::Core(format!(
+            "RegQueryValueExW dword failed (rc={rc}, type={kind})"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn query_sz(h: HKEY, name: &str) -> AppResult<Option<String>> {
+    let name = wide(name);
+    let mut kind = 0;
+    let mut size = 0;
+    let rc = unsafe {
+        RegQueryValueExW(
+            h,
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            &mut kind,
+            core::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if rc == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    if rc != ERROR_SUCCESS || kind != REG_SZ {
+        return Err(AppError::Core(format!(
+            "RegQueryValueExW string size failed (rc={rc}, type={kind})"
+        )));
+    }
+    let mut buffer = vec![0u16; (size as usize / 2).max(1)];
+    let rc = unsafe {
+        RegQueryValueExW(
+            h,
+            name.as_ptr(),
+            core::ptr::null_mut(),
+            &mut kind,
+            buffer.as_mut_ptr().cast::<u8>(),
+            &mut size,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        return Err(AppError::Core(format!(
+            "RegQueryValueExW string failed (rc={rc})"
+        )));
+    }
+    let len = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    Ok(Some(String::from_utf16_lossy(&buffer[..len])))
+}
+
+fn proxy_server_is_exact_endpoint(value: &str, host: &str, port: u16) -> bool {
+    let expected = format!("{}:{port}", host.trim().to_ascii_lowercase());
+    let endpoints: Vec<_> = value
+        .split(';')
+        .filter_map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return None;
+            }
+            Some(
+                part.split_once('=')
+                    .map(|(_, endpoint)| endpoint)
+                    .unwrap_or(part)
+                    .trim()
+                    .to_ascii_lowercase(),
+            )
+        })
+        .collect();
+    !endpoints.is_empty() && endpoints.iter().all(|endpoint| endpoint == &expected)
 }
 
 fn set_dword(h: HKEY, name: &str, value: DWORD) -> AppResult<()> {
@@ -182,5 +284,48 @@ impl SystemProxy for WindowsSystemProxy {
 
         notify_changed();
         Ok(())
+    }
+
+    fn detect_owned(&self, host: &str, port: u16) -> AppResult<Option<SystemProxySnapshot>> {
+        let h = open_internet_settings()?;
+        let enabled = query_dword(h, "ProxyEnable");
+        let server = query_sz(h, "ProxyServer");
+        unsafe { RegCloseKey(h) };
+        let enabled = enabled?.unwrap_or(0) != 0;
+        let server = server?.unwrap_or_default();
+        if enabled && proxy_server_is_exact_endpoint(&server, host, port) {
+            Ok(Some(SystemProxySnapshot { detail: server }))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_server_is_exact_endpoint;
+
+    #[test]
+    fn recognizes_only_an_exact_owned_proxy_server() {
+        assert!(proxy_server_is_exact_endpoint(
+            "127.0.0.1:2080",
+            "127.0.0.1",
+            2080
+        ));
+        assert!(proxy_server_is_exact_endpoint(
+            "http=127.0.0.1:2080;https=127.0.0.1:2080;socks=127.0.0.1:2080",
+            "127.0.0.1",
+            2080
+        ));
+        assert!(!proxy_server_is_exact_endpoint(
+            "http=127.0.0.1:2080;https=proxy.example:8080",
+            "127.0.0.1",
+            2080
+        ));
+        assert!(!proxy_server_is_exact_endpoint(
+            "127.0.0.1:2081",
+            "127.0.0.1",
+            2080
+        ));
     }
 }

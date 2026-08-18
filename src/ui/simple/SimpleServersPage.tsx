@@ -5,7 +5,8 @@ import {
   addSubscriptionUrl,
   getProxyStatus,
   getSettings,
-  listAllNodes,
+  listNodeIds,
+  listNodesPage,
   listSubscriptions,
   refreshSubscription,
   restartProxy,
@@ -16,12 +17,18 @@ import {
   AddConfigModal,
   type ConfigFormValues,
 } from "../../components/AddConfigModal";
+import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
+import { useI18n } from "../../i18n";
+import { useVirtualRange } from "../../hooks/useVirtualRange";
 import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
 const SUBS_COLLAPSE_KEY = "simple.nodes.subsCollapsed";
+const VIRTUALIZE_AFTER = 200;
+const NODE_ROW_HEIGHT = 48;
+const PAGE_SIZE = 200;
 
 function readSortMode(): SortMode {
   try {
@@ -71,9 +78,12 @@ function LatencyLabel({
 }
 
 export function SimpleServersPage() {
+  const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
+  const [nodeTotal, setNodeTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
@@ -89,24 +99,31 @@ export function SimpleServersPage() {
     null,
   );
 
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (append = false) => {
     try {
-      const [s, n, settings] = await Promise.all([
+      if (append) setLoadingMore(true);
+      const [s, page, settings] = await Promise.all([
         listSubscriptions(),
-        listAllNodes(),
+        listNodesPage(query, sortMode, append ? nodes.length : 0, PAGE_SIZE),
         getSettings(),
       ]);
       setSubs(s);
-      setNodes(n);
+      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+      setNodeTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setLoadingMore(false);
     }
-  }, []);
+  }, [nodes.length, query, sortMode]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    const timer = window.setTimeout(() => void reload(false), 150);
+    return () => window.clearTimeout(timer);
+    // nodes.length changes when appending and must not reset pagination.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, sortMode]);
 
   // One-click subscribe deep link → open add modal prefilled.
   useEffect(() => {
@@ -149,35 +166,13 @@ export function SimpleServersPage() {
     [subs, activeSubId],
   );
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = nodes;
-    if (q) {
-      list = list.filter(
-        (n) =>
-          n.name.toLowerCase().includes(q) ||
-          n.protocol.toLowerCase().includes(q) ||
-          n.server.toLowerCase().includes(q),
-      );
-    }
-    const sorted = [...list];
-    if (sortMode === "name") {
-      sorted.sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-      );
-    } else if (sortMode === "latency") {
-      // Low latency first; timeout next; untested last.
-      sorted.sort((a, b) => {
-        const la = a.latency_ms;
-        const lb = b.latency_ms;
-        const sa = la != null ? la : a.latency_at != null ? 999999 : 9999999;
-        const sb = lb != null ? lb : b.latency_at != null ? 999999 : 9999999;
-        if (sa !== sb) return sa - sb;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    return sorted;
-  }, [nodes, query, sortMode]);
+  const filtered = nodes;
+  const virtualized = filtered.length > VIRTUALIZE_AFTER;
+  const nodeRange = useVirtualRange({
+    itemCount: filtered.length,
+    itemSize: NODE_ROW_HEIGHT,
+    enabled: virtualized,
+  });
 
   async function onSelectNode(id: string) {
     if (busy || id === currentId) return;
@@ -203,12 +198,13 @@ export function SimpleServersPage() {
       const list = await activateSubscription(id);
       setSubs(list);
       // Reload nodes for the newly enabled profile(s).
-      const [n, settings, status] = await Promise.all([
-        listAllNodes(),
+      const [page, settings, status] = await Promise.all([
+        listNodesPage(query, sortMode, 0, PAGE_SIZE),
         getSettings(),
         getProxyStatus().catch(() => null),
       ]);
-      setNodes(n);
+      setNodes(page.nodes);
+      setNodeTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
       // Apply new node pool if core is running.
       if (status?.running) {
@@ -222,15 +218,16 @@ export function SimpleServersPage() {
   }
 
   async function onTestAll() {
-    if (testing || nodes.length === 0) return;
-    const ids = nodes.map((n) => n.id);
+    if (testing || nodeTotal === 0) return;
+    const ids = await listNodeIds(query);
+    const idSet = new Set(ids);
     setTesting(true);
-    setTestingIds(new Set(ids));
+    setTestingIds(idSet);
     setError(null);
     // Clear prior latency so UI shows spinner while probing.
     setNodes((prev) =>
       prev.map((n) =>
-        ids.includes(n.id)
+        idSet.has(n.id)
           ? { ...n, latency_ms: undefined, latency_at: undefined }
           : n,
       ),
@@ -255,6 +252,7 @@ export function SimpleServersPage() {
     } finally {
       setTesting(false);
       setTestingIds(new Set());
+      await reload(false);
     }
   }
 
@@ -306,32 +304,42 @@ export function SimpleServersPage() {
   }
 
   return (
-    <div className="simple-page simple-servers">
-      <header className="simple-page-head">
+    <div className="page simple-page simple-servers">
+      <header className="page-header">
         <div>
-          <div className="simple-kicker muted">LIBRARY</div>
-          <h1 className="simple-title">节点</h1>
+          <h1>{t("nodes.title")}</h1>
+          <p className="page-desc">
+            {t("nodes.desc")}
+            {" · "}
+            <span className="mono">
+              {query.trim()
+                ? t("nodes.countFiltered", {
+                    shown: filtered.length,
+                    total: nodeTotal,
+                  })
+                : t("nodes.count", { n: nodeTotal })}
+            </span>
+          </p>
         </div>
-        <div className="simple-head-actions">
-          <button
-            type="button"
-            className="btn-pill secondary"
-            disabled={testing || nodes.length === 0}
+        <div className="header-actions simple-head-actions">
+          <GlassButton
+            variant="primary"
+            icon="⚡"
+            disabled={testing || nodeTotal === 0}
             onClick={() => void onTestAll()}
+            title={t("nodes.testLatency")}
           >
-            {testing ? "测速中…" : "测速"}
-          </button>
-          <button
-            type="button"
-            className="btn-pill"
+            {testing ? t("nodes.testing") : t("nodes.testLatency")}
+          </GlassButton>
+          <GlassButton
             onClick={() => {
               setModalError(null);
               setModalInitial(null);
               setModalOpen(true);
             }}
           >
-            添加
-          </button>
+            {t("config.add")}
+          </GlassButton>
         </div>
       </header>
 
@@ -342,7 +350,7 @@ export function SimpleServersPage() {
         className="search simple-search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="搜索节点…"
+        placeholder={t("nodes.search")}
       />
 
       {error && <div className="banner error">{error}</div>}
@@ -356,10 +364,10 @@ export function SimpleServersPage() {
             onClick={() => setSubsCollapsed((v) => !v)}
           >
             <span className="simple-section-label muted">
-              订阅配置
+              {t("simple.subs")}
               {subsCollapsed && activeSubName
                 ? ` · ${activeSubName}`
-                : " · 点击切换"}
+                : ` · ${t("config.clickUse")}`}
             </span>
             <span
               className={`simple-collapse-caret muted ${subsCollapsed ? "collapsed" : ""}`}
@@ -373,28 +381,27 @@ export function SimpleServersPage() {
                 <button
                   key={s.id}
                   type="button"
-                  className={`simple-card simple-sub-row ${active ? "active" : ""}`}
+                  className={`card simple-sub-row ${active ? "active" : ""}`}
                   disabled={busy}
                   onClick={() => void onSelectSub(s.id)}
                   aria-pressed={active}
                 >
-                  <span className="simple-radio" aria-hidden>
+                  <span className="simple-radio node-dot" aria-hidden>
                     {active ? "●" : "○"}
                   </span>
                   <strong className="simple-sub-name">{s.name}</strong>
                   <span className="muted simple-sub-meta">
-                    {s.node_count}节点
-                    {s.auto_update ? " · 自动" : ""}
-                    {active ? " · 使用中" : ""}
+                    {t("config.nodes", { n: s.node_count })}
+                    {s.auto_update ? ` · ${t("common.enabled")}` : ""}
+                    {active ? ` · ${t("config.using")}` : ""}
                   </span>
-                  <button
-                    type="button"
-                    className="btn-pill secondary simple-sub-refresh"
+                  <GlassButton
+                    className="simple-sub-refresh"
                     disabled={busy}
                     onClick={(e) => void onRefreshSub(s.id, e)}
                   >
-                    刷新
-                  </button>
+                    {t("common.refresh")}
+                  </GlassButton>
                 </button>
               );
             })}
@@ -402,47 +409,49 @@ export function SimpleServersPage() {
       )}
 
       <section className="simple-section">
-        <div className="simple-section-label muted">
-          节点 · {filtered.length}
-          {activeSubId
-            ? ` · ${subs.find((s) => s.id === activeSubId)?.name ?? ""}`
-            : ""}
-        </div>
         <div className="simple-sort-row">
-          <span className="muted simple-sort-label">排序</span>
+          <span className="dash-inline-label">{t("nodes.sortLatency")}</span>
           <GlassSeg
             value={sortMode}
-            ariaLabel="节点排序"
+            ariaLabel={t("nodes.sortLatency")}
             onChange={(v) => setSortMode(v as SortMode)}
             options={[
-              { value: "latency", label: "延迟" },
-              { value: "name", label: "名称" },
-              { value: "default", label: "默认" },
+              { value: "latency", label: t("nodes.sortLatency") },
+              { value: "name", label: t("nodes.sortName") },
+              { value: "default", label: t("nodes.sortDefault") },
             ]}
           />
         </div>
         {filtered.length === 0 ? (
-          <div className="simple-card empty muted">
-            {subs.length === 0
-              ? "暂无节点，请先添加订阅"
-              : "当前订阅无节点，点上方切换其他配置或刷新"}
+          <div className="empty card muted">
+            {subs.length === 0 ? t("nodes.empty") : t("nodes.empty")}
           </div>
         ) : (
-          <ul className="simple-node-list">
-            {filtered.map((n) => {
+          <ul
+            className={`simple-node-list ${virtualized ? "virtualized" : ""}`}
+            ref={nodeRange.containerRef as React.RefObject<HTMLUListElement>}
+          >
+            {nodeRange.paddingTop > 0 && (
+              <li
+                className="node-virtual-spacer"
+                style={{ height: nodeRange.paddingTop }}
+                aria-hidden="true"
+              />
+            )}
+            {filtered.slice(nodeRange.start, nodeRange.end).map((n) => {
               const active = n.id === currentId;
               return (
                 <li key={n.id}>
                   <button
                     type="button"
-                    className={`simple-card simple-node-item ${active ? "active" : ""}`}
+                    className={`simple-node-item ${active ? "active" : ""}`}
                     disabled={busy}
                     onClick={() => void onSelectNode(n.id)}
                   >
-                    <span className="simple-radio" aria-hidden>
+                    <span className="simple-radio node-dot" aria-hidden>
                       {active ? "●" : "○"}
                     </span>
-                    <span className="pill target-proxy">
+                    <span className="simple-node-proto mono">
                       {n.protocol.toUpperCase()}
                     </span>
                     <span className="simple-node-item-name">{n.name}</span>
@@ -455,7 +464,28 @@ export function SimpleServersPage() {
                 </li>
               );
             })}
+            {nodeRange.paddingBottom > 0 && (
+              <li
+                className="node-virtual-spacer"
+                style={{ height: nodeRange.paddingBottom }}
+                aria-hidden="true"
+              />
+            )}
           </ul>
+        )}
+        {nodes.length < nodeTotal && (
+          <GlassButton
+            disabled={loadingMore}
+            onClick={() => void reload(true)}
+            className="simple-load-more"
+          >
+            {loadingMore
+              ? t("common.loading")
+              : t("simple.loadMore", {
+                  shown: nodes.length,
+                  total: nodeTotal,
+                })}
+          </GlassButton>
         )}
       </section>
 

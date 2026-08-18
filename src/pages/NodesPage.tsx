@@ -1,16 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   generateSingboxConfig,
   getProxyStatus,
   getSettings,
-  listAllNodes,
+  listNodeIds,
+  listNodesPage,
   setCurrentNode,
   testNodesLatency,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import type { ProxyNode, SortMode, ViewMode } from "../types";
+
+const VIRTUALIZE_AFTER = 200;
+const LIST_ROW_HEIGHT = 49;
+const GRID_ROW_HEIGHT = 94;
+const PAGE_SIZE = 200;
+
+function gridColumns() {
+  if (window.innerWidth <= 720) return 2;
+  if (window.innerWidth <= 960) return 3;
+  return 4;
+}
 
 /** Render latency cell: spinner / ms / timeout / dash */
 function LatencyDisplay({
@@ -50,6 +63,8 @@ export function NodesPage() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -61,23 +76,41 @@ export function NodesPage() {
 
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [columnCount, setColumnCount] = useState(gridColumns);
 
-  const reload = useCallback(async () => {
+  useEffect(() => {
+    const update = () => setColumnCount(gridColumns());
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  const reload = useCallback(async (append = false) => {
     setError(null);
+    if (append) setLoadingMore(true);
     try {
-      const [list, settings] = await Promise.all([listAllNodes(), getSettings()]);
-      setNodes(list);
+      const offset = append ? nodes.length : 0;
+      const [page, settings] = await Promise.all([
+        listNodesPage(query, sortMode, offset, PAGE_SIZE),
+        getSettings(),
+      ]);
+      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+      setTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  }, []);
+  }, [nodes.length, query, sortMode]);
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    setLoading(true);
+    const timer = window.setTimeout(() => void reload(false), 150);
+    return () => window.clearTimeout(timer);
+    // nodes.length changes as pages append and must not restart the first page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, sortMode]);
 
   useEffect(() => {
     localStorage.setItem("nodes.viewMode", viewMode);
@@ -87,37 +120,19 @@ export function NodesPage() {
     localStorage.setItem("nodes.sortMode", sortMode);
   }, [sortMode]);
 
-  const displayed = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = nodes;
-    if (q) {
-      list = list.filter(
-        (n) =>
-          n.name.toLowerCase().includes(q) ||
-          n.server.toLowerCase().includes(q) ||
-          n.protocol.toLowerCase().includes(q) ||
-          (n.subscription_name?.toLowerCase().includes(q) ?? false),
-      );
-    }
-
-    const sorted = [...list];
-    if (sortMode === "name") {
-      sorted.sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
-      );
-    } else if (sortMode === "latency") {
-      sorted.sort((a, b) => {
-        const la = a.latency_ms;
-        const lb = b.latency_ms;
-        // tested timeout (latency_at set, no ms) sort last among tested
-        const sa = la != null ? la : a.latency_at != null ? 999999 : 9999999;
-        const sb = lb != null ? lb : b.latency_at != null ? 999999 : 9999999;
-        if (sa !== sb) return sa - sb;
-        return a.name.localeCompare(b.name);
-      });
-    }
-    return sorted;
-  }, [nodes, query, sortMode]);
+  const displayed = nodes;
+  const virtualized = displayed.length > VIRTUALIZE_AFTER;
+  const listRange = useVirtualRange({
+    itemCount: displayed.length,
+    itemSize: LIST_ROW_HEIGHT,
+    enabled: virtualized,
+  });
+  const gridRange = useVirtualRange({
+    itemCount: displayed.length,
+    itemSize: GRID_ROW_HEIGHT,
+    itemsPerRow: columnCount,
+    enabled: virtualized,
+  });
 
   async function onSelect(id: string) {
     setBusyId(id);
@@ -143,13 +158,14 @@ export function NodesPage() {
     setTesting(true);
     setError(null);
     // no top banner / completion message
-    const ids = displayed.map((n) => n.id);
-    setTestingIds(new Set(ids));
+    const ids = await listNodeIds(query);
+    const idSet = new Set(ids);
+    setTestingIds(idSet);
 
     // clear prior latency so only spinner shows while testing
     setNodes((prev) =>
       prev.map((n) =>
-        ids.includes(n.id)
+        idSet.has(n.id)
           ? { ...n, latency_ms: undefined, latency_at: undefined }
           : n,
       ),
@@ -176,6 +192,7 @@ export function NodesPage() {
     } finally {
       setTesting(false);
       setTestingIds(new Set());
+      await reload(false);
     }
   }
 
@@ -188,12 +205,12 @@ export function NodesPage() {
             {t("nodes.desc")}
             {" · "}
             <span className="mono">
-              {query.trim() && displayed.length !== nodes.length
+              {query.trim()
                 ? t("nodes.countFiltered", {
                     shown: displayed.length,
-                    total: nodes.length,
+                    total,
                   })
-                : t("nodes.count", { n: nodes.length })}
+                : t("nodes.count", { n: total })}
             </span>
           </p>
         </div>
@@ -262,14 +279,19 @@ export function NodesPage() {
                 <th style={{ width: 90 }}>{t("nodes.sortLatency")}</th>
               </tr>
             </thead>
-            <tbody>
-              {displayed.map((n) => {
+            <tbody ref={listRange.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {listRange.paddingTop > 0 && (
+                <tr className="node-virtual-spacer" aria-hidden="true">
+                  <td colSpan={6} style={{ height: listRange.paddingTop }} />
+                </tr>
+              )}
+              {displayed.slice(listRange.start, listRange.end).map((n) => {
                 const active = n.id === currentId;
                 const isTesting = testingIds.has(n.id);
                 return (
                   <tr
                     key={n.id}
-                    className={active ? "row-active" : undefined}
+                    className={`node-virtual-row ${active ? "row-active" : ""}`}
                     onClick={() => void onSelect(n.id)}
                     style={{ cursor: "pointer" }}
                   >
@@ -297,46 +319,69 @@ export function NodesPage() {
                   </tr>
                 );
               })}
+              {listRange.paddingBottom > 0 && (
+                <tr className="node-virtual-spacer" aria-hidden="true">
+                  <td colSpan={6} style={{ height: listRange.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       ) : (
-        <div className="node-grid">
-          {displayed.map((n) => {
-            const active = n.id === currentId;
-            const isTesting = testingIds.has(n.id);
-            return (
-              <button
-                key={n.id}
-                type="button"
-                className={`node-card ${active ? "active" : ""}`}
-                onClick={() => void onSelect(n.id)}
-                disabled={busyId === n.id}
-              >
-                <div className="node-card-top">
-                  <span className="node-dot">{active ? "●" : "○"}</span>
-                  <div className="node-card-meta">
-                    <code>{n.protocol}</code>
+        <div
+          className={virtualized ? "node-grid-window" : undefined}
+          ref={gridRange.containerRef as React.RefObject<HTMLDivElement>}
+        >
+          {gridRange.paddingTop > 0 && (
+            <div style={{ height: gridRange.paddingTop }} aria-hidden="true" />
+          )}
+          <div className={`node-grid ${virtualized ? "node-grid-virtual" : ""}`}>
+            {displayed.slice(gridRange.start, gridRange.end).map((n) => {
+              const active = n.id === currentId;
+              const isTesting = testingIds.has(n.id);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  className={`node-card ${active ? "active" : ""}`}
+                  onClick={() => void onSelect(n.id)}
+                  disabled={busyId === n.id}
+                >
+                  <div className="node-card-top">
+                    <span className="node-dot">{active ? "●" : "○"}</span>
+                    <div className="node-card-meta">
+                      <code>{n.protocol}</code>
+                    </div>
                   </div>
-                </div>
-                <div className="node-card-name" title={n.name}>
-                  {n.name}
-                </div>
-                <div className="node-card-footer">
-                  <span className="node-sub-label" title={n.subscription_name ?? ""}>
-                    {n.subscription_name}
-                  </span>
-                  <span className="node-card-latency">
-                    <LatencyDisplay
-                      ms={n.latency_ms}
-                      latencyAt={n.latency_at}
-                      testing={isTesting}
-                    />
-                  </span>
-                </div>
-              </button>
-            );
-          })}
+                  <div className="node-card-name" title={n.name}>
+                    {n.name}
+                  </div>
+                  <div className="node-card-footer">
+                    <span className="node-sub-label" title={n.subscription_name ?? ""}>
+                      {n.subscription_name}
+                    </span>
+                    <span className="node-card-latency">
+                      <LatencyDisplay
+                        ms={n.latency_ms}
+                        latencyAt={n.latency_at}
+                        testing={isTesting}
+                      />
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {gridRange.paddingBottom > 0 && (
+            <div style={{ height: gridRange.paddingBottom }} aria-hidden="true" />
+          )}
+        </div>
+      )}
+      {!loading && nodes.length < total && (
+        <div style={{ display: "flex", justifyContent: "center", padding: 12 }}>
+          <GlassButton disabled={loadingMore} onClick={() => void reload(true)}>
+            {loadingMore ? t("common.loading") : `加载更多（${nodes.length}/${total}）`}
+          </GlassButton>
         </div>
       )}
     </div>

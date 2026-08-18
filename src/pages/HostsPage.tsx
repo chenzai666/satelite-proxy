@@ -358,8 +358,8 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
         </section>
       </div>
 
-      {newSetOpen && <div className="modal-backdrop" onClick={() => !busy && setNewSetOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+      {newSetOpen && <div className="modal-backdrop">
+        <div className="modal">
           <header className="modal-header"><h2>{t("hosts.newSetModalTitle")}</h2><button type="button" className="icon-btn" onClick={() => setNewSetOpen(false)}>×</button></header>
           <form className="modal-body" onSubmit={(e) => void createSet(e)}>
             <label className="field"><span>{t("rules.setName")}</span><input value={newSetName} onChange={(e) => setNewSetName(e.target.value)} autoFocus /></label>
@@ -368,8 +368,8 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
         </div>
       </div>}
 
-      {entryOpen && <div className="modal-backdrop" onClick={() => !busy && setEntryOpen(false)}>
-        <div className="modal" onClick={(e) => e.stopPropagation()}>
+      {entryOpen && <div className="modal-backdrop">
+        <div className="modal">
           <header className="modal-header"><h2>{editEntryId ? t("hosts.editMappingTitle") : t("hosts.addMappingTitle")}</h2><button type="button" className="icon-btn" onClick={() => setEntryOpen(false)}>×</button></header>
           <form className="modal-body" onSubmit={(e) => void saveEntry(e)}>
             <label className="field"><span>{t("dns.domainLabel")}</span><input value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" autoFocus /></label>

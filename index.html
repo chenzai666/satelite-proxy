@@ -6,19 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
     <title>Satelite</title>
-  </head>
-
-  <body>
-    <div id="root"></div>
     <script>
-      // Apply UI mode before React paints (pairs with Rust window size on recreate).
+      // Apply last-used theme / UI mode before first paint (avoids day→dark flash).
       try {
+        var th = (localStorage.getItem("satelite.theme") || "").trim().toLowerCase();
+        if (th !== "aerospace") th = "day";
+        document.documentElement.dataset.theme = th;
+        document.documentElement.style.colorScheme = th === "day" ? "light" : "dark";
         var m = localStorage.getItem("satelite.uiMode");
         if (m === "simple" || m === "pro") {
           document.documentElement.dataset.uiMode = m;
         }
       } catch (e) {}
     </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

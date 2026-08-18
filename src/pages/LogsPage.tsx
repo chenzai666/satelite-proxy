@@ -46,17 +46,51 @@ export function LogsPage() {
   const [error, setError] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
+  const cursorRef = useRef(0);
+  const generationRef = useRef(0);
+  const fullReloadGenerationRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
+    const generation = ++generationRef.current;
+    fullReloadGenerationRef.current = generation;
     try {
-      const list = await listAppLogs({
+      const batch = await listAppLogs({
         minLevel,
         limit: 800,
         query: query.trim() || null,
       });
-      setRows(list);
+      if (generation !== generationRef.current) return;
+      cursorRef.current = batch.cursor;
+      setRows(batch.entries);
       setError(null);
     } catch (e) {
+      if (generation !== generationRef.current) return;
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      if (fullReloadGenerationRef.current === generation) {
+        fullReloadGenerationRef.current = null;
+      }
+    }
+  }, [minLevel, query]);
+
+  const loadIncremental = useCallback(async () => {
+    const generation = generationRef.current;
+    if (fullReloadGenerationRef.current === generation) return;
+    try {
+      const batch = await listAppLogs({
+        minLevel,
+        limit: 800,
+        query: query.trim() || null,
+        afterId: cursorRef.current,
+      });
+      if (generation !== generationRef.current) return;
+      cursorRef.current = batch.cursor;
+      if (batch.entries.length > 0) {
+        setRows((current) => [...current, ...batch.entries].slice(-800));
+      }
+      setError(null);
+    } catch (e) {
+      if (generation !== generationRef.current) return;
       setError(typeof e === "string" ? e : String(e));
     }
   }, [minLevel, query]);
@@ -65,9 +99,7 @@ export function LogsPage() {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 1200);
+  useVisibleInterval(() => loadIncremental(), 1200);
 
   useEffect(() => {
     if (!autoScroll || !listRef.current) return;
@@ -77,6 +109,8 @@ export function LogsPage() {
   async function onClear() {
     try {
       await clearAppLogs();
+      generationRef.current += 1;
+      cursorRef.current = 0;
       setRows([]);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));

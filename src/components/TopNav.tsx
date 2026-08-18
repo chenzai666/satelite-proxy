@@ -72,11 +72,14 @@ export function TopNav({ active, onChange }: Props) {
   // runtime lock held by set_capture_mode / restart).
   useVisibleInterval(() => {
     if (coreBusy) return;
-    void tick();
+    return tick();
   }, 3000);
 
+  const wasCoreBusyRef = useRef(coreBusy);
   useEffect(() => {
-    if (!coreBusy) void tick();
+    const wasCoreBusy = wasCoreBusyRef.current;
+    wasCoreBusyRef.current = coreBusy;
+    if (wasCoreBusy && !coreBusy) void tick();
   }, [coreBusy, tick]);
 
   const transitioning =

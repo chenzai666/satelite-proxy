@@ -25,6 +25,61 @@ mod window_ctrl;
 use state::AppState;
 use tauri::{Emitter, Manager};
 
+const MAX_DEEP_LINK_URLS: usize = 8;
+const MAX_DEEP_LINK_URL_LEN: usize = 8 * 1024;
+
+fn show_startup_failure(
+    app: &tauri::App,
+    error: impl std::fmt::Display,
+    data_dir: Option<&std::path::Path>,
+) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    let handle = app.handle().clone();
+    let location = data_dir
+        .map(|path| {
+            format!(
+                "\n\n数据目录：{}\n日志目录：{}",
+                path.display(),
+                path.join("logs").display()
+            )
+        })
+        .unwrap_or_default();
+    let message = format!(
+        "Satelite 无法加载本地数据，已停止启动以避免覆盖现有配置。\n\n错误：{error}{location}"
+    );
+    let dialog = app
+        .dialog()
+        .message(message)
+        .title("Satelite 启动失败")
+        .kind(MessageDialogKind::Error);
+    if let Some(path) = data_dir.map(std::path::Path::to_path_buf) {
+        dialog
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "打开数据目录".into(),
+                "退出".into(),
+            ))
+            .show(move |open| {
+                if open {
+                    let _ = tauri_plugin_opener::open_path(path, None::<&str>);
+                }
+                handle.exit(1);
+            });
+    } else {
+        dialog.show(move |_| handle.exit(1));
+    }
+}
+
+fn bounded_deep_link_urls(urls: impl IntoIterator<Item = String>) -> Vec<String> {
+    urls.into_iter()
+        .filter(|url| url.len() <= MAX_DEEP_LINK_URL_LEN)
+        .take(MAX_DEEP_LINK_URLS)
+        .collect()
+}
+
 pub use domain::{
     AppSettings, ParseResult as SubscriptionParseResult, Protocol, ProtocolConfig, ProxyNode,
     SkippedProxy, Subscription, SubscriptionFormat, SubscriptionSource, SubscriptionView,
@@ -63,11 +118,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir().expect("resolve app data dir");
-            std::fs::create_dir_all(&dir).ok();
+            let dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(error) => {
+                    show_startup_failure(app, error, None);
+                    return Ok(());
+                }
+            };
+            if let Err(error) = std::fs::create_dir_all(&dir) {
+                show_startup_failure(app, error, Some(&dir));
+                return Ok(());
+            }
             app_log::init(dir.join("logs"));
+            app_log::install_panic_hook();
             let resource_dir = app.path().resource_dir().ok();
-            let app_state = AppState::load(dir, resource_dir).expect("load app store");
+            let app_state = match AppState::load(dir.clone(), resource_dir) {
+                Ok(state) => state,
+                Err(error) => {
+                    app_log::error("startup", format!("load app store failed: {error}"));
+                    show_startup_failure(app, error, Some(&dir));
+                    return Ok(());
+                }
+            };
 
             // Snapshot app prefs before move into managed state
             let silent = app_state
@@ -76,6 +148,12 @@ pub fn run() {
             let auto_proxy = app_state
                 .with_store(|s| Ok(s.settings.auto_start_proxy))
                 .unwrap_or(false);
+            let keep_system_proxy_for_auto_start = auto_proxy
+                && app_state
+                    .with_store(|s| {
+                        Ok(s.settings.capture_mode == crate::domain::CaptureMode::System)
+                    })
+                    .unwrap_or(false);
             // Keep LaunchAgent in sync with stored preference
             let launch = app_state
                 .with_store(|s| Ok(s.settings.launch_at_login))
@@ -115,10 +193,11 @@ pub fn run() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let queue_import = |handle: &tauri::AppHandle, urls: Vec<String>| {
+                    let urls = bounded_deep_link_urls(urls);
                     if urls.is_empty() {
                         return;
                     }
-                    app_log::info("deep-link", format!("queue {:?}", urls));
+                    app_log::info("deep-link", format!("queued {} URL(s)", urls.len()));
                     if let Some(state) = handle.try_state::<AppState>() {
                         state.set_pending_import_urls(urls.clone());
                     }
@@ -127,9 +206,10 @@ pub fn run() {
                 };
 
                 if let Ok(Some(urls)) = app.deep_link().get_current() {
-                    if !urls.is_empty() {
+                    let list = bounded_deep_link_urls(urls.iter().map(|url| url.to_string()));
+                    if !list.is_empty() {
                         launched_via_deep_link = true;
-                        let list: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
+                        app_log::info("deep-link", format!("queued {} startup URL(s)", list.len()));
                         // Store immediately; re-emit after UI boot if listener wasn't ready.
                         if let Some(state) = app.try_state::<AppState>() {
                             state.set_pending_import_urls(list.clone());
@@ -166,23 +246,52 @@ pub fn run() {
                 window_ctrl::soft_hide_main(app.handle());
             }
 
-            // Auto-run proxy after launch
-            if auto_proxy {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    // slight delay so tray / window settle
-                    std::thread::sleep(std::time::Duration::from_millis(400));
-                    if let Some(state) = handle.try_state::<AppState>() {
-                        let res = handle.path().resource_dir().ok();
-                        if let Err(e) = state.start_proxy(res.as_deref(), false) {
-                            app_log::error("app", format!("auto_start_proxy failed: {e}"));
-                        } else {
-                            app_log::info("app", "auto_start_proxy ok");
-                            tray::refresh_icon(&handle);
+            // Reconcile a proxy left by an unclean exit and auto-start in one
+            // worker, so cleanup can never race with re-enabling system mode.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // slight delay so tray / window settle
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let Some(state) = handle.try_state::<AppState>() else {
+                    return;
+                };
+                if !keep_system_proxy_for_auto_start {
+                    match state.cleanup_stale_system_proxy() {
+                        Ok(true) => app_log::warn(
+                            "system_proxy",
+                            "cleared stale owned proxy during startup",
+                        ),
+                        Ok(false) => {}
+                        Err(error) => app_log::error(
+                            "system_proxy",
+                            format!("startup reconciliation failed: {error}"),
+                        ),
+                    }
+                }
+                if !auto_proxy {
+                    return;
+                }
+                let res = handle.path().resource_dir().ok();
+                if let Err(error) = state.start_proxy(res.as_deref(), false) {
+                    app_log::error("app", format!("auto_start_proxy failed: {error}"));
+                    if keep_system_proxy_for_auto_start {
+                        match state.cleanup_stale_system_proxy() {
+                            Ok(true) => app_log::warn(
+                                "system_proxy",
+                                "auto-start failed; cleared stale owned proxy",
+                            ),
+                            Ok(false) => {}
+                            Err(cleanup_error) => app_log::error(
+                                "system_proxy",
+                                format!("auto-start cleanup failed: {cleanup_error}"),
+                            ),
                         }
                     }
-                });
-            }
+                } else {
+                    app_log::info("app", "auto_start_proxy ok");
+                    tray::refresh_icon(&handle);
+                }
+            });
 
             Ok(())
         })
@@ -214,6 +323,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_subscriptions,
+            commands::list_subscription_urls,
             commands::get_subscription,
             commands::add_subscription_url,
             commands::add_subscription_file,
@@ -224,6 +334,8 @@ pub fn run() {
             commands::remove_subscription,
             commands::list_subscription_nodes,
             commands::list_all_nodes,
+            commands::list_nodes_page,
+            commands::list_node_ids,
             commands::get_settings,
             commands::update_settings,
             commands::set_current_node,
@@ -269,6 +381,7 @@ pub fn run() {
             commands::remove_rule,
             commands::set_rule_enabled,
             commands::list_connections,
+            commands::list_connection_changes,
             commands::list_requests,
             commands::list_request_failures,
             commands::clear_request_history,
@@ -297,6 +410,7 @@ pub fn run() {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.shutdown_runtime();
                     }
+                    app_log::flush();
                 }
                 // Process is exiting regardless (Cmd+Q / terminate: goes straight here,
                 // bypassing ExitRequested and exit_allowed). Always clean up.
@@ -304,6 +418,7 @@ pub fn run() {
                     if let Some(state) = app_handle.try_state::<AppState>() {
                         state.shutdown_runtime();
                     }
+                    app_log::flush();
                 }
                 // macOS Dock / “reopen”: user clicked the app icon while no visible window
                 // (UI destroyed or hidden to tray). Tray already calls show_main; Dock did not.
@@ -348,4 +463,23 @@ fn peek_pending_import_urls(state: tauri::State<'_, AppState>) -> Option<Vec<Str
 #[tauri::command]
 fn clear_pending_import_urls(state: tauri::State<'_, AppState>) {
     state.clear_pending_import_urls();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounds_deep_link_url_count_and_length() {
+        let mut urls: Vec<String> = (0..10)
+            .map(|index| format!("clash://install-config?url={index}"))
+            .collect();
+        urls.insert(2, "x".repeat(MAX_DEEP_LINK_URL_LEN + 1));
+
+        let bounded = bounded_deep_link_urls(urls);
+
+        assert_eq!(bounded.len(), MAX_DEEP_LINK_URLS);
+        assert!(bounded.iter().all(|url| url.len() <= MAX_DEEP_LINK_URL_LEN));
+        assert_eq!(bounded[2], "clash://install-config?url=2");
+    }
 }

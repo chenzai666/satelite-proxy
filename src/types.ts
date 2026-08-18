@@ -128,6 +128,11 @@ export interface SubscriptionDetail {
   traffic?: SubscriptionTraffic | null;
 }
 
+export interface SubscriptionUrlEntry {
+  id: string;
+  url: string;
+}
+
 export interface ImportResult {
   subscription: SubscriptionView;
   node_count: number;
@@ -150,6 +155,12 @@ export interface ProxyNode {
 
 export type ViewMode = "list" | "grid";
 export type SortMode = "default" | "name" | "latency";
+
+export interface NodePage {
+  nodes: ProxyNode[];
+  total: number;
+  offset: number;
+}
 
 export interface LatencyResult {
   id: string;
@@ -206,6 +217,8 @@ export interface AppSettings {
   theme?: string;
   /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
   accent?: string;
+  /** Overview hero visual: particle | classic */
+  hero_style?: HeroStyle;
   /** Tray mark: badge | mark | ghost | buddy */
   tray_icon?: TrayIconStyle;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
@@ -222,6 +235,8 @@ export interface AppSettings {
 export type AutoSelectMode = "off" | "smart" | "kernel";
 
 export type ThemeId = "aerospace" | "day";
+
+export type HeroStyle = "particle" | "classic";
 
 export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy";
 
@@ -252,6 +267,14 @@ export interface CoreDownloadResult {
   asset_name: string;
   platform: string;
   bytes: number;
+}
+
+export interface CoreDownloadProgress {
+  stage: "preparing" | "downloading" | "installing" | "done";
+  downloaded: number;
+  total?: number | null;
+  percent?: number | null;
+  via_proxy: boolean;
 }
 
 export type CoreState =
@@ -398,4 +421,13 @@ export interface ConnectionView {
   last_seen?: number | null;
   closed?: boolean;
   closed_at?: number | null;
+}
+
+export interface LiveConnectionBatch {
+  rows: ConnectionView[];
+  removed_ids: string[];
+  order_ids: string[];
+  revision: number;
+  unchanged: boolean;
+  full: boolean;
 }

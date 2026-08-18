@@ -13,4 +13,8 @@ impl SystemProxy for StubSystemProxy {
     fn disable(&self, _snapshot: Option<&SystemProxySnapshot>) -> AppResult<()> {
         Ok(())
     }
+
+    fn detect_owned(&self, _host: &str, _port: u16) -> AppResult<Option<SystemProxySnapshot>> {
+        Ok(None)
+    }
 }

@@ -17,6 +17,7 @@ import type {
   RuleTarget,
   RuleType,
   SubscriptionDetail,
+  SubscriptionUrlEntry,
   SubscriptionView,
   DnsSettings,
   DnsTestResult,
@@ -26,6 +27,10 @@ import { trackCoreBusy } from "./coreBusy";
 
 export function listSubscriptions() {
   return invoke<SubscriptionView[]>("list_subscriptions");
+}
+
+export function listSubscriptionUrls() {
+  return invoke<SubscriptionUrlEntry[]>("list_subscription_urls");
 }
 
 export function getSubscription(id: string) {
@@ -112,11 +117,24 @@ export function listAllNodes() {
   return invoke<ProxyNode[]>("list_all_nodes");
 }
 
+export function listNodesPage(query: string, sortMode: string, offset = 0, limit = 200) {
+  return invoke<import("./types").NodePage>("list_nodes_page", {
+    query,
+    sortMode,
+    offset,
+    limit,
+  });
+}
+
+export function listNodeIds(query = "") {
+  return invoke<string[]>("list_node_ids", { query });
+}
+
 export function getSettings() {
   return invoke<AppSettings>("get_settings");
 }
 
-export function updateSettings(payload: {
+export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   apiPort?: number | null;
   probeUrl?: string | null;
@@ -130,6 +148,7 @@ export function updateSettings(payload: {
   locale?: string | null;
   theme?: string | null;
   accent?: string | null;
+  heroStyle?: string | null;
   trayIcon?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
@@ -140,28 +159,66 @@ export function updateSettings(payload: {
   routeFinal?: string | null;
   /** Resolve originating process per connection (find_process_mode). */
   findProcess?: boolean | null;
-}) {
-  return invoke<AppSettings>("update_settings", {
-    mixedPort: payload.mixedPort ?? null,
-    apiPort: payload.apiPort ?? null,
-    probeUrl: payload.probeUrl ?? null,
-    tunEnabled: payload.tunEnabled ?? null,
-    tunStack: payload.tunStack ?? null,
-    closeToTray: payload.closeToTray ?? null,
-    launchAtLogin: payload.launchAtLogin ?? null,
-    silentStart: payload.silentStart ?? null,
-    autoStartProxy: payload.autoStartProxy ?? null,
-    closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
-    locale: payload.locale ?? null,
-    theme: payload.theme ?? null,
-    accent: payload.accent ?? null,
-    trayIcon: payload.trayIcon ?? null,
-    unloadUiOnTray: payload.unloadUiOnTray ?? null,
-    smartSwitch: payload.smartSwitch ?? null,
-    autoSelect: payload.autoSelect ?? null,
-    routeFinal: payload.routeFinal ?? null,
-    findProcess: payload.findProcess ?? null,
+}
+
+type SettingsWaiter = {
+  resolve: (settings: AppSettings) => void;
+  reject: (error: unknown) => void;
+};
+
+let pendingSettings: SettingsUpdatePayload = {};
+let pendingSettingsWaiters: SettingsWaiter[] = [];
+let settingsTimer: number | null = null;
+let settingsWriteInFlight = false;
+
+function scheduleSettingsWrite() {
+  if (settingsTimer != null || settingsWriteInFlight || pendingSettingsWaiters.length === 0) return;
+  settingsTimer = window.setTimeout(() => {
+    settingsTimer = null;
+    const payload = pendingSettings;
+    const waiters = pendingSettingsWaiters;
+    pendingSettings = {};
+    pendingSettingsWaiters = [];
+    settingsWriteInFlight = true;
+    void invoke<AppSettings>("update_settings", {
+      mixedPort: payload.mixedPort ?? null,
+      apiPort: payload.apiPort ?? null,
+      probeUrl: payload.probeUrl ?? null,
+      tunEnabled: payload.tunEnabled ?? null,
+      tunStack: payload.tunStack ?? null,
+      closeToTray: payload.closeToTray ?? null,
+      launchAtLogin: payload.launchAtLogin ?? null,
+      silentStart: payload.silentStart ?? null,
+      autoStartProxy: payload.autoStartProxy ?? null,
+      closeConnectionsOnSwitch: payload.closeConnectionsOnSwitch ?? null,
+      locale: payload.locale ?? null,
+      theme: payload.theme ?? null,
+      accent: payload.accent ?? null,
+      heroStyle: payload.heroStyle ?? null,
+      trayIcon: payload.trayIcon ?? null,
+      unloadUiOnTray: payload.unloadUiOnTray ?? null,
+      smartSwitch: payload.smartSwitch ?? null,
+      autoSelect: payload.autoSelect ?? null,
+      routeFinal: payload.routeFinal ?? null,
+      findProcess: payload.findProcess ?? null,
+    })
+      .then((settings) => waiters.forEach(({ resolve }) => resolve(settings)))
+      .catch((error) => waiters.forEach(({ reject }) => reject(error)))
+      .finally(() => {
+        settingsWriteInFlight = false;
+        scheduleSettingsWrite();
+      });
+  }, 60);
+}
+
+/** Merge settings changes made in the same interaction burst into one durable write. */
+export function updateSettings(payload: SettingsUpdatePayload) {
+  pendingSettings = { ...pendingSettings, ...payload };
+  const result = new Promise<AppSettings>((resolve, reject) => {
+    pendingSettingsWaiters.push({ resolve, reject });
   });
+  scheduleSettingsWrite();
+  return result;
 }
 
 export function setCurrentNode(nodeId: string) {
@@ -193,15 +250,22 @@ export interface AppLogEntry {
   message: string;
 }
 
+export interface AppLogBatch {
+  entries: AppLogEntry[];
+  cursor: number;
+}
+
 export function listAppLogs(opts?: {
   minLevel?: AppLogLevel | null;
   limit?: number | null;
   query?: string | null;
+  afterId?: number | null;
 }) {
-  return invoke<AppLogEntry[]>("list_app_logs", {
+  return invoke<AppLogBatch>("list_app_logs", {
     minLevel: opts?.minLevel ?? "info",
     limit: opts?.limit ?? 500,
     query: opts?.query ?? null,
+    afterId: opts?.afterId ?? null,
   });
 }
 
@@ -458,18 +522,39 @@ export function listConnections() {
   return invoke<ConnectionView[]>("list_connections");
 }
 
-export function listRequests(query?: string | null, limit?: number | null) {
-  return invoke<ConnectionView[]>("list_requests", {
+export function listConnectionChanges(sinceRevision?: number | null) {
+  return invoke<import("./types").LiveConnectionBatch>("list_connection_changes", {
+    sinceRevision: sinceRevision ?? null,
+  });
+}
+
+export interface RequestBatch {
+  entries: ConnectionView[];
+  cursor: number;
+}
+
+export function listRequests(
+  query?: string | null,
+  limit?: number | null,
+  afterSeq?: number | null,
+) {
+  return invoke<RequestBatch>("list_requests", {
     query: query ?? null,
     limit: limit ?? null,
+    afterSeq: afterSeq ?? null,
   });
 }
 
 /** Suspicious closed requests: short-lived & near-zero bytes (failure/timeout). */
-export function listRequestFailures(query?: string | null, limit?: number | null) {
-  return invoke<ConnectionView[]>("list_request_failures", {
+export function listRequestFailures(
+  query?: string | null,
+  limit?: number | null,
+  afterSeq?: number | null,
+) {
+  return invoke<RequestBatch>("list_request_failures", {
     query: query ?? null,
     limit: limit ?? null,
+    afterSeq: afterSeq ?? null,
   });
 }
 

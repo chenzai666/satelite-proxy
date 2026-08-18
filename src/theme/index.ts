@@ -2,7 +2,10 @@ export {
   ThemeProvider,
   useTheme,
   normalizeTheme,
+  normalizeHeroStyle,
   applyThemeToDom,
+  readStoredTheme,
+  readStoredAccent,
 } from "./ThemeContext";
 
 export {

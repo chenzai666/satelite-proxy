@@ -1,8 +1,8 @@
 //! Download sing-box core from GitHub releases (SagerNet/sing-box).
 
 use crate::core::paths::{
-    binary_name, core_bin_path, core_dir, detect_platform, normalize_version, write_version_file,
-    CorePlatform,
+    binary_name, core_bin_path, core_dir, detect_platform, normalize_version,
+    read_version_of_binary, write_version_file, CorePlatform,
 };
 use crate::error::{AppError, AppResult};
 use flate2::read::GzDecoder;
@@ -10,10 +10,12 @@ use serde::Deserialize;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tar::Archive;
 
 const GITHUB_LATEST: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
 const GITHUB_TAG: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/";
+const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct GhRelease {
@@ -38,6 +40,15 @@ pub struct CoreDownloadResult {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct CoreDownloadProgress {
+    pub stage: &'static str,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub percent: Option<u8>,
+    pub via_proxy: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LatestReleaseInfo {
     pub version: String,
     pub asset_name: String,
@@ -49,31 +60,35 @@ pub struct LatestReleaseInfo {
 /// Default pin used only when GitHub API is unreachable.
 const FALLBACK_VERSION: &str = "v1.13.15";
 
-pub async fn fetch_latest_release() -> AppResult<LatestReleaseInfo> {
+pub async fn fetch_latest_release_with_proxy(
+    proxy_url: Option<&str>,
+) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
-    match fetch_release_json(GITHUB_LATEST).await {
+    match fetch_release_json(GITHUB_LATEST, proxy_url).await {
         Ok(release) => pick_asset(release, platform),
         Err(api_err) => {
             // API blocked/unreachable → direct asset URL with pinned fallback version
             let _ = api_err;
-            // API blocked/unreachable → direct asset URL with pinned fallback version
             Ok(synthetic_release_info(FALLBACK_VERSION, platform))
         }
     }
 }
 
-pub async fn fetch_release_by_tag(tag: &str) -> AppResult<LatestReleaseInfo> {
+async fn fetch_release_by_tag_with_proxy(
+    tag: &str,
+    proxy_url: Option<&str>,
+) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
     let tag = normalize_version(tag);
     let url = format!("{GITHUB_TAG}{tag}");
-    match fetch_release_json(&url).await {
+    match fetch_release_json(&url, proxy_url).await {
         Ok(release) => pick_asset(release, platform),
         Err(_) => Ok(synthetic_release_info(&tag, platform)),
     }
 }
 
-async fn fetch_release_json(url: &str) -> AppResult<GhRelease> {
-    let client = http_client()?;
+async fn fetch_release_json(url: &str, proxy_url: Option<&str>) -> AppResult<GhRelease> {
+    let client = http_client(proxy_url)?;
     let resp = client
         .get(url)
         .header("Accept", "application/vnd.github+json")
@@ -147,12 +162,17 @@ fn pick_asset(release: GhRelease, platform: CorePlatform) -> AppResult<LatestRel
     })
 }
 
-fn http_client() -> AppResult<reqwest::Client> {
-    reqwest::Client::builder()
+fn http_client(proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
-        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)")
-        .build()
-        .map_err(|e| AppError::Core(e.to_string()))
+        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)");
+    if let Some(proxy_url) = proxy_url {
+        builder = builder.proxy(
+            reqwest::Proxy::all(proxy_url)
+                .map_err(|error| AppError::Core(format!("download proxy: {error}")))?,
+        );
+    }
+    builder.build().map_err(|e| AppError::Core(e.to_string()))
 }
 
 /// Download latest (or given tag) and install into `{app_data}/bin/sing-box`.
@@ -160,22 +180,37 @@ pub async fn download_latest_core(
     app_data_dir: &Path,
     tag: Option<String>,
 ) -> AppResult<CoreDownloadResult> {
-    let info = if let Some(t) = tag {
-        fetch_release_by_tag(&t).await?
-    } else {
-        fetch_latest_release().await?
-    };
-    download_and_install(app_data_dir, &info).await
+    download_latest_core_with_progress(app_data_dir, tag, None, |_| {}).await
 }
 
-async fn download_and_install(
+pub async fn download_latest_core_with_progress(
+    app_data_dir: &Path,
+    tag: Option<String>,
+    proxy_url: Option<String>,
+    progress: impl Fn(CoreDownloadProgress) + Send + Sync + 'static,
+) -> AppResult<CoreDownloadResult> {
+    let info = if let Some(t) = tag {
+        fetch_release_by_tag_with_proxy(&t, proxy_url.as_deref()).await?
+    } else {
+        fetch_latest_release_with_proxy(proxy_url.as_deref()).await?
+    };
+    download_and_install(app_data_dir, &info, proxy_url.as_deref(), progress).await
+}
+
+async fn download_and_install<F>(
     app_data_dir: &Path,
     info: &LatestReleaseInfo,
-) -> AppResult<CoreDownloadResult> {
-    let bin_dir = core_dir(app_data_dir);
-    fs::create_dir_all(&bin_dir)?;
+    proxy_url: Option<&str>,
+    progress: F,
+) -> AppResult<CoreDownloadResult>
+where
+    F: Fn(CoreDownloadProgress) + Send + Sync + 'static,
+{
+    validate_archive_size_hint(info.size)?;
+    let via_proxy = proxy_url.is_some();
+    let progress = Arc::new(progress);
 
-    let client = http_client()?;
+    let client = http_client(proxy_url)?;
     let resp = client
         .get(&info.download_url)
         .send()
@@ -184,14 +219,75 @@ async fn download_and_install(
     if !resp.status().is_success() {
         return Err(AppError::Core(format!("download status {}", resp.status())));
     }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| AppError::Core(format!("download body: {e}")))?;
+    let declared_total = (info.size > 0).then_some(info.size);
+    let mut last_percent = None;
+    let download_progress = Arc::clone(&progress);
+    let bytes = crate::services::http_body::read_limited_with_progress(
+        resp,
+        MAX_CORE_ARCHIVE_BYTES,
+        "core archive exceeds 256 MB".into(),
+        move |downloaded, response_total| {
+            let total = response_total.or(declared_total);
+            let percent = total
+                .filter(|total| *total > 0)
+                .map(|total| ((downloaded.saturating_mul(100) / total).min(100)) as u8);
+            if downloaded == 0 || percent != last_percent {
+                last_percent = percent;
+                download_progress(CoreDownloadProgress {
+                    stage: "downloading",
+                    downloaded,
+                    total,
+                    percent,
+                    via_proxy,
+                });
+            }
+        },
+    )
+    .await
+    .map_err(|e| AppError::Core(format!("download body: {e}")))?;
     if bytes.len() < 1024 {
         return Err(AppError::Core("download too small, likely failed".into()));
     }
 
+    let app_data_dir = app_data_dir.to_path_buf();
+    let info = info.clone();
+    let downloaded = bytes.len() as u64;
+    progress(CoreDownloadProgress {
+        stage: "installing",
+        downloaded,
+        total: Some(downloaded),
+        percent: Some(100),
+        via_proxy,
+    });
+    let result = tokio::task::spawn_blocking(move || {
+        install_downloaded_archive(&app_data_dir, &info, bytes)
+    })
+    .await
+    .map_err(|error| AppError::Core(format!("install core task: {error}")))??;
+    progress(CoreDownloadProgress {
+        stage: "done",
+        downloaded,
+        total: Some(downloaded),
+        percent: Some(100),
+        via_proxy,
+    });
+    Ok(result)
+}
+
+fn validate_archive_size_hint(size: u64) -> AppResult<()> {
+    if size > MAX_CORE_ARCHIVE_BYTES as u64 {
+        return Err(AppError::Core("core archive exceeds 256 MB".into()));
+    }
+    Ok(())
+}
+
+fn install_downloaded_archive(
+    app_data_dir: &Path,
+    info: &LatestReleaseInfo,
+    bytes: Vec<u8>,
+) -> AppResult<CoreDownloadResult> {
+    let bin_dir = core_dir(app_data_dir);
+    fs::create_dir_all(&bin_dir)?;
     let archive_path = bin_dir.join(&info.asset_name);
     {
         let mut f = File::create(&archive_path)
@@ -201,49 +297,101 @@ async fn download_and_install(
     }
 
     let dest = core_bin_path(app_data_dir);
-    // remove old binary first (Windows may need this; macOS setuid needs elevation)
-    if dest.exists() {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = crate::core::macos_auth::remove_setuid_core_if_needed(&dest);
+    let staged = staged_core_path(&dest);
+    let previous = previous_core_path(&dest);
+    let _ = fs::remove_file(&staged);
+    let install_result = (|| {
+        if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
+            extract_singbox_from_tar_gz(&archive_path, &staged)?;
+        } else if info.asset_name.ends_with(".zip") {
+            extract_singbox_from_zip(&archive_path, &staged)?;
+        } else {
+            return Err(AppError::Core(format!(
+                "unsupported archive: {}",
+                info.asset_name
+            )));
         }
-        let _ = fs::remove_file(&dest);
-    }
 
-    if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
-        extract_singbox_from_tar_gz(&archive_path, &dest)?;
-    } else if info.asset_name.ends_with(".zip") {
-        extract_singbox_from_zip(&archive_path, &dest)?;
-    } else {
-        return Err(AppError::Core(format!(
-            "unsupported archive: {}",
-            info.asset_name
-        )));
-    }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&staged)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&staged, perms)?;
+        }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&dest)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&dest, perms)?;
-    }
+        let actual_version = read_version_of_binary(&staged)?;
+        if !versions_match(&actual_version, &info.version) {
+            return Err(AppError::Core(format!(
+                "downloaded core version mismatch: expected {}, got {actual_version}",
+                info.version
+            )));
+        }
 
-    // cleanup archive
+        let had_previous = replace_installed_core(&staged, &dest, &previous)?;
+        if let Err(error) = write_version_file(app_data_dir, &actual_version) {
+            let _ = fs::remove_file(&dest);
+            if had_previous {
+                let _ = fs::rename(&previous, &dest);
+            }
+            return Err(error);
+        }
+        if had_previous {
+            let _ = fs::remove_file(&previous);
+        }
+
+        Ok(CoreDownloadResult {
+            version: actual_version,
+            path: dest.display().to_string(),
+            asset_name: info.asset_name.clone(),
+            platform: info.platform.clone(),
+            bytes: bytes.len() as u64,
+        })
+    })();
+
     let _ = fs::remove_file(&archive_path);
+    if install_result.is_err() {
+        let _ = fs::remove_file(&staged);
+    }
+    install_result
+}
 
-    write_version_file(app_data_dir, &info.version)?;
+fn staged_core_path(dest: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return dest.with_file_name("sing-box.new.exe");
+    #[cfg(not(target_os = "windows"))]
+    return dest.with_file_name("sing-box.new");
+}
 
-    // verify runnable
-    let _ = crate::core::paths::read_core_version_via_binary(app_data_dir);
+fn previous_core_path(dest: &Path) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    return dest.with_file_name("sing-box.previous.exe");
+    #[cfg(not(target_os = "windows"))]
+    return dest.with_file_name("sing-box.previous");
+}
 
-    Ok(CoreDownloadResult {
-        version: info.version.clone(),
-        path: dest.display().to_string(),
-        asset_name: info.asset_name.clone(),
-        platform: info.platform.clone(),
-        bytes: bytes.len() as u64,
-    })
+fn versions_match(actual: &str, expected: &str) -> bool {
+    normalize_version(actual) == normalize_version(expected)
+}
+
+fn replace_installed_core(staged: &Path, dest: &Path, previous: &Path) -> AppResult<bool> {
+    let _ = fs::remove_file(previous);
+    #[cfg(target_os = "macos")]
+    if dest.exists() {
+        crate::core::macos_auth::remove_setuid_core_if_needed(dest)?;
+    }
+    let had_previous = dest.exists();
+    if had_previous {
+        fs::rename(dest, previous)
+            .map_err(|error| AppError::Core(format!("stage previous core: {error}")))?;
+    }
+    if let Err(error) = fs::rename(staged, dest) {
+        if had_previous {
+            let _ = fs::rename(previous, dest);
+        }
+        return Err(AppError::Core(format!("activate downloaded core: {error}")));
+    }
+    Ok(had_previous)
 }
 
 fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
@@ -324,9 +472,49 @@ fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
 mod tests {
     use super::*;
 
+    fn replacement_test_dir(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "satelite-core-replace-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn platform_suffix_known() {
         let p = detect_platform().expect("platform");
         assert!(!p.asset_suffix.is_empty());
+    }
+
+    #[test]
+    fn core_archive_size_hint_is_bounded() {
+        assert!(validate_archive_size_hint(0).is_ok());
+        assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64).is_ok());
+        assert!(validate_archive_size_hint(MAX_CORE_ARCHIVE_BYTES as u64 + 1).is_err());
+    }
+
+    #[test]
+    fn downloaded_core_version_must_match_release() {
+        assert!(versions_match("1.13.15", "v1.13.15"));
+        assert!(!versions_match("v1.13.14", "v1.13.15"));
+    }
+
+    #[test]
+    fn failed_activation_restores_previous_core() {
+        let directory = replacement_test_dir("rollback");
+        fs::create_dir_all(&directory).unwrap();
+        let dest = directory.join(binary_name());
+        let staged = staged_core_path(&dest);
+        let previous = previous_core_path(&dest);
+        fs::write(&dest, b"old").unwrap();
+
+        assert!(replace_installed_core(&staged, &dest, &previous).is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"old");
+        assert!(!previous.exists());
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

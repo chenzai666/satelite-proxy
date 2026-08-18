@@ -968,9 +968,8 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
       {newSetOpen && (
         <div
           className="modal-backdrop"
-          onClick={() => !busy && setNewSetOpen(false)}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal">
             <header className="modal-header">
               <h2>{t("dns.newSetModalTitle")}</h2>
               <button
@@ -1032,9 +1031,8 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
       {ruleFormOpen && (
         <div
           className="modal-backdrop"
-          onClick={() => !busy && resetRuleForm()}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal">
             <header className="modal-header">
               <h2>{editRuleId ? t("dns.editRuleTitle") : t("dns.addRuleModalTitle")}</h2>
               <button
@@ -1122,9 +1120,8 @@ export function DnsPage({ embedded = false, section = "all" }: Props) {
       {hostFormOpen && (
         <div
           className="modal-backdrop"
-          onClick={() => !busy && resetHostForm()}
         >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal">
             <header className="modal-header">
               <h2>{editHostId ? t("dns.editHostsTitle") : t("dns.addHostsTitle")}</h2>
               <button

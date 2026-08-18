@@ -1,10 +1,12 @@
 use crate::core::{
-    active_core_version, bundled_core_version, detect_platform, download_latest_core,
-    fetch_latest_release, resolve_core_bin, CoreDownloadResult, CoreSource,
+    active_core_version, bundled_core_version, detect_platform, download_latest_core_with_progress,
+    fetch_latest_release_with_proxy, inspect_core_bin, CoreDownloadResult, CoreSource,
 };
 use crate::state::AppState;
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+const CORE_DOWNLOAD_EVENT: &str = "core-download-progress";
 
 #[derive(Debug, Serialize)]
 pub struct CoreInfo {
@@ -27,8 +29,8 @@ pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreI
     let resource_dir = app.path().resource_dir().ok();
     let res = resource_dir.as_deref();
 
-    let (path, source) = resolve_core_bin(&state.app_data_dir, res);
-    // Prefer version.txt / lightweight resolution — avoid spawning sing-box when possible.
+    let (path, source) = inspect_core_bin(&state.app_data_dir, res);
+    // Metadata-only inspection: do not stage/copy the bundled core during page load.
     let version = active_core_version(&state.app_data_dir, res);
     let bundled_version = bundled_core_version(res);
 
@@ -50,8 +52,14 @@ pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreI
 
 /// Remote latest version only (network). Call after local info is shown.
 #[tauri::command]
-pub async fn check_core_update(local_version: Option<String>) -> Result<CoreUpdateInfo, String> {
-    let latest = fetch_latest_release().await.map_err(|e| e.to_string())?;
+pub async fn check_core_update(
+    state: State<'_, AppState>,
+    local_version: Option<String>,
+) -> Result<CoreUpdateInfo, String> {
+    let proxy_url = current_download_proxy(&state)?;
+    let latest = fetch_latest_release_with_proxy(proxy_url.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
     let update_available = match &local_version {
         Some(local) => normalize_cmp(local) != normalize_cmp(&latest.version),
         None => true,
@@ -74,17 +82,37 @@ pub struct CoreUpdateInfo {
 
 #[tauri::command]
 pub async fn download_core(
+    app: AppHandle,
     state: State<'_, AppState>,
     tag: Option<String>,
 ) -> Result<CoreDownloadResult, String> {
-    download_latest_core(&state.app_data_dir, tag)
+    let proxy_url = current_download_proxy(&state)?;
+    let progress_app = app.clone();
+    download_latest_core_with_progress(&state.app_data_dir, tag, proxy_url, move |progress| {
+        let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn fetch_core_latest(
+    state: State<'_, AppState>,
+) -> Result<crate::core::LatestReleaseInfo, String> {
+    let proxy_url = current_download_proxy(&state)?;
+    fetch_latest_release_with_proxy(proxy_url.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
-pub async fn fetch_core_latest() -> Result<crate::core::LatestReleaseInfo, String> {
-    fetch_latest_release().await.map_err(|e| e.to_string())
+fn current_download_proxy(state: &AppState) -> Result<Option<String>, String> {
+    if !state.is_core_running() {
+        return Ok(None);
+    }
+    let mixed_port = state
+        .with_store(|store| Ok(store.settings.mixed_port))
+        .map_err(|error| error.to_string())?;
+    Ok(Some(format!("http://127.0.0.1:{mixed_port}")))
 }
 
 fn normalize_cmp(v: &str) -> String {

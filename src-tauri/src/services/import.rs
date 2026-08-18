@@ -10,6 +10,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
+/// Conservative comparison key for subscription URLs. Query order and path case are
+/// intentionally preserved because they can carry signed credentials.
+pub(crate) fn canonical_subscription_url(input: &str) -> Option<String> {
+    let mut url = url::Url::parse(input.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    if (url.scheme() == "http" && url.port() == Some(80))
+        || (url.scheme() == "https" && url.port() == Some(443))
+    {
+        let _ = url.set_port(None);
+    }
+    url.set_fragment(None);
+    if url.path().is_empty() {
+        url.set_path("/");
+    }
+    Some(url.to_string())
+}
+
 pub struct ImportOutcome {
     pub subscription: Subscription,
     pub nodes: Vec<ProxyNode>,
@@ -83,40 +102,41 @@ pub async fn import_from_url_with_id(
     // Default label from Content-Disposition (RFC 5987 filename*), same as FlClash.
     let disposition_name = parse_content_disposition_filename(response.headers());
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| AppError::Fetch(e.to_string()))?;
-    if bytes.len() > MAX_BODY_BYTES {
-        return Err(AppError::Fetch(format!(
-            "body too large ({} bytes, max {})",
-            bytes.len(),
-            MAX_BODY_BYTES
-        )));
-    }
+    let bytes = crate::services::http_body::read_limited(
+        response,
+        MAX_BODY_BYTES,
+        format!("body too large (max {MAX_BODY_BYTES} bytes)"),
+    )
+    .await
+    .map_err(|e| AppError::Fetch(e.to_string()))?;
 
-    let content = String::from_utf8_lossy(&bytes).into_owned();
-    let body_traffic = parse_userinfo_from_content(&content);
-    let parsed = parse_subscription(&content)?;
     // Name priority: user input > Content-Disposition filename* > URL host
     let display_name = name
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
         .or(disposition_name)
         .unwrap_or_else(|| name_from_url(&url));
-
-    let mut outcome = build_outcome(
-        display_name,
-        SubscriptionSource::Url { url },
-        parsed,
-        existing_id,
-    );
+    let content = String::from_utf8_lossy(&bytes).into_owned();
+    let mut outcome = tokio::task::spawn_blocking(move || -> AppResult<ImportOutcome> {
+        let body_traffic = parse_userinfo_from_content(&content);
+        let parsed = parse_subscription(&content)?;
+        let mut outcome = build_outcome(
+            display_name,
+            SubscriptionSource::Url { url },
+            parsed,
+            existing_id,
+        );
+        // URL body comment > remark nodes; HTTP headers are merged below.
+        outcome.subscription.traffic =
+            SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic);
+        Ok(outcome)
+    })
+    .await
+    .map_err(|error| AppError::Fetch(format!("subscription parse task: {error}")))??;
     outcome.subscription.via_proxy = via_proxy;
     // Priority: HTTP header > body comment > remark node names
-    outcome.subscription.traffic = SubscriptionTraffic::merge(
-        traffic,
-        SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic),
-    );
+    outcome.subscription.traffic =
+        SubscriptionTraffic::merge(traffic, outcome.subscription.traffic);
     Ok(outcome)
 }
 
@@ -906,7 +926,9 @@ fn subscription_id(source: &SubscriptionSource) -> String {
     match source {
         SubscriptionSource::Url { url } => {
             hasher.update(b"url|");
-            hasher.update(url.as_bytes());
+            let canonical =
+                canonical_subscription_url(url).unwrap_or_else(|| url.trim().to_string());
+            hasher.update(canonical.as_bytes());
         }
         SubscriptionSource::File { path } => {
             hasher.update(b"file|");
@@ -915,6 +937,31 @@ fn subscription_id(source: &SubscriptionSource) -> String {
     }
     let digest = hasher.finalize();
     hex::encode(&digest[..16])
+}
+
+#[cfg(test)]
+mod canonical_url_tests {
+    use super::canonical_subscription_url;
+
+    #[test]
+    fn normalizes_only_safe_url_parts() {
+        assert_eq!(
+            canonical_subscription_url(" HTTPS://Example.COM:443#view "),
+            Some("https://example.com/".into())
+        );
+        assert_eq!(
+            canonical_subscription_url("http://example.com:80/path?b=2&a=1"),
+            Some("http://example.com/path?b=2&a=1".into())
+        );
+    }
+
+    #[test]
+    fn preserves_sensitive_path_and_query_order() {
+        assert_ne!(
+            canonical_subscription_url("https://example.com/Token?a=1&b=2"),
+            canonical_subscription_url("https://example.com/token?b=2&a=1")
+        );
+    }
 }
 
 fn name_from_url(url: &str) -> String {

@@ -27,8 +27,10 @@ pub fn get_dns_settings(state: State<'_, AppState>) -> Result<DnsSettings, Strin
 
 /// Read the OS hosts file into a read-only entry list (for the Hosts UI).
 #[tauri::command]
-pub fn read_system_hosts() -> Vec<HostsEntry> {
-    read_system_hosts_entries()
+pub async fn read_system_hosts() -> Result<Vec<HostsEntry>, String> {
+    tauri::async_runtime::spawn_blocking(read_system_hosts_entries)
+        .await
+        .map_err(|error| format!("read system hosts task: {error}"))
 }
 
 /// Replace full DNS settings. Optionally restart core when `apply` is true and running.
@@ -113,7 +115,7 @@ pub struct DnsTestResult {
 /// Resolve a domain for diagnostics. Enabled application Hosts entries are checked
 /// first; unmatched names fall back to the OS resolver.
 #[tauri::command]
-pub fn test_dns_lookup(
+pub async fn test_dns_lookup(
     state: State<'_, AppState>,
     domain: String,
 ) -> Result<DnsTestResult, String> {
@@ -149,28 +151,32 @@ pub fn test_dns_lookup(
         });
     }
 
-    let query = format!("{host}:0");
-    match query.to_socket_addrs() {
-        Ok(iter) => {
-            let mut addrs: Vec<String> = iter.map(|a| a.ip().to_string()).collect();
-            addrs.sort();
-            addrs.dedup();
-            Ok(DnsTestResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        let query = format!("{host}:0");
+        match query.to_socket_addrs() {
+            Ok(iter) => {
+                let mut addrs: Vec<String> = iter.map(|a| a.ip().to_string()).collect();
+                addrs.sort();
+                addrs.dedup();
+                DnsTestResult {
+                    domain: host,
+                    ok: !addrs.is_empty(),
+                    addrs,
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                    error: None,
+                    note: "系统解析结果（非 sing-box 查询路径）".into(),
+                }
+            }
+            Err(e) => DnsTestResult {
                 domain: host,
-                ok: !addrs.is_empty(),
-                addrs,
+                ok: false,
+                addrs: vec![],
                 elapsed_ms: start.elapsed().as_millis() as u64,
-                error: None,
-                note: "系统解析结果（非 sing-box 查询路径）".into(),
-            })
+                error: Some(e.to_string()),
+                note: "系统解析失败".into(),
+            },
         }
-        Err(e) => Ok(DnsTestResult {
-            domain: host,
-            ok: false,
-            addrs: vec![],
-            elapsed_ms: start.elapsed().as_millis() as u64,
-            error: Some(e.to_string()),
-            note: "系统解析失败".into(),
-        }),
-    }
+    })
+    .await
+    .map_err(|error| format!("DNS lookup task: {error}"))
 }

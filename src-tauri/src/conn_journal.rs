@@ -22,14 +22,23 @@ const IDLE_MS: u64 = 500;
 const RECONNECT_MS: u64 = 500;
 
 pub fn spawn_connection_journal(app: AppHandle) {
-    thread::Builder::new()
+    if let Err(error) = thread::Builder::new()
         .name("conn-journal".into())
         .spawn(move || journal_loop(app))
-        .ok();
+    {
+        crate::app_log::error(
+            "journal",
+            format!("failed to start connection journal: {error}"),
+        );
+    }
 }
 
 fn journal_interval_ms(state: &AppState) -> u64 {
-    if state.is_ui_visible() {
+    interval_for_visibility(state.is_ui_visible())
+}
+
+fn interval_for_visibility(visible: bool) -> u64 {
+    if visible {
         WS_INTERVAL_ACTIVE_MS
     } else {
         WS_INTERVAL_BACKGROUND_MS
@@ -48,10 +57,7 @@ fn journal_loop(app: AppHandle) {
             continue;
         }
 
-        let api = {
-            let rt = state.lock_runtime();
-            rt.api_clone()
-        };
+        let api = state.try_clash_api_clone();
 
         let Some(api) = api else {
             thread::sleep(Duration::from_millis(IDLE_MS));
@@ -60,20 +66,24 @@ fn journal_loop(app: AppHandle) {
 
         let interval = journal_interval_ms(&state);
 
-        match stream_ws_snapshots(&api, interval, |text| {
-            if state.is_core_transitioning() {
-                return;
-            }
-            match parse_connections_json(text) {
-                Ok(snap) => {
-                    let mut rt = state.lock_runtime();
-                    rt.apply_snapshot(snap);
+        match stream_ws_snapshots(
+            &api,
+            interval,
+            || journal_interval_ms(&state) != interval,
+            |text| {
+                if state.is_core_transitioning() {
+                    return;
                 }
-                Err(e) => {
-                    crate::app_log::debug("journal", format!("parse: {e}"));
+                match parse_connections_json(text) {
+                    Ok(snap) => {
+                        state.try_apply_connection_snapshot(&api, snap);
+                    }
+                    Err(e) => {
+                        crate::app_log::debug("journal", format!("parse: {e}"));
+                    }
                 }
-            }
-        }) {
+            },
+        ) {
             Ok(()) => {}
             Err(e) => {
                 crate::app_log::debug("journal", format!("WS: {e}; fallback HTTP"));
@@ -81,15 +91,11 @@ fn journal_loop(app: AppHandle) {
                     if state.is_core_transitioning() {
                         break;
                     }
-                    let still = {
-                        let rt = state.lock_runtime();
-                        rt.api_clone()
-                    };
+                    let still = state.try_clash_api_clone();
                     let Some(api) = still else { break };
                     match api.list_connections() {
                         Ok(snap) => {
-                            let mut rt = state.lock_runtime();
-                            rt.apply_snapshot(snap);
+                            state.try_apply_connection_snapshot(&api, snap);
                         }
                         Err(_) => break,
                     }
@@ -104,6 +110,7 @@ fn journal_loop(app: AppHandle) {
 fn stream_ws_snapshots(
     api: &ClashApi,
     interval_ms: u64,
+    mut interval_changed: impl FnMut() -> bool,
     mut on_text: impl FnMut(&str),
 ) -> Result<(), String> {
     let url = api.connections_ws_url(interval_ms);
@@ -138,6 +145,10 @@ fn stream_ws_snapshots(
             let _ = socket.close(None);
             return Ok(());
         }
+        if interval_changed() {
+            let _ = socket.close(None);
+            return Ok(());
+        }
         match socket.read() {
             Ok(Message::Text(text)) => on_text(text.as_str()),
             Ok(Message::Binary(bin)) => {
@@ -159,5 +170,17 @@ fn stream_ws_snapshots(
             Err(WsError::ConnectionClosed) | Err(WsError::AlreadyClosed) => return Ok(()),
             Err(e) => return Err(e.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visibility_selects_the_expected_sampling_interval() {
+        assert_eq!(interval_for_visibility(true), WS_INTERVAL_ACTIVE_MS);
+        assert_eq!(interval_for_visibility(false), WS_INTERVAL_BACKGROUND_MS);
+        assert!(WS_INTERVAL_BACKGROUND_MS > WS_INTERVAL_ACTIVE_MS);
     }
 }

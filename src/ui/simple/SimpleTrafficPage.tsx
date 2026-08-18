@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { getProxyStatus, listConnections } from "../../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getProxyStatus, listConnectionChanges } from "../../api";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
+import { useI18n } from "../../i18n";
 import type { ConnectionView } from "../../types";
+import { applyConnectionChanges } from "../../connectionChanges";
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -10,19 +12,22 @@ function fmtBytes(n: number) {
 }
 
 export function SimpleTrafficPage() {
+  const { t } = useI18n();
   const [rows, setRows] = useState<ConnectionView[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const revisionRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
-      const [status, list] = await Promise.all([
+      const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnections(),
+        listConnectionChanges(revisionRef.current),
       ]);
       setRunning(!!status?.running);
-      setRows(list);
+      revisionRef.current = batch.revision;
+      if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -33,9 +38,7 @@ export function SimpleTrafficPage() {
     void reload();
   }, [reload]);
 
-  useVisibleInterval(() => {
-    void reload();
-  }, 1500);
+  useVisibleInterval(() => reload(), 1500);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -49,15 +52,20 @@ export function SimpleTrafficPage() {
   }, [rows, query]);
 
   return (
-    <div className="simple-page simple-traffic">
-      <header className="simple-page-head">
+    <div className="page simple-page simple-traffic">
+      <header className="page-header">
         <div>
-          <div className="simple-kicker muted">LIVE</div>
-          <h1 className="simple-title">流量</h1>
+          <h1>{t("traffic.title")}</h1>
+          <p className="page-desc">
+            {t("conn.desc")}
+            {" · "}
+            <span className="mono">
+              {running
+                ? t("conn.active", { n: filtered.length })
+                : t("simple.notRunning")}
+            </span>
+          </p>
         </div>
-        <span className="muted mono" style={{ fontSize: 12 }}>
-          {running ? `${filtered.length} 连接` : "未运行"}
-        </span>
       </header>
 
       <input
@@ -67,26 +75,29 @@ export function SimpleTrafficPage() {
         className="search simple-search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        placeholder="过滤域名 / 节点…"
+        placeholder={t("conn.filter")}
       />
 
       {error && <div className="banner error">{error}</div>}
 
       {!running ? (
-        <div className="simple-card empty muted">启动代理后显示实时连接</div>
+        <div className="empty card muted">{t("conn.needStart")}</div>
       ) : filtered.length === 0 ? (
-        <div className="simple-card empty muted">暂无连接</div>
+        <div className="empty card muted">{t("conn.empty")}</div>
       ) : (
         <ul className="simple-conn-list">
           {filtered.map((r) => (
-            <li key={r.id} className="simple-card simple-conn-item">
+            <li key={r.id} className="simple-conn-item">
               <div className="simple-conn-host" title={r.destination || r.host}>
                 {r.host || r.destination || "—"}
               </div>
               <div className="simple-conn-meta muted">
                 <span>{r.node_name || r.node_tag || "—"}</span>
                 <span className="mono">
-                  ↑{fmtBytes(r.upload)} ↓{fmtBytes(r.download)}
+                  <span className="tr-dir up">↑</span>
+                  {fmtBytes(r.upload)}{" "}
+                  <span className="tr-dir down">↓</span>
+                  {fmtBytes(r.download)}
                 </span>
               </div>
             </li>
