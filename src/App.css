@@ -632,6 +632,9 @@ button {
   max-width: 100%;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Reserve the scrollbar gutter so tab switches between short and tall
+     pages (rules <-> dns) don't wobble the content box width sideways. */
+  scrollbar-gutter: stable;
   overscroll-behavior-x: none;
   padding: 0.75rem 1.5rem 1.75rem;
   background: transparent;
@@ -639,7 +642,7 @@ button {
 
 /* Page switch: fade-in + gentle rise on mount (keyed remount in App.tsx). */
 .page-enter {
-  animation: page-enter 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: page-enter var(--page-enter-ms, 240ms) cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes page-enter {
@@ -653,8 +656,40 @@ button {
   }
 }
 
+/* While page-enter runs, its animating opacity puts the subtree in a
+   semi-transparent group: backdrop-filter inside samples only that group and
+   misses the dark page background behind it, so glass controls read as
+   briefly bright before settling ("先亮后暗"). Hold their backdrop-filter off
+   for exactly the entrance duration; with the default fill-mode it flips
+   back on the same frame the group flattens. Keep the duration in sync
+   with .page-enter via --page-enter-ms. */
+:root {
+  --page-enter-ms: 240ms;
+}
+
+.page-enter .glass-seg,
+.page-enter .glass-btn,
+.page-enter .glass-switch-track {
+  animation: glass-backdrop-in var(--page-enter-ms, 240ms);
+}
+
+@keyframes glass-backdrop-in {
+  from,
+  to {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-enter {
+    animation: none;
+  }
+
+  /* No entrance group ever forms — nothing to bridge. */
+  .page-enter .glass-seg,
+  .page-enter .glass-btn,
+  .page-enter .glass-switch-track {
     animation: none;
   }
 }
@@ -3078,6 +3113,16 @@ code {
    preferences card near its old width in the former two-column layout. */
 .settings-app-page .settings-panel {
   max-width: 46rem;
+}
+
+/* Rules / DNS tabs both overflow .main once loaded, but they mount with an
+   empty/loading body that briefly fits the viewport — the scrollbar thumb
+   would flash out and back on every tab switch. Keep the embed overflowing
+   through the async load so the thumb stays put. Generous margin below the
+   visible-area threshold (~100vh - 11rem of chrome) and still shorter than
+   both pages' loaded height, so no permanent empty tail. */
+.settings-scroll-embed {
+  min-height: calc(100vh - 9rem);
 }
 
 /* Ports tab: shared toolbar on top (save applies to both columns), then the
@@ -6239,6 +6284,8 @@ button.active-soft {
   box-sizing: border-box;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Same gutter reservation as .main — no sideways wobble on tab switch. */
+  scrollbar-gutter: stable;
 }
 
 .simple-main .page-enter {
