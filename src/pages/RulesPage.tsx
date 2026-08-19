@@ -656,6 +656,8 @@ export function RulesPage({ embedded = false }: Props) {
   async function onToggleSet(id: string, nextEnabled: boolean) {
     const current = sets.find((s) => s.id === id);
     if (!current || current.enabled === nextEnabled) return;
+    // Empty sets cannot be enabled (the backend rejects it too).
+    if (nextEnabled && current.rule_count === 0) return;
 
     const prevEnabled = current.enabled;
     const gen = nextToggleGen(id);
@@ -1155,7 +1157,14 @@ export function RulesPage({ embedded = false }: Props) {
                 <GlassSwitchControl
                   checked={s.enabled}
                   size="sm"
-                  title={s.enabled ? t("rules.disableSet") : t("rules.enableSet")}
+                  disabled={!s.enabled && s.rule_count === 0}
+                  title={
+                    !s.enabled && s.rule_count === 0
+                      ? t("rules.enableEmptyHint")
+                      : s.enabled
+                        ? t("rules.disableSet")
+                        : t("rules.enableSet")
+                  }
                   onClick={(e) => {
                     e.stopPropagation();
                   }}

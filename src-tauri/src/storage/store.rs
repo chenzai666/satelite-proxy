@@ -958,6 +958,13 @@ impl AppStore {
             .iter_mut()
             .find(|s| s.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        // Enabling an empty set would change nothing in the generated config
+        // (no matchable local rules / no downloaded remote cache).
+        if enabled && crate::config::rule_set_is_empty_for_config(set) {
+            return Err(crate::error::AppError::Config(
+                "规则集暂无可生效的规则，无法启用".into(),
+            ));
+        }
         set.enabled = enabled;
         Ok(())
     }
@@ -1093,6 +1100,8 @@ impl AppStore {
         if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
             set.dns_strategy = dns_strategy;
         }
+        // New sets start disabled — enable once they hold effective rules.
+        set.enabled = false;
         self.rule_sets.insert(0, set.clone());
         set
     }
@@ -1108,6 +1117,9 @@ impl AppStore {
         if let Some(remote) = set.remote.as_mut() {
             remote.update_interval = update_interval.to_string();
         }
+        // New sets start disabled — enable after the first successful
+        // download produces a cached rule file.
+        set.enabled = false;
         self.rule_sets.insert(0, set.clone());
         set
     }
@@ -1581,6 +1593,40 @@ mod tests {
             set.dns_strategy,
             RuleSetStrategy::Smart.recommended_dns_strategy().unwrap()
         );
+    }
+
+    #[test]
+    fn new_sets_start_disabled_and_empty_sets_cannot_be_enabled() {
+        use crate::domain::{Rule, RuleSetStrategy, RuleTarget, RuleType};
+        let mut store = AppStore::default();
+        let local = store.create_local_rule_set("新本地", RuleSetStrategy::Proxy);
+        assert!(!local.enabled, "new local sets start disabled");
+        assert!(
+            store.set_rule_set_enabled(&local.id, true).is_err(),
+            "empty local set cannot be enabled"
+        );
+
+        // One effective rule unlocks enabling.
+        store
+            .upsert_rule_in_set(
+                &local.id,
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 1),
+            )
+            .unwrap();
+        store.set_rule_set_enabled(&local.id, true).unwrap();
+        assert!(store.get_rule_set(&local.id).unwrap().enabled);
+        // Disabling a populated set stays allowed.
+        store.set_rule_set_enabled(&local.id, false).unwrap();
+
+        let remote = store.create_remote_rule_set(
+            "新远程",
+            "https://example.com/r.json",
+            RuleTarget::Proxy,
+            "1h",
+        );
+        assert!(!remote.enabled, "new remote sets start disabled");
+        // No downloaded cache file yet → still empty for config purposes.
+        assert!(store.set_rule_set_enabled(&remote.id, true).is_err());
     }
 
     #[test]
