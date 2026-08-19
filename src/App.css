@@ -503,6 +503,23 @@ button {
   pointer-events: none;
 }
 
+/* Day theme: the translucent white glass is invisible on the light navbar,
+   leaving the drop shadow as the only visible highlight — and that shadow
+   is square-clipped by .topnav-items' overflow, reading as a weird
+   straight-edged halo around the rounded pill. Paint a crisp white capsule
+   instead (same treatment as the day .glass-seg-indicator). */
+[data-theme="day"] .topnav-indicator {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="day"] .topnav-indicator::before {
+  display: none;
+}
+
 .topnav-item {
   border: none !important;
   background: transparent !important;
