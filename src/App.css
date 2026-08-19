@@ -91,13 +91,12 @@
   color-scheme: light;
   --bg: #eef0f4;
   --bg-deep: #e4e7ed;
-  /* Cards lean on their backdrop-filter frost: the page bg is near-white,
-     so the alpha has to drop well below 50% before translucency reads at
-     all (78%→60% was imperceptible). Menus/modals stay on --panel-*.
-     Lower further (0.3) for more bleed-through, raise toward 0.6 to dial
-     back. */
-  --surface: rgba(255, 255, 255, 0.42);
-  --surface-2: rgba(255, 255, 255, 0.65);
+  /* Cards lean on their backdrop-filter frost. The page bg is near-white,
+     so the alpha must be low AND the background must carry colour for the
+     translucency to read (white glass over white is invisible). Menus and
+     modals stay on the opaque --panel-* vars. */
+  --surface: rgba(255, 255, 255, 0.3);
+  --surface-2: rgba(255, 255, 255, 0.55);
   --text: rgba(18, 22, 28, 0.92);
   /* Gray text lifted for readability on the light surfaces: muted sat at
      ~4.0:1 contrast (below the 4.5:1 AA bar for body text), faint/placeholder
@@ -293,9 +292,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(48, 155, 119, 0.2) 0%,
-      rgba(77, 158, 132, 0.12) 36%,
-      rgba(112, 164, 148, 0.05) 60%,
+      rgba(48, 155, 119, 0.26) 0%,
+      rgba(77, 158, 132, 0.16) 36%,
+      rgba(112, 164, 148, 0.07) 60%,
       transparent 77%
     ),
     var(--page-glow),
@@ -1053,11 +1052,19 @@ tr.row-active {
 /* WebView2 can flash a white compositor tile over settings and traffic cards
    when the glass navbar repaints on hover. The card fill already provides the
    intended translucent surface, so avoid a second backdrop-filter layer on
-   these pages. */
+   these pages — except in the day theme, where cards sit at 42% white and
+   need the frost to behave like everywhere else (and a white flash tile is
+   invisible on light surfaces anyway). */
 .settings-page .card,
 .traffic-page .card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+[data-theme="day"] .settings-page .card,
+[data-theme="day"] .traffic-page .card {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .settings-tabs {
@@ -3475,7 +3482,8 @@ code {
 .dns-panel-head {
   padding: 0.7rem 0.95rem 0.6rem;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 55%, var(--surface));
+  /* No strip fill: the card surface is translucent in both themes, and a
+     solid header band read as an opaque card. The border separates. */
   flex-shrink: 0;
 }
 
@@ -3803,7 +3811,7 @@ button.check.on {
   margin-top: auto;
   padding: 0.7rem 0.85rem 0.85rem;
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 40%, var(--surface));
+  /* Same as .dns-panel-head: no strip fill, translucency stays uniform. */
 }
 
 .dns-add-title {
