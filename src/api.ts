@@ -486,7 +486,7 @@ export function setRuleSetDnsStrategy(id: string, strategy: RuleSetDnsStrategy) 
 export function createRuleSet(
   name: string,
   remoteUrl?: string | null,
-  target?: "proxy" | "direct" | "block" | null,
+  target?: "proxy" | "direct" | "block" | "smart" | null,
   updateInterval?: "disabled" | "1h" | "12h" | "24h" | null,
 ) {
   return invoke<RuleSet>("create_rule_set", {

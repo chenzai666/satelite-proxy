@@ -748,6 +748,28 @@ button {
   word-break: break-all;
 }
 
+/* Guidance banner (rule editor, plain-set divergence): text + inline CTA. */
+.banner.guide {
+  background: var(--warning-muted);
+  color: var(--warning);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.75rem;
+}
+
+.rule-diverge-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.rule-diverge-banner .glass-btn {
+  flex: 0 0 auto;
+}
+
 .toast {
   position: fixed;
   top: 1.25rem;
@@ -2164,20 +2186,13 @@ button.node-card:disabled,
   white-space: nowrap;
 }
 
-.rules-main-actions .glass-seg {
-  padding: 0.12rem;
-}
-
-.rules-main-actions .glass-seg-indicator {
-  top: 0.12rem;
-  bottom: 0.12rem;
-  left: 0.12rem;
-  width: calc((100% - 0.24rem) / var(--count, 3));
-}
-
-.rules-main-actions .glass-seg-btn {
-  padding: 0.24rem 0.48rem !important;
-  font-size: 0.65rem !important;
+/* Read-only strategy badge in the toolbar — editing lives in the ⋮ menu
+   (Batch set routes). */
+.rules-strategy-pill {
+  cursor: default;
+  border-radius: 999px;
+  padding: 0.14rem 0.55rem;
+  font-size: 0.65rem;
 }
 
 .rules-toolbar-tail {

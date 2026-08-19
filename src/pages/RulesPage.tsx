@@ -40,7 +40,6 @@ import type {
   ProxyNode,
   Rule,
   RuleSetDnsStrategy,
-  RuleSetStrategy,
   RuleSetSummary,
   RemoteRulePage,
   RuleTarget,
@@ -117,7 +116,7 @@ export function RulesPage({ embedded = false }: Props) {
   const [newSetName, setNewSetName] = useState(t("rules.setNamePh"));
   const [newSetKind, setNewSetKind] = useState<"local" | "remote">("local");
   const [newSetUrl, setNewSetUrl] = useState("");
-  const [newSetTarget, setNewSetTarget] = useState<RouteFinal>("proxy");
+  const [newSetTarget, setNewSetTarget] = useState<RouteFinal | "smart">("proxy");
   const [newSetUpdateInterval, setNewSetUpdateInterval] = useState<
     "disabled" | "1h" | "12h" | "24h"
   >("disabled");
@@ -433,6 +432,12 @@ export function RulesPage({ embedded = false }: Props) {
 
   const viewSet = sets.find((s) => s.id === viewSetId);
 
+  /** Plain sets stay uniform: a per-rule target different from the set
+   *  strategy must live in a Mixed (smart) set — the editor guides the
+   *  conversion instead of saving a silently-diverging rule. */
+  const plainDiverged =
+    !!viewSet && viewSet.strategy !== "smart" && target !== viewSet.strategy;
+
   useEffect(() => {
     setRemotePageIndex(0);
     setRemoteParsed(false);
@@ -502,7 +507,7 @@ export function RulesPage({ embedded = false }: Props) {
         ? t("rules.targetDirect")
         : s === "block"
           ? t("rules.targetBlock")
-          : t("rules.targetSmart");
+          : t("rules.strategySmart");
   }
 
   function dnsStrategyLabel(s: string): string {
@@ -602,7 +607,7 @@ export function RulesPage({ embedded = false }: Props) {
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
-    if (!viewSetId || !payload.trim()) return;
+    if (!viewSetId || !payload.trim() || plainDiverged) return;
     // Smart sets honor the full target list; plain sets honor the per-rule
     // proxy/direct/block choice (the builder routes each rule separately).
     const effectiveTarget = clampTargetForSet(target);
@@ -682,17 +687,12 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onStrategyChange(strategy: RuleSetStrategy) {
-    if (!viewSetId || !viewSet || strategy === viewSet.strategy || busy) return;
-    if (
-      viewSet.strategy === "smart" &&
-      strategy !== "smart" &&
-      !confirm(t("rules.switchStrategyConfirm"))
-    ) return;
+  async function onDnsStrategyChange(strategy: RuleSetDnsStrategy) {
+    if (!viewSetId || !viewSet || strategy === viewSet.dns_strategy || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await setRuleSetStrategy(viewSetId, strategy);
+      await setRuleSetDnsStrategy(viewSetId, strategy);
       await Promise.all([reloadSets(), reloadRules(viewSetId)]);
     } catch (err) {
       setError(String(err));
@@ -701,12 +701,16 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  async function onDnsStrategyChange(strategy: RuleSetDnsStrategy) {
-    if (!viewSetId || !viewSet || strategy === viewSet.dns_strategy || busy) return;
+  /** Convert a plain set to Mixed from the rule editor. Flip-to-smart keeps
+   *  every rule's current target (the uniform base), so only the rule being
+   *  edited ends up diverging; the editor stays open with all per-rule
+   *  targets unlocked. */
+  async function onConvertToSmart() {
+    if (!viewSetId || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await setRuleSetDnsStrategy(viewSetId, strategy);
+      await setRuleSetStrategy(viewSetId, "smart");
       await Promise.all([reloadSets(), reloadRules(viewSetId)]);
     } catch (err) {
       setError(String(err));
@@ -1266,20 +1270,15 @@ export function RulesPage({ embedded = false }: Props) {
             <div className="header-actions rules-main-actions">
               <div className="rules-policy-control">
                 <span className="muted rules-policy-label">{t("rules.routeLabel")}</span>
-                <GlassSeg
-                  value={viewSet?.strategy ?? "proxy"}
-                  ariaLabel={t("rules.routeStrategyAria")}
-                  disabled={!viewSet || busy}
-                  onChange={(value) => void onStrategyChange(value as RuleSetStrategy)}
-                  options={[
-                    { value: "proxy", label: strategyLabel("proxy") },
-                    { value: "direct", label: strategyLabel("direct") },
-                    { value: "block", label: strategyLabel("block") },
-                    ...(!viewSet?.remote ? [{ value: "smart", label: t("rules.smartLabel") }] : []),
-                  ]}
-                />
+                <span
+                  className={`pill target-${viewSet?.strategy ?? "proxy"} rules-strategy-pill`}
+                  title={t("rules.strategyEditHint")}
+                  aria-label={t("rules.routeStrategyAria")}
+                >
+                  {strategyLabel(viewSet?.strategy ?? "proxy")}
+                </span>
               </div>
-              {(viewSet?.strategy !== "block" || !viewSet?.remote) && (
+              {viewSet && (
               <div className="rule-menu rules-more" data-toolbar-menu>
                 <button
                   type="button"
@@ -1293,7 +1292,7 @@ export function RulesPage({ embedded = false }: Props) {
                 </button>
                 {toolbarMenuOpen && (
                   <div className="rule-menu-pop rules-more-pop" role="menu">
-                    {viewSet?.strategy !== "block" && (
+                    {viewSet.strategy !== "block" && (
                       <div className="rules-more-section">
                         <div className="muted rules-more-title">
                           {t("rules.setMenuDnsTitle")}
@@ -1321,22 +1320,18 @@ export function RulesPage({ embedded = false }: Props) {
                         })}
                       </div>
                     )}
-                    {!viewSet?.remote && (
-                      <>
-                        <div className="rules-more-divider" />
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="rule-menu-item"
-                          onClick={() => {
-                            setToolbarMenuOpen(false);
-                            openBatch();
-                          }}
-                        >
-                          {t("rules.batchSetRules")}
-                        </button>
-                      </>
-                    )}
+                    <div className="rules-more-divider" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="rule-menu-item"
+                      onClick={() => {
+                        setToolbarMenuOpen(false);
+                        openBatch();
+                      }}
+                    >
+                      {t("rules.batchSetRules")}
+                    </button>
                   </div>
                 )}
               </div>
@@ -1615,15 +1610,17 @@ export function RulesPage({ embedded = false }: Props) {
             </header>
             <form className="modal-body" onSubmit={(e) => void onBatchApply(e)}>
               <div className="muted" style={{ fontSize: 12 }}>
-                {rules.length === 0
-                  ? t("rules.batchEmpty")
-                  : t("rules.batchHint", { name: viewSet.name, n: rules.length })}
+                {viewSet.remote
+                  ? t("rules.batchRemoteHint", { name: viewSet.name })
+                  : rules.length === 0
+                    ? t("rules.batchEmpty")
+                    : t("rules.batchHint", { name: viewSet.name, n: rules.length })}
               </div>
               <div className="field">
                 <span>{t("rules.outbound")}</span>
                 <SolidSelect
                   value={batchTarget}
-                  options={targetOpts}
+                  options={viewSet.remote ? targetOpts.slice(0, 3) : targetOpts}
                   onChange={(v) => setBatchTarget(v as RuleTarget)}
                   aria-label={t("rules.outbound")}
                 />
@@ -1690,11 +1687,14 @@ export function RulesPage({ embedded = false }: Props) {
                   </label>
                 </div>
               )}
-              {(batchTarget === "node" || batchTarget === "smart") && (
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {t("rules.batchHybridHint")}
-                </div>
-              )}
+              <div className="muted" style={{ fontSize: 12 }}>
+                {t("rules.batchStrategyPreview", {
+                  s:
+                    batchTarget === "proxy" || batchTarget === "direct" || batchTarget === "block"
+                      ? strategyLabel(batchTarget)
+                      : t("rules.strategySmart"),
+                })}
+              </div>
               <footer className="modal-footer">
                 <GlassButton onClick={() => setBatchOpen(false)}>
                   {t("common.cancel")}
@@ -1704,13 +1704,15 @@ export function RulesPage({ embedded = false }: Props) {
                   type="submit"
                   disabled={
                     batchBusy ||
-                    rules.length === 0 ||
+                    (!viewSet.remote && rules.length === 0) ||
                     (batchTarget === "node" && !batchNodeId.trim())
                   }
                 >
                   {batchBusy
                     ? t("common.loading")
-                    : t("rules.batchApply", { n: rules.length })}
+                    : viewSet.remote
+                      ? t("rules.batchApplySet")
+                      : t("rules.batchApply", { n: rules.length })}
                 </GlassButton>
               </footer>
             </form>
@@ -1773,6 +1775,17 @@ export function RulesPage({ embedded = false }: Props) {
                   aria-label={t("rules.outbound")}
                 />
               </div>
+              {plainDiverged && (
+                <div className="banner guide rule-diverge-banner">
+                  <span>{t("rules.plainDivergeBanner")}</span>
+                  <GlassButton
+                    onClick={() => void onConvertToSmart()}
+                    disabled={busy}
+                  >
+                    {t("rules.convertToSmartCta")}
+                  </GlassButton>
+                </div>
+              )}
               {viewSet?.strategy === "smart" && target === "node" && (
                 <div className="field rule-node-pick">
                   <span>{t("rules.pickNode")}</span>
@@ -1894,6 +1907,7 @@ export function RulesPage({ embedded = false }: Props) {
                   variant="primary"
                   disabled={
                     busy ||
+                    plainDiverged ||
                     !payload.trim() ||
                     (viewSet?.strategy === "smart" && target === "node" && !pinNodeId.trim()) ||
                     (viewSet?.strategy === "smart" && target === "smart" &&
@@ -1929,7 +1943,14 @@ export function RulesPage({ embedded = false }: Props) {
                 <GlassSeg
                   value={newSetKind}
                   ariaLabel={t("rules.addModeLabel")}
-                  onChange={(value) => setNewSetKind(value as "local" | "remote")}
+                  onChange={(value) => {
+                    const kind = value as "local" | "remote";
+                    setNewSetKind(kind);
+                    // Mixed is a local-only strategy — remote sets stay p/d/b.
+                    if (kind === "remote" && newSetTarget === "smart") {
+                      setNewSetTarget("proxy");
+                    }
+                  }}
                   options={[
                     { value: "local", label: t("rules.addModeLocal") },
                     { value: "remote", label: t("rules.addModeRemote") },
@@ -1963,20 +1984,29 @@ export function RulesPage({ embedded = false }: Props) {
                 </label>
               )}
               {/* Route choice for BOTH kinds — local sets pick their initial
-                  strategy here, mirroring the remote flow. */}
+                  strategy here, mirroring the remote flow. Mixed (per-rule
+                  outbounds) is local-only. */}
               <label className="field">
                 <span>{t("rules.routeLabel")}</span>
                 <GlassSeg
                   value={newSetTarget}
                   ariaLabel={t("rules.routeStrategyAria")}
-                  onChange={(value) => setNewSetTarget(value as RouteFinal)}
+                  onChange={(value) => setNewSetTarget(value as RouteFinal | "smart")}
                   options={[
                     { value: "proxy", label: t("rules.targetProxy") },
                     { value: "direct", label: t("rules.targetDirect") },
                     { value: "block", label: t("rules.targetBlock") },
+                    ...(newSetKind === "local"
+                      ? [{ value: "smart", label: t("rules.strategySmart") }]
+                      : []),
                   ]}
                 />
               </label>
+              {newSetKind === "local" && newSetTarget === "smart" && (
+                <p className="muted" style={{ fontSize: 12, margin: 0 }}>
+                  {t("rules.createSetSmartHint")}
+                </p>
+              )}
               {newSetKind === "remote" && (
                 <>
                   <label className="field">

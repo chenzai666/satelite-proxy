@@ -1012,9 +1012,17 @@ impl AppStore {
             .iter_mut()
             .find(|set| set.id == id)
             .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
-        if set.remote.is_some() {
+        let is_remote = set.remote.is_some();
+        // Remote sets route the whole set by target; node pins and keyword
+        // filters are local per-rule features.
+        if is_remote
+            && !matches!(
+                target,
+                RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+            )
+        {
             return Err(crate::error::AppError::Config(
-                "远程规则集没有本地规则,无法批量设置".into(),
+                "远程规则集仅支持代理 / 直连 / 屏蔽".into(),
             ));
         }
         let pin = if target == RuleTarget::Node {
@@ -1049,6 +1057,9 @@ impl AppStore {
             RuleTarget::Node | RuleTarget::Smart => {
                 set.strategy = RuleSetStrategy::Smart;
             }
+        }
+        if let Some(remote) = set.remote.as_mut() {
+            remote.target = target.clone();
         }
         for rule in &mut set.rules {
             rule.target = target.clone();
@@ -1522,6 +1533,34 @@ mod tests {
     }
 
     #[test]
+    fn batch_set_rule_targets_routes_remote_whole_set() {
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        let mut store = AppStore::default();
+        let set = store.create_remote_rule_set(
+            "远程集",
+            "https://example.com/rules.json",
+            RuleTarget::Proxy,
+            "1h",
+        );
+
+        let (updated, _) = store
+            .batch_set_rule_targets(&set.id, RuleTarget::Direct, None, vec![], vec![])
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Direct);
+        assert_eq!(
+            updated.remote.expect("remote config").target,
+            RuleTarget::Direct
+        );
+
+        // Node / smart stay local-only for remote sets.
+        assert!(
+            store
+                .batch_set_rule_targets(&set.id, RuleTarget::Smart, None, vec![], vec![])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn create_local_rule_set_applies_initial_strategy() {
         use crate::domain::RuleSetStrategy;
         let mut store = AppStore::default();
@@ -1530,6 +1569,18 @@ mod tests {
         // DNS pairing follows the same recommendation as a strategy flip.
         assert_eq!(set.dns_strategy, RuleSetStrategy::Direct.recommended_dns_strategy().unwrap());
         assert!(store.rule_sets[0].id == set.id, "new set lands on top");
+    }
+
+    #[test]
+    fn create_local_rule_set_smart_pairs_remote_dns() {
+        use crate::domain::RuleSetStrategy;
+        let mut store = AppStore::default();
+        let set = store.create_local_rule_set("混合集", RuleSetStrategy::Smart);
+        assert_eq!(set.strategy, RuleSetStrategy::Smart);
+        assert_eq!(
+            set.dns_strategy,
+            RuleSetStrategy::Smart.recommended_dns_strategy().unwrap()
+        );
     }
 
     #[test]

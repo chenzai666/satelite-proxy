@@ -662,19 +662,23 @@ pub fn create_rule_set(
                 Ok(store.create_remote_rule_set(n, url, target, update_interval))
             } else {
                 // Local set: an optional initial strategy from the new-set
-                // dialog's 路由 choice (same p/d/b restriction as remote).
+                // dialog's 路由 choice (Mixed is local-only; remote keeps p/d/b).
                 let target = target.unwrap_or(RuleTarget::Proxy);
                 if !matches!(
                     target,
-                    RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+                    RuleTarget::Proxy
+                        | RuleTarget::Direct
+                        | RuleTarget::Block
+                        | RuleTarget::Smart
                 ) {
                     return Err(crate::error::AppError::Config(
-                        "本地规则集仅支持 proxy/direct/block 策略".into(),
+                        "本地规则集仅支持 proxy/direct/block/smart 策略".into(),
                     ));
                 }
                 let strategy = match target {
                     RuleTarget::Direct => RuleSetStrategy::Direct,
                     RuleTarget::Block => RuleSetStrategy::Block,
+                    RuleTarget::Smart => RuleSetStrategy::Smart,
                     _ => RuleSetStrategy::Proxy,
                 };
                 Ok(store.create_local_rule_set(n, strategy))
