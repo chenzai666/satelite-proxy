@@ -44,6 +44,24 @@ pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Rotate the clash_api secret (user-triggered from Settings → Ports).
+/// Restarts a running core so the new secret takes effect immediately.
+#[tauri::command]
+pub async fn regenerate_api_secret(app: AppHandle) -> Result<AppSettings, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .regenerate_api_secret(resource_dir.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("regenerate secret task: {e}"))?
+}
+
 #[tauri::command]
 pub fn update_settings(
     app: AppHandle,
@@ -550,7 +568,6 @@ fn restore_generated_tag_names(
 pub async fn generate_singbox_config(
     state: State<'_, AppState>,
 ) -> Result<GenerateConfigResult, String> {
-    let secret = generate_api_secret();
     let app_data_dir = state.app_data_dir.clone();
 
     let (nodes, settings, rules, remote_rule_sets, dns) = state
@@ -565,6 +582,13 @@ pub async fn generate_singbox_config(
         })
         .map_err(|e| e.to_string())?;
 
+    // Reuse the persisted secret (user rotates it explicitly); generate only
+    // for old stores that predate the clash_api_secret field.
+    let secret = settings
+        .clash_api_secret
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(generate_api_secret);
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let built = build_singbox_config(

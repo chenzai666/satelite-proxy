@@ -281,6 +281,11 @@ export function updateSettings(payload: SettingsUpdatePayload) {
   return result;
 }
 
+/** Rotate the clash_api secret (user-triggered). Restarts a running core. */
+export function regenerateApiSecret() {
+  return invoke<AppSettings>("regenerate_api_secret");
+}
+
 export function setCurrentNode(nodeId: string) {
   return invoke<AppSettings>("set_current_node", { nodeId });
 }

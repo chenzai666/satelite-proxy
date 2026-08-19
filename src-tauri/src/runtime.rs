@@ -656,7 +656,14 @@ impl Runtime {
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
-        let secret = generate_api_secret();
+        // Reuse the persisted clash_api secret so it survives restarts; only
+        // old stores (field missing/empty) get one generated on first start.
+        let secret = store
+            .settings
+            .clash_api_secret
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(generate_api_secret);
         let built = build_singbox_config(
             &nodes,
             &BuildOptions {

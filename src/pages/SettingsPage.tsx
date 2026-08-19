@@ -6,6 +6,7 @@ import {
   getCoreInfo,
   getProxyStatus,
   getSettings,
+  regenerateApiSecret,
   restartProxy,
   updateSettings,
 } from "../api";
@@ -266,10 +267,6 @@ export function SettingsPage() {
       const status = await getProxyStatus().catch(() => null);
       if (status?.running) {
         await restartProxy();
-        // Restart regenerates the clash_api secret; re-read so the
-        // read-only secret field below shows the value now in effect.
-        const fresh = await getSettings();
-        setSettings(fresh);
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -358,6 +355,21 @@ export function SettingsPage() {
       window.setTimeout(() => setSecretCopied(false), 1500);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** User-triggered secret rotation; backend restarts a running core so the
+   * new secret is live immediately. */
+  async function onRegenerateSecret() {
+    setError(null);
+    setBusy(true);
+    try {
+      const s = await regenerateApiSecret();
+      setSettings(s);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -718,6 +730,14 @@ export function SettingsPage() {
                     title={t("common.copy")}
                   >
                     {secretCopied ? t("common.copied") : t("common.copy")}
+                  </GlassButton>
+                  <GlassButton
+                    icon="↻"
+                    disabled={busy || customRuntime}
+                    onClick={() => void onRegenerateSecret()}
+                    title={t("settings.regenerateSecret")}
+                  >
+                    {t("settings.regenerateSecret")}
                   </GlassButton>
                 </div>
                 <span className="field-hint muted">

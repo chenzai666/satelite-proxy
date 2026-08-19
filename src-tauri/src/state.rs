@@ -1214,4 +1214,36 @@ impl AppState {
             Ok(status)
         }
     }
+
+    /// User-triggered clash_api secret rotation. Persists a new secret and
+    /// restarts a running core so the regenerated config picks it up.
+    pub fn regenerate_api_secret(
+        &self,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<crate::domain::AppSettings> {
+        let _transition = self.begin_core_transition()?;
+        let mut runtime = self.lock_runtime();
+        let _persistence = self.lock_store_persistence();
+        let mut store = self.lock_store();
+
+        if store.settings.runtime_source().is_custom() {
+            return Err(crate::error::AppError::Core(
+                "自写配置模式下无法重新生成密钥，请在配置文件里自行修改".into(),
+            ));
+        }
+
+        store.settings.clash_api_secret = Some(crate::config::generate_api_secret());
+        store.save(&self.store_path)?;
+
+        runtime.core.poll();
+        if runtime.core.is_running() {
+            self.mark_cached_core_state(CoreState::Starting);
+            runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+            store.save(&self.store_path)?;
+        }
+        let status = runtime.status(&store);
+        self.cache_status(&status);
+
+        Ok(store.settings.clone())
+    }
 }
