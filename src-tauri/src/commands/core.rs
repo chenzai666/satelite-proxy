@@ -133,6 +133,21 @@ fn parse_version(v: &str) -> Vec<u32> {
         .collect()
 }
 
+/// The machine's LAN IPv4 (of the default-route interface), for the
+/// dashboard's listen card. The UDP "connect" trick only makes the OS pick
+/// a route — no packet is sent — so it works offline as long as an
+/// interface with a default route exists. `None` when there is no such
+/// address (e.g. fully offline).
+#[tauri::command]
+pub fn get_lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_newer_version;

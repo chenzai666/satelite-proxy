@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getCoreInfo,
+  getLanIp,
   getProxyStatus,
   getSettings,
+  getSubscription,
   listAllNodes,
   listSubscriptions,
   previewSingboxConfig,
   restartProxy,
+  setRuntimeSource,
   setOutboundMode,
   startProxy,
   smartSwitchNow,
@@ -20,6 +23,7 @@ import {
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
@@ -32,6 +36,27 @@ import type {
   SubscriptionTraffic,
   SubscriptionView,
 } from "../types";
+
+/**
+ * Split a config line around (all occurrences of) the filter string and wrap
+ * the hits in <mark>. Case-insensitive; the query is always non-empty here.
+ */
+function highlightPreviewLine(line: string, query: string): ReactNode {
+  const lower = line.toLowerCase();
+  const lq = query.toLowerCase();
+  const parts: ReactNode[] = [];
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(lq, from);
+    if (at === -1) {
+      parts.push(line.slice(from));
+      return parts;
+    }
+    if (at > from) parts.push(line.slice(from, at));
+    parts.push(<mark key={at}>{line.slice(at, at + query.length)}</mark>);
+    from = at + query.length;
+  }
+}
 
 interface Props {
   onGoProfiles?: () => void;
@@ -98,6 +123,30 @@ function fmtUptime(startedAt?: number | null) {
   return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
 }
 
+/** Keep an element on a single line by shrinking its font until the content
+ *  fits (never wraps; ellipsis is the last resort below the size floor).
+ *  Re-fits when the text changes or the window resizes. */
+function useSingleLineFit<T extends HTMLElement>(text: string) {
+  const ref = useRef<T | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      // Drop any previous override so the CSS clamp() sets the start size.
+      el.style.fontSize = "";
+      let size = parseFloat(getComputedStyle(el).fontSize);
+      while (size > 12 && el.scrollWidth > el.clientWidth) {
+        size -= 1;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [text]);
+  return ref;
+}
+
 export function DashboardPage({
   onGoProfiles,
   onGoNodes,
@@ -110,7 +159,13 @@ export function DashboardPage({
   const [currentNode, setCurrentNode] = useState<ProxyNode | null>(null);
   /** settings.current_node_id — available before full node list. */
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
-  const [settingsPorts, setSettingsPorts] = useState({ mixed: 2080, api: 19090 });
+  const [settingsPorts, setSettingsPorts] = useState({
+    mixed: 2080,
+    api: 19090,
+    extras: [] as import("../types").ExtraInbound[],
+  });
+  /** LAN IPv4 for the listen card (null until fetched / offline). */
+  const [lanIp, setLanIp] = useState<string | null>(null);
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [proxy, setProxy] = useState<ProxyStatus | null>(null);
@@ -121,6 +176,9 @@ export function DashboardPage({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  /** Config-preview modal: quick line filter + copy feedback. */
+  const [previewQuery, setPreviewQuery] = useState("");
+  const [previewCopied, setPreviewCopied] = useState(false);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -129,6 +187,7 @@ export function DashboardPage({
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
@@ -161,18 +220,24 @@ export function DashboardPage({
         listSubscriptions(),
         listAllNodes(),
         getCoreInfo().catch(() => null),
+        getLanIp().catch(() => null),
       ]);
 
       const [settings, status] = await statusP;
-      setSettingsPorts({ mixed: settings.mixed_port, api: settings.api_port });
+      setSettingsPorts({
+        mixed: settings.mixed_port,
+        api: settings.api_port,
+        extras: settings.extra_inbounds ?? [],
+      });
       setCurrentNodeId(settings.current_node_id ?? null);
       setProxy(status);
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, core] = await detailP;
+      const [subList, nodeList, core, lan] = await detailP;
       setSubs(subList);
       setNodes(nodeList);
+      setLanIp(lan ?? null);
       const cur =
         nodeList.find((n) => n.id === settings.current_node_id) ??
         nodeList[0] ??
@@ -234,6 +299,7 @@ export function DashboardPage({
     function onDoc(e: MouseEvent) {
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
         setMoreOpen(false);
+        setConfigMenuOpen(false);
       }
     }
     document.addEventListener("mousedown", onDoc);
@@ -374,13 +440,52 @@ export function DashboardPage({
     }
   }
 
+  const customProfiles = useMemo(
+    () => subs.filter((s) => s.source_kind === "singbox"),
+    [subs],
+  );
+  const selectedCustomId =
+    proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
+
+  async function onPickRuntime(source: string) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setMoreOpen(false);
+    setConfigMenuOpen(false);
+    try {
+      await setRuntimeSource(source);
+      const s = await getProxyStatus();
+      setProxy(s);
+      await reload();
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onPreview() {
     setBusy(true);
     setError(null);
     setMoreOpen(false);
+    setPreviewQuery("");
+    setPreviewCopied(false);
     try {
-      const r = await previewSingboxConfig();
-      setResult(r);
+      if (proxy?.runtime_source === "singbox" && proxy.runtime_profile_id) {
+        const detail = await getSubscription(proxy.runtime_profile_id);
+        setResult({
+          path: proxy.config_path ?? "",
+          selected_tag: "",
+          outbound_count: 0,
+          mixed_port: proxy.mixed_port,
+          api_port: proxy.api_port,
+          preview: detail.content ?? "",
+        });
+      } else {
+        const r = await previewSingboxConfig();
+        setResult(r);
+      }
       setShowPreview(true);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -418,9 +523,16 @@ export function DashboardPage({
   const nodeCount = nodes.length;
   const subCount = subs.length;
   // Allow start once we know a node id, even if full list is still loading.
+  const customRuntime = proxy?.runtime_source === "singbox";
   const canStart =
-    nodeCount > 0 || (!!currentNodeId && statusReady);
+    customRuntime || nodeCount > 0 || (!!currentNodeId && statusReady);
   const mixedPort = proxy?.mixed_port ?? settingsPorts.mixed;
+  // Multi-listen ports only matter for the generated config (custom mode
+  // launches the user's own file; its inbound shows on the config card).
+  const extraInbounds = customRuntime ? [] : settingsPorts.extras;
+  const extraListenTooltip = extraInbounds
+    .map((e) => `${e.kind} ${e.allow_lan ? "0.0.0.0" : "127.0.0.1"}:${e.port}`)
+    .join("  ·  ");
 
   const switching =
     stateLabel === "starting" || stateLabel === "stopping" || busy;
@@ -454,19 +566,28 @@ export function DashboardPage({
 
   const heroTitle = !detailsReady && running
     ? null // skeleton
-    : running
-      ? currentNode?.name ?? t("dashboard.disconnected")
-      : isError
-        ? t("dashboard.errorTitle")
-        : t("dashboard.disconnected");
+    : customRuntime
+      ? t("dashboard.customMode", {
+          name: proxy?.runtime_profile_name || t("config.singbox"),
+        })
+      : running
+        ? currentNode?.name ?? t("dashboard.disconnected")
+        : isError
+          ? t("dashboard.errorTitle")
+          : t("dashboard.disconnected");
 
   const heroSub = !detailsReady && running
     ? null
-    : running
-      ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
-          .filter(Boolean)
-          .join(" · ")
-      : t("dashboard.desc");
+    : customRuntime
+      ? t("config.singboxReadonly")
+      : running
+        ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
+            .filter(Boolean)
+            .join(" · ")
+        : t("dashboard.desc");
+
+  // Long node names shrink to one line instead of wrapping the hero.
+  const heroTitleRef = useSingleLineFit<HTMLHeadingElement>(heroTitle ?? "");
 
   /** Best / avg among nodes that have a successful latency sample. */
   const latencyStats = useMemo(() => {
@@ -499,7 +620,44 @@ export function DashboardPage({
     }
   }
 
+  async function onCopyPreview() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.preview);
+      setPreviewCopied(true);
+      setToast(t("common.copied"));
+      window.setTimeout(() => setPreviewCopied(false), 1500);
+      window.setTimeout(() => setToast(null), 1500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** Config preview split once per fetch; filter runs over these lines. */
+  const previewLines = useMemo(
+    () => (result?.preview ?? "").split("\n"),
+    [result?.preview],
+  );
+  const previewQueryTrimmed = previewQuery.trim();
+  const previewMatches = useMemo(() => {
+    const q = previewQueryTrimmed.toLowerCase();
+    if (!q) return null;
+    const out: { n: number; text: string }[] = [];
+    previewLines.forEach((text, n) => {
+      if (text.toLowerCase().includes(q)) out.push({ n, text });
+    });
+    return out;
+  }, [previewLines, previewQueryTrimmed]);
+
   const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
+
+  const selectedCustom = useMemo(
+    () =>
+      customRuntime
+        ? (subs.find((s) => s.id === proxy?.runtime_profile_id) ?? null)
+        : null,
+    [customRuntime, proxy?.runtime_profile_id, subs],
+  );
 
   const activeSub = enabledSubs[0] ?? subs[0] ?? null;
 
@@ -594,7 +752,7 @@ export function DashboardPage({
             SATELITE {appVersion ?? "—"}
           </div>
 
-          <h1 className="dash-hero-title">
+          <h1 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (
@@ -690,11 +848,66 @@ export function DashboardPage({
                   >
                     {t("common.preview")}
                   </button>
+                  <div className="dash-more-sub">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={configMenuOpen}
+                      disabled={busy}
+                      onClick={() => setConfigMenuOpen((v) => !v)}
+                    >
+                      <span>{t("dashboard.pickConfig")}</span>
+                      <span className="dash-more-caret" aria-hidden>
+                        ›
+                      </span>
+                    </button>
+                    {configMenuOpen && (
+                      <div className="dash-more-submenu card glass" role="menu">
+                        <button
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={!selectedCustomId}
+                          className={!selectedCustomId ? "is-selected" : ""}
+                          disabled={busy}
+                          onClick={() => void onPickRuntime("generated")}
+                        >
+                          <span className="dash-more-check" aria-hidden>
+                            {!selectedCustomId ? "●" : "○"}
+                          </span>
+                          {t("dashboard.pickConfigDefault")}
+                        </button>
+                        {customProfiles.map((profile) => {
+                          const selected = selectedCustomId === profile.id;
+                          return (
+                            <button
+                              key={profile.id}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              className={selected ? "is-selected" : ""}
+                              disabled={busy}
+                              title={profile.name}
+                              onClick={() =>
+                                void onPickRuntime(`singbox:${profile.id}`)
+                              }
+                            >
+                              <span className="dash-more-check" aria-hidden>
+                                {selected ? "●" : "○"}
+                              </span>
+                              {profile.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   <button
                     type="button"
                     role="menuitem"
                     onClick={() => {
                       setMoreOpen(false);
+                      setConfigMenuOpen(false);
                       onGoSettings?.();
                     }}
                   >
@@ -715,7 +928,7 @@ export function DashboardPage({
               value={outboundMode}
               ready={statusReady}
               ariaLabel={t("dashboard.routing")}
-              disabled={controlsBusy || !statusReady}
+              disabled={controlsBusy || !statusReady || customRuntime}
               onChange={(v) => void onSetMode(v as OutboundMode)}
               options={[
                 { value: "rule", label: t("dashboard.modeRule") },
@@ -746,7 +959,7 @@ export function DashboardPage({
               value={autoSelectMode}
               ready={statusReady}
               ariaLabel={t("dashboard.autoSelect")}
-              disabled={modeBusy || !statusReady}
+              disabled={modeBusy || !statusReady || customRuntime}
               disabledValues={
                 new Set(
                   [
@@ -803,7 +1016,12 @@ export function DashboardPage({
               disabledValues={
                 new Set(
                   [
-                    nodeCount === 0 && captureMode !== "tun" ? "tun" : null,
+                    customRuntime || (nodeCount === 0 && captureMode !== "tun")
+                      ? "tun"
+                      : null,
+                    customRuntime && !proxy?.custom_inbound_port
+                      ? "system"
+                      : null,
                   ].filter((v): v is string => v != null),
                 )
               }
@@ -997,42 +1215,73 @@ export function DashboardPage({
         >
           <header className="instrument-head">
             <span className="instrument-label">
-              {t("dashboard.cardSub")}
+              {customRuntime
+                ? t("dashboard.cardCustom")
+                : t("dashboard.cardSub")}
             </span>
           </header>
           <div
             className={`instrument-value readout instrument-subscription-names${
-              visibleSubs.length > 1 || (activeSubNames?.length ?? 0) > 12
-                ? " wrap"
-                : ""
+              customRuntime
+                ? (selectedCustom?.name.length ?? 0) > 12
+                  ? " wrap"
+                  : ""
+                : visibleSubs.length > 1 || (activeSubNames?.length ?? 0) > 12
+                  ? " wrap"
+                  : ""
             }`}
-            title={activeSubNames || undefined}
+            title={
+              customRuntime
+                ? (selectedCustom?.name ?? undefined)
+                : activeSubNames || undefined
+            }
           >
-            <span>{activeSubNames || t("dashboard.noSub")}</span>
+            <span>
+              {customRuntime
+                ? selectedCustom?.name || t("dashboard.noSub")
+                : activeSubNames || t("dashboard.noSub")}
+            </span>
           </div>
           <div className="instrument-kv mono">
-            <div className="instrument-quota-row">
-              <span className="kv-k">{t("dashboard.quota")}</span>
-              {quotaPct != null ? (
-                <span
-                  className={`instrument-quota-bar ${quotaLevel}`}
-                  title={`${quotaPct}%`}
-                  aria-label={`${quotaPct}%`}
-                >
-                  <span
-                    className="instrument-quota-fill"
-                    style={{ width: `${quotaPct}%` }}
-                  />
-                </span>
-              ) : null}
-              <span className="kv-v">{subQuota.label}</span>
-            </div>
-            <div>
-              <span className="kv-k">{t("dashboard.profiles")}</span>
-              <span className="kv-v">
-                {subCount} · {nodeCount} {t("dashboard.nodes").toLowerCase()}
-              </span>
-            </div>
+            {customRuntime ? (
+              <>
+                <div>
+                  <span className="kv-k">{t("config.singbox")}</span>
+                  <span className="kv-v">{t("config.singboxReadonly")}</span>
+                </div>
+                <div>
+                  <span className="kv-k">IN</span>
+                  <span className="kv-v">
+                    {proxy?.custom_inbound_port
+                      ? `:${proxy.custom_inbound_port}`
+                      : "—"}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="instrument-quota-row">
+                  <span className="kv-k">{t("dashboard.quota")}</span>
+                  {quotaPct != null ? (
+                    <span
+                      className={`instrument-quota-bar ${quotaLevel}`}
+                      title={`${quotaPct}%`}
+                      aria-label={`${quotaPct}%`}
+                    >
+                      <span
+                        className="instrument-quota-fill"
+                        style={{ width: `${quotaPct}%` }}
+                      />
+                    </span>
+                  ) : null}
+                  <span className="kv-v">{subQuota.label}</span>
+                </div>
+                <div>
+                  <span className="kv-k">{t("dashboard.nodeCount")}</span>
+                  <span className="kv-v">{nodeCount}</span>
+                </div>
+              </>
+            )}
           </div>
         </article>
 
@@ -1054,11 +1303,17 @@ export function DashboardPage({
               {t("dashboard.cardSystem")}
             </span>
           </header>
-          <div className="instrument-value readout mono">:{mixedPort}</div>
+          <div
+            className={`instrument-value readout mono${extraInbounds.length ? " multi" : ""}`}
+            title={extraInbounds.length ? extraListenTooltip : undefined}
+          >
+            :{mixedPort}
+            {extraInbounds.map((e) => ` :${e.port}`)}
+          </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">PROXY</span>
-              <span className="kv-v">http://127.0.0.1:{mixedPort}</span>
+              <span className="kv-k">{t("dashboard.lanIp")}</span>
+              <span className="kv-v">{lanIp ?? "—"}</span>
             </div>
             <div>
               <span className="kv-k">ENV</span>
@@ -1093,8 +1348,42 @@ export function DashboardPage({
                 ×
               </button>
             </header>
-            <div className="modal-body">
-              <pre className="preview-json">{result.preview}</pre>
+            <div className="modal-body preview-body">
+              <div className="preview-toolbar">
+                <input
+                  className="search preview-search"
+                  placeholder={t("dashboard.filterConfig")}
+                  value={previewQuery}
+                  onChange={(e) => setPreviewQuery(e.target.value)}
+                  spellCheck={false}
+                />
+                {previewMatches && (
+                  <span className="muted preview-match-count">
+                    {t("dashboard.matchCount", {
+                      n: previewMatches.length,
+                      total: previewLines.length,
+                    })}
+                  </span>
+                )}
+                <GlassButton
+                  onClick={() => void onCopyPreview()}
+                  disabled={previewCopied}
+                >
+                  {previewCopied ? t("common.copied") : t("common.copy")}
+                </GlassButton>
+              </div>
+              <pre className="preview-json">
+                {previewMatches
+                  ? previewMatches.map((m) => (
+                      <span className="preview-line" key={m.n}>
+                        <span className="preview-line-no">{m.n + 1}</span>
+                        <span className="preview-line-text">
+                          {highlightPreviewLine(m.text, previewQueryTrimmed)}
+                        </span>
+                      </span>
+                    ))
+                  : result.preview}
+              </pre>
             </div>
           </div>
         </div>

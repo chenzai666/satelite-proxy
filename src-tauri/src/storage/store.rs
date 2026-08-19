@@ -6,7 +6,9 @@ use crate::domain::{
     GENERAL_SET_NAME,
 };
 use crate::error::{AppError, AppResult};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,9 @@ const MAX_CORRUPT_SNAPSHOTS: usize = 3;
 pub struct AppStore {
     #[serde(default)]
     pub schema_version: u32,
+    #[serde(default)]
     pub subscriptions: Vec<Subscription>,
+    #[serde(default)]
     pub nodes: Vec<StoredNode>,
     #[serde(default)]
     pub settings: AppSettings,
@@ -34,6 +38,19 @@ pub struct AppStore {
     /// Legacy single-active field; migrated into `RuleSet.enabled`.
     #[serde(default)]
     pub active_rule_set_id: Option<String>,
+    /// User-assigned node names, keyed by `identity|parsed-name`.
+    #[serde(default)]
+    pub node_aliases: std::collections::BTreeMap<String, String>,
+    /// Items this build could not parse. Kept so save() writes them back
+    /// instead of dropping newer-schema data.
+    #[serde(skip)]
+    retained_subscriptions: Vec<Value>,
+    #[serde(skip)]
+    retained_nodes: Vec<Value>,
+    #[serde(skip)]
+    retained_rules: Vec<Value>,
+    #[serde(skip)]
+    retained_rule_sets: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,9 +71,17 @@ impl AppStore {
         store.ensure_rule_sets(resource_dir);
         store.migrate_redundant_general_rule_set();
         store.migrate_remote_update_policy();
+        store.migrate_plain_set_rule_targets();
+        store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
         if schema_before < 5 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v5.backup.json");
+            if !backup.exists() {
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
+            }
+        }
+        if schema_before < 6 && source_raw.is_some() {
+            let backup = path.with_file_name("store.pre-v6.backup.json");
             if !backup.exists() {
                 let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
             }
@@ -72,18 +97,35 @@ impl AppStore {
     ) -> AppResult<(Self, Option<String>)> {
         match fs::read_to_string(path) {
             Ok(raw) => match parse_store(&raw) {
-                Ok(store) => Ok((store, Some(raw))),
+                Ok(store) => {
+                    if store.subscriptions.is_empty() {
+                        if let Some((richer, snapshot_raw, origin)) =
+                            load_richer_snapshot(path, 0)
+                        {
+                            crate::app_log::warn(
+                                "storage",
+                                format!(
+                                    "store.json had no profiles; restored {} subscriptions from {}",
+                                    richer.subscriptions.len(),
+                                    origin.display()
+                                ),
+                            );
+                            return Ok((richer, Some(snapshot_raw)));
+                        }
+                    }
+                    Ok((store, Some(raw)))
+                }
                 Err(primary_error) => {
                     quarantine_corrupt_store(path, &raw)?;
-                    if let Some((store, backup_raw)) = load_valid_backup(path) {
+                    if let Some((store, snapshot_raw, origin)) = load_valid_snapshot(path) {
                         crate::app_log::warn(
                             "storage",
                             format!(
                                 "store.json was invalid ({primary_error}); restored {}",
-                                backup_path(path).display()
+                                origin.display()
                             ),
                         );
-                        Ok((store, Some(backup_raw)))
+                        Ok((store, Some(snapshot_raw)))
                     } else {
                         crate::app_log::error(
                             "storage",
@@ -96,15 +138,15 @@ impl AppStore {
                 }
             },
             Err(error) if error.kind() == ErrorKind::NotFound => {
-                if let Some((store, backup_raw)) = load_valid_backup(path) {
+                if let Some((store, snapshot_raw, origin)) = load_valid_snapshot(path) {
                     crate::app_log::warn(
                         "storage",
                         format!(
                             "store.json was missing; restored {}",
-                            backup_path(path).display()
+                            origin.display()
                         ),
                     );
-                    Ok((store, Some(backup_raw)))
+                    Ok((store, Some(snapshot_raw)))
                 } else {
                     Ok((Self::with_builtin_sets(resource_dir), None))
                 }
@@ -481,6 +523,33 @@ impl AppStore {
         self.schema_version = VERSION;
     }
 
+    /// v6: rule targets became per-rule under plain strategies (previously
+    /// the set strategy always won). Normalize every non-smart local set to
+    /// the semantics users observed so far — all rules retargeted to the set
+    /// strategy — so the upgrade changes no routing. Per-rule choices made
+    /// after the migration are kept (this runs once).
+    pub fn migrate_plain_set_rule_targets(&mut self) {
+        const VERSION: u32 = 6;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        for set in &mut self.rule_sets {
+            if set.remote.is_some() || set.strategy == RuleSetStrategy::Smart {
+                continue;
+            }
+            let target = match set.strategy {
+                RuleSetStrategy::Direct => RuleTarget::Direct,
+                RuleSetStrategy::Block => RuleTarget::Block,
+                _ => RuleTarget::Proxy,
+            };
+            for rule in &mut set.rules {
+                rule.target = target.clone();
+            }
+        }
+        self.schema_version = VERSION;
+    }
+
     /// v5: remote updates used to run hourly without an explicit user choice.
     /// Upgrade existing remote sets to opt-in scheduling; newly created sets
     /// persist the user's selected interval and are already on schema v5.
@@ -501,7 +570,7 @@ impl AppStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let raw = serde_json::to_string_pretty(self)
+        let raw = serialize_store(self)
             .map_err(|e| AppError::Storage(format!("serialize store: {e}")))?;
         if let Ok(previous_raw) = fs::read_to_string(path) {
             if parse_store(&previous_raw).is_ok() {
@@ -524,7 +593,8 @@ impl AppStore {
         } else {
             self.subscriptions.push(sub);
         }
-        for node in nodes {
+        for mut node in nodes {
+            self.apply_node_alias(&mut node);
             self.nodes.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
@@ -540,6 +610,10 @@ impl AppStore {
             return Err(AppError::NotFound(id.to_string()));
         }
         self.nodes.retain(|n| n.subscription_id != id);
+        if self.settings.runtime_source().singbox_id() == Some(id) {
+            self.settings
+                .set_runtime_source(crate::domain::RuntimeSource::Generated);
+        }
         // If removed was the only enabled, enable first remaining.
         if !self.subscriptions.iter().any(|s| s.enabled) {
             if let Some(first) = self.subscriptions.first_mut() {
@@ -554,11 +628,33 @@ impl AppStore {
         self.subscriptions.iter().find(|s| s.id == id)
     }
 
+    /// Copy leftover path-based file profiles into stored text so we no longer
+    /// depend on an external path.
+    pub fn migrate_file_sources_to_copied_text(&mut self) {
+        for sub in &mut self.subscriptions {
+            let crate::domain::SubscriptionSource::File { path } = &sub.source else {
+                continue;
+            };
+            if path.is_empty() || path.starts_with("satelite:") {
+                continue;
+            }
+            match std::fs::read_to_string(path) {
+                Ok(content) if !content.is_empty() => {
+                    sub.source = crate::domain::SubscriptionSource::Text { content };
+                    sub.auto_update = false;
+                }
+                _ => {
+                    sub.auto_update = false;
+                }
+            }
+        }
+    }
+
     pub fn enabled_nodes(&self) -> Vec<ProxyNode> {
         let enabled: std::collections::HashSet<_> = self
             .subscriptions
             .iter()
-            .filter(|s| s.enabled)
+            .filter(|s| s.enabled && s.source.contributes_nodes())
             .map(|s| s.id.as_str())
             .collect();
         self.nodes
@@ -568,41 +664,107 @@ impl AppStore {
             .collect()
     }
 
+    /// Sorted ids of the nodes the generated config would include (same filter
+    /// as [`Self::enabled_nodes`]). Subscription imports compare this before
+    /// and after to decide whether the running core needs a rebuild — node ids
+    /// are content hashes, so a renamed or rotated node silently changes the
+    /// id set the running core was built from.
+    pub fn enabled_node_ids_sorted(&self) -> Vec<String> {
+        let enabled: std::collections::HashSet<_> = self
+            .subscriptions
+            .iter()
+            .filter(|s| s.enabled && s.source.contributes_nodes())
+            .map(|s| s.id.as_str())
+            .collect();
+        let mut ids: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|n| enabled.contains(n.subscription_id.as_str()))
+            .map(|n| n.node.id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Exclusive (default): only one subscription enabled.
     /// Mix: multiple can be enabled.
     pub fn ensure_subscription_enable_policy(&mut self) {
-        if self.subscriptions.is_empty() {
+        let generated: Vec<String> = self
+            .subscriptions
+            .iter()
+            .filter(|s| s.source.contributes_nodes())
+            .map(|s| s.id.clone())
+            .collect();
+        if generated.is_empty() {
             return;
         }
         if !self.settings.mix_mode {
             let enabled: Vec<String> = self
                 .subscriptions
                 .iter()
-                .filter(|s| s.enabled)
+                .filter(|s| s.enabled && s.source.contributes_nodes())
                 .map(|s| s.id.clone())
                 .collect();
             if enabled.len() > 1 {
                 let keep = enabled[0].clone();
                 for s in &mut self.subscriptions {
-                    s.enabled = s.id == keep;
+                    if s.source.contributes_nodes() {
+                        s.enabled = s.id == keep;
+                    }
                 }
             } else if enabled.is_empty() {
-                if let Some(first) = self.subscriptions.first_mut() {
-                    first.enabled = true;
+                if let Some(first) = generated.first() {
+                    for s in &mut self.subscriptions {
+                        if s.source.contributes_nodes() {
+                            s.enabled = s.id == *first;
+                        }
+                    }
                 }
             }
-        } else if !self.subscriptions.iter().any(|s| s.enabled) {
-            if let Some(first) = self.subscriptions.first_mut() {
-                first.enabled = true;
+        } else if !self
+            .subscriptions
+            .iter()
+            .any(|s| s.enabled && s.source.contributes_nodes())
+        {
+            if let Some(first) = generated.first() {
+                for s in &mut self.subscriptions {
+                    if s.id == *first {
+                        s.enabled = true;
+                    }
+                }
             }
         }
         self.ensure_current_node_valid();
     }
 
+    /// Homepage ··· menu: `generated` or a stored complete sing-box archive.
+    pub fn set_runtime_source(
+        &mut self,
+        source: crate::domain::RuntimeSource,
+    ) -> AppResult<()> {
+        if let crate::domain::RuntimeSource::Singbox { id } = &source {
+            let ok = self.subscriptions.iter().any(|s| {
+                s.id == *id && matches!(s.source, crate::domain::SubscriptionSource::Singbox { .. })
+            });
+            if !ok {
+                return Err(AppError::NotFound(id.clone()));
+            }
+        }
+        self.settings.set_runtime_source(source);
+        Ok(())
+    }
+
     /// Click card: exclusive → enable only this; Mix → toggle this.
+    /// Does not change which file the kernel launches.
     pub fn activate_subscription(&mut self, id: &str) -> AppResult<()> {
-        if !self.subscriptions.iter().any(|s| s.id == id) {
-            return Err(AppError::NotFound(id.to_string()));
+        let contributes = self
+            .subscriptions
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.source.contributes_nodes())
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        if !contributes {
+            return Ok(());
         }
         if self.settings.mix_mode {
             let currently = self
@@ -613,7 +775,11 @@ impl AppStore {
                 .unwrap_or(false);
             // Don't allow disabling the last enabled subscription.
             if currently {
-                let enabled_count = self.subscriptions.iter().filter(|s| s.enabled).count();
+                let enabled_count = self
+                    .subscriptions
+                    .iter()
+                    .filter(|s| s.enabled && s.source.contributes_nodes())
+                    .count();
                 if enabled_count <= 1 {
                     return Ok(());
                 }
@@ -656,10 +822,14 @@ impl AppStore {
 
     /// New subscription: enable only when no other is enabled (or none exist).
     pub fn prepare_new_subscription_enabled(&self, sub: &mut Subscription) {
+        if !sub.source.contributes_nodes() {
+            sub.enabled = false;
+            return;
+        }
         let any_enabled = self
             .subscriptions
             .iter()
-            .any(|s| s.enabled && s.id != sub.id);
+            .any(|s| s.enabled && s.id != sub.id && s.source.contributes_nodes());
         if any_enabled {
             sub.enabled = false;
         } else {
@@ -669,6 +839,52 @@ impl AppStore {
 
     pub fn find_node(&self, id: &str) -> Option<&ProxyNode> {
         self.nodes.iter().find(|n| n.node.id == id).map(|n| &n.node)
+    }
+
+    pub fn node_alias_key(node: &ProxyNode) -> String {
+        node.instance_key()
+    }
+
+    fn apply_node_alias(&self, node: &mut ProxyNode) {
+        if let Some(alias) = self.node_aliases.get(&Self::node_alias_key(node)) {
+            let alias = alias.trim();
+            if !alias.is_empty() {
+                node.name = alias.to_string();
+            }
+        }
+    }
+
+    pub fn rename_node(&mut self, id: &str, name: String) -> AppResult<ProxyNode> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(AppError::InvalidProxy {
+                name: id.to_string(),
+                reason: "name is required".into(),
+            });
+        }
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|n| n.node.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        let identity = node.node.identity_key();
+        let old_name = node.node.name.clone();
+        let parsed_key = format!("{identity}|{old_name}");
+        let prefix = format!("{identity}|");
+        let source_key = self
+            .node_aliases
+            .iter()
+            .find_map(|(key, value)| {
+                if key.starts_with(&prefix) && value == &old_name {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(parsed_key);
+        node.node.name = name.clone();
+        self.node_aliases.insert(source_key, name);
+        Ok(node.node.clone())
     }
 
     pub fn update_node_latency(
@@ -778,8 +994,94 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn create_rule_set(&mut self, name: &str) -> RuleSet {
-        let set = RuleSet::new_user(name, vec![]);
+    /// Apply one target to EVERY rule of a local set (batch set-routes).
+    /// proxy/direct/block collapse to a plain strategy (whole-set, same as a
+    /// strategy flip); node/smart force the set to Smart and rewrite each
+    /// rule with the pin / keywords. Returns (set, needs_core_restart).
+    pub fn batch_set_rule_targets(
+        &mut self,
+        id: &str,
+        target: crate::domain::RuleTarget,
+        node_id: Option<String>,
+        smart_include: Vec<String>,
+        smart_exclude: Vec<String>,
+    ) -> AppResult<(RuleSet, bool)> {
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        let set = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == id)
+            .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
+        if set.remote.is_some() {
+            return Err(crate::error::AppError::Config(
+                "远程规则集没有本地规则,无法批量设置".into(),
+            ));
+        }
+        let pin = if target == RuleTarget::Node {
+            let nid = node_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| crate::error::AppError::Config("请选择节点".into()))?;
+            let name = self
+                .nodes
+                .iter()
+                .find(|stored| stored.node.id == nid)
+                .map(|stored| stored.node.name.clone())
+                .ok_or_else(|| {
+                    crate::error::AppError::Config("指定的节点不存在".into())
+                })?;
+            Some((nid.to_string(), name))
+        } else {
+            None
+        };
+        match target {
+            RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block => {
+                set.strategy = match target {
+                    RuleTarget::Direct => RuleSetStrategy::Direct,
+                    RuleTarget::Block => RuleSetStrategy::Block,
+                    _ => RuleSetStrategy::Proxy,
+                };
+                if let Some(dns) = set.strategy.recommended_dns_strategy() {
+                    set.dns_strategy = dns;
+                }
+            }
+            RuleTarget::Node | RuleTarget::Smart => {
+                set.strategy = RuleSetStrategy::Smart;
+            }
+        }
+        for rule in &mut set.rules {
+            rule.target = target.clone();
+            rule.node_id = pin.as_ref().map(|(id, _)| id.clone());
+            rule.node_name = pin.as_ref().map(|(_, name)| name.clone());
+            rule.smart_include = if target == RuleTarget::Smart {
+                smart_include.clone()
+            } else {
+                Vec::new()
+            };
+            rule.smart_exclude = if target == RuleTarget::Smart {
+                smart_exclude.clone()
+            } else {
+                Vec::new()
+            };
+        }
+        let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
+        Ok((set.clone(), needs_restart))
+    }
+
+    /// Create a local user set with an initial route strategy (the new-set
+    /// dialog's 路由 choice, mirroring the remote flow). DNS strategy follows
+    /// the recommended pairing via the same helper the flip path uses.
+    pub fn create_local_rule_set(
+        &mut self,
+        name: &str,
+        strategy: crate::domain::RuleSetStrategy,
+    ) -> RuleSet {
+        let mut set = RuleSet::new_user(name, vec![]);
+        set.strategy = strategy;
+        if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
+            set.dns_strategy = dns_strategy;
+        }
         self.rule_sets.insert(0, set.clone());
         set
     }
@@ -902,17 +1204,164 @@ fn same_rules_ignoring_storage_fields(left: &[Rule], right: &[Rule]) -> bool {
 }
 
 fn parse_store(raw: &str) -> Result<AppStore, serde_json::Error> {
-    serde_json::from_str(raw)
+    let value: Value = serde_json::from_str(raw)?;
+    Ok(store_from_json(value))
+}
+
+fn store_from_json(value: Value) -> AppStore {
+    let mut store = AppStore::default();
+    let Some(obj) = value.as_object() else {
+        crate::app_log::warn("storage", "store root is not an object; using defaults for missing fields");
+        return store;
+    };
+
+    if let Some(v) = obj.get("schema_version").and_then(Value::as_u64) {
+        store.schema_version = v as u32;
+    }
+
+    let (subs, retained_subs) = split_known_items::<Subscription>(obj.get("subscriptions"));
+    store.subscriptions = subs;
+    store.retained_subscriptions = retained_subs;
+
+    let (nodes, retained_nodes) = split_known_items::<StoredNode>(obj.get("nodes"));
+    store.nodes = nodes;
+    store.retained_nodes = retained_nodes;
+
+    let (rules, retained_rules) = split_known_items::<Rule>(obj.get("rules"));
+    store.rules = rules;
+    store.retained_rules = retained_rules;
+
+    let (rule_sets, retained_sets) = split_known_items::<RuleSet>(obj.get("rule_sets"));
+    store.rule_sets = rule_sets;
+    store.retained_rule_sets = retained_sets;
+
+    if let Some(settings) = obj.get("settings") {
+        match serde_json::from_value::<AppSettings>(settings.clone()) {
+            Ok(parsed) => store.settings = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable settings object ({error}); keeping defaults"),
+            ),
+        }
+    }
+    if let Some(dns) = obj.get("dns") {
+        match serde_json::from_value::<DnsSettings>(dns.clone()) {
+            Ok(parsed) => store.dns = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable dns object ({error}); keeping defaults"),
+            ),
+        }
+    }
+    store.active_rule_set_id = obj
+        .get("active_rule_set_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+
+    store
+}
+
+fn split_known_items<T: DeserializeOwned>(value: Option<&Value>) -> (Vec<T>, Vec<Value>) {
+    let Some(Value::Array(items)) = value else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut known = Vec::with_capacity(items.len());
+    let mut retained = Vec::new();
+    for item in items {
+        match serde_json::from_value::<T>(item.clone()) {
+            Ok(parsed) => known.push(parsed),
+            Err(error) => {
+                crate::app_log::warn(
+                    "storage",
+                    format!("ignored unrecognized store item ({error}); keeping it on disk"),
+                );
+                retained.push(item.clone());
+            }
+        }
+    }
+    (known, retained)
+}
+
+fn serialize_store(store: &AppStore) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(store)?;
+    if let Some(obj) = value.as_object_mut() {
+        merge_retained(obj, "subscriptions", &store.retained_subscriptions);
+        merge_retained(obj, "nodes", &store.retained_nodes);
+        merge_retained(obj, "rules", &store.retained_rules);
+        merge_retained(obj, "rule_sets", &store.retained_rule_sets);
+    }
+    serde_json::to_string_pretty(&value)
+}
+
+fn merge_retained(obj: &mut Map<String, Value>, key: &str, extra: &[Value]) {
+    if extra.is_empty() {
+        return;
+    }
+    let slot = obj.entry(key).or_insert_with(|| Value::Array(Vec::new()));
+    if let Value::Array(items) = slot {
+        items.extend(extra.iter().cloned());
+    }
+}
+
+fn snapshot_candidates(path: &Path) -> Vec<PathBuf> {
+    let mut out = vec![backup_path(path)];
+    if let Some(directory) = path.parent() {
+        if let Ok(entries) = fs::read_dir(directory) {
+            let mut snapshots: Vec<PathBuf> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("store.corrupt-"))
+                })
+                .collect();
+            snapshots.sort_by_key(|entry| {
+                std::cmp::Reverse(
+                    entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .ok(),
+                )
+            });
+            out.extend(snapshots);
+        }
+    }
+    out
+}
+
+fn load_valid_snapshot(path: &Path) -> Option<(AppStore, String, PathBuf)> {
+    load_richer_snapshot(path, 0).or_else(|| {
+        for candidate in snapshot_candidates(path) {
+            let Ok(raw) = fs::read_to_string(&candidate) else {
+                continue;
+            };
+            if let Ok(store) = parse_store(&raw) {
+                return Some((store, raw, candidate));
+            }
+        }
+        None
+    })
+}
+
+fn load_richer_snapshot(path: &Path, min_subs: usize) -> Option<(AppStore, String, PathBuf)> {
+    for candidate in snapshot_candidates(path) {
+        let Ok(raw) = fs::read_to_string(&candidate) else {
+            continue;
+        };
+        let Ok(store) = parse_store(&raw) else {
+            continue;
+        };
+        if store.subscriptions.len() > min_subs {
+            return Some((store, raw, candidate));
+        }
+    }
+    None
 }
 
 fn backup_path(path: &Path) -> PathBuf {
     path.with_file_name(STORE_BACKUP_NAME)
-}
-
-fn load_valid_backup(path: &Path) -> Option<(AppStore, String)> {
-    let raw = fs::read_to_string(backup_path(path)).ok()?;
-    let store = parse_store(&raw).ok()?;
-    Some((store, raw))
 }
 
 fn quarantine_corrupt_store(path: &Path, raw: &str) -> AppResult<PathBuf> {
@@ -1005,6 +1454,119 @@ mod tests {
     }
 
     #[test]
+    fn batch_set_rule_targets_node_forces_smart_and_pins_all() {
+        use crate::domain::{
+            ProxyNode, Protocol, ProtocolConfig, Rule, RuleSet, RuleSetStrategy, RuleTarget,
+            RuleType,
+        };
+        let mut store = AppStore::default();
+        let node = ProxyNode {
+            id: "node-1".into(),
+            name: "东京 01".into(),
+            protocol: Protocol::Shadowsocks,
+            server: "example.com".into(),
+            port: 8388,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Shadowsocks {
+                method: "aes-256-gcm".into(),
+                password: "x".into(),
+                plugin: None,
+                plugin_opts: None,
+                shadow_tls: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        };
+        store.nodes.push(StoredNode {
+            subscription_id: "sub".into(),
+            node,
+        });
+        let set = RuleSet::new_user(
+            "批量集",
+            vec![
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 1),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 2),
+            ],
+        );
+        store.rule_sets = vec![set];
+        let id = store.rule_sets[0].id.clone();
+
+        let (updated, _) = store
+            .batch_set_rule_targets(
+                &id,
+                RuleTarget::Node,
+                Some("node-1".into()),
+                vec![],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Smart);
+        assert!(updated.rules.iter().all(|r| {
+            r.target == RuleTarget::Node
+                && r.node_id.as_deref() == Some("node-1")
+                && r.node_name.as_deref() == Some("东京 01")
+        }));
+
+        // Batch to direct collapses back to a plain uniform strategy.
+        let (updated, _) = store
+            .batch_set_rule_targets(&id, RuleTarget::Direct, None, vec![], vec![])
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Direct);
+        assert!(updated
+            .rules
+            .iter()
+            .all(|r| r.target == RuleTarget::Direct && r.node_id.is_none()));
+    }
+
+    #[test]
+    fn create_local_rule_set_applies_initial_strategy() {
+        use crate::domain::RuleSetStrategy;
+        let mut store = AppStore::default();
+        let set = store.create_local_rule_set("本地直连集", RuleSetStrategy::Direct);
+        assert_eq!(set.strategy, RuleSetStrategy::Direct);
+        // DNS pairing follows the same recommendation as a strategy flip.
+        assert_eq!(set.dns_strategy, RuleSetStrategy::Direct.recommended_dns_strategy().unwrap());
+        assert!(store.rule_sets[0].id == set.id, "new set lands on top");
+    }
+
+    #[test]
+    fn v6_load_writes_pre_v6_backup_and_migrates() {
+        use crate::domain::{Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let path = test_store_path("pre-v6");
+        let mut store = AppStore::default();
+        store.schema_version = 5;
+        let mut set = RuleSet::new_user(
+            "v5集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "a.com".into(),
+                RuleTarget::Direct,
+                1,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        store.rule_sets = vec![set];
+        store.save(&path).unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.schema_version, 6);
+        let pre_v6 = path.with_file_name("store.pre-v6.backup.json");
+        assert!(pre_v6.exists(), "pre-v6 snapshot must be written on upgrade");
+        let snap = parse_store(&fs::read_to_string(&pre_v6).unwrap()).unwrap();
+        assert_eq!(snap.schema_version, 5);
+        // Reloading the migrated store must not resurrect the backup logic.
+        fs::remove_file(&pre_v6).unwrap();
+        let again = AppStore::load(&path, None).unwrap();
+        assert_eq!(again.schema_version, 6);
+        assert!(!pre_v6.exists(), "v6 store skips the backup on reload");
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn save_preserves_the_previous_valid_store() {
         let path = test_store_path("backup");
         let mut store = AppStore::default();
@@ -1039,6 +1601,83 @@ mod tests {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    fn sample_url_sub(name: &str) -> Subscription {
+        Subscription {
+            id: format!("id-{name}"),
+            name: name.into(),
+            source: crate::domain::SubscriptionSource::Url {
+                url: "https://example.com/sub".into(),
+            },
+            last_update: 1,
+            node_count: 0,
+            enabled: true,
+            format: None,
+            skipped_count: 0,
+            via_proxy: false,
+            auto_update: false,
+            auto_update_interval_min: 1440,
+            traffic: None,
+        }
+    }
+
+    fn stored_node(sub_id: &str, node_id: &str) -> StoredNode {
+        StoredNode {
+            subscription_id: sub_id.into(),
+            node: crate::domain::ProxyNode {
+                id: node_id.into(),
+                name: node_id.into(),
+                protocol: crate::domain::Protocol::Trojan,
+                server: "example.com".into(),
+                port: 443,
+                tls: None,
+                transport: None,
+                udp: None,
+                config: crate::domain::ProtocolConfig::Trojan {
+                    password: "x".into(),
+                },
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            },
+        }
+    }
+
+    #[test]
+    fn enabled_node_ids_sorted_tracks_node_and_enable_changes() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("a");
+        let sub_id = sub.id.clone();
+        store.subscriptions.push(sub);
+        store.nodes.push(stored_node(&sub_id, "node-a"));
+
+        let before = store.enabled_node_ids_sorted();
+        assert_eq!(before, vec!["node-a".to_string()]);
+
+        // Identical refresh (same ids) keeps the fingerprint stable — no
+        // rebuild would be queued.
+        store.nodes.clear();
+        store.nodes.push(stored_node(&sub_id, "node-a"));
+        assert_eq!(store.enabled_node_ids_sorted(), before);
+
+        // Renamed node → new content-hash id → fingerprint changes.
+        store.nodes.clear();
+        store.nodes.push(stored_node(&sub_id, "node-b"));
+        assert_ne!(store.enabled_node_ids_sorted(), before);
+
+        // Disabling the subscription removes its nodes from the projection.
+        let with_node = store.enabled_node_ids_sorted();
+        store.subscriptions[0].enabled = false;
+        assert!(store.enabled_node_ids_sorted().is_empty());
+        assert_ne!(store.enabled_node_ids_sorted(), with_node);
+
+        // Singbox (custom config) subscriptions never contribute nodes.
+        store.subscriptions[0].enabled = true;
+        store.subscriptions[0].source = crate::domain::SubscriptionSource::Singbox {
+            content: "{}".into(),
+        };
+        assert!(store.enabled_node_ids_sorted().is_empty());
+    }
+
     #[test]
     fn load_quarantines_a_corrupt_store_without_backup() {
         let path = test_store_path("defaults");
@@ -1052,6 +1691,140 @@ mod tests {
         );
         assert_eq!(corrupt_snapshots(&path).len(), 1);
         assert!(parse_store(&fs::read_to_string(&path).unwrap()).is_ok());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn skips_unknown_subscription_objects() {
+        let raw = r#"{
+          "schema_version": 5,
+          "subscriptions": [
+            {
+              "id": "keep",
+              "name": "ok",
+              "source": {"kind":"url","url":"https://example.com"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            },
+            12
+          ],
+          "nodes": []
+        }"#;
+        let store = parse_store(raw).unwrap();
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(store.subscriptions[0].id, "keep");
+        assert_eq!(store.retained_subscriptions.len(), 1);
+    }
+
+    #[test]
+    fn unknown_source_kind_is_ignored_and_written_back() {
+        let raw = r#"{
+          "schema_version": 5,
+          "subscriptions": [
+            {
+              "id": "keep",
+              "name": "ok",
+              "source": {"kind":"url","url":"https://example.com"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            },
+            {
+              "id": "future",
+              "name": "next-gen",
+              "source": {"kind":"quantum","payload":"x"},
+              "last_update": 1,
+              "node_count": 0,
+              "enabled": true,
+              "skipped_count": 0
+            }
+          ],
+          "nodes": []
+        }"#;
+        let store = parse_store(raw).unwrap();
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(store.subscriptions[0].id, "keep");
+        assert_eq!(store.retained_subscriptions.len(), 1);
+
+        let path = test_store_path("retain-unknown");
+        store.save(&path).unwrap();
+        let written: Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let kinds: Vec<&str> = written["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["source"]["kind"].as_str())
+            .collect();
+        assert!(kinds.contains(&"url"));
+        assert!(kinds.contains(&"quantum"));
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn valid_json_with_unknown_kind_does_not_reset_or_quarantine() {
+        let path = test_store_path("no-wipe");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            r#"{
+              "schema_version": 5,
+              "settings": {"mixed_port": 2345, "api_port": 19090},
+              "subscriptions": [
+                {
+                  "id": "keep",
+                  "name": "ok",
+                  "source": {"kind":"url","url":"https://example.com"},
+                  "last_update": 1,
+                  "node_count": 0,
+                  "enabled": true,
+                  "skipped_count": 0
+                },
+                {
+                  "id": "future",
+                  "name": "next-gen",
+                  "source": {"kind":"quantum"},
+                  "last_update": 1,
+                  "node_count": 0,
+                  "enabled": true,
+                  "skipped_count": 0
+                }
+              ],
+              "nodes": []
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.subscriptions.len(), 1);
+        assert_eq!(loaded.subscriptions[0].name, "ok");
+        assert_eq!(loaded.settings.mixed_port, 2345);
+        assert!(corrupt_snapshots(&path).is_empty());
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn empty_store_recovers_from_newer_corrupt_snapshot() {
+        let path = test_store_path("empty-recover");
+        AppStore::default().save(&path).unwrap();
+        let mut rich = AppStore::default();
+        rich.subscriptions.push(sample_url_sub("keep-me"));
+        let snapshot = path.with_file_name("store.corrupt-999.json");
+        fs::write(
+            &snapshot,
+            serde_json::to_string(&rich).unwrap(),
+        )
+        .unwrap();
+
+        let recovered = AppStore::load(&path, None).unwrap();
+        assert_eq!(recovered.subscriptions.len(), 1);
+        assert_eq!(recovered.subscriptions[0].name, "keep-me");
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -1118,6 +1891,48 @@ mod tests {
         let once = serde_json::to_string(&store.rule_sets).unwrap();
         store.migrate_unified_rule_sets();
         assert_eq!(once, serde_json::to_string(&store.rule_sets).unwrap());
+    }
+
+    #[test]
+    fn v6_migration_normalizes_plain_set_rule_targets_once() {
+        use crate::domain::{Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let mut set = RuleSet::new_user(
+            "遗留混合",
+            vec![
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Direct, 1),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Block, 2),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        let mut smart = RuleSet::new_user(
+            "智能集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "c.com".into(),
+                RuleTarget::Node,
+                1,
+            )],
+        );
+        smart.strategy = RuleSetStrategy::Smart;
+        let mut store = AppStore {
+            schema_version: 5,
+            rule_sets: vec![set, smart],
+            ..AppStore::with_builtin_sets(None)
+        };
+        store.migrate_plain_set_rule_targets();
+        // Plain set normalized to its strategy; smart set untouched.
+        assert!(
+            store.rule_sets[0]
+                .rules
+                .iter()
+                .all(|r| r.target == RuleTarget::Proxy)
+        );
+        assert!(store.rule_sets[1].rules[0].target == RuleTarget::Node);
+        assert_eq!(store.schema_version, 6);
+        // Idempotent: a post-migration per-rule choice survives reload.
+        store.rule_sets[0].rules[0].target = RuleTarget::Direct;
+        store.migrate_plain_set_rule_targets();
+        assert!(store.rule_sets[0].rules[0].target == RuleTarget::Direct);
     }
 
     #[test]
@@ -1283,7 +2098,7 @@ mod tests {
             .rule_sets
             .push(RuleSet::new_user("已有规则", Vec::new()));
 
-        let local = store.create_rule_set("新本地");
+        let local = store.create_local_rule_set("新本地", RuleSetStrategy::Proxy);
         assert_eq!(store.rule_sets[0].id, local.id);
 
         let remote = store.create_remote_rule_set(
@@ -1294,5 +2109,69 @@ mod tests {
         );
         assert_eq!(store.rule_sets[0].id, remote.id);
         assert_eq!(store.rule_sets[1].id, local.id);
+    }
+
+    fn sample_hy2(id: &str, name: &str) -> ProxyNode {
+        use crate::domain::{Protocol, ProtocolConfig};
+        ProxyNode {
+            id: id.into(),
+            name: name.into(),
+            protocol: Protocol::Hysteria2,
+            server: "203.10.98.188".into(),
+            port: 443,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Hysteria2 {
+                password: "same".into(),
+                up_mbps: None,
+                down_mbps: None,
+                obfs: None,
+                obfs_password: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    #[test]
+    fn rename_does_not_alias_sibling_nodes_on_same_backend() {
+        let mut store = AppStore::default();
+        store
+            .upsert_subscription(
+                sample_url_sub("s"),
+                vec![sample_hy2("a", "HK-01"), sample_hy2("b", "HK-02")],
+            )
+            .unwrap();
+        store.rename_node("a", "Hong Kong".into()).unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
+        assert_eq!(store.find_node("b").unwrap().name, "HK-02");
+
+        store
+            .upsert_subscription(
+                sample_url_sub("s"),
+                vec![sample_hy2("a", "HK-01"), sample_hy2("b", "HK-02")],
+            )
+            .unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
+        assert_eq!(store.find_node("b").unwrap().name, "HK-02");
+    }
+
+    #[test]
+    fn set_runtime_source_selects_custom_and_falls_back_on_delete() {
+        let mut store = AppStore::default();
+        let mut sub = sample_url_sub("s");
+        sub.id = "sb1".into();
+        sub.source = crate::domain::SubscriptionSource::Singbox {
+            content: r#"{"inbounds":[{"type":"mixed","listen_port":1}],"outbounds":[{"type":"direct"}]}"#.into(),
+        };
+        store.upsert_subscription(sub, Vec::new()).unwrap();
+        store
+            .set_runtime_source(crate::domain::RuntimeSource::Singbox { id: "sb1".into() })
+            .unwrap();
+        assert_eq!(store.settings.runtime_source, "singbox:sb1");
+        store.remove_subscription("sb1").unwrap();
+        assert_eq!(store.settings.runtime_source, "generated");
     }
 }

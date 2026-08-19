@@ -30,6 +30,28 @@ fn apply_running(app: &AppHandle) {
     crate::rule_apply::request_restart(app.clone(), Vec::new());
 }
 
+/// Whether any rule set is enabled. Crossing zero enabled sets switches the
+/// builder between grouped sets and the legacy flat rule list, which does
+/// change the generated config even for empty sets.
+fn any_rule_set_enabled(store: &crate::storage::AppStore) -> bool {
+    store.rule_sets.iter().any(|set| set.enabled)
+}
+
+/// Priority order of enabled sets that actually contribute rules. Reordering
+/// only reaches the kernel config when this sequence changes.
+fn enabled_contributing_ids(state: &AppState) -> Vec<String> {
+    state
+        .with_store(|store| {
+            Ok(store
+                .enabled_rule_sets()
+                .iter()
+                .filter(|set| !crate::config::rule_set_is_empty_for_config(set))
+                .map(|set| set.id.clone())
+                .collect())
+        })
+        .unwrap_or_default()
+}
+
 /// Write Clash `.list` for a set under app data.
 fn dump_set(state: &AppState, set_id: &str) {
     let set = state
@@ -401,10 +423,21 @@ pub fn set_active_rule_set(
     id: String,
 ) -> Result<(), String> {
     // Back-compat: enable this set (does not disable others).
-    state
-        .with_store_mut(|store| store.set_rule_set_enabled(&id, true))
+    // An effectively-empty set never reaches the kernel config, so enabling
+    // it needs no restart unless the zero-enabled-sets boundary is crossed.
+    let skip_restart = state
+        .with_store_mut(|store| {
+            let boundary_before = any_rule_set_enabled(store);
+            store.set_rule_set_enabled(&id, true)?;
+            Ok(any_rule_set_enabled(store) == boundary_before
+                && store
+                    .get_rule_set(&id)
+                    .is_some_and(crate::config::rule_set_is_empty_for_config))
+        })
         .map_err(|e| e.to_string())?;
-    apply_running(&app);
+    if !skip_restart {
+        apply_running(&app);
+    }
     Ok(())
 }
 
@@ -415,12 +448,26 @@ pub fn set_rule_set_enabled(
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
-    state
-        .with_store_mut(|store| store.set_rule_set_enabled(&id, enabled))
+    // Empty sets never reach the kernel config; skip the restart (and just
+    // ack the UI) unless this toggle crosses the zero-enabled-sets boundary,
+    // where the builder would fall back to the legacy flat rule list.
+    let skip_restart = state
+        .with_store_mut(|store| {
+            let boundary_before = any_rule_set_enabled(store);
+            store.set_rule_set_enabled(&id, enabled)?;
+            Ok(any_rule_set_enabled(store) == boundary_before
+                && store
+                    .get_rule_set(&id)
+                    .is_some_and(crate::config::rule_set_is_empty_for_config))
+        })
         .map_err(|e| e.to_string())?;
     // Persist resolves immediately; restart runs in the background and
     // reports via the `rule-set-apply-status` event (see `rule_apply`).
-    crate::rule_apply::request_apply(app, id, enabled);
+    if skip_restart {
+        crate::rule_apply::emit_ready_without_restart(&app, &id, enabled);
+    } else {
+        crate::rule_apply::request_apply(app, id, enabled);
+    }
     Ok(())
 }
 
@@ -431,7 +478,7 @@ pub fn set_rule_set_strategy(
     id: String,
     strategy: RuleSetStrategy,
 ) -> Result<RuleSet, String> {
-    let set = state
+    let (set, needs_restart) = state
         .with_store_mut(|store| {
             let set = store
                 .rule_sets
@@ -444,6 +491,20 @@ pub fn set_rule_set_strategy(
                 ));
             }
             set.strategy = strategy;
+            // Plain strategies own every rule's target: retarget all local
+            // rules so flipping a set keeps its one-knob meaning (stale
+            // node/smart pins from an earlier smart phase must not linger).
+            // Flipping TO smart keeps current targets for per-rule editing.
+            if set.remote.is_none() && strategy != RuleSetStrategy::Smart {
+                let fallback = match strategy {
+                    RuleSetStrategy::Direct => RuleTarget::Direct,
+                    RuleSetStrategy::Block => RuleTarget::Block,
+                    _ => RuleTarget::Proxy,
+                };
+                for rule in set.rules.iter_mut() {
+                    rule.target = fallback.clone();
+                }
+            }
             if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
                 set.dns_strategy = dns_strategy;
             }
@@ -452,10 +513,42 @@ pub fn set_rule_set_strategy(
                     remote.target = target;
                 }
             }
-            Ok(set.clone())
+            // The strategy of an effectively-empty set reaches nothing in the
+            // generated config — no restart needed for those.
+            let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
+            Ok((set.clone(), needs_restart))
         })
         .map_err(|e| e.to_string())?;
-    apply_running(&app);
+    if needs_restart {
+        apply_running(&app);
+    }
+    Ok(set)
+}
+
+#[tauri::command]
+pub fn batch_set_rule_targets(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    target: RuleTarget,
+    node_id: Option<String>,
+    smart_include: Option<Vec<String>>,
+    smart_exclude: Option<Vec<String>>,
+) -> Result<RuleSet, String> {
+    let (set, needs_restart) = state
+        .with_store_mut(|store| {
+            store.batch_set_rule_targets(
+                &id,
+                target,
+                node_id,
+                smart_include.unwrap_or_default(),
+                smart_exclude.unwrap_or_default(),
+            )
+        })
+        .map_err(|e| e.to_string())?;
+    if needs_restart {
+        apply_running(&app);
+    }
     Ok(set)
 }
 
@@ -466,7 +559,7 @@ pub fn set_rule_set_dns_strategy(
     id: String,
     strategy: RuleSetDnsStrategy,
 ) -> Result<RuleSet, String> {
-    let set = state
+    let (set, needs_restart) = state
         .with_store_mut(|store| {
             let set = store
                 .rule_sets
@@ -474,10 +567,15 @@ pub fn set_rule_set_dns_strategy(
                 .find(|set| set.id == id)
                 .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
             set.dns_strategy = strategy;
-            Ok(set.clone())
+            // DNS policy of an effectively-empty set emits no grouped DNS
+            // rule, so the kernel config is unchanged — skip the restart.
+            let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
+            Ok((set.clone(), needs_restart))
         })
         .map_err(|e| e.to_string())?;
-    apply_running(&app);
+    if needs_restart {
+        apply_running(&app);
+    }
     Ok(set)
 }
 
@@ -491,11 +589,16 @@ pub fn reorder_rule_sets(
     if ids.is_empty() {
         return Err("ids is empty".into());
     }
+    // Empty sets are skipped by the config builder, so only a changed order
+    // of contributing sets can affect the kernel.
+    let contributing_before = enabled_contributing_ids(&state);
     state
         .with_store_mut(|store| store.reorder_rule_sets(&ids))
         .map_err(|e| e.to_string())?;
-    // Order is already saved; restart failure must not revert UI order.
-    apply_running(&app);
+    if enabled_contributing_ids(&state) != contributing_before {
+        // Order is already saved; restart failure must not revert UI order.
+        apply_running(&app);
+    }
     state
         .with_store(|store| Ok(store.list_rule_set_summaries()))
         .map_err(|e| e.to_string())
@@ -558,7 +661,23 @@ pub fn create_rule_set(
                 })?;
                 Ok(store.create_remote_rule_set(n, url, target, update_interval))
             } else {
-                Ok(store.create_rule_set(n))
+                // Local set: an optional initial strategy from the new-set
+                // dialog's 路由 choice (same p/d/b restriction as remote).
+                let target = target.unwrap_or(RuleTarget::Proxy);
+                if !matches!(
+                    target,
+                    RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+                ) {
+                    return Err(crate::error::AppError::Config(
+                        "本地规则集仅支持 proxy/direct/block 策略".into(),
+                    ));
+                }
+                let strategy = match target {
+                    RuleTarget::Direct => RuleSetStrategy::Direct,
+                    RuleTarget::Block => RuleSetStrategy::Block,
+                    _ => RuleSetStrategy::Proxy,
+                };
+                Ok(store.create_local_rule_set(n, strategy))
             }
         })
         .map_err(|e| e.to_string())?;
@@ -643,12 +762,15 @@ pub fn delete_rule_set(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let cached_path = state
+    let (cached_path, was_contributing, boundary_before) = state
         .with_store(|store| {
-            Ok(store
-                .get_rule_set(&id)
-                .and_then(|set| set.remote.as_ref())
-                .and_then(|remote| remote.local_path.clone()))
+            let set = store.get_rule_set(&id);
+            Ok((
+                set.and_then(|set| set.remote.as_ref())
+                    .and_then(|remote| remote.local_path.clone()),
+                set.is_some_and(|set| !crate::config::rule_set_is_empty_for_config(set)),
+                any_rule_set_enabled(store),
+            ))
         })
         .map_err(|e| e.to_string())?;
     state
@@ -661,7 +783,14 @@ pub fn delete_rule_set(
             let _ = std::fs::remove_file(path);
         }
     }
-    apply_running(&app);
+    // Deleting an effectively-empty set changes nothing the kernel sees,
+    // unless it was the last enabled set (legacy fallback boundary).
+    let boundary_after = state
+        .with_store(|store| Ok(any_rule_set_enabled(store)))
+        .unwrap_or(true);
+    if was_contributing || boundary_before != boundary_after {
+        apply_running(&app);
+    }
     Ok(())
 }
 
@@ -744,7 +873,7 @@ pub fn save_rule(
     state: State<'_, AppState>,
     input: SaveRuleInput,
 ) -> Result<Rule, String> {
-    let rule = state
+    let (rule, needs_restart) = state
         .with_store_mut(|store| {
             if matches!(input.rule_type, RuleType::Geoip) {
                 return Err(crate::error::AppError::Config(
@@ -772,6 +901,7 @@ pub fn save_rule(
                     "远程规则集不能编辑单项".into(),
                 ));
             }
+            let set_empty_before = crate::config::rule_set_is_empty_for_config(set);
             let effective_target = set.strategy.route_target().unwrap_or(input.target);
 
             let ord = input
@@ -879,7 +1009,13 @@ pub fn save_rule(
                 r
             };
 
-            store.upsert_rule_in_set(&set_id, rule)
+            let rule = store.upsert_rule_in_set(&set_id, rule)?;
+            // Edits that keep the set effectively empty (all rules disabled
+            // or unmatchable) cannot change the kernel config.
+            let set_empty_after = store
+                .get_rule_set(&set_id)
+                .is_some_and(crate::config::rule_set_is_empty_for_config);
+            Ok((rule, !(set_empty_before && set_empty_after)))
         })
         .map_err(|e| e.to_string())?;
     // Dual files: Clash route list + optional SYSTEM DNS sidecar.
@@ -888,7 +1024,9 @@ pub fn save_rule(
     } else if let Some(sid) = input.set_id.as_deref() {
         dump_set(&state, sid);
     }
-    apply_running(&app);
+    if needs_restart {
+        apply_running(&app);
+    }
     // Best-effort: pick best node for new/updated smart rule after core restarts.
     if matches!(rule.target, RuleTarget::Smart) && rule.enabled {
         let r = rule.clone();
@@ -940,11 +1078,24 @@ pub fn remove_rule(
             })
             .map_err(|e| e.to_string())?,
     };
-    state
-        .with_store_mut(|store| store.remove_rule_from_set(&sid, &id))
+    let needs_restart = state
+        .with_store_mut(|store| {
+            // Removing a rule from an already-empty set (no effective rules)
+            // cannot change the kernel config.
+            let empty_before = store
+                .get_rule_set(&sid)
+                .is_some_and(crate::config::rule_set_is_empty_for_config);
+            store.remove_rule_from_set(&sid, &id)?;
+            let empty_after = store
+                .get_rule_set(&sid)
+                .is_some_and(crate::config::rule_set_is_empty_for_config);
+            Ok(!(empty_before && empty_after))
+        })
         .map_err(|e| e.to_string())?;
     dump_set(&state, &sid);
-    apply_running(&app);
+    if needs_restart {
+        apply_running(&app);
+    }
     Ok(())
 }
 
@@ -969,23 +1120,30 @@ pub fn set_rule_enabled(
             })
             .map_err(|e| e.to_string())?,
     };
-    let rule = state
+    let (rule, needs_restart) = state
         .with_store_mut(|store| {
             let set = store
                 .rule_sets
                 .iter_mut()
                 .find(|s| s.id == sid)
                 .ok_or_else(|| crate::error::AppError::NotFound(sid.clone()))?;
+            let empty_before = crate::config::rule_set_is_empty_for_config(set);
             let rule = set
                 .rules
                 .iter_mut()
                 .find(|r| r.id == id)
                 .ok_or_else(|| crate::error::AppError::NotFound(id))?;
             rule.enabled = enabled;
-            Ok(rule.clone())
+            let rule = rule.clone();
+            // Toggling rules inside an effectively-empty set never reaches
+            // the kernel config; only emptiness transitions need a restart.
+            let empty_after = crate::config::rule_set_is_empty_for_config(set);
+            Ok((rule, !(empty_before && empty_after)))
         })
         .map_err(|e| e.to_string())?;
     dump_set(&state, &sid);
-    apply_running(&app);
+    if needs_restart {
+        apply_running(&app);
+    }
     Ok(rule)
 }

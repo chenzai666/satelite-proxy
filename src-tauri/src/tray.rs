@@ -117,12 +117,8 @@ const TRAY_ID: &str = "main";
 
 fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
     match (style, running) {
-        (TrayIconStyle::Badge, true) => {
-            (include_bytes!("../icons/tray/badge-on.png"), false)
-        }
-        (TrayIconStyle::Badge, false) => {
-            (include_bytes!("../icons/tray/badge-off.png"), false)
-        }
+        (TrayIconStyle::Badge, true) => (include_bytes!("../icons/tray/badge-on.png"), false),
+        (TrayIconStyle::Badge, false) => (include_bytes!("../icons/tray/badge-off.png"), false),
         (TrayIconStyle::Mark, true) => (include_bytes!("../icons/tray/mark-on.png"), false),
         // Transparent flat mark: black silhouette, macOS tints for the menu bar.
         (TrayIconStyle::Mark, false) => (include_bytes!("../icons/tray/mark-off.png"), true),

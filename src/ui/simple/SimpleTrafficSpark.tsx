@@ -21,6 +21,8 @@ interface Sample {
 interface Link {
   process: string;
   node: string;
+  /** Direct (non-proxied) link — its arc renders green instead of blue. */
+  direct: boolean;
   bytes: number;
   n: number;
 }
@@ -131,14 +133,17 @@ function shortProcess(raw: string) {
   return base.trim();
 }
 
-function buildLinks(rows: ConnectionView[]): Link[] {
+function buildLinks(rows: ConnectionView[], directLabel: string): Link[] {
   const map = new Map<string, Link>();
   for (const r of rows) {
     if (r.closed) continue;
     const process = shortProcess(r.process) || r.host || "—";
-    const node = r.node_name || r.node_tag || "—";
+    // "direct" is the raw outbound tag from the core — show it localized.
+    const rawNode = r.node_name || r.node_tag || "—";
+    const direct = rawNode === "direct";
+    const node = direct ? directLabel : rawNode;
     const key = `${process}\0${node}`;
-    const prev = map.get(key) ?? { process, node, bytes: 0, n: 0 };
+    const prev = map.get(key) ?? { process, node, direct, bytes: 0, n: 0 };
     prev.bytes += r.upload + r.download;
     prev.n += 1;
     map.set(key, prev);
@@ -211,7 +216,10 @@ export function SimpleTrafficSpark({
   const quiet = running && hasConns && !hasTraffic;
   const empty = !running || (!hasTraffic && !hasConns);
 
-  const links = useMemo(() => buildLinks(rows), [rows]);
+  const links = useMemo(
+    () => buildLinks(rows, t("simple.sparkDirect")),
+    [rows, t],
+  );
   const processCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const r of rows) {
@@ -231,7 +239,7 @@ export function SimpleTrafficSpark({
   const leftRefs = useRef(new Map<string, HTMLElement>());
   const rightRefs = useRef(new Map<string, HTMLElement>());
   const [arcs, setArcs] = useState<
-    { key: string; d: string; hot: boolean }[]
+    { key: string; d: string; hot: boolean; direct: boolean }[]
   >([]);
 
   const measureArcs = useCallback(() => {
@@ -257,6 +265,7 @@ export function SimpleTrafficSpark({
           key: `${l.process}->${l.node}`,
           d: `M ${x1.toFixed(1)} ${y1.toFixed(1)} C ${(x1 + dx).toFixed(1)} ${y1.toFixed(1)}, ${(x2 - dx).toFixed(1)} ${y2.toFixed(1)}, ${x2.toFixed(1)} ${y2.toFixed(1)}`,
           hot: l.bytes > 0,
+          direct: l.direct,
         },
       ];
     });
@@ -367,7 +376,7 @@ export function SimpleTrafficSpark({
             {arcs.map((a) => (
               <path
                 key={a.key}
-                className={`simple-spark-arc${a.hot ? " hot" : ""}`}
+                className={`simple-spark-arc${a.hot ? " hot" : ""}${a.direct ? " direct" : ""}`}
                 d={a.d}
               />
             ))}

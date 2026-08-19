@@ -294,6 +294,7 @@ impl CoreManager {
         log_dir: &Path,
         mixed_port: u16,
         api_port: Option<u16>,
+        extra_ports: &[u16],
         elevated: bool,
         _resource_dir: Option<&Path>,
     ) -> AppResult<()> {
@@ -304,13 +305,23 @@ impl CoreManager {
 
         // Drop our own child first if still tracked.
         let _ = self.stop();
-        let mut ports = vec![mixed_port];
+        let mut ports = Vec::new();
+        if mixed_port != 0 {
+            ports.push(mixed_port);
+        }
         if let Some(api) = api_port {
-            if api != mixed_port {
+            if api != 0 && api != mixed_port {
                 ports.push(api);
             }
         }
-        Self::ensure_ports_free(&ports)?;
+        for &p in extra_ports {
+            if p != 0 && !ports.contains(&p) {
+                ports.push(p);
+            }
+        }
+        if !ports.is_empty() {
+            Self::ensure_ports_free(&ports)?;
+        }
 
         #[cfg(target_os = "macos")]
         if elevated {

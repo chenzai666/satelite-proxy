@@ -887,13 +887,40 @@ button {
   font-size: 0.85rem;
 }
 
+/* Config preview: a large, near-fullscreen dialog (copy + line filter live
+   in .preview-toolbar; the <pre> itself fills the remaining height). */
 .preview-modal {
-  width: min(720px, 100%);
+  width: min(1080px, 96vw);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 2rem);
+}
+
+.preview-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.preview-toolbar .search {
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-match-count {
+  white-space: nowrap;
+  font-size: 0.72rem;
 }
 
 .preview-json {
   margin: 0;
-  max-height: 420px;
+  flex: 1;
+  min-height: 260px;
   overflow: auto;
   background: var(--code-bg);
   color: var(--code-fg);
@@ -903,6 +930,33 @@ button {
   font-size: 11px;
   line-height: 1.45;
   font-family: var(--mono);
+}
+
+.preview-line {
+  display: flex;
+  gap: 0.75rem;
+  /* span (not div): <pre> only allows phrasing content. */
+}
+
+.preview-line-no {
+  flex: none;
+  min-width: 3rem;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+.preview-line-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.preview-json mark {
+  background: var(--primary-muted);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 tr.row-active {
@@ -1465,7 +1519,8 @@ tr.row-active {
   border: 0;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证 960 下节点卡仍 4 列只变窄不换行 */
+@media (max-width: 900px) {
   .node-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1516,6 +1571,24 @@ button.node-card.active,
 button.node-card:disabled,
 .node-card:disabled {
   opacity: 0.7;
+}
+
+.rename-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+}
+
+.rename-node-meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.rename-node-meta code {
+  font-size: 0.68rem;
 }
 
 .node-card-top {
@@ -2064,6 +2137,12 @@ button.node-card:disabled,
   flex-wrap: nowrap;
   padding: 0.65rem 0.75rem;
   margin-bottom: 0.75rem;
+  /* The ⋮ popover opens DOWNWARD over the rules table card. Both cards are
+     isolation-isolated stacking contexts painted in DOM order, so without
+     this the later table card would paint OVER the popover — and its
+     backdrop-filter would frost it, reading as a translucent menu. */
+  position: relative;
+  z-index: 70;
 }
 
 .rules-main-actions {
@@ -2210,6 +2289,22 @@ tr.rule-row:hover {
   gap: 6px;
   margin-bottom: 10px;
   padding: 12px 14px;
+}
+
+/* Cache-file row under the remote rule-set hint: path + "parse & show". */
+.remote-cache-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.remote-cache-path {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  word-break: break-all;
+  user-select: all;
+  max-width: 100%;
 }
 
 .remote-rules-wrap.table-wrap {
@@ -2366,6 +2461,67 @@ tr.rule-row:hover {
   background: var(--danger-bg);
 }
 
+/* Toolbar ⋮ menu (rules page): opens DOWNWARD below the trigger (it sits at
+   the top of the content area). Fully opaque and VISIBLY elevated — the
+   page background and --panel-solid are near-identical darks, so use the
+   brighter elevated panel + strong border/shadow to read as a solid card. */
+.rules-more-pop {
+  bottom: auto;
+  top: calc(100% + 4px);
+  min-width: 12rem;
+  padding: 0.5rem;
+  gap: 0.15rem;
+  background: var(--panel-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-elevated), 0 2px 10px rgba(0, 0, 0, 0.35);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.rules-more-title {
+  font-size: 0.72rem;
+  margin: 0 0.2rem 0.3rem;
+}
+
+.rules-more-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.35rem 0.25rem;
+}
+
+/* Radio-style DNS options: plain menu items with a leading dot — solid by
+   construction (no glass capsule inside the popover). */
+.rules-more-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Day theme: --panel-elevated (#f3f4f7) is nearly identical to the page bg
+   (#eef0f4), which reads as "transparent". Use pure white + a real border
+   and shadow so EVERY popover (row/set/toolbar) visibly floats. */
+[data-theme="day"] .rule-menu-pop {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.16);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.16),
+    0 2px 10px rgba(15, 23, 42, 0.1);
+}
+
+.rules-more-radio {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+
+.rules-more-radio.on {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: 0 0 6px var(--primary-glow);
+}
+
 .modal-body select {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2425,6 +2581,35 @@ button.danger:hover:not(:disabled) {
 button.small {
   padding: 0.3rem 0.65rem;
   font-size: 0.8rem;
+}
+
+.config-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+}
+
+.config-group-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.config-group-empty {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.sub-card.readonly {
+  cursor: default;
+}
+
+.sub-card.readonly:hover {
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 /* config — compact FlClash-like subscription cards */
@@ -2811,31 +2996,56 @@ code {
   align-items: start;
 }
 
-/* Application and network options share one tab and use the available width. */
-.settings-app-network-page {
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
-  gap: 0.75rem;
-  align-items: start;
+/* App tab alone since the ports card moved to its own tab: cap the
+   preferences card near its old width in the former two-column layout. */
+.settings-app-page .settings-panel {
+  max-width: 46rem;
 }
 
-.settings-app-network-page .settings-form-grid {
+/* Ports tab: shared toolbar on top (save applies to both columns), then the
+   main port form (left) beside the extra-listeners panel (right). */
+.settings-ports-toolbar {
+  max-width: 56rem;
+}
+
+.settings-ports-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 0.75rem;
+  align-items: start;
+  max-width: 56rem;
+}
+
+.settings-ports-page .settings-form-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.65rem;
+  padding: 0.85rem;
   max-width: none;
+}
+
+.settings-ports-page .settings-inbounds-card {
   padding: 0.85rem;
 }
 
-.settings-app-network-page > .settings-panel,
-.settings-app-network-page .settings-form-grid .field {
+.settings-ports-page .settings-form-grid .field {
   min-width: 0;
 }
 
-.settings-app-network-page .settings-form-grid input,
-.settings-app-network-page .settings-form-grid .solid-select {
+.settings-ports-page .settings-form-grid input,
+.settings-ports-page .settings-form-grid .solid-select {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
+}
+
+@media (max-width: 700px) {
+  .settings-ports-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-ports-page .settings-form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .settings-network-card-head {
@@ -2857,14 +3067,21 @@ code {
   line-height: 1.35;
 }
 
-.settings-network-card-head button {
-  flex-shrink: 0;
+/* Multi-listen ports table inside the network card (settings · 端口与网络) */
+.inbound-table-wrap {
+  /* Narrow table never scrolls; visible overflow keeps the ⋮ menu unclipped
+     (same reason rules-table-wrap overrides the default). */
+  overflow: visible;
 }
 
-@media (max-width: 700px) {
-  .settings-app-network-page {
-    grid-template-columns: 1fr;
-  }
+.inbound-empty {
+  text-align: center;
+  padding: 1.1rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.settings-network-card-head button {
+  flex-shrink: 0;
 }
 
 .dns-cell-general {
@@ -3679,6 +3896,47 @@ button.check.on {
   overflow: visible;
 }
 
+.modal.config-add-modal {
+  width: min(560px, 100%);
+  max-height: min(92vh, 860px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.config-add-modal .modal-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 7.5rem;
+  gap: 0.65rem;
+}
+
+.field textarea.config-paste {
+  min-height: 8.5rem;
+  resize: vertical;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.field textarea.config-paste:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-muted);
+}
+
+.node-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
 .field {
   position: relative;
   z-index: 0;
@@ -3798,7 +4056,8 @@ button.check.on {
   overflow: visible;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证首页 hero 三列布局不折叠 */
+@media (max-width: 900px) {
   .dash-hero {
     grid-template-columns: minmax(140px, 180px) 1fr;
   }
@@ -3994,6 +4253,59 @@ button.check.on {
   box-shadow: none !important;
 }
 
+.dash-more-sub {
+  position: relative;
+}
+
+.dash-more-sub > button {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.dash-more-caret {
+  opacity: 0.55;
+  font-size: 0.95em;
+}
+
+.dash-more-submenu {
+  position: absolute;
+  right: calc(100% + 4px);
+  top: 0;
+  z-index: 31;
+  min-width: 11rem;
+  max-width: 16rem;
+  max-height: 16rem;
+  overflow: auto;
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  background: var(--panel-solid) !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-elevated);
+}
+
+.dash-more-submenu button {
+  display: flex !important;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.dash-more-submenu button.is-selected {
+  color: var(--accent) !important;
+}
+
+.dash-more-check {
+  width: 0.85rem;
+  flex: 0 0 auto;
+  font-size: 0.65rem;
+}
+
 .dash-hero .particle-orbit {
   filter: saturate(1) brightness(1);
   transition: filter 1.25s ease;
@@ -4089,6 +4401,16 @@ button.check.on {
   min-width: 4.2rem;
   color: var(--faint);
   margin-right: 0.35rem;
+}
+
+/* Multi-listen ports listed inline in the value line — smaller so a few fit,
+   CSS ellipsis ("…") when they don't. Tooltip carries the full listen list. */
+.instrument-value.multi {
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .instrument-kv .kv-k.down {
   color: var(--download);
@@ -4397,6 +4719,11 @@ button.check.on {
   letter-spacing: -0.03em;
   line-height: 1.15;
   color: var(--text);
+  /* Long node names shrink to fit via useSingleLineFit; nowrap + ellipsis
+     are the hard guarantee that the hero never grows a second line. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dash-hero-desc {
@@ -4478,7 +4805,7 @@ button.check.on {
 
 .instrument-grid.instrument-grid-6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: 10.5rem;
+  grid-auto-rows: 9.5rem;
 }
 
 .instrument-grid.instrument-grid-6 > .instrument,
@@ -4491,7 +4818,8 @@ button.check.on {
   box-sizing: border-box;
 }
 
-@media (max-width: 960px) {
+/* 960 是专业模式窗口宽度,断点压到 900 保证首页仪表卡仍 3 列只变窄不换行 */
+@media (max-width: 900px) {
   .instrument-grid,
   .instrument-grid.instrument-grid-6 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4639,7 +4967,7 @@ button.check.on {
 }
 
 .instrument-quota-bar {
-  flex: 0 0 2.4rem;
+  flex: 0 0 4.8rem;
   height: 3px;
   margin-right: 0.4rem;
   border-radius: 99px;
@@ -6211,7 +6539,9 @@ button.active-soft {
 
 .simple-spark-arc {
   fill: none;
-  stroke: color-mix(in srgb, var(--text) 26%, transparent);
+  /* Proxied arcs are always blue (--accent-blue, NOT --primary — in the
+     aerospace theme --primary is green and would collide with direct). */
+  stroke: color-mix(in srgb, var(--accent-blue) 45%, transparent);
   stroke-width: 1.15;
   stroke-dasharray: 3.2 4.6;
   stroke-linecap: round;
@@ -6219,7 +6549,17 @@ button.active-soft {
 }
 
 .simple-spark-arc.hot {
-  stroke: color-mix(in srgb, var(--primary) 42%, transparent);
+  stroke: color-mix(in srgb, var(--accent-blue) 75%, transparent);
+}
+
+/* Direct (non-proxied) links read green — idle and active variants.
+   Alphas stay well above the proxied base so the hue reads at 1px dashes. */
+.simple-spark-arc.direct {
+  stroke: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.simple-spark-arc.direct.hot {
+  stroke: color-mix(in srgb, var(--success) 88%, transparent);
 }
 
 .simple-spark-area {
@@ -6462,6 +6802,17 @@ button.simple-link-row {
   font: inherit;
   color: inherit;
   cursor: pointer;
+}
+
+/* Higher specificity so disabled beats the `cursor: pointer` above.
+   Plain arrow — disabled rows read as inert content, not "forbidden". */
+button.simple-card:disabled,
+button.simple-node-item:disabled,
+button.simple-node-card:disabled,
+button.simple-link-row:disabled,
+button.simple-sub-row:disabled,
+button.node-card:disabled {
+  cursor: default;
 }
 
 button.simple-card:hover:not(:disabled),

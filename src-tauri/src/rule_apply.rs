@@ -165,6 +165,13 @@ pub fn request_apply(app: AppHandle, id: String, enabled: bool) {
     }
 }
 
+/// Acknowledge a persisted toggle that cannot change the generated config
+/// (e.g. toggling an effectively-empty rule set): close the UI busy state
+/// with a terminal `ready` event without queueing any core restart.
+pub fn emit_ready_without_restart(app: &AppHandle, id: &str, enabled: bool) {
+    emit(app, id, enabled, "ready", None);
+}
+
 /// Queue a non-toggle rule change for the same globally serialized restart.
 /// This is used after one or more remote rule files have been downloaded.
 pub fn request_restart(app: AppHandle, cleanup_after_apply: Vec<PathBuf>) {

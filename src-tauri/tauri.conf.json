@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "Satelite",
-        "width": 1024,
-        "height": 760,
+        "width": 960,
+        "height": 720,
         "resizable": false,
         "center": true
       }

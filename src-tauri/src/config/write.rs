@@ -12,6 +12,48 @@ pub fn active_config_path(app_data_dir: &Path) -> PathBuf {
     config_dir(app_data_dir).join("active.json")
 }
 
+pub fn custom_config_dir(app_data_dir: &Path) -> PathBuf {
+    config_dir(app_data_dir).join("custom")
+}
+
+pub fn custom_config_path(app_data_dir: &Path, id: &str) -> PathBuf {
+    custom_config_dir(app_data_dir).join(format!("{}.json", sanitize_profile_id(id)))
+}
+
+/// Persist a user sing-box document as-is. Never writes `active.json`.
+pub fn write_custom_config(app_data_dir: &Path, id: &str, raw: &str) -> AppResult<PathBuf> {
+    let dir = custom_config_dir(app_data_dir);
+    fs::create_dir_all(&dir)?;
+    let path = custom_config_path(app_data_dir, id);
+    let tmp = dir.join(format!("{}.json.tmp", sanitize_profile_id(id)));
+    fs::write(&tmp, raw.as_bytes())?;
+    fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
+pub fn remove_custom_config(app_data_dir: &Path, id: &str) {
+    let path = custom_config_path(app_data_dir, id);
+    let _ = fs::remove_file(path);
+}
+
+fn sanitize_profile_id(id: &str) -> String {
+    let cleaned: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "profile".into()
+    } else {
+        cleaned
+    }
+}
+
 /// Write active.json and a timestamped backup. Returns active path.
 pub fn write_active_config(app_data_dir: &Path, built: &BuiltConfig) -> AppResult<PathBuf> {
     let dir = config_dir(app_data_dir);
@@ -37,6 +79,41 @@ pub fn write_active_config(app_data_dir: &Path, built: &BuiltConfig) -> AppResul
     prune_backups(&backup_dir, 20)?;
 
     Ok(active)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::builder::BuiltConfig;
+    use serde_json::json;
+
+    #[test]
+    fn custom_write_does_not_touch_active_json() {
+        let dir = std::env::temp_dir().join(format!(
+            "satelite-custom-write-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let active_before = json!({"mark":"generated"});
+        let built = BuiltConfig {
+            value: active_before.clone(),
+            outbound_tags: Vec::new(),
+            selected_tag: "direct".into(),
+        };
+        write_active_config(&dir, &built).unwrap();
+        let user = r#"{"inbounds":[{"type":"mixed","listen_port":1080}],"outbounds":[{"type":"direct"}]}"#;
+        let custom = write_custom_config(&dir, "abc123", user).unwrap();
+        assert!(custom.ends_with(std::path::Path::new("custom").join("abc123.json")));
+        assert_eq!(fs::read_to_string(&custom).unwrap(), user);
+        let active_after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(active_config_path(&dir)).unwrap()).unwrap();
+        assert_eq!(active_after, active_before);
+        let _ = fs::remove_dir_all(dir);
+    }
 }
 
 fn prune_backups(dir: &Path, keep: usize) -> AppResult<()> {

@@ -46,7 +46,7 @@ pub fn build_dns_section(
     // it no longer follows the routing `final`.
     let final_tag = dns_final_tag(settings.normalize_dns_final());
 
-    build_default(settings, hijack, final_tag)
+    build_default(settings, hijack, final_tag, tun_enabled)
 }
 
 /// Map the DNS `final` strategy to a server tag.
@@ -64,12 +64,17 @@ fn dns_final_tag(dns_final: &str) -> &'static str {
 /// Note: only IP-literal server addresses are used here. Domain-name addresses
 /// (e.g. `dns.google`) would require a `domain_resolver`, creating a bootstrap
 /// dependency — IPs avoid that entirely.
+///
+/// `dns-remote` detours through the `proxy` group: DoH endpoints such as
+/// 1.1.1.1 are commonly blocked on direct connections, and with TUN +
+/// hijack-dns every system query funnels into this server — a dead direct
+/// DoH therefore takes down name resolution for the whole machine.
 fn builtin_servers(fake_ip: &FakeIpConfig) -> Vec<Value> {
     let mut servers = vec![
         json!({ "type": "local", "tag": TAG_LOCAL }),
         json!({ "type": "udp", "tag": TAG_CN, "server": "223.5.5.5" }),
         json!({ "type": "udp", "tag": "dns-cn-tencent", "server": "119.29.29.29" }),
-        json!({ "type": "https", "tag": TAG_REMOTE, "server": "1.1.1.1" }),
+        json!({ "type": "https", "tag": TAG_REMOTE, "server": "1.1.1.1", "detour": "proxy" }),
     ];
     if fake_ip.enabled {
         let mut fi = json!({
@@ -208,7 +213,7 @@ fn hosts_layer(hosts: &HostsConfig) -> Option<(Value, Value)> {
 
 /// Global DNS baseline. Unified rule-set DNS rules are prepended later by the
 /// top-level builder and therefore override FakeIP and the unmatched default.
-fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str) -> BuiltDns {
+fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str, tun_enabled: bool) -> BuiltDns {
     let mut servers = builtin_servers(&settings.fake_ip);
     let mut rules: Vec<Value> = Vec::new();
 
@@ -234,7 +239,16 @@ fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str) -> Built
     });
     BuiltDns {
         dns,
-        default_resolver: TAG_LOCAL.into(),
+        // `route.default_domain_resolver` resolves outbound server domains
+        // (i.e. the user's node addresses). With TUN + auto_route the system
+        // resolver's queries are routed into the tunnel and hijacked, so
+        // `dns-local` becomes a loop (and on Windows, strict_route's firewall
+        // rules can block them outright) — node dialing then fails entirely.
+        // `dns-cn` is dialed by sing-box itself, bound to the physical
+        // interface via auto_detect_interface, so it always bypasses the
+        // tunnel. Without TUN the system resolver remains the fastest and
+        // most environment-faithful choice.
+        default_resolver: if tun_enabled { TAG_CN.into() } else { TAG_LOCAL.into() },
         want_hijack: hijack,
     }
 }
@@ -286,6 +300,29 @@ fn normalize_suffix(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::domain::DnsSettings;
+
+    #[test]
+    fn dns_remote_detours_through_proxy() {
+        // DoH 1.1.1.1 is unreachable on direct connections in censored
+        // networks; with TUN + hijack-dns a dead remote server kills name
+        // resolution for the whole machine (Windows: "no internet").
+        let b = build_dns_section(&DnsSettings::default(), true, &[]);
+        let remote = b.dns["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["tag"] == TAG_REMOTE)
+            .unwrap();
+        assert_eq!(remote["detour"], json!("proxy"));
+    }
+
+    #[test]
+    fn default_domain_resolver_avoids_system_dns_loop_under_tun() {
+        let b = build_dns_section(&DnsSettings::default(), true, &[]);
+        assert_eq!(b.default_resolver, TAG_CN);
+        let b = build_dns_section(&DnsSettings::default(), false, &[]);
+        assert_eq!(b.default_resolver, TAG_LOCAL);
+    }
 
     #[test]
     fn dns_final_follows_dns_final_setting() {

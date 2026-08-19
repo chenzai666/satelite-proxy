@@ -96,7 +96,7 @@ export interface SubscriptionTraffic {
 export interface SubscriptionView {
   id: string;
   name: string;
-  source_kind: "url" | "file" | string;
+  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
   source_display: string;
   last_update: number;
   node_count: number;
@@ -114,9 +114,12 @@ export interface SubscriptionView {
 export interface SubscriptionDetail {
   id: string;
   name: string;
-  source_kind: "url" | "file" | string;
+  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
   url?: string | null;
   path?: string | null;
+  content?: string | null;
+  uri?: string | null;
+  node?: ManualNodeDraft | null;
   last_update: number;
   node_count: number;
   enabled: boolean;
@@ -178,14 +181,80 @@ export interface LatencyBatchResult {
   method?: string;
 }
 
-export type AddSourceKind = "url" | "file";
+export type AddSourceKind = "url" | "file" | "text" | "node" | "singbox";
+
+export type ProfileKind = "subscription" | "local" | "singbox";
+export type LocalKind = "node" | "multi";
+export type ConfigInputMode = "paste" | "file";
+
+/** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
+export interface ManualNodeDraft {
+  protocol: string;
+  server: string;
+  port: number;
+  name?: string | null;
+  password?: string | null;
+  uuid?: string | null;
+  method?: string | null;
+  plugin?: string | null;
+  pluginOpts?: string | null;
+  alterId?: number | null;
+  security?: string | null;
+  flow?: string | null;
+  packetEncoding?: string | null;
+  username?: string | null;
+  path?: string | null;
+  upMbps?: number | null;
+  downMbps?: number | null;
+  obfs?: string | null;
+  obfsPassword?: string | null;
+  congestionControl?: string | null;
+  udpRelayMode?: string | null;
+  zeroRttHandshake?: boolean | null;
+  psk?: string | null;
+  version?: number | null;
+  user?: string | null;
+  privateKey?: string | null;
+  privateKeyPassphrase?: string | null;
+  peerPublicKey?: string | null;
+  localAddress?: string | null;
+  preSharedKey?: string | null;
+  mtu?: number | null;
+  quic?: boolean | null;
+  executablePath?: string | null;
+  tls?: boolean | null;
+  sni?: string | null;
+  insecure?: boolean | null;
+  alpn?: string | null;
+  fingerprint?: string | null;
+  realityPublicKey?: string | null;
+  realityShortId?: string | null;
+  network?: string | null;
+  host?: string | null;
+  serviceName?: string | null;
+  udp?: boolean | null;
+}
 
 /** Clash-style routing mode. */
 export type OutboundMode = "rule" | "global" | "direct";
 
+/** Extra sing-box inbound listener (settings-managed). */
+export interface ExtraInbound {
+  id: string;
+  /** mixed | http */
+  kind: "mixed" | "http";
+  port: number;
+  /** true → listen 0.0.0.0, false → 127.0.0.1 */
+  allow_lan?: boolean;
+}
+
 export interface AppSettings {
   mixed_port: number;
+  /** Main mixed inbound listens on 0.0.0.0 instead of 127.0.0.1. */
+  allow_lan?: boolean;
   api_port: number;
+  /** Additional mixed/http listeners emitted into the generated config. */
+  extra_inbounds?: ExtraInbound[];
   current_node_id?: string | null;
   clash_api_secret?: string | null;
   probe_url: string;
@@ -229,6 +298,8 @@ export interface AppSettings {
   find_process?: boolean;
   /** @deprecated derived from auto_select === "smart" */
   smart_switch?: boolean;
+  /** `generated` or `singbox:<profile_id>`. */
+  runtime_source?: string;
 }
 
 /** Manual / app smart switch / sing-box urltest. */
@@ -310,6 +381,13 @@ export interface ProxyStatus {
   auto_select?: AutoSelectMode | string;
   /** Unix seconds when core last started (uptime = now - this). */
   core_started_at?: number | null;
+  /** `generated` or `singbox`. */
+  runtime_source?: string;
+  runtime_profile_id?: string | null;
+  runtime_profile_name?: string | null;
+  custom_has_clash_api?: boolean;
+  custom_has_tun?: boolean;
+  custom_inbound_port?: number | null;
   /** Resident memory (bytes) of the core process, when known. */
   core_memory_bytes?: number | null;
 }

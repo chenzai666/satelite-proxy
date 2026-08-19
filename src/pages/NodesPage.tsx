@@ -3,15 +3,18 @@ import {
   generateSingboxConfig,
   getProxyStatus,
   getSettings,
+  listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
   setCurrentNode,
+  testCustomNodesLatency,
   testNodesLatency,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import { useVirtualRange } from "../hooks/useVirtualRange";
+import { filterCustomNodes, applyCustomLatency, type CustomLatencyMap } from "../customNodes";
 import type { ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
@@ -74,6 +77,9 @@ export function NodesPage() {
     return (localStorage.getItem("nodes.sortMode") as SortMode) || "default";
   });
 
+  const [customRuntime, setCustomRuntime] = useState(false);
+  // Session-only latency results for custom-mode nodes (not persisted backend-side).
+  const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [columnCount, setColumnCount] = useState(gridColumns);
@@ -88,21 +94,30 @@ export function NodesPage() {
     setError(null);
     if (append) setLoadingMore(true);
     try {
-      const offset = append ? nodes.length : 0;
-      const [page, settings] = await Promise.all([
-        listNodesPage(query, sortMode, offset, PAGE_SIZE),
-        getSettings(),
-      ]);
-      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
-      setTotal(page.total);
+      const settings = await getSettings();
+      const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
+      setCustomRuntime(custom);
       setCurrentId(settings.current_node_id ?? null);
+      const offset = append ? nodes.length : 0;
+      if (custom) {
+        // Custom mode: read-only nodes extracted from the sing-box config,
+        // overlaid with this session's latency results.
+        const all = applyCustomLatency(await listCustomConfigNodes(), customLatency);
+        const filtered = filterCustomNodes(all, query, sortMode, offset, PAGE_SIZE);
+        setNodes((prev) => (append ? [...prev, ...filtered.nodes] : filtered.nodes));
+        setTotal(filtered.total);
+      } else {
+        const page = await listNodesPage(query, sortMode, offset, PAGE_SIZE);
+        setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+        setTotal(page.total);
+      }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [nodes.length, query, sortMode]);
+  }, [nodes.length, query, sortMode, customLatency]);
 
   useEffect(() => {
     setLoading(true);
@@ -158,7 +173,9 @@ export function NodesPage() {
     setTesting(true);
     setError(null);
     // no top banner / completion message
-    const ids = await listNodeIds(query);
+    // Custom mode probes the extracted (unsaved) nodes — ids come from the
+    // loaded list because they are not in the node store.
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
     const idSet = new Set(ids);
     setTestingIds(idSet);
 
@@ -172,8 +189,20 @@ export function NodesPage() {
     );
 
     try {
-      const batch = await testNodesLatency(ids, 3000);
+      const batch = customRuntime
+        ? await testCustomNodesLatency(3000)
+        : await testNodesLatency(ids, 3000);
       const map = new Map(batch.results.map((r) => [r.id, r]));
+      if (customRuntime) {
+        // Session-only — remember results across filter / sort / page reloads.
+        setCustomLatency((prev) => {
+          const next = new Map(prev);
+          for (const r of batch.results) {
+            next.set(r.id, { ms: r.latency_ms ?? null, at: r.tested_at });
+          }
+          return next;
+        });
+      }
       setNodes((prev) =>
         prev.map((n) => {
           const r = map.get(n.id);
@@ -188,16 +217,23 @@ export function NodesPage() {
       );
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
-      await reload();
+      if (!customRuntime) await reload();
     } finally {
       setTesting(false);
       setTestingIds(new Set());
-      await reload(false);
+      // Custom results are session-only — keep the merged values instead of
+      // re-reading the latency-less extracted list.
+      if (!customRuntime) await reload(false);
     }
   }
 
   return (
     <div className="page nodes-page">
+      {customRuntime && (
+        <div className="banner" role="status">
+          {t("nodes.customReadOnly")}
+        </div>
+      )}
       <header className="page-header">
         <div>
           <h1>{t("nodes.title")}</h1>
@@ -264,7 +300,11 @@ export function NodesPage() {
         <div className="empty">{t("common.loading")}</div>
       ) : displayed.length === 0 ? (
         <div className="empty card muted">
-          {nodes.length === 0 ? t("nodes.empty") : "—"}
+          {nodes.length === 0
+            ? customRuntime
+              ? t("nodes.customEmpty")
+              : t("nodes.empty")
+            : "—"}
         </div>
       ) : viewMode === "list" ? (
         <div className="card table-wrap">
@@ -292,8 +332,8 @@ export function NodesPage() {
                   <tr
                     key={n.id}
                     className={`node-virtual-row ${active ? "row-active" : ""}`}
-                    onClick={() => void onSelect(n.id)}
-                    style={{ cursor: "pointer" }}
+                    onClick={customRuntime ? undefined : () => void onSelect(n.id)}
+                    style={{ cursor: customRuntime ? "default" : "pointer" }}
                   >
                     <td>{active ? "●" : "○"}</td>
                     <td>
@@ -345,7 +385,7 @@ export function NodesPage() {
                   type="button"
                   className={`node-card ${active ? "active" : ""}`}
                   onClick={() => void onSelect(n.id)}
-                  disabled={busyId === n.id}
+                  disabled={customRuntime || busyId === n.id}
                 >
                   <div className="node-card-top">
                     <span className="node-dot">{active ? "●" : "○"}</span>

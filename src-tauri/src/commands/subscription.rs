@@ -1,8 +1,12 @@
-use crate::domain::{ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView};
+use crate::domain::{
+    ManualNodeDraft, ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView,
+};
 use crate::services::import::{
-    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_url_with_id,
+    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
+    import_from_singbox, import_from_text, import_from_url_with_id,
 };
 use crate::state::AppState;
+use crate::subscription::node_to_draft;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -126,7 +130,7 @@ pub fn list_subscription_urls(
                         id: subscription.id.clone(),
                         url: url.clone(),
                     }),
-                    SubscriptionSource::File { .. } => None,
+                    _ => None,
                 })
                 .collect())
         })
@@ -140,16 +144,25 @@ pub fn get_subscription(
 ) -> Result<SubscriptionDetail, String> {
     state
         .with_store(|store| {
-            store
+            let mut detail = store
                 .get_subscription(&id)
                 .map(|s| s.to_detail())
-                .ok_or_else(|| crate::error::AppError::NotFound(id))
+                .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
+            if detail.source_kind == "node" {
+                detail.node = store
+                    .nodes
+                    .iter()
+                    .find(|n| n.subscription_id == id)
+                    .map(|n| node_to_draft(&n.node));
+            }
+            Ok(detail)
         })
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn add_subscription_url(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     url: String,
@@ -186,35 +199,85 @@ pub async fn add_subscription_url(
         auto_update.unwrap_or(false),
         auto_update_interval_min.unwrap_or(1440),
     );
-    persist_import(&state, outcome)
+    persist_import(&app, &state, outcome)
 }
 
 #[tauri::command]
 pub async fn add_subscription_file(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
     path: String,
     auto_update: Option<bool>,
     auto_update_interval_min: Option<u32>,
 ) -> Result<ImportResult, String> {
-    let mut outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
-    apply_auto_update_prefs(
-        &mut outcome.subscription,
-        auto_update.unwrap_or(false),
-        auto_update_interval_min.unwrap_or(1440),
-    );
-    persist_import(&state, outcome)
+    let _ = (auto_update, auto_update_interval_min);
+    let outcome = import_file_blocking(name, PathBuf::from(path), None).await?;
+    persist_import(&app, &state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_text(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: Option<String>,
+    content: String,
+) -> Result<ImportResult, String> {
+    let outcome = import_text_blocking(name, content, None).await?;
+    persist_import(&app, &state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_node(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
+) -> Result<ImportResult, String> {
+    let outcome = import_node_blocking(name, uri, node, None).await?;
+    persist_import(&app, &state, outcome)
+}
+
+#[tauri::command]
+pub async fn add_subscription_singbox(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: Option<String>,
+    content: Option<String>,
+    path: Option<String>,
+) -> Result<ImportResult, String> {
+    let body = load_inline_body(content, path).await?;
+    let outcome = import_singbox_blocking(name, body, None).await?;
+    persist_import(&app, &state, outcome)
+}
+
+#[tauri::command]
+pub fn read_import_file(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path.trim());
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() as usize > 8 * 1024 * 1024 {
+        return Err("file too large (max 8 MB)".into());
+    }
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
 /// Update existing subscription. Keeps stable id. Re-imports nodes.
 #[tauri::command]
 pub async fn update_subscription(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     name: Option<String>,
     kind: String,
     url: Option<String>,
     path: Option<String>,
+    content: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
     via_proxy: Option<bool>,
     auto_update: Option<bool>,
     auto_update_interval_min: Option<u32>,
@@ -290,27 +353,53 @@ pub async fn update_subscription(
             o.subscription.via_proxy = false;
             (o, None, false)
         }
-        _ => return Err("kind must be url or file".into()),
+        "text" => {
+            let content = content
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .ok_or_else(|| "content is required".to_string())?;
+            let mut o = import_text_blocking(Some(display_name), content, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        "node" => {
+            let mut o =
+                import_node_blocking(Some(display_name), uri, node, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        "singbox" => {
+            let body = load_inline_body(content, path).await?;
+            let mut o = import_singbox_blocking(Some(display_name), body, Some(id.clone())).await?;
+            o.subscription.via_proxy = false;
+            (o, None, false)
+        }
+        _ => return Err("kind must be url, file, text, node, or singbox".into()),
     };
 
     let mut outcome = outcome;
     outcome.subscription.enabled = existing.enabled || replaced_enabled;
-    apply_auto_update_prefs(
-        &mut outcome.subscription,
-        auto_update.unwrap_or(existing.auto_update),
-        auto_update_interval_min.unwrap_or(existing.auto_update_interval_min),
-    );
+    if outcome.subscription.source.is_remote() {
+        apply_auto_update_prefs(
+            &mut outcome.subscription,
+            auto_update.unwrap_or(existing.auto_update),
+            auto_update_interval_min.unwrap_or(existing.auto_update_interval_min),
+        );
+    } else {
+        outcome.subscription.auto_update = false;
+    }
 
-    persist_import_replacing(&state, outcome, replaced_id.as_deref())
+    persist_import_replacing(&app, &state, outcome, replaced_id.as_deref())
 }
 
 #[tauri::command]
 pub async fn refresh_subscription(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     via_proxy: Option<bool>,
 ) -> Result<ImportResult, String> {
-    refresh_subscription_inner(&state, id, via_proxy).await
+    refresh_subscription_inner(&app, &state, id, via_proxy).await
 }
 
 fn apply_auto_update_prefs(
@@ -324,13 +413,15 @@ fn apply_auto_update_prefs(
 
 /// Internal refresh used by the auto-update scheduler (no Tauri State).
 pub async fn refresh_subscription_by_id(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: &str,
 ) -> Result<ImportResult, String> {
-    refresh_subscription_inner(state, id.to_string(), None).await
+    refresh_subscription_inner(app, state, id.to_string(), None).await
 }
 
 async fn refresh_subscription_inner(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: String,
     via_proxy: Option<bool>,
@@ -338,13 +429,14 @@ async fn refresh_subscription_inner(
     match begin_refresh_flight(&id)? {
         RefreshFlight::Follower(receiver) => wait_for_refresh(receiver).await,
         RefreshFlight::Leader(leader) => {
-            let result = refresh_subscription_once(state, id, via_proxy).await;
+            let result = refresh_subscription_once(app, state, id, via_proxy).await;
             leader.finish(result)
         }
     }
 }
 
 async fn refresh_subscription_once(
+    app: &tauri::AppHandle,
     state: &AppState,
     id: String,
     via_proxy: Option<bool>,
@@ -381,6 +473,44 @@ async fn refresh_subscription_once(
             )
             .await?
         }
+        crate::domain::SubscriptionSource::Text { content } => {
+            import_text_blocking(
+                Some(existing.name.clone()),
+                content.clone(),
+                Some(id.clone()),
+            )
+            .await?
+        }
+        crate::domain::SubscriptionSource::Node { uri } => {
+            let draft = if uri.is_none() {
+                state
+                    .with_store(|store| {
+                        Ok(store
+                            .nodes
+                            .iter()
+                            .find(|n| n.subscription_id == id)
+                            .map(|n| node_to_draft(&n.node)))
+                    })
+                    .map_err(|e| e.to_string())?
+            } else {
+                None
+            };
+            import_node_blocking(
+                Some(existing.name.clone()),
+                uri.clone(),
+                draft,
+                Some(id.clone()),
+            )
+            .await?
+        }
+        crate::domain::SubscriptionSource::Singbox { content } => {
+            import_singbox_blocking(
+                Some(existing.name.clone()),
+                content.clone(),
+                Some(id.clone()),
+            )
+            .await?
+        }
     };
     let latest = state
         .with_store(|store| {
@@ -402,7 +532,7 @@ async fn refresh_subscription_once(
         latest.auto_update,
         latest.auto_update_interval_min,
     );
-    persist_import(state, outcome)
+    persist_import(app, state, outcome)
 }
 
 async fn import_file_blocking(
@@ -422,11 +552,71 @@ async fn import_file_blocking(
     .map_err(|error| format!("subscription file task: {error}"))?
 }
 
+async fn import_text_blocking(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_text(name, content, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription text task: {error}"))?
+}
+
+async fn import_node_blocking(
+    name: Option<String>,
+    uri: Option<String>,
+    node: Option<ManualNodeDraft>,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_node(name, uri, node, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription node task: {error}"))?
+}
+
+async fn import_singbox_blocking(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> Result<crate::services::import::ImportOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_from_singbox(name, content, existing_id).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("subscription singbox task: {error}"))?
+}
+
+async fn load_inline_body(
+    content: Option<String>,
+    path: Option<String>,
+) -> Result<String, String> {
+    if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
+        return Ok(content);
+    }
+    let path = path
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "content or path is required".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(path);
+        if !path.exists() {
+            return Err(format!("file not found: {}", path.display()));
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|error| format!("read file task: {error}"))?
+}
+
 #[tauri::command]
 pub fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .with_store_mut(|store| store.remove_subscription(&id))
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::config::remove_custom_config(&state.app_data_dir, &id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -447,23 +637,34 @@ pub fn list_subscription_nodes(
 }
 
 fn persist_import(
+    app: &tauri::AppHandle,
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
 ) -> Result<ImportResult, String> {
-    persist_import_replacing(state, outcome, None)
+    persist_import_replacing(app, state, outcome, None)
 }
 
 fn persist_import_replacing(
+    app: &tauri::AppHandle,
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
+    if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
+        crate::config::write_custom_config(
+            &state.app_data_dir,
+            &outcome.subscription.id,
+            content,
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
-    let view = state
+    let (view, node_set_changed) = state
         .with_store_mut(|store| {
             let mut outcome = outcome;
+            let node_ids_before = store.enabled_node_ids_sorted();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
                 store
                     .subscriptions
@@ -480,18 +681,72 @@ fn persist_import_replacing(
             store.upsert_subscription(outcome.subscription, outcome.nodes)?;
             store.ensure_subscription_enable_policy();
             store.ensure_current_node_valid();
+            let node_ids_after = store.enabled_node_ids_sorted();
             let view = store
                 .get_subscription(&sub_id)
                 .map(|s| s.to_view())
                 .ok_or_else(|| crate::error::AppError::NotFound(sub_id.clone()))?;
-            Ok(view)
+            Ok((view, node_ids_before != node_ids_after))
         })
         .map_err(|e| e.to_string())?;
+    if node_set_changed {
+        // Node ids are content hashes, so a refreshed subscription may rename
+        // or rotate nodes. The running core still holds outbounds built from
+        // the old ids: without a rebuild, traffic rows lose their display
+        // names (raw node-… tags) and stale outbounds can dial servers the
+        // provider has already retired. Same debounced queue rule edits use —
+        // several subscriptions updating together produce one rebuild.
+        crate::app_log::info(
+            "subscription",
+            format!("{sub_id}: enabled node set changed; queued core rebuild"),
+        );
+        crate::rule_apply::request_restart(app.clone(), Vec::new());
+    }
     Ok(ImportResult {
         subscription: view,
         node_count,
         skipped_count,
     })
+}
+
+/// Homepage ··· → 指定配置. `source` is `generated` or `singbox:<id>`.
+/// Restarts the core when it is already running so the new file takes effect.
+#[tauri::command]
+pub async fn set_runtime_source(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    source: String,
+) -> Result<crate::domain::AppSettings, String> {
+    use crate::domain::RuntimeSource;
+    use tauri::Manager;
+
+    let parsed = RuntimeSource::parse(&source);
+    state
+        .with_store_mut(|store| {
+            store.set_runtime_source(parsed)?;
+            Ok(store.settings.clone())
+        })
+        .map_err(|e| e.to_string())?;
+
+    if state.is_core_running() {
+        let resource_dir = app.path().resource_dir().ok();
+        let worker = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let state = worker
+                .try_state::<AppState>()
+                .ok_or_else(|| "app state unavailable".to_string())?;
+            state
+                .restart_proxy(resource_dir.as_deref())
+                .map_err(|e| e.to_string())?;
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| format!("switch config task: {e}"))??;
+    }
+
+    state
+        .with_store(|store| Ok(store.settings.clone()))
+        .map_err(|e| e.to_string())
 }
 
 /// Click a config card: exclusive enable (default) or Mix toggle.

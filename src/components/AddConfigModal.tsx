@@ -1,9 +1,21 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { readImportFile } from "../api";
 import { GlassButton } from "./GlassButton";
 import { GlassSeg } from "./GlassSeg";
 import { GlassSwitchControl } from "./GlassSwitchControl";
-import type { AddSourceKind } from "../types";
+import {
+  emptyNodeDraft,
+  nodeDraftReady,
+  NodeDraftFields,
+} from "./NodeDraftFields";
+import type {
+  AddSourceKind,
+  ConfigInputMode,
+  LocalKind,
+  ManualNodeDraft,
+  ProfileKind,
+} from "../types";
 import { canonicalSubscriptionUrl } from "../subscriptionUrl";
 
 export interface ConfigFormValues {
@@ -11,11 +23,11 @@ export interface ConfigFormValues {
   kind: AddSourceKind;
   url?: string;
   path?: string;
-  /** Fetch URL via local mixed proxy (core must be running). */
+  content?: string;
+  uri?: string;
+  node?: ManualNodeDraft;
   viaProxy?: boolean;
-  /** Periodically refresh this profile. */
   autoUpdate?: boolean;
-  /** Minutes between auto updates (default 1440). */
   autoUpdateIntervalMin?: number;
 }
 
@@ -27,20 +39,25 @@ const AUTO_UPDATE_MINUTES: Record<Exclude<AutoUpdateInterval, "disabled">, numbe
   "24h": 1440,
 };
 
+function kindToProfile(kind: AddSourceKind): ProfileKind {
+  if (kind === "url") return "subscription";
+  if (kind === "singbox") return "singbox";
+  return "local";
+}
+
+function kindToLocal(kind: AddSourceKind, hasManualForm?: boolean): LocalKind {
+  if (kind === "node" && hasManualForm) return "node";
+  return "multi";
+}
+
 interface Props {
   open: boolean;
   busy: boolean;
   error: string | null;
-  /**
-   * Prefill form fields. Used for edit and for one-click subscribe (add).
-   * Does not imply edit mode — set `isEdit` for that.
-   */
   initial?: ConfigFormValues | null;
-  /** When true, UI treats form as editing an existing profile. */
   isEdit?: boolean;
   title?: string;
   submitLabel?: string;
-  /** Raw URLs belonging to other profiles, used for duplicate feedback. */
   existingUrls?: string[];
   onClose: () => void;
   onSubmit: (payload: ConfigFormValues) => void;
@@ -58,22 +75,34 @@ export function AddConfigModal({
   onClose,
   onSubmit,
 }: Props) {
-  const [kind, setKind] = useState<AddSourceKind>("url");
+  const [profile, setProfile] = useState<ProfileKind>("subscription");
+  const [localKind, setLocalKind] = useState<LocalKind>("node");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const [path, setPath] = useState("");
+  const [content, setContent] = useState("");
+  const [configMode, setConfigMode] = useState<ConfigInputMode>("paste");
+  const [node, setNode] = useState<ManualNodeDraft>(() => emptyNodeDraft());
   const [viaProxy, setViaProxy] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] =
     useState<AutoUpdateInterval>("24h");
+  const [fileLabel, setFileLabel] = useState("");
+  const [fileError, setFileError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
     if (initial) {
-      setKind(initial.kind);
+      setProfile(kindToProfile(initial.kind));
+      setLocalKind(
+        kindToLocal(initial.kind, !!(initial.node && initial.node.server)),
+      );
       setName(initial.name);
       setUrl(initial.url ?? "");
-      setPath(initial.path ?? "");
+      setContent(initial.content ?? initial.uri ?? "");
+      setNode(initial.node ?? emptyNodeDraft());
+      setConfigMode("paste");
       setViaProxy(!!initial.viaProxy);
+      setFileLabel("");
+      setFileError(null);
       const interval = initial.autoUpdateIntervalMin ?? 1440;
       setAutoUpdateInterval(
         initial.autoUpdate === false
@@ -85,28 +114,50 @@ export function AddConfigModal({
               : "24h",
       );
     } else {
-      setKind("url");
+      setProfile("subscription");
+      setLocalKind("node");
       setName("");
       setUrl("");
-      setPath("");
+      setContent("");
+      setNode(emptyNodeDraft());
+      setConfigMode("paste");
       setViaProxy(false);
       setAutoUpdateInterval("24h");
+      setFileLabel("");
+      setFileError(null);
     }
   }, [isOpen, initial]);
 
   if (!isOpen) return null;
 
   async function pickFile() {
+    setFileError(null);
     const selected = await open({
       multiple: false,
       filters: [
-        { name: "Subscription", extensions: ["yaml", "yml", "txt", "conf"] },
+        {
+          name: "Config",
+          extensions: ["json", "yaml", "yml", "txt", "conf"],
+        },
         { name: "All", extensions: ["*"] },
       ],
     });
-    if (typeof selected === "string") {
-      setPath(selected);
+    if (typeof selected !== "string") return;
+    try {
+      const text = await readImportFile(selected);
+      setContent(text);
+      setFileLabel(selected);
+      setConfigMode("paste");
+    } catch (e) {
+      setFileError(typeof e === "string" ? e : String(e));
     }
+  }
+
+  function currentKind(): AddSourceKind {
+    if (profile === "subscription") return "url";
+    if (profile === "singbox") return "singbox";
+    if (localKind === "node") return "node";
+    return "text";
   }
 
   function handleSubmit(e: FormEvent) {
@@ -115,31 +166,31 @@ export function AddConfigModal({
     const interval = autoUpdate
       ? AUTO_UPDATE_MINUTES[autoUpdateInterval]
       : 1440;
-    if (kind === "url") {
-      onSubmit({
-        name: name.trim(),
-        kind,
-        url: url.trim(),
-        viaProxy,
-        autoUpdate,
-        autoUpdateIntervalMin: interval,
-      });
-    } else {
-      onSubmit({
-        name: name.trim(),
-        kind,
-        path: path.trim(),
-        viaProxy: false,
-        autoUpdate,
-        autoUpdateIntervalMin: interval,
-      });
+    const kind = currentKind();
+    const payload: ConfigFormValues = {
+      name: name.trim(),
+      kind,
+      viaProxy: kind === "url" ? viaProxy : false,
+      autoUpdate: kind === "url" ? autoUpdate : false,
+      autoUpdateIntervalMin: interval,
+    };
+    if (kind === "url") payload.url = url.trim();
+    if (kind === "text" || kind === "singbox") payload.content = content.trim();
+    if (kind === "node") {
+      payload.node = {
+        ...node,
+        name: name.trim() || node.name || undefined,
+      };
     }
+    onSubmit(payload);
   }
 
+  const kind = currentKind();
   const canSubmit =
     !busy &&
     ((kind === "url" && url.trim().length > 0) ||
-      (kind === "file" && path.trim().length > 0));
+      ((kind === "text" || kind === "singbox") && content.trim().length > 0) ||
+      (kind === "node" && name.trim().length > 0 && nodeDraftReady(node)));
   const normalizedUrl = url.trim();
   const canonicalUrl = canonicalSubscriptionUrl(normalizedUrl);
   const duplicateUrl =
@@ -147,13 +198,14 @@ export function AddConfigModal({
     normalizedUrl.length > 0 &&
     existingUrls.some(
       (existingUrl) =>
-        canonicalUrl != null && canonicalSubscriptionUrl(existingUrl) === canonicalUrl,
+        canonicalUrl != null &&
+        canonicalSubscriptionUrl(existingUrl) === canonicalUrl,
     );
 
   return (
     <div className="modal-backdrop">
       <div
-        className="modal"
+        className="modal config-add-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="config-modal-title"
@@ -174,6 +226,44 @@ export function AddConfigModal({
         </header>
 
         <form className="modal-body" onSubmit={handleSubmit}>
+          <div className="field">
+            <span>类型</span>
+            <GlassSeg
+              value={
+                profile === "local"
+                  ? localKind === "node"
+                    ? "manual"
+                    : "parse"
+                  : profile
+              }
+              ariaLabel="配置类型"
+              disabled={busy}
+              onChange={(v) => {
+                if (v === "subscription" || v === "singbox") {
+                  setProfile(v);
+                } else {
+                  setProfile("local");
+                  setLocalKind(v === "manual" ? "node" : "multi");
+                }
+              }}
+              options={[
+                { value: "subscription", label: "订阅" },
+                { value: "manual", label: "手动填写" },
+                { value: "parse", label: "链接解析" },
+                { value: "singbox", label: "自写配置" },
+              ]}
+            />
+            <span className="field-hint muted">
+              {profile === "subscription"
+                ? "从订阅链接下载并解析节点"
+                : profile === "singbox"
+                  ? "自己手写或已有现成 sing-box 配置文件，按原文启动内核；应用内节点 / 路由 / DNS 停用"
+                  : localKind === "node"
+                    ? "按协议表单添加单条手动节点"
+                    : "粘贴协议链接或 Clash / sing-box 订阅内容提取节点"}
+            </span>
+          </div>
+
           <label className="field">
             <span>名称</span>
             <input
@@ -182,26 +272,20 @@ export function AddConfigModal({
               spellCheck={false}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="例如：机场 A"
+              placeholder={
+                profile === "subscription"
+                  ? "例如：机场 A"
+                  : profile === "singbox"
+                    ? "例如：自用完整配置"
+                    : localKind === "node"
+                      ? "必填，例如：家宽备用"
+                      : "例如：自建节点组 / 协议链接"
+              }
               disabled={busy}
             />
           </label>
 
-          <div className="field">
-            <span>来源</span>
-            <GlassSeg
-              value={kind}
-              ariaLabel="来源"
-              disabled={busy}
-              onChange={(v) => setKind(v as ConfigFormValues["kind"])}
-              options={[
-                { value: "url", label: "订阅 URL" },
-                { value: "file", label: "本地文件" },
-              ]}
-            />
-          </div>
-
-          {kind === "url" ? (
+          {profile === "subscription" && (
             <>
               <label className="field">
                 <span>订阅链接</span>
@@ -235,52 +319,111 @@ export function AddConfigModal({
                   onChange={setViaProxy}
                 />
               </div>
-            </>
-          ) : (
-            <div className="field">
-              <span>配置文件</span>
-              <div className="file-row">
-                <input
-                  autoCapitalize="off"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  placeholder="选择 Clash YAML / URI 列表文件"
+              <div className="field">
+                <span>自动更新</span>
+                <GlassSeg
+                  value={autoUpdateInterval}
+                  ariaLabel="自动更新间隔"
                   disabled={busy}
+                  onChange={(value) =>
+                    setAutoUpdateInterval(value as AutoUpdateInterval)
+                  }
+                  options={[
+                    { value: "disabled", label: "禁用" },
+                    { value: "1h", label: "1 小时" },
+                    { value: "12h", label: "12 小时" },
+                    { value: "24h", label: "24 小时" },
+                  ]}
                 />
-                <button type="button" className="secondary" onClick={pickFile} disabled={busy}>
-                  浏览…
-                </button>
               </div>
-            </div>
+            </>
           )}
 
-          <div className="field">
-            <span>自动更新</span>
-            <GlassSeg
-              value={autoUpdateInterval}
-              ariaLabel="自动更新间隔"
+          {profile === "local" && localKind === "node" && (
+            <NodeDraftFields
+              value={node}
               disabled={busy}
-              onChange={(value) =>
-                setAutoUpdateInterval(value as AutoUpdateInterval)
-              }
-              options={[
-                { value: "disabled", label: "禁用" },
-                { value: "1h", label: "1 小时" },
-                { value: "12h", label: "12 小时" },
-                { value: "24h", label: "24 小时" },
-              ]}
+              onChange={setNode}
             />
-          </div>
+          )}
+
+          {(profile === "singbox" ||
+            (profile === "local" && localKind === "multi")) && (
+              <>
+                <div className="field">
+                  <span>输入方式</span>
+                  <GlassSeg
+                    value={configMode}
+                    ariaLabel="配置输入方式"
+                    disabled={busy}
+                    onChange={(v) => setConfigMode(v as ConfigInputMode)}
+                    options={[
+                      { value: "paste", label: "粘贴" },
+                      { value: "file", label: "本地文件" },
+                    ]}
+                  />
+                </div>
+                {configMode === "file" && (
+                  <div className="field">
+                    <span>从文件拷贝</span>
+                    <div className="file-row">
+                      <input
+                        readOnly
+                        value={fileLabel}
+                        placeholder="选择文件后会拷贝进应用，不记录原路径"
+                        disabled={busy}
+                      />
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => void pickFile()}
+                        disabled={busy}
+                      >
+                        浏览…
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <label className="field">
+                  <span>
+                    {profile === "singbox"
+                      ? "完整 sing-box JSON"
+                      : "配置内容"}
+                  </span>
+                  <textarea
+                    className="config-paste"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    placeholder={
+                      profile === "singbox"
+                        ? "必须是含 inbounds + outbounds 的完整 sing-box JSON。启动时按原文拉起内核，应用不会改这份文件。"
+                        : "一行一个协议链接（vless://…），也可粘贴 Clash / sing-box 订阅内容以提取节点"
+                    }
+                    disabled={busy}
+                    rows={profile === "singbox" ? 12 : 8}
+                  />
+                </label>
+              </>
+            )}
 
           <p className="hint">
-            {isEdit
-              ? "保存时会重新拉取/读取并解析节点（保留配置 id）。"
-              : "提交后将下载或读取文件，解析 Clash / URI 节点并转换为内部配置格式。"}
+            {profile === "subscription"
+              ? isEdit
+                ? "保存时会重新拉取并解析节点（保留配置 id）。"
+                : "提交后将下载订阅并解析节点。"
+              : profile === "singbox"
+                ? "点卡片选中后，首页连接会用这份文件启动内核。"
+                : localKind === "node"
+                  ? "按协议填写字段，添加一条手动节点。协议链接请用「链接解析」。"
+                  : "支持单行或多行协议链接，也能从 Clash / sing-box 订阅里提取节点。本地文件会拷贝进应用。"}
           </p>
 
-          {error && <div className="form-error">{error}</div>}
+          {(error || fileError) && (
+            <div className="form-error">{error || fileError}</div>
+          )}
 
           <footer className="modal-footer">
             <GlassButton onClick={onClose} disabled={busy}>

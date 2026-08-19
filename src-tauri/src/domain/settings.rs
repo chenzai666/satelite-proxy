@@ -150,12 +150,36 @@ impl TrayIconStyle {
     }
 }
 
+/// Extra inbound listener for the generated sing-box config.
+/// `kind`: `mixed` | `http`; `allow_lan` decides the listen host
+/// (0.0.0.0 vs 127.0.0.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtraInbound {
+    /// Stable row id (UI key / list identity).
+    pub id: String,
+    #[serde(default = "default_extra_inbound_kind")]
+    pub kind: String,
+    pub port: u16,
+    #[serde(default)]
+    pub allow_lan: bool,
+}
+
+fn default_extra_inbound_kind() -> String {
+    "mixed".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// mixed inbound listen port
     pub mixed_port: u16,
+    /// Mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
+    #[serde(default)]
+    pub allow_lan: bool,
     /// clash_api controller port
     pub api_port: u16,
+    /// Additional inbound listeners emitted into the generated config.
+    #[serde(default)]
+    pub extra_inbounds: Vec<ExtraInbound>,
     /// Last selected node id (ProxyNode.id)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_node_id: Option<String>,
@@ -232,6 +256,51 @@ pub struct AppSettings {
     /// Legacy bool (pre auto_select). Migrated on store load; not re-written.
     #[serde(default, skip_serializing)]
     pub smart_switch: bool,
+    /// Which config the kernel should run: `generated` or `singbox:<profile_id>`.
+    #[serde(default = "default_runtime_source")]
+    pub runtime_source: String,
+}
+
+fn default_runtime_source() -> String {
+    "generated".into()
+}
+
+/// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeSource {
+    Generated,
+    Singbox { id: String },
+}
+
+impl RuntimeSource {
+    pub fn parse(raw: &str) -> Self {
+        let raw = raw.trim();
+        if let Some(id) = raw.strip_prefix("singbox:") {
+            let id = id.trim();
+            if !id.is_empty() {
+                return Self::Singbox { id: id.to_string() };
+            }
+        }
+        Self::Generated
+    }
+
+    pub fn as_store_value(&self) -> String {
+        match self {
+            Self::Generated => "generated".into(),
+            Self::Singbox { id } => format!("singbox:{id}"),
+        }
+    }
+
+    pub fn is_custom(&self) -> bool {
+        matches!(self, Self::Singbox { .. })
+    }
+
+    pub fn singbox_id(&self) -> Option<&str> {
+        match self {
+            Self::Singbox { id } => Some(id.as_str()),
+            Self::Generated => None,
+        }
+    }
 }
 
 fn default_probe_url() -> String {
@@ -270,7 +339,9 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             mixed_port: 2080,
+            allow_lan: false,
             api_port: 19090,
+            extra_inbounds: Vec::new(),
             current_node_id: None,
             clash_api_secret: None,
             probe_url: default_probe_url(),
@@ -294,11 +365,20 @@ impl Default for AppSettings {
             auto_select: AutoSelectMode::Off,
             find_process: true,
             smart_switch: false,
+            runtime_source: default_runtime_source(),
         }
     }
 }
 
 impl AppSettings {
+    pub fn runtime_source(&self) -> RuntimeSource {
+        RuntimeSource::parse(&self.runtime_source)
+    }
+
+    pub fn set_runtime_source(&mut self, source: RuntimeSource) {
+        self.runtime_source = source.as_store_value();
+    }
+
     /// Infer the new capture preference from the legacy persisted TUN flag.
     pub fn migrate_capture_mode(&mut self) {
         if self.tun_enabled && self.capture_mode == CaptureMode::Off {
@@ -364,5 +444,41 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("nope"), None);
+    }
+
+    #[test]
+    fn runtime_source_roundtrip() {
+        assert_eq!(RuntimeSource::parse(""), RuntimeSource::Generated);
+        assert_eq!(RuntimeSource::parse("generated"), RuntimeSource::Generated);
+        assert_eq!(
+            RuntimeSource::parse("singbox:abc"),
+            RuntimeSource::Singbox { id: "abc".into() }
+        );
+        let mut settings = AppSettings::default();
+        settings.set_runtime_source(RuntimeSource::Singbox { id: "p1".into() });
+        assert!(settings.runtime_source().is_custom());
+        settings.set_runtime_source(RuntimeSource::Generated);
+        assert!(!settings.runtime_source().is_custom());
+    }
+
+    #[test]
+    fn extra_inbounds_default_when_missing_and_roundtrip() {
+        // Old store JSON without the field loads with an empty list.
+        let legacy = r#"{"mixed_port":2080,"api_port":19090}"#;
+        let settings: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(settings.extra_inbounds.is_empty());
+
+        // New entries survive a serde round-trip; kind defaults to mixed.
+        let raw = r#"{"id":"i1","port":2081,"allow_lan":true}"#;
+        let inbound: ExtraInbound = serde_json::from_str(raw).unwrap();
+        assert_eq!(inbound.kind, "mixed");
+        let settings = AppSettings {
+            extra_inbounds: vec![inbound],
+            ..AppSettings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.extra_inbounds, settings.extra_inbounds);
+        assert!(json.contains("\"allow_lan\":true"));
     }
 }

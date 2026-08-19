@@ -1,9 +1,12 @@
+use crate::domain::ManualNodeDraft;
 use crate::domain::{
     ParseResult, ProxyNode, Subscription, SubscriptionFormat, SubscriptionSource,
     SubscriptionTraffic,
 };
 use crate::error::{AppError, AppResult};
-use crate::subscription::parse_subscription;
+use crate::subscription::{
+    parse_manual_draft, parse_single_uri, parse_subscription, validate_complete_singbox_config,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -125,6 +128,7 @@ pub async fn import_from_url_with_id(
             SubscriptionSource::Url { url },
             parsed,
             existing_id,
+            true,
         );
         // URL body comment > remark nodes; HTTP headers are merged below.
         outcome.subscription.traffic =
@@ -435,6 +439,11 @@ fn parse_userinfo_str(raw: &str) -> Option<SubscriptionTraffic> {
 
 /// Providers often inject fake proxies whose **names** carry quota text, e.g.
 /// `剩余流量：2.41 TB` / `套餐到期：长期有效`. Extract traffic and drop them.
+fn is_remark_name(name: &str) -> bool {
+    let mut traffic = SubscriptionTraffic::default();
+    apply_remark_name(name, &mut traffic)
+}
+
 fn split_remark_nodes(nodes: Vec<ProxyNode>) -> (Option<SubscriptionTraffic>, Vec<ProxyNode>) {
     let mut traffic = SubscriptionTraffic::default();
     let mut real = Vec::with_capacity(nodes.len());
@@ -824,6 +833,50 @@ proxies:
         assert!(t.quota_remaining.is_some());
         assert_eq!(t.expire_text.as_deref(), Some("长期有效"));
     }
+
+    #[test]
+    fn local_link_parse_keeps_hysteria2_named_like_quota() {
+        let uri = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%89%A9%E4%BD%99%E6%B5%81%E9%87%8F%EF%BC%9A977.82%20GB";
+        let outcome = import_from_text(Some("hy2-test".into()), uri.into(), None).unwrap();
+        assert_eq!(outcome.nodes.len(), 1);
+        assert_eq!(outcome.subscription.node_count, 1);
+        assert!(outcome.subscription.traffic.is_none());
+        assert_eq!(outcome.nodes[0].server, "203.10.98.188");
+        assert_eq!(outcome.nodes[0].port, 443);
+        assert_ne!(outcome.nodes[0].name, "剩余流量：977.82 GB");
+    }
+
+    #[test]
+    fn same_hysteria2_with_different_fragments_is_one_node() {
+        let a = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%89%A9%E4%BD%99%E6%B5%81%E9%87%8F%EF%BC%9A977.82%20GB";
+        let b = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%A5%97%E9%A4%90%E5%88%B0%E6%9C%9F%EF%BC%9A%E9%95%BF%E6%9C%9F%E6%9C%89%E6%95%88";
+        let outcome =
+            import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
+        assert_eq!(outcome.nodes.len(), 1);
+        assert_eq!(outcome.subscription.node_count, 1);
+    }
+
+    #[test]
+    fn local_import_of_full_clash_config_matches_parser() {
+        let yaml = include_str!("../../tests/fixtures/clash_free_sample.yaml");
+        let outcome = import_from_text(Some("clash".into()), yaml.into(), None).unwrap();
+        assert_eq!(outcome.nodes.len(), 8);
+        assert_eq!(outcome.subscription.node_count, 8);
+        assert_eq!(outcome.subscription.skipped_count, 0);
+        assert_eq!(outcome.subscription.format.as_deref(), Some("clash_yaml"));
+    }
+
+    #[test]
+    fn same_backend_different_names_stay_separate() {
+        let base = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com";
+        let body = format!("{base}#HK-01\n{base}#HK-02\n{base}#JP-01");
+        let outcome = import_from_text(Some("airport".into()), body, None).unwrap();
+        assert_eq!(outcome.nodes.len(), 3);
+        assert_eq!(outcome.subscription.node_count, 3);
+        let mut names: Vec<_> = outcome.nodes.iter().map(|n| n.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["HK-01", "HK-02", "JP-01"]);
+    }
 }
 
 pub fn import_from_file(name: Option<String>, path: &Path) -> AppResult<ImportOutcome> {
@@ -847,9 +900,6 @@ pub fn import_from_file_with_id(
         )));
     }
     let content = std::fs::read_to_string(path)?;
-    let body_traffic = parse_userinfo_from_content(&content);
-    let parsed = parse_subscription(&content)?;
-    let path_str = path.to_string_lossy().to_string();
     let display_name = name
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
@@ -859,16 +909,121 @@ pub fn import_from_file_with_id(
                 .unwrap_or("Local config")
                 .to_string()
         });
+    // Copy file bytes into the store — do not keep a live path (unstable).
+    import_from_text(Some(display_name), content, existing_id)
+}
 
-    let mut outcome = build_outcome(
+pub fn import_from_text(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> AppResult<ImportOutcome> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err(AppError::EmptySubscription);
+    }
+    if content.len() > MAX_BODY_BYTES {
+        return Err(AppError::Io(format!(
+            "config too large ({} bytes, max {})",
+            content.len(),
+            MAX_BODY_BYTES
+        )));
+    }
+    let display_name = name
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "多节点".into());
+    let mut outcome = import_parsed_content(
         display_name,
-        SubscriptionSource::File { path: path_str },
-        parsed,
+        &content,
+        SubscriptionSource::Text {
+            content: content.clone(),
+        },
         existing_id,
-    );
-    // File: body comment > remark nodes
-    outcome.subscription.traffic =
-        SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic);
+    )?;
+    outcome.subscription.auto_update = false;
+    Ok(outcome)
+}
+
+pub fn import_from_singbox(
+    name: Option<String>,
+    content: String,
+    existing_id: Option<String>,
+) -> AppResult<ImportOutcome> {
+    let normalized = validate_complete_singbox_config(&content)?;
+    let display_name = name
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "sing-box".into());
+    let source = SubscriptionSource::Singbox {
+        content: normalized,
+    };
+    let parsed = crate::domain::ParseResult {
+        nodes: Vec::new(),
+        skipped: Vec::new(),
+        format: crate::domain::SubscriptionFormat::SingboxJson,
+    };
+    let mut outcome = build_outcome(display_name, source, parsed, existing_id, false);
+    outcome.subscription.auto_update = false;
+    outcome.subscription.enabled = false;
+    Ok(outcome)
+}
+
+pub fn import_from_node(
+    name: Option<String>,
+    uri: Option<String>,
+    draft: Option<ManualNodeDraft>,
+    existing_id: Option<String>,
+) -> AppResult<ImportOutcome> {
+    let display_name = name
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    let uri = uri.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    let (parsed, source) = if let Some(uri) = uri {
+        let parsed = parse_single_uri(&uri, display_name.as_deref())?;
+        (parsed, SubscriptionSource::Node { uri: Some(uri) })
+    } else if let Some(draft) = draft {
+        let parsed = parse_manual_draft(&draft, display_name.as_deref())?;
+        (parsed, SubscriptionSource::Node { uri: None })
+    } else {
+        return Err(AppError::SubscriptionParse(
+            "node requires a share URI or a filled form".into(),
+        ));
+    };
+
+    let name = display_name.unwrap_or_else(|| {
+        parsed
+            .nodes
+            .first()
+            .map(|n| n.name.clone())
+            .unwrap_or_else(|| "Node".into())
+    });
+    let mut outcome = build_outcome(name, source, parsed, existing_id, false);
+    outcome.subscription.auto_update = false;
+    Ok(outcome)
+}
+
+fn import_parsed_content(
+    display_name: String,
+    content: &str,
+    source: SubscriptionSource,
+    existing_id: Option<String>,
+) -> AppResult<ImportOutcome> {
+    let parsed = parse_subscription(content)?;
+    let extract_quota = source.is_remote();
+    let body_traffic = if extract_quota {
+        parse_userinfo_from_content(content)
+    } else {
+        None
+    };
+    let mut outcome = build_outcome(display_name, source, parsed, existing_id, extract_quota);
+    if extract_quota {
+        outcome.subscription.traffic =
+            SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic);
+    }
     Ok(outcome)
 }
 
@@ -877,11 +1032,27 @@ fn build_outcome(
     source: SubscriptionSource,
     parsed: ParseResult,
     existing_id: Option<String>,
+    extract_quota: bool,
 ) -> ImportOutcome {
     let id = existing_id.unwrap_or_else(|| subscription_id(&source));
     let format = format_label(parsed.format);
     let skipped = parsed.skipped.len();
-    let (remark_traffic, real_nodes) = split_remark_nodes(parsed.nodes);
+    let (remark_traffic, real_nodes) = if extract_quota {
+        split_remark_nodes(parsed.nodes)
+    } else {
+        let nodes: Vec<ProxyNode> = parsed
+            .nodes
+            .into_iter()
+            .map(|mut n| {
+                if is_remark_name(&n.name) {
+                    n.name = format!("{}-{}-{}", n.protocol.as_str(), n.server, n.port);
+                }
+                n
+            })
+            .collect();
+        (None, nodes)
+    };
+    let real_nodes = dedupe_nodes(real_nodes);
     let node_count = real_nodes.len() as u32;
     let subscription = Subscription {
         id,
@@ -921,6 +1092,20 @@ fn build_outcome(
     }
 }
 
+fn dedupe_nodes(nodes: Vec<ProxyNode>) -> Vec<ProxyNode> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        // Keep HK-01 / HK-02 even when they share host:port:auth.
+        // Remark fragments (剩余流量 / 套餐到期) are rewritten to the same
+        // proto-host-port name first, so those still collapse to one node.
+        if seen.insert(node.instance_key()) {
+            out.push(node);
+        }
+    }
+    out
+}
+
 fn subscription_id(source: &SubscriptionSource) -> String {
     let mut hasher = Sha256::new();
     match source {
@@ -933,6 +1118,29 @@ fn subscription_id(source: &SubscriptionSource) -> String {
         SubscriptionSource::File { path } => {
             hasher.update(b"file|");
             hasher.update(path.as_bytes());
+        }
+        SubscriptionSource::Text { content } => {
+            hasher.update(b"text|");
+            hasher.update(content.as_bytes());
+        }
+        SubscriptionSource::Node { uri } => {
+            hasher.update(b"node|");
+            if let Some(uri) = uri {
+                hasher.update(uri.as_bytes());
+            } else {
+                hasher.update(b"manual");
+                hasher.update(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos().to_string())
+                        .unwrap_or_default()
+                        .as_bytes(),
+                );
+            }
+        }
+        SubscriptionSource::Singbox { content } => {
+            hasher.update(b"singbox|");
+            hasher.update(content.as_bytes());
         }
     }
     let digest = hasher.finalize();
@@ -976,6 +1184,8 @@ fn format_label(f: SubscriptionFormat) -> String {
         SubscriptionFormat::ClashYaml => "clash_yaml".into(),
         SubscriptionFormat::UriList => "uri_list".into(),
         SubscriptionFormat::Base64UriList => "base64_uri_list".into(),
+        SubscriptionFormat::SingboxJson => "singbox_json".into(),
+        SubscriptionFormat::Manual => "manual".into(),
     }
 }
 

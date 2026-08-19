@@ -1,0 +1,99 @@
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+external-controller: 127.0.0.1:9090
+
+proxies:
+- name: "PL-VLESS-WS"
+  type: "vless"
+  server: "198.51.100.10"
+  port: 443
+  uuid: "11111111-1111-1111-1111-111111111111"
+  tls: true
+  servername: "cdn.example.com"
+  client-fingerprint: "chrome"
+  network: "ws"
+  ws-opts:
+    path: "/"
+    headers:
+      Host: "cdn.example.com"
+
+- name: "US-HTTP-NULL-USER"
+  type: "http"
+  server: "198.51.100.20"
+  port: 9002
+  username: "null"
+  password: "None"
+  tls: true
+  sni: "198.51.100.20"
+  skip-cert-verify: true
+
+- name: "JP-HTTP-NO-AUTH-A"
+  type: "http"
+  server: "fan.example.com"
+  port: 443
+  tls: true
+  sni: "fan.example.com"
+  skip-cert-verify: true
+
+- name: "JP-HTTP-NO-AUTH-B"
+  type: "http"
+  server: "fan.example.com"
+  port: 443
+  tls: true
+
+- name: "US-VLESS-REALITY"
+  type: "vless"
+  server: "198.51.100.30"
+  port: 443
+  uuid: "22222222-2222-2222-2222-222222222222"
+  flow: "xtls-rprx-vision"
+  tls: true
+  servername: "yahoo.com"
+  client-fingerprint: "ios"
+  reality-opts:
+    public-key: "public-key-example"
+    short-id: "abcd1234"
+
+- name: "KR-TROJAN"
+  type: "trojan"
+  server: "trojan.example.com"
+  port: 443
+  password: "secret"
+  tls: true
+
+- name: "SG-ANYTLS-A"
+  type: "anytls"
+  server: "any.example.com"
+  port: 45647
+  password: "33333333-3333-3333-3333-333333333333"
+  udp: true
+  sni: "sni-a.example.com"
+
+- name: "SG-ANYTLS-B"
+  type: "anytls"
+  server: "any.example.com"
+  port: 47053
+  password: "33333333-3333-3333-3333-333333333333"
+  udp: true
+  sni: "sni-b.example.com"
+
+proxy-groups:
+- name: "选择出口"
+  type: "select"
+  proxies:
+    - DIRECT
+    - "PL-VLESS-WS"
+    - "US-HTTP-NULL-USER"
+    - "JP-HTTP-NO-AUTH-A"
+    - "JP-HTTP-NO-AUTH-B"
+    - "US-VLESS-REALITY"
+    - "KR-TROJAN"
+    - "SG-ANYTLS-A"
+    - "SG-ANYTLS-B"
+
+rules:
+  - GEOSITE,CN,DIRECT
+  - GEOIP,CN,DIRECT
+  - "MATCH,选择出口"

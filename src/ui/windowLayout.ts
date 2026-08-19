@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { UiMode } from "./UiModeContext";
 
 /** Pro console — matches tauri.conf.json default. */
-export const PRO_WINDOW = { width: 1024, height: 760 } as const;
+export const PRO_WINDOW = { width: 960, height: 720 } as const;
 /** Simple vertical strip — content ~380–400px + chrome. */
-export const SIMPLE_WINDOW = { width: 420, height: 760 } as const;
+export const SIMPLE_WINDOW = { width: 420, height: 720 } as const;
 
 /** Persist mode for next WebView recreate (Rust reads app_data/data/ui_mode). */
 export async function persistUiModePref(mode: UiMode): Promise<void> {

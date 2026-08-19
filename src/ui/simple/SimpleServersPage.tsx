@@ -2,17 +2,27 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   activateSubscription,
   addSubscriptionFile,
+  addSubscriptionNode,
+  addSubscriptionSingbox,
+  addSubscriptionText,
   addSubscriptionUrl,
   getProxyStatus,
   getSettings,
+  listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
   listSubscriptions,
   refreshSubscription,
   restartProxy,
   setCurrentNode,
+  testCustomNodesLatency,
   testNodesLatency,
 } from "../../api";
+import {
+  applyCustomLatency,
+  filterCustomNodes,
+  type CustomLatencyMap,
+} from "../../customNodes";
 import {
   AddConfigModal,
   type ConfigFormValues,
@@ -85,6 +95,9 @@ export function SimpleServersPage() {
   const [nodeTotal, setNodeTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [runtimeSource, setRuntimeSource] = useState("generated");
+  // Session-only latency results for custom-mode nodes (not persisted backend-side).
+  const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
   const [subsCollapsed, setSubsCollapsed] = useState(() => readSubsCollapsed());
@@ -99,24 +112,33 @@ export function SimpleServersPage() {
     null,
   );
 
+
   const reload = useCallback(async (append = false) => {
     try {
       if (append) setLoadingMore(true);
-      const [s, page, settings] = await Promise.all([
-        listSubscriptions(),
-        listNodesPage(query, sortMode, append ? nodes.length : 0, PAGE_SIZE),
-        getSettings(),
-      ]);
+      const [s, settings] = await Promise.all([listSubscriptions(), getSettings()]);
       setSubs(s);
-      setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
-      setNodeTotal(page.total);
       setCurrentId(settings.current_node_id ?? null);
+      setRuntimeSource(settings.runtime_source || "generated");
+      const offset = append ? nodes.length : 0;
+      if ((settings.runtime_source || "generated").startsWith("singbox:")) {
+        // Custom mode: read-only nodes extracted from the sing-box config,
+        // overlaid with this session's latency results.
+        const all = applyCustomLatency(await listCustomConfigNodes(), customLatency);
+        const filtered = filterCustomNodes(all, query, sortMode, offset, PAGE_SIZE);
+        setNodes((prev) => (append ? [...prev, ...filtered.nodes] : filtered.nodes));
+        setNodeTotal(filtered.total);
+      } else {
+        const page = await listNodesPage(query, sortMode, offset, PAGE_SIZE);
+        setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
+        setNodeTotal(page.total);
+      }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setLoadingMore(false);
     }
-  }, [nodes.length, query, sortMode]);
+  }, [nodes.length, query, sortMode, customLatency]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void reload(false), 150);
@@ -166,6 +188,8 @@ export function SimpleServersPage() {
     [subs, activeSubId],
   );
 
+  const customRuntime = runtimeSource.startsWith("singbox:");
+
   const filtered = nodes;
   const virtualized = filtered.length > VIRTUALIZE_AFTER;
   const nodeRange = useVirtualRange({
@@ -197,19 +221,12 @@ export function SimpleServersPage() {
     try {
       const list = await activateSubscription(id);
       setSubs(list);
-      // Reload nodes for the newly enabled profile(s).
-      const [page, settings, status] = await Promise.all([
-        listNodesPage(query, sortMode, 0, PAGE_SIZE),
-        getSettings(),
-        getProxyStatus().catch(() => null),
-      ]);
-      setNodes(page.nodes);
-      setNodeTotal(page.total);
-      setCurrentId(settings.current_node_id ?? null);
-      // Apply new node pool if core is running.
+      // Reload the page's node source (custom vs generated) after switching.
+      const status = await getProxyStatus().catch(() => null);
       if (status?.running) {
         await restartProxy();
       }
+      await reload(false);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -219,7 +236,9 @@ export function SimpleServersPage() {
 
   async function onTestAll() {
     if (testing || nodeTotal === 0) return;
-    const ids = await listNodeIds(query);
+    // Custom mode probes the extracted (unsaved) nodes — ids come from the
+    // loaded list because they are not in the node store.
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -233,8 +252,20 @@ export function SimpleServersPage() {
       ),
     );
     try {
-      const batch = await testNodesLatency(ids, 3000);
+      const batch = customRuntime
+        ? await testCustomNodesLatency(3000)
+        : await testNodesLatency(ids, 3000);
       const map = new Map(batch.results.map((r) => [r.id, r]));
+      if (customRuntime) {
+        // Session-only — remember results across filter / sort / page reloads.
+        setCustomLatency((prev) => {
+          const next = new Map(prev);
+          for (const r of batch.results) {
+            next.set(r.id, { ms: r.latency_ms ?? null, at: r.tested_at });
+          }
+          return next;
+        });
+      }
       setNodes((prev) =>
         prev.map((n) => {
           const r = map.get(n.id);
@@ -248,11 +279,13 @@ export function SimpleServersPage() {
       );
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
-      await reload();
+      if (!customRuntime) await reload();
     } finally {
       setTesting(false);
       setTestingIds(new Set());
-      await reload(false);
+      // Custom results are session-only — keep the merged values instead of
+      // re-reading the latency-less extracted list.
+      if (!customRuntime) await reload(false);
     }
   }
 
@@ -284,12 +317,26 @@ export function SimpleServersPage() {
           !!payload.autoUpdate,
           payload.autoUpdateIntervalMin ?? 1440,
         );
-      } else {
+      } else if (payload.kind === "file") {
         await addSubscriptionFile(
           payload.name || null,
           payload.path ?? "",
           !!payload.autoUpdate,
           payload.autoUpdateIntervalMin ?? 1440,
+        );
+      } else if (payload.kind === "text") {
+        await addSubscriptionText(payload.name || null, payload.content ?? "");
+      } else if (payload.kind === "singbox") {
+        await addSubscriptionSingbox(
+          payload.name || null,
+          payload.content ?? "",
+          null,
+        );
+      } else {
+        await addSubscriptionNode(
+          payload.name || null,
+          payload.uri ?? null,
+          payload.node ?? null,
         );
       }
       setModalOpen(false);
@@ -305,6 +352,11 @@ export function SimpleServersPage() {
 
   return (
     <div className="page simple-page simple-servers">
+      {customRuntime && (
+        <div className="banner" role="status">
+          {t("nodes.customReadOnly")}
+        </div>
+      )}
       <header className="page-header">
         <div>
           <h1>{t("nodes.title")}</h1>
@@ -376,13 +428,19 @@ export function SimpleServersPage() {
           </button>
           {!subsCollapsed &&
             subs.map((s) => {
-              const active = s.enabled;
+              const active =
+                s.source_kind === "singbox"
+                  ? runtimeSource === `singbox:${s.id}`
+                  : s.enabled && runtimeSource === "generated";
+              // Custom mode: switching the active profile is a runtime-source
+              // change (homepage picker) — freeze subscription / local rows.
+              const rowDisabled = busy || (customRuntime && s.source_kind !== "singbox");
               return (
                 <button
                   key={s.id}
                   type="button"
                   className={`card simple-sub-row ${active ? "active" : ""}`}
-                  disabled={busy}
+                  disabled={rowDisabled}
                   onClick={() => void onSelectSub(s.id)}
                   aria-pressed={active}
                 >
@@ -391,7 +449,9 @@ export function SimpleServersPage() {
                   </span>
                   <strong className="simple-sub-name">{s.name}</strong>
                   <span className="muted simple-sub-meta">
-                    {t("config.nodes", { n: s.node_count })}
+                    {s.source_kind === "singbox"
+                      ? t("config.singboxReadonly")
+                      : t("config.nodes", { n: s.node_count })}
                     {s.auto_update ? ` · ${t("common.enabled")}` : ""}
                     {active ? ` · ${t("config.using")}` : ""}
                   </span>
@@ -424,7 +484,7 @@ export function SimpleServersPage() {
         </div>
         {filtered.length === 0 ? (
           <div className="empty card muted">
-            {subs.length === 0 ? t("nodes.empty") : t("nodes.empty")}
+            {customRuntime ? t("nodes.customEmpty") : t("nodes.empty")}
           </div>
         ) : (
           <ul
@@ -445,7 +505,7 @@ export function SimpleServersPage() {
                   <button
                     type="button"
                     className={`simple-node-item ${active ? "active" : ""}`}
-                    disabled={busy}
+                    disabled={busy || customRuntime}
                     onClick={() => void onSelectNode(n.id)}
                   >
                     <span className="simple-radio node-dot" aria-hidden>

@@ -67,12 +67,50 @@ export function addSubscriptionFile(
   });
 }
 
+export function addSubscriptionText(name: string | null, content: string) {
+  return invoke<ImportResult>("add_subscription_text", {
+    name,
+    content,
+  });
+}
+
+export function addSubscriptionNode(
+  name: string | null,
+  uri: string | null,
+  node: import("./types").ManualNodeDraft | null,
+) {
+  return invoke<ImportResult>("add_subscription_node", {
+    name,
+    uri,
+    node,
+  });
+}
+
+export function addSubscriptionSingbox(
+  name: string | null,
+  content: string | null,
+  path: string | null = null,
+) {
+  return invoke<ImportResult>("add_subscription_singbox", {
+    name,
+    content,
+    path,
+  });
+}
+
+export function readImportFile(path: string) {
+  return invoke<string>("read_import_file", { path });
+}
+
 export function updateSubscription(input: {
   id: string;
   name: string | null;
-  kind: "url" | "file";
+  kind: "url" | "file" | "text" | "node" | "singbox";
   url?: string | null;
   path?: string | null;
+  content?: string | null;
+  uri?: string | null;
+  node?: import("./types").ManualNodeDraft | null;
   viaProxy?: boolean | null;
   autoUpdate?: boolean | null;
   autoUpdateIntervalMin?: number | null;
@@ -83,6 +121,9 @@ export function updateSubscription(input: {
     kind: input.kind,
     url: input.url ?? null,
     path: input.path ?? null,
+    content: input.content ?? null,
+    uri: input.uri ?? null,
+    node: input.node ?? null,
     viaProxy: input.viaProxy ?? null,
     autoUpdate: input.autoUpdate ?? null,
     autoUpdateIntervalMin: input.autoUpdateIntervalMin ?? null,
@@ -103,6 +144,11 @@ export function removeSubscription(id: string) {
 /** Exclusive select / Mix toggle. Returns updated subscription list. */
 export function activateSubscription(id: string) {
   return invoke<SubscriptionView[]>("activate_subscription", { id });
+}
+
+/** Homepage launch source: `generated` or `singbox:<id>`. Restarts if running. */
+export function setRuntimeSource(source: string) {
+  return invoke<AppSettings>("set_runtime_source", { source });
 }
 
 export function setMixMode(mix: boolean) {
@@ -130,13 +176,26 @@ export function listNodeIds(query = "") {
   return invoke<string[]>("list_node_ids", { query });
 }
 
+/** Read-only nodes extracted from the selected custom sing-box config (custom mode). */
+export function listCustomConfigNodes() {
+  return invoke<ProxyNode[]>("list_custom_config_nodes");
+}
+
+export function renameNode(id: string, name: string) {
+  return invoke<ProxyNode>("rename_node", { id, name });
+}
+
 export function getSettings() {
   return invoke<AppSettings>("get_settings");
 }
 
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
+  /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
+  allowLan?: boolean | null;
   apiPort?: number | null;
+  /** Some(list) replaces the whole extra-inbound list. */
+  extraInbounds?: import("./types").ExtraInbound[] | null;
   probeUrl?: string | null;
   tunEnabled?: boolean | null;
   tunStack?: string | null;
@@ -183,6 +242,7 @@ function scheduleSettingsWrite() {
     void invoke<AppSettings>("update_settings", {
       mixedPort: payload.mixedPort ?? null,
       apiPort: payload.apiPort ?? null,
+      extraInbounds: payload.extraInbounds ?? null,
       probeUrl: payload.probeUrl ?? null,
       tunEnabled: payload.tunEnabled ?? null,
       tunStack: payload.tunStack ?? null,
@@ -290,6 +350,11 @@ export function getCoreInfo() {
   return invoke<CoreInfo>("get_core_info");
 }
 
+/** Machine's LAN IPv4 (default-route interface). Null when offline. */
+export function getLanIp() {
+  return invoke<string | null>("get_lan_ip");
+}
+
 export function checkCoreUpdate(localVersion?: string | null) {
   return invoke<{
     latest_version: string;
@@ -321,6 +386,15 @@ export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | nul
     timeout_ms: timeoutMs ?? null,
   };
   return invoke<LatencyBatchResult>("test_nodes_latency", args);
+}
+
+/** Same TCP probe, for nodes extracted from the selected custom sing-box config (results not persisted). */
+export function testCustomNodesLatency(timeoutMs?: number | null) {
+  const args: Record<string, unknown> = {
+    timeoutMs: timeoutMs ?? null,
+    timeout_ms: timeoutMs ?? null,
+  };
+  return invoke<LatencyBatchResult>("test_custom_nodes_latency", args);
 }
 
 export function getProxyStatus() {
@@ -438,6 +512,23 @@ export function updateRuleSet(
     name,
     remoteUrl: remoteUrl ?? null,
     updateInterval: updateInterval ?? null,
+  });
+}
+
+/** Apply one target to every rule of a local set (batch set-routes). */
+export function batchSetRuleTargets(
+  id: string,
+  target: "proxy" | "direct" | "block" | "node" | "smart",
+  nodeId?: string | null,
+  smartInclude?: string[] | null,
+  smartExclude?: string[] | null,
+) {
+  return invoke<RuleSet>("batch_set_rule_targets", {
+    id,
+    target,
+    nodeId: nodeId ?? null,
+    smartInclude: smartInclude ?? null,
+    smartExclude: smartExclude ?? null,
   });
 }
 

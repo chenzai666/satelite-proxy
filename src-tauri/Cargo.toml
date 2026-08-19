@@ -44,3 +44,12 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Same windows crate tauri already depends on (version-unified, no extra copy);
+# adds the NT process-table query used by core::memory's RSS probe.
+windows = { version = "0.61", features = [
+    "Wdk_System_SystemInformation",
+    "Win32_System_WindowsProgramming",
+    "Win32_Foundation",
+] }

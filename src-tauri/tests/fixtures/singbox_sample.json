@@ -1,0 +1,36 @@
+{
+  "log": { "level": "info" },
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080 }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "VLESS-Reality",
+      "server": "vl.example.com",
+      "server_port": 443,
+      "uuid": "22222222-2222-2222-2222-222222222222",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": { "enabled": true, "fingerprint": "chrome" },
+        "reality": { "enabled": true, "public_key": "pubkey123", "short_id": "abcd" }
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "SS-HK",
+      "server": "ss.example.com",
+      "server_port": 8388,
+      "method": "aes-256-gcm",
+      "password": "secret"
+    },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": ["VLESS-Reality", "SS-HK"]
+    },
+    { "type": "direct", "tag": "direct" }
+  ]
+}
