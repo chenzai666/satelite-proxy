@@ -261,15 +261,9 @@ button {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
-  background:
-    var(--page-glow),
-    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
-  color: var(--text);
-}
-
-/* Carry the hero's green atmosphere behind the top navigation. This gives
-   the glass capsule real colour variation to refract instead of a flat fill. */
-.dashboard-shell {
+  /* The hero's green atmosphere on every page (was dashboard-only): mostly
+     lives behind the top navigation so the glass capsule keeps some colour
+     variation to refract instead of a flat fill. */
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
@@ -280,14 +274,17 @@ button {
     ),
     var(--page-glow),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  color: var(--text);
 }
 
+/* The green atmosphere moved to .app-shell (all pages); .dashboard-shell
+   now only tunes the navbar liquid for the hero area. */
 .dashboard-shell .topnav {
   --topnav-liquid: rgba(22, 32, 30, 0.5);
   background: rgba(15, 20, 23, 0.42);
 }
 
-[data-theme="day"] .dashboard-shell {
+[data-theme="day"] .app-shell {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
