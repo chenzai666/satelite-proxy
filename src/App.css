@@ -94,15 +94,18 @@
   --surface: rgba(255, 255, 255, 0.78);
   --surface-2: rgba(255, 255, 255, 0.92);
   --text: rgba(18, 22, 28, 0.92);
-  --muted: rgba(18, 22, 28, 0.55);
-  --faint: rgba(18, 22, 28, 0.35);
+  /* Gray text lifted for readability on the light surfaces: muted sat at
+     ~4.0:1 contrast (below the 4.5:1 AA bar for body text), faint/placeholder
+     at ~2.2:1. These land at ~5.6 / ~2.9 / ~4.0 respectively. */
+  --muted: rgba(18, 22, 28, 0.65);
+  --faint: rgba(18, 22, 28, 0.45);
   --border: rgba(0, 0, 0, 0.08);
   --border-subtle: rgba(0, 0, 0, 0.05);
   --border-strong: rgba(0, 0, 0, 0.14);
   --grid: transparent;
   --grid-line: transparent;
-  --placeholder: rgba(18, 22, 28, 0.35);
-  --nav-label: rgba(18, 22, 28, 0.4);
+  --placeholder: rgba(18, 22, 28, 0.45);
+  --nav-label: rgba(18, 22, 28, 0.55);
   --hover-wash: rgba(0, 0, 0, 0.04);
   --code-bg: rgba(0, 0, 0, 0.04);
   --code-fg: rgba(18, 22, 28, 0.8);
