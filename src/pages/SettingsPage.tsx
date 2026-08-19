@@ -72,6 +72,8 @@ export function SettingsPage() {
   const [inboundLan, setInboundLan] = useState(false);
   const [inboundError, setInboundError] = useState<string | null>(null);
   const [menuInboundId, setMenuInboundId] = useState<string | null>(null);
+  /** Copy-feedback flag for the read-only Clash API secret field. */
+  const [secretCopied, setSecretCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -264,6 +266,10 @@ export function SettingsPage() {
       const status = await getProxyStatus().catch(() => null);
       if (status?.running) {
         await restartProxy();
+        // Restart regenerates the clash_api secret; re-read so the
+        // read-only secret field below shows the value now in effect.
+        const fresh = await getSettings();
+        setSettings(fresh);
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -341,6 +347,18 @@ export function SettingsPage() {
 
   function removeInbound(id: string) {
     setExtra((prev) => prev.filter((r) => r.id !== id));
+  }
+
+  async function onCopySecret() {
+    const secret = settings?.clash_api_secret;
+    if (!secret) return;
+    try {
+      await navigator.clipboard.writeText(secret);
+      setSecretCopied(true);
+      window.setTimeout(() => setSecretCopied(false), 1500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
   }
 
   async function onDownloadCore() {
@@ -681,6 +699,31 @@ export function SettingsPage() {
                   onChange={(e) => setApi(e.target.value)}
                 />
               </label>
+              <div className="field field-span-2">
+                <span>{t("settings.apiSecret")}</span>
+                <div className="api-secret-row">
+                  <input
+                    readOnly
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    className="mono api-secret-input"
+                    value={settings?.clash_api_secret ?? ""}
+                    placeholder={t("settings.apiSecretNone")}
+                  />
+                  <GlassButton
+                    icon={secretCopied ? "✓" : "⧉"}
+                    disabled={!settings?.clash_api_secret}
+                    onClick={() => void onCopySecret()}
+                    title={t("common.copy")}
+                  >
+                    {secretCopied ? t("common.copied") : t("common.copy")}
+                  </GlassButton>
+                </div>
+                <span className="field-hint muted">
+                  {t("settings.apiSecretHint")}
+                </span>
+              </div>
               <div className="via-proxy-row field-span-2">
                 <div>
                   <div className="sys-proxy-title">{t("settings.allowLan")}</div>

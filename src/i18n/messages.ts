@@ -234,6 +234,10 @@ const en = {
   "settings.toggleSaveNote": "Toggles save immediately.",
   "settings.mixedPort": "Mixed inbound port",
   "settings.apiPort": "Clash API port",
+  "settings.apiSecret": "Clash API secret",
+  "settings.apiSecretHint":
+    "Auto-regenerated each time the core starts. External tools must send it as Authorization: Bearer <secret> to call http://127.0.0.1:port",
+  "settings.apiSecretNone": "Generated when the core starts",
   "settings.probeUrl": "Latency probe URL",
   "settings.tunStack": "TUN stack",
   "settings.tunStackHint": "TUN toggle lives on Dashboard · now",
@@ -946,6 +950,10 @@ const zh: Record<MessageKey, string> = {
   "settings.toggleSaveNote": "开关即时保存。",
   "settings.mixedPort": "Mixed 入站端口",
   "settings.apiPort": "Clash API 端口",
+  "settings.apiSecret": "Clash API 密钥",
+  "settings.apiSecretHint":
+    "每次内核启动都会重新生成；外部工具访问 http://127.0.0.1:端口 时需携带 Authorization: Bearer <密钥>",
+  "settings.apiSecretNone": "内核启动后生成",
   "settings.probeUrl": "延迟测试 URL",
   "settings.tunStack": "TUN 协议栈",
   "settings.tunStackHint": "TUN 开关在概览页 · 当前",

@@ -3038,6 +3038,28 @@ code {
   box-sizing: border-box;
 }
 
+/* Read-only Clash API secret field: mono input + copy button on one line. */
+.api-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.api-secret-row .api-secret-input {
+  flex: 1;
+  min-width: 0;
+  user-select: text;
+}
+
+.api-secret-row .api-secret-input[readonly] {
+  color: var(--muted);
+}
+
+.api-secret-row .glass-btn {
+  flex-shrink: 0;
+}
+
 @media (max-width: 700px) {
   .settings-ports-columns {
     grid-template-columns: 1fr;
