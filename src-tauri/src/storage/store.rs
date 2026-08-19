@@ -71,10 +71,17 @@ impl AppStore {
         store.ensure_rule_sets(resource_dir);
         store.migrate_redundant_general_rule_set();
         store.migrate_remote_update_policy();
+        store.migrate_plain_set_rule_targets();
         store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
         if schema_before < 5 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v5.backup.json");
+            if !backup.exists() {
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
+            }
+        }
+        if schema_before < 6 && source_raw.is_some() {
+            let backup = path.with_file_name("store.pre-v6.backup.json");
             if !backup.exists() {
                 let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
             }
@@ -511,6 +518,33 @@ impl AppStore {
                 let set = &mut self.rule_sets[index];
                 set.builtin = false;
                 set.ownership = RuleSetOwnership::User;
+            }
+        }
+        self.schema_version = VERSION;
+    }
+
+    /// v6: rule targets became per-rule under plain strategies (previously
+    /// the set strategy always won). Normalize every non-smart local set to
+    /// the semantics users observed so far — all rules retargeted to the set
+    /// strategy — so the upgrade changes no routing. Per-rule choices made
+    /// after the migration are kept (this runs once).
+    pub fn migrate_plain_set_rule_targets(&mut self) {
+        const VERSION: u32 = 6;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        for set in &mut self.rule_sets {
+            if set.remote.is_some() || set.strategy == RuleSetStrategy::Smart {
+                continue;
+            }
+            let target = match set.strategy {
+                RuleSetStrategy::Direct => RuleTarget::Direct,
+                RuleSetStrategy::Block => RuleTarget::Block,
+                _ => RuleTarget::Proxy,
+            };
+            for rule in &mut set.rules {
+                rule.target = target.clone();
             }
         }
         self.schema_version = VERSION;
@@ -960,8 +994,94 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn create_rule_set(&mut self, name: &str) -> RuleSet {
-        let set = RuleSet::new_user(name, vec![]);
+    /// Apply one target to EVERY rule of a local set (batch set-routes).
+    /// proxy/direct/block collapse to a plain strategy (whole-set, same as a
+    /// strategy flip); node/smart force the set to Smart and rewrite each
+    /// rule with the pin / keywords. Returns (set, needs_core_restart).
+    pub fn batch_set_rule_targets(
+        &mut self,
+        id: &str,
+        target: crate::domain::RuleTarget,
+        node_id: Option<String>,
+        smart_include: Vec<String>,
+        smart_exclude: Vec<String>,
+    ) -> AppResult<(RuleSet, bool)> {
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        let set = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == id)
+            .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
+        if set.remote.is_some() {
+            return Err(crate::error::AppError::Config(
+                "远程规则集没有本地规则,无法批量设置".into(),
+            ));
+        }
+        let pin = if target == RuleTarget::Node {
+            let nid = node_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| crate::error::AppError::Config("请选择节点".into()))?;
+            let name = self
+                .nodes
+                .iter()
+                .find(|stored| stored.node.id == nid)
+                .map(|stored| stored.node.name.clone())
+                .ok_or_else(|| {
+                    crate::error::AppError::Config("指定的节点不存在".into())
+                })?;
+            Some((nid.to_string(), name))
+        } else {
+            None
+        };
+        match target {
+            RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block => {
+                set.strategy = match target {
+                    RuleTarget::Direct => RuleSetStrategy::Direct,
+                    RuleTarget::Block => RuleSetStrategy::Block,
+                    _ => RuleSetStrategy::Proxy,
+                };
+                if let Some(dns) = set.strategy.recommended_dns_strategy() {
+                    set.dns_strategy = dns;
+                }
+            }
+            RuleTarget::Node | RuleTarget::Smart => {
+                set.strategy = RuleSetStrategy::Smart;
+            }
+        }
+        for rule in &mut set.rules {
+            rule.target = target.clone();
+            rule.node_id = pin.as_ref().map(|(id, _)| id.clone());
+            rule.node_name = pin.as_ref().map(|(_, name)| name.clone());
+            rule.smart_include = if target == RuleTarget::Smart {
+                smart_include.clone()
+            } else {
+                Vec::new()
+            };
+            rule.smart_exclude = if target == RuleTarget::Smart {
+                smart_exclude.clone()
+            } else {
+                Vec::new()
+            };
+        }
+        let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
+        Ok((set.clone(), needs_restart))
+    }
+
+    /// Create a local user set with an initial route strategy (the new-set
+    /// dialog's 路由 choice, mirroring the remote flow). DNS strategy follows
+    /// the recommended pairing via the same helper the flip path uses.
+    pub fn create_local_rule_set(
+        &mut self,
+        name: &str,
+        strategy: crate::domain::RuleSetStrategy,
+    ) -> RuleSet {
+        let mut set = RuleSet::new_user(name, vec![]);
+        set.strategy = strategy;
+        if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
+            set.dns_strategy = dns_strategy;
+        }
         self.rule_sets.insert(0, set.clone());
         set
     }
@@ -1334,6 +1454,119 @@ mod tests {
     }
 
     #[test]
+    fn batch_set_rule_targets_node_forces_smart_and_pins_all() {
+        use crate::domain::{
+            ProxyNode, Protocol, ProtocolConfig, Rule, RuleSet, RuleSetStrategy, RuleTarget,
+            RuleType,
+        };
+        let mut store = AppStore::default();
+        let node = ProxyNode {
+            id: "node-1".into(),
+            name: "东京 01".into(),
+            protocol: Protocol::Shadowsocks,
+            server: "example.com".into(),
+            port: 8388,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Shadowsocks {
+                method: "aes-256-gcm".into(),
+                password: "x".into(),
+                plugin: None,
+                plugin_opts: None,
+                shadow_tls: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        };
+        store.nodes.push(StoredNode {
+            subscription_id: "sub".into(),
+            node,
+        });
+        let set = RuleSet::new_user(
+            "批量集",
+            vec![
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 1),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 2),
+            ],
+        );
+        store.rule_sets = vec![set];
+        let id = store.rule_sets[0].id.clone();
+
+        let (updated, _) = store
+            .batch_set_rule_targets(
+                &id,
+                RuleTarget::Node,
+                Some("node-1".into()),
+                vec![],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Smart);
+        assert!(updated.rules.iter().all(|r| {
+            r.target == RuleTarget::Node
+                && r.node_id.as_deref() == Some("node-1")
+                && r.node_name.as_deref() == Some("东京 01")
+        }));
+
+        // Batch to direct collapses back to a plain uniform strategy.
+        let (updated, _) = store
+            .batch_set_rule_targets(&id, RuleTarget::Direct, None, vec![], vec![])
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Direct);
+        assert!(updated
+            .rules
+            .iter()
+            .all(|r| r.target == RuleTarget::Direct && r.node_id.is_none()));
+    }
+
+    #[test]
+    fn create_local_rule_set_applies_initial_strategy() {
+        use crate::domain::RuleSetStrategy;
+        let mut store = AppStore::default();
+        let set = store.create_local_rule_set("本地直连集", RuleSetStrategy::Direct);
+        assert_eq!(set.strategy, RuleSetStrategy::Direct);
+        // DNS pairing follows the same recommendation as a strategy flip.
+        assert_eq!(set.dns_strategy, RuleSetStrategy::Direct.recommended_dns_strategy().unwrap());
+        assert!(store.rule_sets[0].id == set.id, "new set lands on top");
+    }
+
+    #[test]
+    fn v6_load_writes_pre_v6_backup_and_migrates() {
+        use crate::domain::{Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let path = test_store_path("pre-v6");
+        let mut store = AppStore::default();
+        store.schema_version = 5;
+        let mut set = RuleSet::new_user(
+            "v5集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "a.com".into(),
+                RuleTarget::Direct,
+                1,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        store.rule_sets = vec![set];
+        store.save(&path).unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.schema_version, 6);
+        let pre_v6 = path.with_file_name("store.pre-v6.backup.json");
+        assert!(pre_v6.exists(), "pre-v6 snapshot must be written on upgrade");
+        let snap = parse_store(&fs::read_to_string(&pre_v6).unwrap()).unwrap();
+        assert_eq!(snap.schema_version, 5);
+        // Reloading the migrated store must not resurrect the backup logic.
+        fs::remove_file(&pre_v6).unwrap();
+        let again = AppStore::load(&path, None).unwrap();
+        assert_eq!(again.schema_version, 6);
+        assert!(!pre_v6.exists(), "v6 store skips the backup on reload");
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn save_preserves_the_previous_valid_store() {
         let path = test_store_path("backup");
         let mut store = AppStore::default();
@@ -1661,6 +1894,48 @@ mod tests {
     }
 
     #[test]
+    fn v6_migration_normalizes_plain_set_rule_targets_once() {
+        use crate::domain::{Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let mut set = RuleSet::new_user(
+            "遗留混合",
+            vec![
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Direct, 1),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Block, 2),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        let mut smart = RuleSet::new_user(
+            "智能集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "c.com".into(),
+                RuleTarget::Node,
+                1,
+            )],
+        );
+        smart.strategy = RuleSetStrategy::Smart;
+        let mut store = AppStore {
+            schema_version: 5,
+            rule_sets: vec![set, smart],
+            ..AppStore::with_builtin_sets(None)
+        };
+        store.migrate_plain_set_rule_targets();
+        // Plain set normalized to its strategy; smart set untouched.
+        assert!(
+            store.rule_sets[0]
+                .rules
+                .iter()
+                .all(|r| r.target == RuleTarget::Proxy)
+        );
+        assert!(store.rule_sets[1].rules[0].target == RuleTarget::Node);
+        assert_eq!(store.schema_version, 6);
+        // Idempotent: a post-migration per-rule choice survives reload.
+        store.rule_sets[0].rules[0].target = RuleTarget::Direct;
+        store.migrate_plain_set_rule_targets();
+        assert!(store.rule_sets[0].rules[0].target == RuleTarget::Direct);
+    }
+
+    #[test]
     fn v3_migration_folds_dns_matchers_into_shared_rules() {
         let mut store = AppStore {
             schema_version: 2,
@@ -1823,7 +2098,7 @@ mod tests {
             .rule_sets
             .push(RuleSet::new_user("已有规则", Vec::new()));
 
-        let local = store.create_rule_set("新本地");
+        let local = store.create_local_rule_set("新本地", RuleSetStrategy::Proxy);
         assert_eq!(store.rule_sets[0].id, local.id);
 
         let remote = store.create_remote_rule_set(

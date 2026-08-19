@@ -327,60 +327,28 @@ fn build_grouped_rule_sets(
             }));
         }
 
-        match set.strategy {
-            RuleSetStrategy::Block => {
-                route_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
-            }
-            RuleSetStrategy::Direct | RuleSetStrategy::Proxy => {
-                route_rules.push(json!({
-                    "rule_set": [set.id],
-                    "action": "route",
-                    "outbound": if set.strategy == RuleSetStrategy::Direct { "direct" } else { "proxy" },
-                }));
-            }
-            RuleSetStrategy::Smart if set.remote.is_none() => {
-                let mut groups: Vec<(String, Vec<Rule>)> = Vec::new();
-                let mut sorted: Vec<Rule> = set
-                    .rules
-                    .iter()
-                    .filter(|rule| inline_rule_is_effective(rule))
-                    .cloned()
-                    .collect();
-                sorted.sort_by_key(|rule| rule.ord);
-                for rule in sorted {
-                    let key = if rule.target == RuleTarget::Block {
-                        "reject".to_string()
-                    } else {
-                        format!("route:{}", resolve_rule_outbound(&rule, nodes, tags))
-                    };
-                    if let Some((_, rules)) = groups.iter_mut().find(|(group, _)| group == &key) {
-                        rules.push(rule);
-                    } else {
-                        groups.push((key, vec![rule]));
-                    }
+        // Local sets route per rule: each rule's own target wins. Under a
+        // plain strategy the per-rule choice is proxy/direct/block only —
+        // node/smart pins (e.g. left over from an earlier smart phase) are
+        // clamped to the set strategy. `set_rule_set_strategy` retargets all
+        // rules on flip, so a plain set stays uniform unless the user
+        // deliberately mixes per-rule routes. Remote sets have no local
+        // rules and keep their single set-level route.
+        if set.remote.is_none() {
+            route_local_set_grouped(set, nodes, tags, &mut definitions, &mut route_rules);
+        } else {
+            match set.strategy {
+                RuleSetStrategy::Block => {
+                    route_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
                 }
-                for (index, (key, rules)) in groups.into_iter().enumerate() {
-                    let tag = format!("{}-route-{index}", set.id);
-                    let Some(headless) = build_headless_rules(&rules) else {
-                        continue;
-                    };
-                    definitions.push(json!({
-                        "type": "inline",
-                        "tag": tag,
-                        "rules": headless,
+                _ => {
+                    route_rules.push(json!({
+                        "rule_set": [set.id],
+                        "action": "route",
+                        "outbound": if set.strategy == RuleSetStrategy::Direct { "direct" } else { "proxy" },
                     }));
-                    if key == "reject" {
-                        route_rules.push(json!({ "rule_set": [tag], "action": "reject" }));
-                    } else {
-                        route_rules.push(json!({
-                            "rule_set": [tag],
-                            "action": "route",
-                            "outbound": key.trim_start_matches("route:"),
-                        }));
-                    }
                 }
             }
-            RuleSetStrategy::Smart => {}
         }
 
         if set.strategy == RuleSetStrategy::Block {
@@ -395,6 +363,87 @@ fn build_grouped_rule_sets(
     }
 
     (definitions, route_rules, dns_rules)
+}
+
+/// Per-rule routing for a local set: group effective rules by resolved
+/// outbound and emit one child inline rule-set per group (the parent set
+/// definition stays registered for DNS). Shared by every local strategy —
+/// Smart honors node/smart targets; plain strategies clamp them.
+fn route_local_set_grouped(
+    set: &RuleSet,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    definitions: &mut Vec<Value>,
+    route_rules: &mut Vec<Value>,
+) {
+    let mut groups: Vec<(String, Vec<Rule>)> = Vec::new();
+    let mut sorted: Vec<Rule> = set
+        .rules
+        .iter()
+        .filter(|rule| inline_rule_is_effective(rule))
+        .cloned()
+        .collect();
+    sorted.sort_by_key(|rule| rule.ord);
+    for mut rule in sorted {
+        if set.strategy != RuleSetStrategy::Smart
+            && !matches!(
+                rule.target,
+                RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+            )
+        {
+            rule.target = match set.strategy {
+                RuleSetStrategy::Direct => RuleTarget::Direct,
+                RuleSetStrategy::Block => RuleTarget::Block,
+                _ => RuleTarget::Proxy,
+            };
+        }
+        let key = if rule.target == RuleTarget::Block {
+            "reject".to_string()
+        } else {
+            format!("route:{}", resolve_rule_outbound(&rule, nodes, tags))
+        };
+        if let Some((_, rules)) = groups.iter_mut().find(|(group, _)| group == &key) {
+            rules.push(rule);
+        } else {
+            groups.push((key, vec![rule]));
+        }
+    }
+    // A uniform set keeps its classic shape: the parent definition itself is
+    // referenced by route (and DNS) — no child sets. Only genuinely mixed
+    // per-rule routing pays for child rule-sets.
+    if groups.len() == 1 {
+        let (key, _) = groups.into_iter().next().unwrap();
+        if key == "reject" {
+            route_rules.push(json!({ "rule_set": [set.id.clone()], "action": "reject" }));
+        } else {
+            route_rules.push(json!({
+                "rule_set": [set.id.clone()],
+                "action": "route",
+                "outbound": key.trim_start_matches("route:"),
+            }));
+        }
+        return;
+    }
+    for (index, (key, rules)) in groups.into_iter().enumerate() {
+        let tag = format!("{}-route-{index}", set.id);
+        let Some(headless) = build_headless_rules(&rules) else {
+            continue;
+        };
+        definitions.push(json!({
+            "type": "inline",
+            "tag": tag,
+            "rules": headless,
+        }));
+        if key == "reject" {
+            route_rules.push(json!({ "rule_set": [tag], "action": "reject" }));
+        } else {
+            route_rules.push(json!({
+                "rule_set": [tag],
+                "action": "route",
+                "outbound": key.trim_start_matches("route:"),
+            }));
+        }
+    }
 }
 
 /// Whether a set contributes nothing to the generated sing-box config: no
@@ -1348,20 +1397,24 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_set_strategy_overrides_legacy_item_targets_for_route_and_dns() {
+    fn plain_set_routes_uniform_targets_through_parent_tag() {
+        // Since the v6 store migration (and rewrite-on-strategy-flip), every
+        // non-smart local set is uniform unless the user mixes per-rule
+        // routes on purpose. A uniform set keeps the classic single-group
+        // shape: the parent definition is referenced by both route and DNS.
         let mut set = RuleSet::new_user(
             "整组代理",
             vec![
                 Rule::new(
                     RuleType::DomainSuffix,
                     "example.com".into(),
-                    RuleTarget::Direct,
+                    RuleTarget::Proxy,
                     10,
                 ),
                 Rule::new(
                     RuleType::DomainSuffix,
                     "example.org".into(),
-                    RuleTarget::Block,
+                    RuleTarget::Proxy,
                     20,
                 ),
             ],
@@ -1468,6 +1521,64 @@ mod tests {
     }
 
     #[test]
+    fn plain_strategy_set_honors_per_rule_routes() {
+        let mut set = RuleSet::new_user(
+            "混合路由",
+            vec![
+                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 10),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 20),
+                Rule::new(RuleType::DomainSuffix, "c.com".into(), RuleTarget::Block, 30),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+
+        let (definitions, routes, _dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        // Parent (DNS) + one child per distinct outbound: proxy, direct, reject.
+        assert_eq!(definitions.len(), 4);
+        let outbounds: Vec<(String, String)> = routes
+            .iter()
+            .map(|r| {
+                (
+                    r["action"].as_str().unwrap_or("").to_string(),
+                    r["outbound"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        assert!(outbounds.contains(&("route".into(), "proxy".into())));
+        assert!(outbounds.contains(&("route".into(), "direct".into())));
+        assert!(outbounds.contains(&("reject".into(), String::new())));
+        assert_eq!(routes.len(), 3);
+    }
+
+    #[test]
+    fn plain_strategy_set_clamps_node_and_smart_pins() {
+        let mut set = RuleSet::new_user(
+            "钳制",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "node.com".into(),
+                    RuleTarget::Node,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "smart.com".into(),
+                    RuleTarget::Smart,
+                    20,
+                ),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Direct;
+
+        let (_definitions, routes, _dns) = build_grouped_rule_sets(&[set], &[], &[]);
+        // Both pins clamp to the set strategy: a single direct route group.
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["action"], "route");
+        assert_eq!(routes[0]["outbound"], "direct");
+    }
+
+    #[test]
     fn smart_set_partitions_only_effective_rules() {
         let mut set = RuleSet::new_user(
             "智能集",
@@ -1489,11 +1600,12 @@ mod tests {
         set.strategy = RuleSetStrategy::Smart;
 
         let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
-        // Parent (DNS) + exactly one non-empty child route set.
-        assert_eq!(definitions.len(), 2);
+        // Single outbound group: the parent definition itself carries the
+        // route (classic shape) — no child rule-set needed.
+        assert_eq!(definitions.len(), 1);
         assert!(!definitions[0]["rules"].as_array().unwrap().is_empty());
-        assert!(!definitions[1]["rules"].as_array().unwrap().is_empty());
         assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["rule_set"], json!([definitions[0]["tag"]]));
         assert_eq!(dns.len(), 1);
     }
 
@@ -1724,9 +1836,10 @@ mod tests {
         assert_eq!(inbounds.len(), 1);
         assert_eq!(inbounds[0]["type"], "mixed");
         assert!(built.value.get("dns").is_some());
-        assert!(built.value["route"]
-            .get("default_domain_resolver")
-            .is_some());
+        // Without TUN the system resolver stays the fastest choice.
+        assert_eq!(
+            built.value["route"]["default_domain_resolver"], "dns-local"
+        );
         assert_eq!(built.value["route"]["final"], "proxy");
         let proxy = built.value["outbounds"]
             .as_array()
@@ -1864,9 +1977,12 @@ mod tests {
             .as_array()
             .is_some_and(|a| a.iter().any(|v| v == "127.0.0.0/8")));
         assert!(built.value.get("dns").is_some());
-        assert!(built.value["route"]
-            .get("default_domain_resolver")
-            .is_some());
+        // TUN must not resolve outbound domains via the system resolver:
+        // those queries get hijacked into the tunnel (loop), so the direct
+        // UDP server is used instead.
+        assert_eq!(
+            built.value["route"]["default_domain_resolver"], "dns-cn"
+        );
         let rules = built.value["route"]["rules"].as_array().unwrap();
         assert!(rules
             .iter()

@@ -491,6 +491,20 @@ pub fn set_rule_set_strategy(
                 ));
             }
             set.strategy = strategy;
+            // Plain strategies own every rule's target: retarget all local
+            // rules so flipping a set keeps its one-knob meaning (stale
+            // node/smart pins from an earlier smart phase must not linger).
+            // Flipping TO smart keeps current targets for per-rule editing.
+            if set.remote.is_none() && strategy != RuleSetStrategy::Smart {
+                let fallback = match strategy {
+                    RuleSetStrategy::Direct => RuleTarget::Direct,
+                    RuleSetStrategy::Block => RuleTarget::Block,
+                    _ => RuleTarget::Proxy,
+                };
+                for rule in set.rules.iter_mut() {
+                    rule.target = fallback.clone();
+                }
+            }
             if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
                 set.dns_strategy = dns_strategy;
             }
@@ -503,6 +517,33 @@ pub fn set_rule_set_strategy(
             // generated config — no restart needed for those.
             let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
             Ok((set.clone(), needs_restart))
+        })
+        .map_err(|e| e.to_string())?;
+    if needs_restart {
+        apply_running(&app);
+    }
+    Ok(set)
+}
+
+#[tauri::command]
+pub fn batch_set_rule_targets(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    target: RuleTarget,
+    node_id: Option<String>,
+    smart_include: Option<Vec<String>>,
+    smart_exclude: Option<Vec<String>>,
+) -> Result<RuleSet, String> {
+    let (set, needs_restart) = state
+        .with_store_mut(|store| {
+            store.batch_set_rule_targets(
+                &id,
+                target,
+                node_id,
+                smart_include.unwrap_or_default(),
+                smart_exclude.unwrap_or_default(),
+            )
         })
         .map_err(|e| e.to_string())?;
     if needs_restart {
@@ -620,7 +661,23 @@ pub fn create_rule_set(
                 })?;
                 Ok(store.create_remote_rule_set(n, url, target, update_interval))
             } else {
-                Ok(store.create_rule_set(n))
+                // Local set: an optional initial strategy from the new-set
+                // dialog's 路由 choice (same p/d/b restriction as remote).
+                let target = target.unwrap_or(RuleTarget::Proxy);
+                if !matches!(
+                    target,
+                    RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+                ) {
+                    return Err(crate::error::AppError::Config(
+                        "本地规则集仅支持 proxy/direct/block 策略".into(),
+                    ));
+                }
+                let strategy = match target {
+                    RuleTarget::Direct => RuleSetStrategy::Direct,
+                    RuleTarget::Block => RuleSetStrategy::Block,
+                    _ => RuleSetStrategy::Proxy,
+                };
+                Ok(store.create_local_rule_set(n, strategy))
             }
         })
         .map_err(|e| e.to_string())?;

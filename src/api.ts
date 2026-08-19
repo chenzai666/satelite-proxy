@@ -515,6 +515,23 @@ export function updateRuleSet(
   });
 }
 
+/** Apply one target to every rule of a local set (batch set-routes). */
+export function batchSetRuleTargets(
+  id: string,
+  target: "proxy" | "direct" | "block" | "node" | "smart",
+  nodeId?: string | null,
+  smartInclude?: string[] | null,
+  smartExclude?: string[] | null,
+) {
+  return invoke<RuleSet>("batch_set_rule_targets", {
+    id,
+    target,
+    nodeId: nodeId ?? null,
+    smartInclude: smartInclude ?? null,
+    smartExclude: smartExclude ?? null,
+  });
+}
+
 export function listRemoteRuleItems(
   id: string,
   offset: number,

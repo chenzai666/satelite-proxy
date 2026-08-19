@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   getCoreInfo,
@@ -23,6 +23,7 @@ import {
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
@@ -35,6 +36,27 @@ import type {
   SubscriptionTraffic,
   SubscriptionView,
 } from "../types";
+
+/**
+ * Split a config line around (all occurrences of) the filter string and wrap
+ * the hits in <mark>. Case-insensitive; the query is always non-empty here.
+ */
+function highlightPreviewLine(line: string, query: string): ReactNode {
+  const lower = line.toLowerCase();
+  const lq = query.toLowerCase();
+  const parts: ReactNode[] = [];
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(lq, from);
+    if (at === -1) {
+      parts.push(line.slice(from));
+      return parts;
+    }
+    if (at > from) parts.push(line.slice(from, at));
+    parts.push(<mark key={at}>{line.slice(at, at + query.length)}</mark>);
+    from = at + query.length;
+  }
+}
 
 interface Props {
   onGoProfiles?: () => void;
@@ -154,6 +176,9 @@ export function DashboardPage({
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  /** Config-preview modal: quick line filter + copy feedback. */
+  const [previewQuery, setPreviewQuery] = useState("");
+  const [previewCopied, setPreviewCopied] = useState(false);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -444,6 +469,8 @@ export function DashboardPage({
     setBusy(true);
     setError(null);
     setMoreOpen(false);
+    setPreviewQuery("");
+    setPreviewCopied(false);
     try {
       if (proxy?.runtime_source === "singbox" && proxy.runtime_profile_id) {
         const detail = await getSubscription(proxy.runtime_profile_id);
@@ -592,6 +619,35 @@ export function DashboardPage({
       setError(typeof e === "string" ? e : String(e));
     }
   }
+
+  async function onCopyPreview() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.preview);
+      setPreviewCopied(true);
+      setToast(t("common.copied"));
+      window.setTimeout(() => setPreviewCopied(false), 1500);
+      window.setTimeout(() => setToast(null), 1500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** Config preview split once per fetch; filter runs over these lines. */
+  const previewLines = useMemo(
+    () => (result?.preview ?? "").split("\n"),
+    [result?.preview],
+  );
+  const previewQueryTrimmed = previewQuery.trim();
+  const previewMatches = useMemo(() => {
+    const q = previewQueryTrimmed.toLowerCase();
+    if (!q) return null;
+    const out: { n: number; text: string }[] = [];
+    previewLines.forEach((text, n) => {
+      if (text.toLowerCase().includes(q)) out.push({ n, text });
+    });
+    return out;
+  }, [previewLines, previewQueryTrimmed]);
 
   const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
 
@@ -1292,8 +1348,42 @@ export function DashboardPage({
                 ×
               </button>
             </header>
-            <div className="modal-body">
-              <pre className="preview-json">{result.preview}</pre>
+            <div className="modal-body preview-body">
+              <div className="preview-toolbar">
+                <input
+                  className="search preview-search"
+                  placeholder={t("dashboard.filterConfig")}
+                  value={previewQuery}
+                  onChange={(e) => setPreviewQuery(e.target.value)}
+                  spellCheck={false}
+                />
+                {previewMatches && (
+                  <span className="muted preview-match-count">
+                    {t("dashboard.matchCount", {
+                      n: previewMatches.length,
+                      total: previewLines.length,
+                    })}
+                  </span>
+                )}
+                <GlassButton
+                  onClick={() => void onCopyPreview()}
+                  disabled={previewCopied}
+                >
+                  {previewCopied ? t("common.copied") : t("common.copy")}
+                </GlassButton>
+              </div>
+              <pre className="preview-json">
+                {previewMatches
+                  ? previewMatches.map((m) => (
+                      <span className="preview-line" key={m.n}>
+                        <span className="preview-line-no">{m.n + 1}</span>
+                        <span className="preview-line-text">
+                          {highlightPreviewLine(m.text, previewQueryTrimmed)}
+                        </span>
+                      </span>
+                    ))
+                  : result.preview}
+              </pre>
             </div>
           </div>
         </div>

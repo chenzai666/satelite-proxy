@@ -887,13 +887,40 @@ button {
   font-size: 0.85rem;
 }
 
+/* Config preview: a large, near-fullscreen dialog (copy + line filter live
+   in .preview-toolbar; the <pre> itself fills the remaining height). */
 .preview-modal {
-  width: min(720px, 100%);
+  width: min(1080px, 96vw);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 2rem);
+}
+
+.preview-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.preview-toolbar .search {
+  flex: 1;
+  min-width: 0;
+}
+
+.preview-match-count {
+  white-space: nowrap;
+  font-size: 0.72rem;
 }
 
 .preview-json {
   margin: 0;
-  max-height: 420px;
+  flex: 1;
+  min-height: 260px;
   overflow: auto;
   background: var(--code-bg);
   color: var(--code-fg);
@@ -903,6 +930,33 @@ button {
   font-size: 11px;
   line-height: 1.45;
   font-family: var(--mono);
+}
+
+.preview-line {
+  display: flex;
+  gap: 0.75rem;
+  /* span (not div): <pre> only allows phrasing content. */
+}
+
+.preview-line-no {
+  flex: none;
+  min-width: 3rem;
+  text-align: right;
+  color: var(--muted);
+  user-select: none;
+}
+
+.preview-line-text {
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.preview-json mark {
+  background: var(--primary-muted);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 tr.row-active {
@@ -2083,6 +2137,12 @@ button.node-card:disabled,
   flex-wrap: nowrap;
   padding: 0.65rem 0.75rem;
   margin-bottom: 0.75rem;
+  /* The ⋮ popover opens DOWNWARD over the rules table card. Both cards are
+     isolation-isolated stacking contexts painted in DOM order, so without
+     this the later table card would paint OVER the popover — and its
+     backdrop-filter would frost it, reading as a translucent menu. */
+  position: relative;
+  z-index: 70;
 }
 
 .rules-main-actions {
@@ -2229,6 +2289,22 @@ tr.rule-row:hover {
   gap: 6px;
   margin-bottom: 10px;
   padding: 12px 14px;
+}
+
+/* Cache-file row under the remote rule-set hint: path + "parse & show". */
+.remote-cache-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.remote-cache-path {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  word-break: break-all;
+  user-select: all;
+  max-width: 100%;
 }
 
 .remote-rules-wrap.table-wrap {
@@ -2383,6 +2459,67 @@ tr.rule-row:hover {
 
 .rule-menu-item.danger:hover {
   background: var(--danger-bg);
+}
+
+/* Toolbar ⋮ menu (rules page): opens DOWNWARD below the trigger (it sits at
+   the top of the content area). Fully opaque and VISIBLY elevated — the
+   page background and --panel-solid are near-identical darks, so use the
+   brighter elevated panel + strong border/shadow to read as a solid card. */
+.rules-more-pop {
+  bottom: auto;
+  top: calc(100% + 4px);
+  min-width: 12rem;
+  padding: 0.5rem;
+  gap: 0.15rem;
+  background: var(--panel-elevated);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-elevated), 0 2px 10px rgba(0, 0, 0, 0.35);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.rules-more-title {
+  font-size: 0.72rem;
+  margin: 0 0.2rem 0.3rem;
+}
+
+.rules-more-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 0.35rem 0.25rem;
+}
+
+/* Radio-style DNS options: plain menu items with a leading dot — solid by
+   construction (no glass capsule inside the popover). */
+.rules-more-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Day theme: --panel-elevated (#f3f4f7) is nearly identical to the page bg
+   (#eef0f4), which reads as "transparent". Use pure white + a real border
+   and shadow so EVERY popover (row/set/toolbar) visibly floats. */
+[data-theme="day"] .rule-menu-pop {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.16);
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.16),
+    0 2px 10px rgba(15, 23, 42, 0.1);
+}
+
+.rules-more-radio {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+
+.rules-more-radio.on {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: 0 0 6px var(--primary-glow);
 }
 
 .modal-body select {
@@ -6402,7 +6539,9 @@ button.active-soft {
 
 .simple-spark-arc {
   fill: none;
-  stroke: color-mix(in srgb, var(--text) 26%, transparent);
+  /* Proxied arcs are always blue (--accent-blue, NOT --primary — in the
+     aerospace theme --primary is green and would collide with direct). */
+  stroke: color-mix(in srgb, var(--accent-blue) 45%, transparent);
   stroke-width: 1.15;
   stroke-dasharray: 3.2 4.6;
   stroke-linecap: round;
@@ -6410,7 +6549,17 @@ button.active-soft {
 }
 
 .simple-spark-arc.hot {
-  stroke: color-mix(in srgb, var(--primary) 42%, transparent);
+  stroke: color-mix(in srgb, var(--accent-blue) 75%, transparent);
+}
+
+/* Direct (non-proxied) links read green — idle and active variants.
+   Alphas stay well above the proxied base so the hue reads at 1px dashes. */
+.simple-spark-arc.direct {
+  stroke: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.simple-spark-arc.direct.hot {
+  stroke: color-mix(in srgb, var(--success) 88%, transparent);
 }
 
 .simple-spark-area {

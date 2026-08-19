@@ -378,6 +378,7 @@ pub fn run() {
             commands::set_rule_set_enabled,
             commands::set_rule_set_strategy,
             commands::set_rule_set_dns_strategy,
+            commands::batch_set_rule_targets,
             commands::create_rule_set,
             commands::update_rule_set,
             commands::refresh_remote_rule_set,
