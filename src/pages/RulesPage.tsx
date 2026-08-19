@@ -48,14 +48,6 @@ import type {
 
 type RouteFinal = "proxy" | "direct" | "block";
 
-const TYPE_OPTS: { value: RuleType; label: string }[] = [
-  { value: "domain_suffix", label: "DOMAIN-SUFFIX" },
-  { value: "domain", label: "DOMAIN" },
-  { value: "domain_keyword", label: "DOMAIN-KEYWORD" },
-  { value: "ip_cidr", label: "IP-CIDR" },
-  { value: "process", label: "PROCESS" },
-];
-
 /**
  * If `payload` is a pasted http(s) URL, suggest what it would actually
  * resolve to for the given rule type — DOMAIN keeps the full hostname,
@@ -339,6 +331,7 @@ export function RulesPage({ embedded = false }: Props) {
       (r) =>
         r.payload.toLowerCase().includes(q) ||
         r.type.toLowerCase().includes(q) ||
+        ruleTypeLabel(r.type).toLowerCase().includes(q) ||
         r.target.toLowerCase().includes(q) ||
         (r.node_name ?? "").toLowerCase().includes(q) ||
         (r.smart_include ?? []).some((k) => k.toLowerCase().includes(q)) ||
@@ -498,6 +491,33 @@ export function RulesPage({ embedded = false }: Props) {
     ],
     [t],
   );
+
+  const typeOpts: { value: RuleType; label: string }[] = useMemo(
+    () => [
+      { value: "domain_suffix", label: t("rules.typeDomainSuffix") },
+      { value: "domain", label: t("rules.typeDomain") },
+      { value: "domain_keyword", label: t("rules.typeDomainKeyword") },
+      { value: "ip_cidr", label: t("rules.typeIpCidr") },
+      { value: "process", label: t("rules.typeProcess") },
+    ],
+    [t],
+  );
+
+  /** Localized rule-type label; unknown kinds (e.g. from remote files)
+   *  fall back to the raw value. */
+  function ruleTypeLabel(type: string): string {
+    return type === "domain_suffix"
+      ? t("rules.typeDomainSuffix")
+      : type === "domain"
+        ? t("rules.typeDomain")
+        : type === "domain_keyword"
+          ? t("rules.typeDomainKeyword")
+          : type === "ip_cidr"
+            ? t("rules.typeIpCidr")
+            : type === "process"
+              ? t("rules.typeProcess")
+              : type;
+  }
 
   /** Localized set-strategy / DNS-strategy labels (no raw English in UI). */
   function strategyLabel(s: string): string {
@@ -1433,7 +1453,7 @@ export function RulesPage({ embedded = false }: Props) {
                       {remotePage.items.map((item) => (
                         <tr key={item.index}>
                           <td className="rule-ord">{item.index}</td>
-                          <td className="rule-type"><code>{item.kind}</code></td>
+                          <td className="rule-type"><code>{ruleTypeLabel(item.kind)}</code></td>
                           <td>
                             {item.complex ? (
                               <details className="remote-rule-details">
@@ -1513,7 +1533,7 @@ export function RulesPage({ embedded = false }: Props) {
                     >
                       <td className="rule-ord">{r.ord}</td>
                       <td className="rule-type">
-                        <code>{r.type}</code>
+                        <code>{ruleTypeLabel(r.type)}</code>
                       </td>
                       <td className="rule-payload" title={r.payload}>
                         {r.payload}
@@ -1743,7 +1763,7 @@ export function RulesPage({ embedded = false }: Props) {
                 <span>{t("rules.type")}</span>
                 <SolidSelect
                   value={ruleType}
-                  options={TYPE_OPTS}
+                  options={typeOpts}
                   onChange={(v) => setRuleType(v as RuleType)}
                   aria-label={t("rules.type")}
                 />
