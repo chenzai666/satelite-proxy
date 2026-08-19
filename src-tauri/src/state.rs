@@ -106,6 +106,73 @@ mod kernel_selection_poll_tests {
     }
 
     #[test]
+    fn kernel_auto_manual_select_skips_live_put_and_flips_mode() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-kernel-manual-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = AppState::load(test_dir.clone(), None).expect("load test state");
+        state
+            .with_store_mut(|store| {
+                store.upsert_subscription(
+                    crate::domain::Subscription {
+                        id: "sub".into(),
+                        name: "sub".into(),
+                        source: crate::domain::SubscriptionSource::Url {
+                            url: "https://example.com/sub".into(),
+                        },
+                        last_update: 1,
+                        node_count: 0,
+                        enabled: true,
+                        format: None,
+                        skipped_count: 0,
+                        via_proxy: false,
+                        auto_update: false,
+                        auto_update_interval_min: 1440,
+                        traffic: None,
+                    },
+                    vec![crate::domain::ProxyNode {
+                        id: "node-a".into(),
+                        name: "node-a".into(),
+                        protocol: crate::domain::Protocol::Trojan,
+                        server: "example.com".into(),
+                        port: 443,
+                        tls: None,
+                        transport: None,
+                        udp: None,
+                        config: crate::domain::ProtocolConfig::Trojan {
+                            password: "x".into(),
+                        },
+                        source: None,
+                        latency_ms: None,
+                        latency_at: None,
+                    }],
+                )?;
+                store.settings.auto_select = crate::domain::AutoSelectMode::Kernel;
+                Ok(())
+            })
+            .expect("seed kernel mode");
+
+        // Nothing listens here: any live PUT would fail, proving it is skipped.
+        state.lock_runtime().api =
+            Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
+
+        let (settings, was_kernel, selected_live) = state
+            .select_current_node_serialized("node-a", true, true)
+            .expect("kernel-mode manual select must not touch the urltest group");
+        assert!(!selected_live);
+        assert!(was_kernel);
+        assert_eq!(settings.auto_select, crate::domain::AutoSelectMode::Off);
+        assert_eq!(settings.current_node_id.as_deref(), Some("node-a"));
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
     fn status_uses_cache_instead_of_waiting_for_runtime_during_transition() {
         let test_dir = std::env::temp_dir().join(format!(
             "satelite-status-cache-{}-{}",
@@ -889,7 +956,7 @@ impl AppState {
         close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
-        let (tag, should_close) = self.with_store(|store| {
+        let (tag, should_close, kernel_auto) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
                     "自写配置模式下无法切换节点".into(),
@@ -904,13 +971,18 @@ impl AppState {
             Ok((
                 crate::config::outbound_tag(node),
                 close_if_enabled && store.settings.close_connections_on_switch,
+                manual && store.settings.auto_select.is_kernel(),
             ))
         })?;
         let api = {
             let runtime = self.lock_runtime();
             runtime.clash_api_clone()
         };
-        let selected_live = if let Some(api) = api {
+        // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
+        // manual pick; the caller rebuilds a selector group via core restart.
+        let selected_live = if kernel_auto {
+            false
+        } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
             if should_close {
                 let _ = api.close_all_connections();

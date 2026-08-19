@@ -357,6 +357,7 @@ const en = {
   "nodes.renameTitle": "Rename node",
   "nodes.renamePlaceholder": "Display name",
   "nodes.renameSave": "Save",
+  "nodes.switchingManual": "Switched to manual mode — restarting core…",
 
   // traffic (active + closed)
   "traffic.title": "Traffic",
@@ -1083,6 +1084,7 @@ const zh: Record<MessageKey, string> = {
   "nodes.renameTitle": "编辑节点名",
   "nodes.renamePlaceholder": "显示名称",
   "nodes.renameSave": "保存",
+  "nodes.switchingManual": "已切换为手动模式，正在重启内核…",
 
   "traffic.title": "流量",
   "traffic.desc": "连接中与已关闭的连接记录",

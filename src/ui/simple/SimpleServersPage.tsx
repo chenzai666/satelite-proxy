@@ -31,8 +31,9 @@ import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
+import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
-import type { ProxyNode, SortMode, SubscriptionView } from "../../types";
+import type { AutoSelectMode, ProxyNode, SortMode, SubscriptionView } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
 const SUBS_COLLAPSE_KEY = "simple.nodes.subsCollapsed";
@@ -103,6 +104,9 @@ export function SimpleServersPage() {
   const [subsCollapsed, setSubsCollapsed] = useState(() => readSubsCollapsed());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoSelect, setAutoSelect] = useState<AutoSelectMode>("off");
+  // Manual click in kernel-auto mode: urltest → selector rebuild restarts the core.
+  const [switching, setSwitching] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [modalOpen, setModalOpen] = useState(false);
@@ -120,6 +124,7 @@ export function SimpleServersPage() {
       setSubs(s);
       setCurrentId(settings.current_node_id ?? null);
       setRuntimeSource(settings.runtime_source || "generated");
+      setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       const offset = append ? nodes.length : 0;
       if ((settings.runtime_source || "generated").startsWith("singbox:")) {
         // Custom mode: read-only nodes extracted from the sing-box config,
@@ -199,15 +204,27 @@ export function SimpleServersPage() {
   });
 
   async function onSelectNode(id: string) {
-    if (busy || id === currentId) return;
+    if (busy || switching || id === currentId) return;
     setBusy(true);
     setError(null);
     try {
+      const leavingKernel = autoSelect === "kernel";
       await setCurrentNode(id);
       setCurrentId(id);
+      setAutoSelect("off");
+      if (leavingKernel) {
+        // urltest → selector rebuild: when running, hold the busy state until
+        // the core restart finishes (stopped cores just persist the pick).
+        const status = await getProxyStatus().catch(() => null);
+        if (status?.running) {
+          setSwitching(true);
+          await waitForCoreRestart();
+        }
+      }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      setSwitching(false);
       setBusy(false);
     }
   }
@@ -406,6 +423,13 @@ export function SimpleServersPage() {
       />
 
       {error && <div className="banner error">{error}</div>}
+
+      {switching && (
+        <div className="banner busy" role="status">
+          <span className="lat-spinner" aria-hidden />
+          {t("nodes.switchingManual")}
+        </div>
+      )}
 
       {subs.length > 0 && (
         <section className="simple-section">

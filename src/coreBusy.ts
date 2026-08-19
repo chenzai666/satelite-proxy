@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 /**
  * Global "core is starting/stopping/restarting" flag.
@@ -75,4 +76,35 @@ export function useCoreBusy(): boolean {
   const [busy, setBusy] = useState(depth > 0);
   useEffect(() => subscribeCoreBusy(setBusy), []);
   return busy;
+}
+
+/**
+ * Wait for a queued core restart (rule_apply worker) to complete.
+ * The worker is debounced and restarts asynchronously after the triggering
+ * invoke resolves, so callers subscribe here first and wait for the
+ * "config-apply-status" terminal event ("ready" / "error").
+ */
+export function waitForCoreRestart(
+  timeoutMs = 30000,
+): Promise<"ready" | "error" | "timeout"> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let dispose: (() => void) | undefined;
+    let timer = 0;
+    const finish = (result: "ready" | "error" | "timeout") => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      dispose?.();
+      resolve(result);
+    };
+    void listen<{ status: string }>("config-apply-status", (event) => {
+      if (event.payload.status === "ready") finish("ready");
+      else if (event.payload.status === "error") finish("error");
+    }).then((d) => {
+      if (settled) d();
+      else dispose = d;
+    });
+    timer = window.setTimeout(() => finish("timeout"), timeoutMs);
+  });
 }

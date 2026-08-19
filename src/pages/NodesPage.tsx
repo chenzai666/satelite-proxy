@@ -13,9 +13,10 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
+import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { filterCustomNodes, applyCustomLatency, type CustomLatencyMap } from "../customNodes";
-import type { ProxyNode, SortMode, ViewMode } from "../types";
+import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
 const LIST_ROW_HEIGHT = 49;
@@ -70,6 +71,9 @@ export function NodesPage() {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [autoSelect, setAutoSelect] = useState<AutoSelectMode>("off");
+  // Manual click in kernel-auto mode: urltest → selector rebuild restarts the core.
+  const [switching, setSwitching] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     return (localStorage.getItem("nodes.viewMode") as ViewMode) || "list";
   });
@@ -98,6 +102,7 @@ export function NodesPage() {
       const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
       setCustomRuntime(custom);
       setCurrentId(settings.current_node_id ?? null);
+      setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       const offset = append ? nodes.length : 0;
       if (custom) {
         // Custom mode: read-only nodes extracted from the sing-box config,
@@ -150,20 +155,29 @@ export function NodesPage() {
   });
 
   async function onSelect(id: string) {
+    if (busyId || switching) return;
     setBusyId(id);
     setError(null);
     try {
+      const leavingKernel = autoSelect === "kernel";
       await setCurrentNode(id);
       setCurrentId(id);
+      setAutoSelect("off");
       // Running: Clash API hot-switch — UI selection is enough feedback.
       // Stopped: write active.json so next start uses the new node.
       const status = await getProxyStatus().catch(() => null);
       if (!status?.running) {
         await generateSingboxConfig();
+      } else if (leavingKernel) {
+        // Main group rebuilds urltest → selector: hold the busy feedback
+        // until the core restart finishes.
+        setSwitching(true);
+        await waitForCoreRestart();
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      setSwitching(false);
       setBusyId(null);
     }
   }
@@ -295,6 +309,13 @@ export function NodesPage() {
       </header>
 
       {error && <div className="banner error">{error}</div>}
+
+      {switching && (
+        <div className="banner busy" role="status">
+          <span className="lat-spinner" aria-hidden />
+          {t("nodes.switchingManual")}
+        </div>
+      )}
 
       {loading ? (
         <div className="empty">{t("common.loading")}</div>

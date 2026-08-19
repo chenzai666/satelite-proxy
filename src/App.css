@@ -759,6 +759,21 @@ button {
   font-size: 0.75rem;
 }
 
+/* Restart-in-progress banner: spinner + text (kernel auto → manual click). */
+.banner.busy {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--success-muted);
+  color: var(--primary);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.75rem;
+  font-family: var(--mono);
+}
+
 .rule-diverge-banner {
   display: flex;
   align-items: center;
