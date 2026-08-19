@@ -8,6 +8,7 @@ import {
   getSubscription,
   listAllNodes,
   listSubscriptions,
+  peekProxyStatus,
   previewSingboxConfig,
   restartProxy,
   setRuntimeSource,
@@ -168,7 +169,12 @@ export function DashboardPage({
   const [lanIp, setLanIp] = useState<string | null>(null);
   const [coreVersion, setCoreVersion] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [proxy, setProxy] = useState<ProxyStatus | null>(null);
+  // Seed from the cross-mount status snapshot so re-mounting on tab switch
+  // paints the quick-control segs at their real values (still disabled until
+  // statusReady) instead of flashing the fallbacks.
+  const [proxy, setProxy] = useState<ProxyStatus | null>(() =>
+    peekProxyStatus(),
+  );
   /** false until status wave lands; details (nodes/subs) may still be loading. */
   const [statusReady, setStatusReady] = useState(false);
   const [detailsReady, setDetailsReady] = useState(false);

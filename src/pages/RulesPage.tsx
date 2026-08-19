@@ -18,6 +18,7 @@ import {
   listAllNodes,
   listRemoteRuleItems,
   listRuleSets,
+  peekSettings,
   removeRule,
   refreshRemoteRuleSet,
   updateRuleSet,
@@ -88,7 +89,12 @@ export function RulesPage({ embedded = false }: Props) {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [routeFinal, setRouteFinal] = useState<RouteFinal>("proxy");
+  // Seed from the cross-mount settings snapshot so re-mounting on tab switch
+  // paints the persisted final directly instead of flashing the default.
+  const [routeFinal, setRouteFinal] = useState<RouteFinal>(() => {
+    const saved = peekSettings()?.route_final?.toLowerCase();
+    return saved === "direct" || saved === "block" ? saved : "proxy";
+  });
   const [finalBusy, setFinalBusy] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);

@@ -3,6 +3,7 @@ import {
   getProxyStatus,
   getSettings,
   listAllNodes,
+  peekProxyStatus,
   setOutboundMode,
   smartSwitchNow,
   startProxy,
@@ -55,7 +56,11 @@ interface Props {
 
 export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
   const { t } = useI18n();
-  const [proxy, setProxy] = useState<ProxyStatus | null>(null);
+  // Seed from the cross-mount status snapshot (see api.ts) so switching
+  // between simple tabs paints the real state instead of flashing defaults.
+  const [proxy, setProxy] = useState<ProxyStatus | null>(() =>
+    peekProxyStatus(),
+  );
   const [node, setNode] = useState<ProxyNode | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
   const [nodeReady, setNodeReady] = useState(false);
