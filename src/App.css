@@ -91,8 +91,13 @@
   color-scheme: light;
   --bg: #eef0f4;
   --bg-deep: #e4e7ed;
-  --surface: rgba(255, 255, 255, 0.78);
-  --surface-2: rgba(255, 255, 255, 0.92);
+  /* Cards lean on their backdrop-filter frost: the page bg is near-white,
+     so the alpha has to drop well below 50% before translucency reads at
+     all (78%→60% was imperceptible). Menus/modals stay on --panel-*.
+     Lower further (0.3) for more bleed-through, raise toward 0.6 to dial
+     back. */
+  --surface: rgba(255, 255, 255, 0.42);
+  --surface-2: rgba(255, 255, 255, 0.65);
   --text: rgba(18, 22, 28, 0.92);
   /* Gray text lifted for readability on the light surfaces: muted sat at
      ~4.0:1 contrast (below the 4.5:1 AA bar for body text), faint/placeholder
