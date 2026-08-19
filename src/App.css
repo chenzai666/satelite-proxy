@@ -2077,7 +2077,7 @@ button.node-card:disabled,
   border-radius: 8px;
   padding: 0.55rem 0.65rem;
   font-weight: 500;
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
   transition: border-color 0.12s, background 0.12s, opacity 0.12s;
 }
@@ -2091,15 +2091,68 @@ button.node-card:disabled,
   background: var(--primary-muted);
 }
 
-.ruleset-item.dragging {
-  opacity: 0.65;
-  border-color: var(--primary);
-  background: var(--primary-muted);
-  box-shadow: var(--shadow-elevated);
+/* --- Ruleset drag-sort (pointer-based; see useRulesetDragSort) --- */
+
+body.ruleset-dragging,
+body.ruleset-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
-.ruleset-item.drag-targetable {
-  border-style: dashed;
+body.ruleset-dragging .ruleset-item:not(.selected):hover {
+  background: transparent;
+}
+
+.ruleset-drop-gap {
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1.5px dashed var(--primary-border);
+  background: var(--primary-muted);
+  animation: ruleset-gap-in 0.12s ease-out;
+}
+
+@keyframes ruleset-gap-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Floating "picked up" card: pixel-aligned clone of the source card. The
+ * host's translate property is driven per-frame by JS, so the lift transform
+ * below can keep its own transition without fighting the follow movement. */
+.ruleset-drag-host {
+  will-change: translate;
+}
+
+.ruleset-drag-preview {
+  z-index: 1000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16), 0 18px 48px rgba(0, 0, 0, 0.3);
+  opacity: 0.98;
+  transform: scale(1) rotate(0deg);
+  transition:
+    transform 0.15s ease-out,
+    box-shadow 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+
+.ruleset-drag-preview.lifted {
+  border-color: var(--primary-border);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2), 0 26px 64px rgba(0, 0, 0, 0.38);
+  transform: scale(1.03) rotate(0.5deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ruleset-drop-gap {
+    animation: none;
+  }
+  .ruleset-drag-preview {
+    transition: none;
+  }
 }
 
 .ruleset-item-top {
@@ -2127,11 +2180,6 @@ button.node-card:disabled,
 .ruleset-drag:hover {
   color: var(--muted);
   background: var(--border-subtle);
-}
-
-.ruleset-item.dragging .ruleset-drag {
-  cursor: grabbing;
-  color: var(--primary);
 }
 
 .ruleset-prio {
