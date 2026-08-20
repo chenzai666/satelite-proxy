@@ -304,8 +304,18 @@ pub async fn list_remote_rule_items(
     };
     let page = tauri::async_runtime::spawn_blocking(move || {
         let bytes = if format == "binary" {
-            let core = core.ok_or_else(|| "无法查看 SRS：sing-box 内核不可用".to_string())?;
-            crate::remote_rule_auto::decompile_srs(&core, &path)?
+            let raw = std::fs::read(&path).map_err(|error| error.to_string())?;
+            let scan = crate::srs::parse(&raw).map_err(|error| format!("SRS 解析失败: {error}"))?;
+            if scan.has_adguard {
+                // AdGuard rule-sets cannot be decompiled by sing-box; serve
+                // the rules rebuilt from the binary structure instead.
+                let parsed = crate::srs::parse_with_rules(&raw)
+                    .map_err(|error| format!("SRS 解析失败: {error}"))?;
+                serde_json::to_vec(&parsed.display_source()).map_err(|error| error.to_string())?
+            } else {
+                let core = core.ok_or_else(|| "无法查看 SRS：sing-box 内核不可用".to_string())?;
+                crate::remote_rule_auto::decompile_srs(&core, &path)?
+            }
         } else {
             std::fs::read(&path).map_err(|error| error.to_string())?
         };

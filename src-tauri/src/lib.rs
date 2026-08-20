@@ -14,6 +14,7 @@ mod rule_apply;
 mod runtime;
 mod services;
 mod smart_switch;
+mod srs;
 mod state;
 mod storage;
 mod subscription;

@@ -288,9 +288,17 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
         Ok(bytes) => bytes,
         Err(error) => return fail(app, id, error),
     };
-    let (format, source_rule_count) = match validate_source(&bytes) {
-        Ok(count) => (RuleSetFileFormat::Source, Some(count)),
-        Err(_) if bytes.starts_with(b"SRS") => (RuleSetFileFormat::Binary, None),
+    let (format, source_rule_count, binary_scan) = match validate_source(&bytes) {
+        Ok(count) => (RuleSetFileFormat::Source, Some(count), None),
+        Err(_) if bytes.starts_with(b"SRS") => {
+            // Structural parse validates the binary container without the
+            // core, and is the only validation possible for AdGuard
+            // rule-sets, which `sing-box rule-set decompile` refuses.
+            match crate::srs::parse(&bytes) {
+                Ok(parsed) => (RuleSetFileFormat::Binary, None, Some(parsed)),
+                Err(error) => return fail(app, id, format!("SRS 校验失败: {error}")),
+            }
+        }
         Err(error) => return fail(app, id, error),
     };
 
@@ -325,26 +333,38 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
     let rule_count = match source_rule_count {
         Some(count) => count,
         None => {
-            let resource_dir = app.path().resource_dir().ok();
-            let (core, _) =
-                crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref());
-            let Some(core) = core else {
-                let _ = std::fs::remove_file(&path);
-                return fail(app, id, "无法校验 SRS：sing-box 内核不可用".into());
-            };
-            let input = path.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                let source = decompile_srs(&core, &input)?;
-                validate_source(&source)
-            })
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|result| result);
-            match result {
-                Ok(count) => count,
-                Err(error) => {
-                    let _ = std::fs::remove_file(&path);
-                    return fail(app, id, error);
+            let parsed = binary_scan.expect("binary sets are scanned before writing");
+            if parsed.has_adguard {
+                // AdGuard rule-sets cannot be decompiled by sing-box; the
+                // structural scan above already validated the file.
+                parsed.display_count
+            } else {
+                let resource_dir = app.path().resource_dir().ok();
+                let (core, _) =
+                    crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref());
+                match core {
+                    // Regular binary rule-set: decompile with the core for
+                    // an against-the-core check and an exact JSON count.
+                    Some(core) => {
+                        let input = path.clone();
+                        let result = tauri::async_runtime::spawn_blocking(move || {
+                            let source = decompile_srs(&core, &input)?;
+                            validate_source(&source)
+                        })
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result);
+                        match result {
+                            Ok(count) => count,
+                            Err(error) => {
+                                let _ = std::fs::remove_file(&path);
+                                return fail(app, id, error);
+                            }
+                        }
+                    }
+                    // No core available to decompile with: the structural
+                    // scan already verified the file, accept it as-is.
+                    None => parsed.display_count,
                 }
             }
         }
