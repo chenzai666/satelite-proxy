@@ -1,27 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   getProxyStatus,
   getSettings,
   listAllNodes,
+  listSubscriptions,
   peekProxyStatus,
-  setOutboundMode,
-  smartSwitchNow,
   startProxy,
   stopProxy,
   testNodesLatency,
-  updateSettings,
 } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
 import { HeroVisual } from "../../components/HeroVisual";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
-import { SimpleTrafficSpark } from "./SimpleTrafficSpark";
 import type {
-  AutoSelectMode,
-  OutboundMode,
   ProxyNode,
   ProxyStatus,
+  SubscriptionView,
 } from "../../types";
 
 function fmtSpeed(bps: number) {
@@ -42,13 +38,6 @@ function fmtLatency(ms?: number | null) {
   return `${ms} ms`;
 }
 
-function latencyClass(ms?: number | null) {
-  if (ms == null || ms < 0) return "lat-none";
-  if (ms < 200) return "lat-good";
-  if (ms < 300) return "lat-ok";
-  return "lat-slow";
-}
-
 interface Props {
   onGoServers?: () => void;
   onGoTraffic?: () => void;
@@ -63,16 +52,12 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
   );
   const [node, setNode] = useState<ProxyNode | null>(null);
   const [nodeCount, setNodeCount] = useState(0);
+  const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodeReady, setNodeReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [smartProbing, setSmartProbing] = useState(false);
-  const smartGenRef = useRef(0);
   const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000));
-  const [spark, setSpark] = useState<
-    { up: number; down: number; conns: number }[]
-  >([]);
 
   const reloadStatus = useCallback(async () => {
     try {
@@ -85,13 +70,15 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   const reloadNode = useCallback(async () => {
     try {
-      const [settings, nodes] = await Promise.all([
+      const [settings, nodes, subList] = await Promise.all([
         getSettings().catch(() => null),
         listAllNodes().catch(() => [] as ProxyNode[]),
+        listSubscriptions().catch(() => [] as SubscriptionView[]),
       ]);
       const id = settings?.current_node_id;
       setNode(id ? (nodes.find((n) => n.id === id) ?? null) : nodes[0] ?? null);
       setNodeCount(nodes.length);
+      setSubs(subList);
       setNodeReady(true);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
@@ -177,15 +164,6 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
         : "STOPPED";
   const dotClass = running ? "on" : connecting ? "busy" : "off";
 
-  function resolveAutoSelect(): AutoSelectMode {
-    const raw =
-      proxy?.auto_select ?? (proxy?.smart_switch ? "smart" : "off");
-    if (raw === "smart" || raw === "kernel") return raw;
-    return "off";
-  }
-
-  const autoSelectMode = resolveAutoSelect();
-  const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
   const customRuntime = proxy?.runtime_source === "singbox";
 
   async function onToggle() {
@@ -210,81 +188,13 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
     }
   }
 
-  async function onSetAutoSelect(mode: AutoSelectMode) {
-    const prev = autoSelectMode;
-    if (mode === prev) return;
-    setError(null);
-    if (mode !== "smart") {
-      smartGenRef.current += 1;
-      setSmartProbing(false);
-    }
-    setProxy((p) =>
-      p ? { ...p, auto_select: mode, smart_switch: mode === "smart" } : p,
-    );
-    const gen = ++smartGenRef.current;
-    if (mode === "smart") setSmartProbing(true);
-    try {
-      await updateSettings({ autoSelect: mode });
-      if (gen !== smartGenRef.current) return;
-      if (mode === "smart") {
-        try {
-          const r = await smartSwitchNow();
-          if (gen !== smartGenRef.current) return;
-          if (r.message === "core not running") {
-            setError(t("dashboard.smartSwitchNeedCore"));
-          } else if (
-            r.message === "all probes failed" ||
-            r.message === "clash api unavailable"
-          ) {
-            setError(t("dashboard.smartSwitchProbeFail"));
-          } else if (r.message === "no nodes") {
-            setError(t("dashboard.smartSwitchNoNodes"));
-          }
-        } catch (probeErr) {
-          if (gen !== smartGenRef.current) return;
-          setError(
-            typeof probeErr === "string" ? probeErr : String(probeErr),
-          );
-        }
-      }
-      if (gen !== smartGenRef.current) return;
-      await reload();
-    } catch (e) {
-      if (gen === smartGenRef.current) {
-        setError(typeof e === "string" ? e : String(e));
-        setProxy((p) =>
-          p
-            ? { ...p, auto_select: prev, smart_switch: prev === "smart" }
-            : p,
-        );
-      }
-    } finally {
-      if (gen === smartGenRef.current) setSmartProbing(false);
-    }
-  }
-
-  async function onSetMode(mode: OutboundMode) {
-    setBusy(true);
-    setError(null);
-    try {
-      setProxy(await setOutboundMode(mode));
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const up = proxy?.upload_speed ?? 0;
   const down = proxy?.download_speed ?? 0;
   const conns = proxy?.connections ?? 0;
 
-  useEffect(() => {
-    setSpark((prev) => {
-      const next = [...prev, { up, down, conns }];
-      return next.length > 60 ? next.slice(next.length - 60) : next;
-    });
-  }, [nowSec, up, down, conns]);
+  const enabledSubs = subs.filter((s) => s.enabled);
+  const enabledNodeCount = enabledSubs.reduce((sum, s) => sum + s.node_count, 0);
+
   const startedAt = proxy?.core_started_at ?? null;
   const uptimeLabel =
     running && startedAt != null && startedAt > 0
@@ -359,187 +269,100 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
             )}
           </p>
         </div>
-      </section>
-
-      <div className="simple-instruments">
-        <button
-          type="button"
-          className="instrument accent-cyan instrument-click simple-instrument"
-          onClick={() => onGoServers?.()}
-        >
-          <header className="instrument-head">
-            <span className="instrument-label">{t("dashboard.node")}</span>
-            <span className="instrument-tag">
-              {!nodeReady
-                ? "…"
-                : (node?.protocol?.toUpperCase() ?? "—")}
-            </span>
-          </header>
-          <div className="instrument-value sm">
-            {!nodeReady ? (
-              <span className="skel skel-inline skel-w-50" aria-hidden />
-            ) : (
-              (node?.name ?? t("simple.pickNode"))
-            )}
-          </div>
-          <div className="instrument-kv mono">
-            <div>
-              <span className="kv-k">{t("dashboard.latency")}</span>
+        {/* Contextual info centered under the icon: running → live traffic;
+            stopped → enabled profile + capture mode. */}
+        {running ? (
+          <button
+            type="button"
+            className="simple-hero-traffic mono"
+            onClick={() => onGoTraffic?.()}
+            aria-label={t("dashboard.cardTraffic")}
+          >
+            <div className="sht-speeds">
+              <span>
+                <span className="tr-dir down">↓</span>
+                {fmtSpeed(down)}
+              </span>
+              <span>
+                <span className="tr-dir up">↑</span>
+                {fmtSpeed(up)}
+              </span>
+            </div>
+            <div className="sht-meta">
+              Σ {fmtBytes((proxy?.upload_total ?? 0) + (proxy?.download_total ?? 0))}
+              {" · "}
+              {t("simple.sparkConns", { n: conns })}
+            </div>
+          </button>
+        ) : (
+          <div className="simple-hero-stopped">
+            <button
+              type="button"
+              className="simple-hero-subs"
+              onClick={() => onGoServers?.()}
+            >
+              {!nodeReady ? (
+                <span className="skel skel-inline skel-w-50" aria-hidden />
+              ) : customRuntime ? (
+                (proxy?.runtime_profile_name || t("config.singbox"))
+              ) : enabledSubs.length > 0 ? (
+                <>
+                  {enabledSubs.map((s) => s.name).join(" · ")}
+                  <span className="shs-count">
+                    {t("simple.subNodes", { n: enabledNodeCount })}
+                  </span>
+                </>
+              ) : (
+                t("simple.pickSub")
+              )}
+            </button>
+            <div className="simple-hero-capture">
               <span
-                className={`kv-v lat ${testing ? "lat-none" : latencyClass(node?.latency_ms)}`}
+                className={`dash-inline-label${captureBusy ? " dash-smart-probing" : ""}`}
               >
-                {testing ? "…" : fmtLatency(node?.latency_ms)}
+                {captureBusy ? (
+                  <>
+                    <span className="lat-spinner dash-smart-spinner" aria-hidden />
+                    <span>{t("dashboard.captureSwitching")}</span>
+                  </>
+                ) : (
+                  t("dashboard.capture")
+                )}
               </span>
+              <GlassSeg
+                value={captureMode}
+                ready={!!proxy}
+                ariaLabel={t("dashboard.capture")}
+                disabled={!proxy}
+                disabledValues={
+                  new Set(
+                    [
+                      customRuntime || (nodeCount === 0 && captureMode !== "tun")
+                        ? "tun"
+                        : null,
+                      customRuntime && !proxy?.custom_inbound_port ? "system" : null,
+                    ].filter((v): v is string => v != null),
+                  )
+                }
+                titles={{
+                  tun: t("dashboard.captureTunHint"),
+                  system: t("dashboard.captureSystemHint"),
+                  off: t("dashboard.captureDesc"),
+                }}
+                onChange={(v) => {
+                  setError(null);
+                  requestCaptureMode(v as "off" | "system" | "tun");
+                }}
+                options={[
+                  { value: "off", label: t("dashboard.captureOff") },
+                  { value: "system", label: t("dashboard.captureSystem") },
+                  { value: "tun", label: t("dashboard.captureTun") },
+                ]}
+              />
             </div>
           </div>
-        </button>
-        <button
-          type="button"
-          className="instrument accent-blue instrument-click simple-instrument"
-          onClick={() => onGoTraffic?.()}
-        >
-          <header className="instrument-head">
-            <span className="instrument-label">{t("dashboard.cardTraffic")}</span>
-            <span className="instrument-tag">NET</span>
-          </header>
-          <div className="instrument-traffic">
-            <div>
-              <span className="tr-dir down">↓</span> {fmtSpeed(down)}
-            </div>
-            <div>
-              <span className="tr-dir up">↑</span> {fmtSpeed(up)}
-            </div>
-          </div>
-          <div className="instrument-kv mono">
-            <div>
-              <span className="kv-k">Σ</span>
-              <span className="kv-v">
-                {fmtBytes((proxy?.upload_total ?? 0) + (proxy?.download_total ?? 0))}
-              </span>
-            </div>
-          </div>
-        </button>
-      </div>
-
-      <aside className="simple-rail" aria-label={t("dashboard.quickControls")}>
-        <div className="dash-rail-title mono">{t("dashboard.quickControls")}</div>
-        <div className="dash-inline-row">
-          <span className="dash-inline-label">{t("dashboard.routing")}</span>
-          <GlassSeg
-            value={outboundMode}
-            ready={!!proxy}
-            ariaLabel={t("dashboard.routing")}
-            disabled={busy || !proxy || customRuntime}
-            onChange={(v) => void onSetMode(v as OutboundMode)}
-            options={[
-              { value: "rule", label: t("dashboard.modeRule") },
-              { value: "global", label: t("dashboard.modeGlobal") },
-              { value: "direct", label: t("dashboard.modeDirect") },
-            ]}
-          />
-        </div>
-        <div className="dash-inline-row">
-          <span
-            className={`dash-inline-label${smartProbing ? " dash-smart-probing" : ""}`}
-          >
-            {smartProbing ? (
-              <>
-                <span className="lat-spinner dash-smart-spinner" aria-hidden />
-                <span>{t("dashboard.smartSwitchProbing")}</span>
-              </>
-            ) : (
-              t("dashboard.autoSelect")
-            )}
-          </span>
-          <GlassSeg
-            value={autoSelectMode}
-            ready={!!proxy}
-            ariaLabel={t("dashboard.autoSelect")}
-            disabled={busy || !proxy || customRuntime}
-            disabledValues={
-              new Set(
-                [
-                  smartProbing ? "smart" : null,
-                  nodeCount === 0 && autoSelectMode === "off" && !smartProbing
-                    ? "kernel"
-                    : null,
-                  nodeCount === 0 && autoSelectMode === "off" && !smartProbing
-                    ? "smart"
-                    : null,
-                ].filter((v): v is string => v != null),
-              )
-            }
-            titles={{
-              kernel: t("dashboard.autoSelectKernelHint"),
-              smart: t("dashboard.smartSwitchDesc"),
-              off: t("dashboard.autoSelectDesc"),
-            }}
-            onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}
-            options={[
-              { value: "off", label: t("dashboard.autoSelectOff") },
-              { value: "kernel", label: t("dashboard.autoSelectKernel") },
-              { value: "smart", label: t("dashboard.autoSelectSmart") },
-            ]}
-          />
-        </div>
-        <div className="dash-inline-row">
-          <span
-            className={`dash-inline-label${captureBusy ? " dash-smart-probing" : ""}`}
-          >
-            {captureBusy ? (
-              <>
-                <span className="lat-spinner dash-smart-spinner" aria-hidden />
-                <span>{t("dashboard.captureSwitching")}</span>
-              </>
-            ) : (
-              t("dashboard.capture")
-            )}
-          </span>
-          <GlassSeg
-            value={captureMode}
-            ready={!!proxy}
-            ariaLabel={t("dashboard.capture")}
-            disabled={!proxy}
-            disabledValues={
-              new Set(
-                [
-                  customRuntime || (nodeCount === 0 && captureMode !== "tun")
-                    ? "tun"
-                    : null,
-                  customRuntime && !proxy?.custom_inbound_port ? "system" : null,
-                ].filter((v): v is string => v != null),
-              )
-            }
-            titles={{
-              tun: t("dashboard.captureTunHint"),
-              system: t("dashboard.captureSystemHint"),
-              off: t("dashboard.captureDesc"),
-            }}
-            onChange={(v) => {
-              setError(null);
-              requestCaptureMode(v as "off" | "system" | "tun");
-            }}
-            options={[
-              { value: "off", label: t("dashboard.captureOff") },
-              { value: "system", label: t("dashboard.captureSystem") },
-              { value: "tun", label: t("dashboard.captureTun") },
-            ]}
-          />
-        </div>
-      </aside>
-
-      <SimpleTrafficSpark
-        samples={spark}
-        up={up}
-        down={down}
-        conns={conns}
-        running={running}
-        label={t("simple.spark")}
-        idleLabel={t("simple.sparkIdle")}
-        idleConnsLabel={t("simple.sparkIdleConns")}
-        connsLabel={t("simple.sparkConns", { n: conns })}
-        onOpen={onGoTraffic}
-      />
+        )}
+      </section>
     </div>
   );
 }
