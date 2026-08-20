@@ -35,7 +35,7 @@ const RULE_FAILURE_RETRY_BASE: Duration = Duration::from_secs(60);
 
 // —— Active probe ——
 const PROBE_TIMEOUT_MS: u64 = 2500;
-const TOP_K: usize = 4;
+const TOP_K: usize = 6;
 const CANDIDATE_CONCURRENCY: usize = 3;
 const BOOTSTRAP_BATCH: usize = 8;
 const BOOTSTRAP_MAX: usize = 24;
@@ -48,9 +48,9 @@ const TOLERANCE_MS: u32 = 50;
 const MIN_IMPROVEMENT_RATIO: f64 = 0.25;
 
 // —— Passive (connection journal) ——
-const PASSIVE_LOOKBACK_MS: i64 = 30_000;
-const PASSIVE_MIN_SAMPLES: u32 = 8;
-const PASSIVE_FAIL_RATE: f64 = 0.25;
+const PASSIVE_LOOKBACK_MS: i64 = 20_000;
+const PASSIVE_MIN_SAMPLES: u32 = 5;
+const PASSIVE_FAIL_RATE: f64 = 0.15;
 const CONSECUTIVE_PROBE_FAILS: u32 = 2;
 
 // —— Score weights (lower is better) ——
@@ -240,11 +240,22 @@ fn score_node(latency_ms: Option<u32>, fail_rate: f64, ejected: bool) -> f64 {
 }
 
 fn sort_candidates_by_score(nodes: &mut [ProxyNode], ejected: &[String]) {
+    sort_candidates_by_score_with_fail_rate(nodes, ejected, |_| 0.0);
+}
+
+/// Same ranking, but `fail_rate_of` supplies each node's recent passive fail
+/// rate (e.g. from the connection journal) so chronically-flaky nodes sort
+/// behind merely-slower ones even before an active probe confirms it.
+fn sort_candidates_by_score_with_fail_rate(
+    nodes: &mut [ProxyNode],
+    ejected: &[String],
+    mut fail_rate_of: impl FnMut(&ProxyNode) -> f64,
+) {
     nodes.sort_by(|a, b| {
         let ea = ejected.iter().any(|e| e == &a.id);
         let eb = ejected.iter().any(|e| e == &b.id);
-        let sa = score_node(a.latency_ms, 0.0, ea);
-        let sb = score_node(b.latency_ms, 0.0, eb);
+        let sa = score_node(a.latency_ms, fail_rate_of(a), ea);
+        let sb = score_node(b.latency_ms, fail_rate_of(b), eb);
         sa.partial_cmp(&sb)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.name.cmp(&b.name))
@@ -740,7 +751,23 @@ async fn tick(state: &AppState) -> Result<(), String> {
         .filter(|n| !ejected.iter().any(|e| e == &n.id))
         .cloned()
         .collect();
-    sort_candidates_by_score(&mut candidates, &ejected);
+    // Weight ranking by each candidate's own recent passive fail rate so a
+    // chronically-flaky node doesn't out-rank a merely-slower one just
+    // because its last active probe happened to land low.
+    let fail_rates: HashMap<String, f64> = {
+        let rt = state.lock_runtime();
+        candidates
+            .iter()
+            .map(|n| {
+                let tag = outbound_tag(n);
+                let stats = rt.passive_node_stats(&tag, PASSIVE_LOOKBACK_MS);
+                (n.id.clone(), stats.fail_rate())
+            })
+            .collect()
+    };
+    sort_candidates_by_score_with_fail_rate(&mut candidates, &ejected, |n| {
+        fail_rates.get(&n.id).copied().unwrap_or(0.0)
+    });
     candidates.truncate(TOP_K);
 
     if candidates.is_empty() {
@@ -781,12 +808,15 @@ async fn tick(state: &AppState) -> Result<(), String> {
         Ok(())
     });
 
-    // Rank by live score (latency only post-probe; fail_rate 0 for successful probes).
+    // Rank by live score: fresh probe latency weighted by each node's
+    // recent passive fail rate (chronic flakiness still counts even when
+    // this probe happened to succeed).
     let mut ranked: Vec<(String, u32, f64)> = cand_results
         .into_iter()
         .filter_map(|r| {
             let ms = r.latency_ms?;
-            let sc = score_node(Some(ms), 0.0, false);
+            let fail_rate = fail_rates.get(&r.id).copied().unwrap_or(0.0);
+            let sc = score_node(Some(ms), fail_rate, false);
             Some((r.id, ms, sc))
         })
         .collect();
