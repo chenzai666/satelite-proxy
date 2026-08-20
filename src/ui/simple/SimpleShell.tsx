@@ -1,6 +1,7 @@
 import {
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -45,14 +46,16 @@ function SimplePageFallback() {
 }
 
 export function SimpleShell() {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [nav, setNav] = useState<SimpleNavKey>("connect");
   const { token, prefill } = useImportIntent();
   const itemRefs = useRef<Record<string, HTMLButtonElement>>({});
+  const navItemsRef = useRef<HTMLElement>(null);
   const [indicatorStyle, setIndicatorStyle] = useState<CSSProperties>({
     opacity: 0,
   });
-  useLayoutEffect(() => {
+
+  const measureIndicator = useCallback(() => {
     const el = itemRefs.current[nav];
     if (!el) return;
     setIndicatorStyle({
@@ -60,7 +63,23 @@ export function SimpleShell() {
       transform: `translateX(${el.offsetLeft}px)`,
       width: `${el.offsetWidth}px`,
     });
-  }, [nav, locale]);
+  }, [nav]);
+
+  useLayoutEffect(() => {
+    measureIndicator();
+  }, [measureIndicator]);
+
+  // Startup race: the page can render before the window settles at the
+  // simple-mode width; tabs are flex-1, so the first measurement may be stale
+  // and leave an oversized indicator covering the tabs. Re-measure whenever
+  // the nav container is resized.
+  useEffect(() => {
+    const container = navItemsRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureIndicator());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measureIndicator]);
 
   // One-click subscribe → open 节点 page (add subscription modal).
   useEffect(() => {
@@ -83,7 +102,10 @@ export function SimpleShell() {
             </span>
           </div>
           <div className="topnav-divider" aria-hidden />
-          <nav className="topnav-items simple-topnav-items">
+          <nav
+            className="topnav-items simple-topnav-items"
+            ref={navItemsRef}
+          >
             <span
               className="topnav-indicator"
               aria-hidden="true"

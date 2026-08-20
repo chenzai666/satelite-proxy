@@ -85,7 +85,6 @@ export function SimpleServersPage() {
   const [runtimeSource, setRuntimeSource] = useState("generated");
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
-  const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -114,11 +113,11 @@ export function SimpleServersPage() {
         // Custom mode: read-only nodes extracted from the sing-box config,
         // overlaid with this session's latency results.
         const all = applyCustomLatency(await listCustomConfigNodes(), customLatency);
-        const filtered = filterCustomNodes(all, query, sortMode, offset, PAGE_SIZE);
+        const filtered = filterCustomNodes(all, "", sortMode, offset, PAGE_SIZE);
         setNodes((prev) => (append ? [...prev, ...filtered.nodes] : filtered.nodes));
         setNodeTotal(filtered.total);
       } else {
-        const page = await listNodesPage(query, sortMode, offset, PAGE_SIZE);
+        const page = await listNodesPage("", sortMode, offset, PAGE_SIZE);
         setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
         setNodeTotal(page.total);
       }
@@ -127,14 +126,14 @@ export function SimpleServersPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nodes.length, query, sortMode, customLatency]);
+  }, [nodes.length, sortMode, customLatency]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void reload(false), 150);
     return () => window.clearTimeout(timer);
     // nodes.length changes when appending and must not reset pagination.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, sortMode]);
+  }, [sortMode]);
 
   // One-click subscribe deep link → open add modal prefilled.
   useEffect(() => {
@@ -199,7 +198,7 @@ export function SimpleServersPage() {
     if (testing || nodeTotal === 0) return;
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
     // loaded list because they are not in the node store.
-    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds();
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -308,14 +307,7 @@ export function SimpleServersPage() {
           <p className="page-desc">
             {t("nodes.desc")}
             {" · "}
-            <span className="mono">
-              {query.trim()
-                ? t("nodes.countFiltered", {
-                    shown: filtered.length,
-                    total: nodeTotal,
-                  })
-                : t("nodes.count", { n: nodeTotal })}
-            </span>
+            <span className="mono">{t("nodes.count", { n: nodeTotal })}</span>
           </p>
         </div>
         <div className="header-actions simple-head-actions">
@@ -328,27 +320,8 @@ export function SimpleServersPage() {
           >
             {testing ? t("nodes.testing") : t("nodes.testLatency")}
           </GlassButton>
-          <GlassButton
-            onClick={() => {
-              setModalError(null);
-              setModalInitial(null);
-              setModalOpen(true);
-            }}
-          >
-            {t("config.add")}
-          </GlassButton>
         </div>
       </header>
-
-      <input
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        className="search simple-search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={t("nodes.search")}
-      />
 
       {error && <div className="banner error">{error}</div>}
 
