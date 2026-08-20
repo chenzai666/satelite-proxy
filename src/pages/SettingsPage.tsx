@@ -504,6 +504,10 @@ export function SettingsPage() {
             : visibleTab === "ports"
               ? " settings-ports-page"
               : ""
+        }${
+          visibleTab === "rules" || visibleTab === "dns"
+            ? " settings-scroll-embed"
+            : ""
         }`}
         key={visibleTab}
       >

@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import {
   GlassSwitchControl,
   GlassSwitchTrack,
+  useGlassSwitchThumb,
   type GlassSwitchSize,
-  useGlassSwitchAnimation,
 } from "./GlassSwitchControl";
 
 interface Props {
@@ -48,7 +48,7 @@ export function GlassSwitch({
   size = "md",
   ready = true,
 }: Props) {
-  const canAnimate = useGlassSwitchAnimation(ready);
+  const { animate, markUserChange } = useGlassSwitchThumb(checked, ready);
 
   if (capsule) {
     return (
@@ -57,14 +57,17 @@ export function GlassSwitch({
         role="switch"
         aria-checked={checked}
         className={`glass-btn glass-switch-capsule${checked ? " on" : ""}${
-          canAnimate ? "" : " no-anim"
+          animate ? "" : " no-anim"
         }`}
         title={title}
         disabled={disabled}
-        onClick={() => onChange(!checked)}
+        onClick={() => {
+          markUserChange();
+          onChange(!checked);
+        }}
       >
         {label != null && <span className="glass-switch-label">{label}</span>}
-        <GlassSwitchTrack checked={checked} size={size} animate={canAnimate} />
+        <GlassSwitchTrack checked={checked} size={size} animate={animate} />
       </button>
     );
   }

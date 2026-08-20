@@ -10,6 +10,7 @@ import {
   getSubscription,
   listSubscriptions,
   listSubscriptionUrls,
+  peekSettings,
   refreshSubscription,
   removeSubscription,
   setMixMode,
@@ -263,7 +264,11 @@ export function ConfigPage() {
   const [items, setItems] = useState<SubscriptionView[]>([]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
-  const [mixMode, setMixModeState] = useState(false);
+  // Seed from the cross-mount settings snapshot (see api.ts) so the header
+  // mix switch paints its persisted position on re-mount without sliding.
+  const [mixMode, setMixModeState] = useState(
+    () => peekSettings()?.mix_mode ?? false,
+  );
   const [runtimeSource, setRuntimeSource] = useState("generated");
 
   const [modalOpen, setModalOpen] = useState(false);

@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useState,
   type MouseEventHandler,
 } from "react";
@@ -47,6 +48,36 @@ export function useGlassSwitchAnimation(ready: boolean) {
   return canAnimate;
 }
 
+/**
+ * Thumb animation gate shared by GlassSwitchControl and GlassSwitch's capsule
+ * variant. Mirrors GlassSeg: the thumb only slides for user-driven changes —
+ * a persisted value landing after mount (or a poll refresh) paints its
+ * position directly instead of sliding in from the default.
+ */
+export function useGlassSwitchThumb(checked: boolean, ready: boolean) {
+  const canAnimate = useGlassSwitchAnimation(ready);
+  const committedCheckedRef = useRef(checked);
+  const pendingUserCheckedRef = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    committedCheckedRef.current = checked;
+    if (pendingUserCheckedRef.current === checked) {
+      pendingUserCheckedRef.current = null;
+    }
+  }, [checked]);
+
+  const positionChanged = committedCheckedRef.current !== checked;
+  const isUserChange = pendingUserCheckedRef.current === checked;
+
+  return {
+    animate: canAnimate && (!positionChanged || isUserChange),
+    /** Call right before onChange from a user click. */
+    markUserChange() {
+      pendingUserCheckedRef.current = !checked;
+    },
+  };
+}
+
 /** Visual glass track, reusable inside larger composite controls. */
 export function GlassSwitchTrack({
   checked,
@@ -75,7 +106,7 @@ export function GlassSwitchControl({
   ready = true,
   onClick,
 }: Props) {
-  const canAnimate = useGlassSwitchAnimation(ready);
+  const { animate, markUserChange } = useGlassSwitchThumb(checked, ready);
 
   return (
     <button
@@ -88,10 +119,13 @@ export function GlassSwitchControl({
       disabled={disabled}
       onClick={(event) => {
         onClick?.(event);
-        if (!event.defaultPrevented) onChange(!checked);
+        if (!event.defaultPrevented) {
+          markUserChange();
+          onChange(!checked);
+        }
       }}
     >
-      <GlassSwitchTrack checked={checked} size={size} animate={canAnimate} />
+      <GlassSwitchTrack checked={checked} size={size} animate={animate} />
     </button>
   );
 }

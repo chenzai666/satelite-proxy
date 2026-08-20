@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { getDnsSettings, readSystemHosts, updateDnsSettings } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
+import { useRulesetDragSort } from "../hooks/useRulesetDragSort";
 import type { DnsRuleSet, DnsSettings, HostsEntry } from "../types";
 import { useI18n } from "../i18n";
 
@@ -150,17 +158,42 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
     }
   }
 
-  async function moveSet(direction: -1 | 1) {
-    if (!dns || !viewSet || busy) return;
-    const ids = hostSets.map((set) => set.id);
-    const index = ids.indexOf(viewSet.id);
-    const target = index + direction;
-    if (index < 0 || target < 0 || target >= ids.length) return;
-    const full = [...dns.rule_sets];
-    const left = full.findIndex((set) => set.id === ids[index]);
-    const right = full.findIndex((set) => set.id === ids[target]);
-    [full[left], full[right]] = [full[right], full[left]];
-    await save({ ...dns, rule_sets: full });
+  /** Reordered hosts sets refill the hosts slots of the full rule_sets list. */
+  function applyHostsOrder(full: DnsRuleSet[], orderedHosts: DnsRuleSet[]) {
+    let i = 0;
+    return full.map((set) =>
+      set.kind === "hosts" ? (orderedHosts[i++] ?? set) : set,
+    );
+  }
+
+  async function commitHostsOrder(orderedHosts: DnsRuleSet[]) {
+    if (!dns) return;
+    const next = {
+      ...dns,
+      rule_sets: applyHostsOrder(dns.rule_sets, orderedHosts),
+    };
+    setDns(next);
+    if (!(await save(next))) void reload();
+  }
+
+  /** Same pointer drag-sort as the rule sets sidebar (see useRulesetDragSort). */
+  const { drag, onItemPointerDown } = useRulesetDragSort<DnsRuleSet>({
+    items: hostSets,
+    onReorder: (next, startIds) => {
+      if (next.map((set) => set.id).join("\0") === startIds.join("\0")) return;
+      void commitHostsOrder(next);
+    },
+  });
+
+  /** Keyboard fallback for the drag sort (parity with the rule sets list). */
+  async function moveSetId(id: string, dir: -1 | 1) {
+    if (!dns || busy) return;
+    const index = hostSets.findIndex((set) => set.id === id);
+    const target = index + dir;
+    if (index < 0 || target < 0 || target >= hostSets.length) return;
+    const next = [...hostSets];
+    [next[index], next[target]] = [next[target], next[index]];
+    await commitHostsOrder(next);
   }
 
   function openAddEntry() {
@@ -231,6 +264,79 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
 
   if (!dns && !error) return <div className="settings-embed empty">{t("common.loading")}</div>;
 
+  // Sidebar cards with the same drag-sort shape as the rule sets list: the
+  // dragged card leaves the list (a fixed clone follows the pointer) and a
+  // highlighted gap marks the live insertion slot.
+  const setCards: ReactNode[] = [];
+  {
+    const others = drag
+      ? hostSets.filter((set) => set.id !== drag.id)
+      : hostSets;
+    for (const set of others) {
+      if (drag && setCards.length === drag.insertIndex) {
+        setCards.push(
+          <div
+            key="hosts-drop-gap"
+            className="ruleset-drop-gap"
+            style={{ height: drag.height }}
+            aria-hidden="true"
+          />,
+        );
+      }
+      setCards.push(
+        <div
+          key={set.id}
+          data-ruleset-id={set.id}
+          className={`ruleset-item${viewSet?.id === set.id ? " selected" : ""}`}
+          role="button"
+          tabIndex={0}
+          onPointerDown={(e) => onItemPointerDown(set.id, e)}
+          onClick={() => setViewSetId(set.id)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") setViewSetId(set.id);
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              void moveSetId(set.id, -1);
+            }
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              void moveSetId(set.id, 1);
+            }
+          }}
+        >
+          <div className="ruleset-item-top">
+            <span className="ruleset-drag" aria-hidden="true">⋮⋮</span>
+            <span className="ruleset-name">{set.name}</span>
+            <GlassSwitchControl
+              checked={set.enabled}
+              size="sm"
+              title={set.enabled ? t("hosts.disableSetTooltip") : t("hosts.enableSetTooltip")}
+              disabled={busy}
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+              onChange={() => toggleSet(set.id)}
+            />
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {set.read_only ? t("hosts.systemReadonlyMeta") : t("hosts.mappingCount", { n: set.hosts.length })}
+            {set.enabled ? ` · ${t("common.enabled")}` : ` · ${t("common.disabled")}`}
+          </div>
+        </div>,
+      );
+    }
+    if (drag && setCards.length === drag.insertIndex) {
+      setCards.push(
+        <div
+          key="hosts-drop-gap-end"
+          className="ruleset-drop-gap"
+          style={{ height: drag.height }}
+          aria-hidden="true"
+        />,
+      );
+    }
+  }
+
   return (
     <div className={embedded ? "settings-embed dns-page" : "page dns-page"}>
       {error && <div className="banner error">{error}</div>}
@@ -251,36 +357,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
             {t("hosts.listTitle")}
             <span className="ruleset-list-hint">{t("hosts.listHint")}</span>
           </div>
-          {hostSets.map((set) => (
-            <div
-              key={set.id}
-              className={`ruleset-item${viewSet?.id === set.id ? " selected" : ""}`}
-              role="button"
-              tabIndex={0}
-              onClick={() => setViewSetId(set.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") setViewSetId(set.id);
-              }}
-            >
-              <div className="ruleset-item-top">
-                <span className="ruleset-name">{set.name}</span>
-                <GlassSwitchControl
-                  checked={set.enabled}
-                  size="sm"
-                  title={set.enabled ? t("hosts.disableSetTooltip") : t("hosts.enableSetTooltip")}
-                  disabled={busy}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                  }}
-                  onChange={() => toggleSet(set.id)}
-                />
-              </div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {set.read_only ? t("hosts.systemReadonlyMeta") : t("hosts.mappingCount", { n: set.hosts.length })}
-                {set.enabled ? ` · ${t("common.enabled")}` : ` · ${t("common.disabled")}`}
-              </div>
-            </div>
-          ))}
+          {setCards}
         </aside>
 
         <section className="rules-main">
@@ -294,20 +371,6 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
               </div>
             </div>
             {viewSet && <div className="header-actions">
-              <button
-                type="button"
-                className="ghost small"
-                disabled={busy || hostSets[0]?.id === viewSet.id}
-                onClick={() => void moveSet(-1)}
-                title={t("dns.raisePrio")}
-              >↑</button>
-              <button
-                type="button"
-                className="ghost small"
-                disabled={busy || hostSets[hostSets.length - 1]?.id === viewSet.id}
-                onClick={() => void moveSet(1)}
-                title={t("dns.lowerPrio")}
-              >↓</button>
               {!viewSet.read_only && <GlassButton
                 variant="primary"
                 icon="+"

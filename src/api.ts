@@ -148,11 +148,11 @@ export function activateSubscription(id: string) {
 
 /** Homepage launch source: `generated` or `singbox:<id>`. Restarts if running. */
 export function setRuntimeSource(source: string) {
-  return invoke<AppSettings>("set_runtime_source", { source });
+  return keepSettings(invoke<AppSettings>("set_runtime_source", { source }));
 }
 
 export function setMixMode(mix: boolean) {
-  return invoke<AppSettings>("set_mix_mode", { mix });
+  return keepSettings(invoke<AppSettings>("set_mix_mode", { mix }));
 }
 
 export function listSubscriptionNodes(id: string) {
@@ -185,8 +185,42 @@ export function renameNode(id: string, name: string) {
   return invoke<ProxyNode>("rename_node", { id, name });
 }
 
+/**
+ * Cross-mount snapshots of the latest resolved settings / proxy status.
+ * Tab switches remount pages (key={nav} page-enter animation), so control
+ * state seeded from a default would visibly flip to the persisted value once
+ * the mount IPC lands. Pages seed their initial state from these snapshots
+ * instead and still refresh from the backend right after mount.
+ */
+let settingsSnapshot: AppSettings | null = null;
+let proxySnapshot: ProxyStatus | null = null;
+
+/** Latest resolved settings, or null before the first get/mutate resolves. */
+export function peekSettings(): AppSettings | null {
+  return settingsSnapshot;
+}
+
+/** Latest resolved proxy status, or null before the first status call. */
+export function peekProxyStatus(): ProxyStatus | null {
+  return proxySnapshot;
+}
+
+function keepSettings(p: Promise<AppSettings>): Promise<AppSettings> {
+  return p.then((settings) => {
+    settingsSnapshot = settings;
+    return settings;
+  });
+}
+
+function keepProxy(p: Promise<ProxyStatus>): Promise<ProxyStatus> {
+  return p.then((status) => {
+    proxySnapshot = status;
+    return status;
+  });
+}
+
 export function getSettings() {
-  return invoke<AppSettings>("get_settings");
+  return keepSettings(invoke<AppSettings>("get_settings"));
 }
 
 export interface SettingsUpdatePayload {
@@ -262,7 +296,10 @@ function scheduleSettingsWrite() {
       routeFinal: payload.routeFinal ?? null,
       findProcess: payload.findProcess ?? null,
     })
-      .then((settings) => waiters.forEach(({ resolve }) => resolve(settings)))
+      .then((settings) => {
+        settingsSnapshot = settings;
+        waiters.forEach(({ resolve }) => resolve(settings));
+      })
       .catch((error) => waiters.forEach(({ reject }) => reject(error)))
       .finally(() => {
         settingsWriteInFlight = false;
@@ -283,11 +320,11 @@ export function updateSettings(payload: SettingsUpdatePayload) {
 
 /** Rotate the clash_api secret (user-triggered). Restarts a running core. */
 export function regenerateApiSecret() {
-  return invoke<AppSettings>("regenerate_api_secret");
+  return keepSettings(invoke<AppSettings>("regenerate_api_secret"));
 }
 
 export function setCurrentNode(nodeId: string) {
-  return invoke<AppSettings>("set_current_node", { nodeId });
+  return keepSettings(invoke<AppSettings>("set_current_node", { nodeId }));
 }
 
 export interface SmartSwitchNowResult {
@@ -403,43 +440,51 @@ export function testCustomNodesLatency(timeoutMs?: number | null) {
 }
 
 export function getProxyStatus() {
-  return invoke<ProxyStatus>("get_proxy_status");
+  return keepProxy(invoke<ProxyStatus>("get_proxy_status"));
 }
 
 export function startProxy(enableSystemProxy = false) {
-  return trackCoreBusy(
-    invoke<ProxyStatus>("start_proxy", {
-      enableSystemProxy,
-    }),
+  return keepProxy(
+    trackCoreBusy(
+      invoke<ProxyStatus>("start_proxy", {
+        enableSystemProxy,
+      }),
+    ),
   );
 }
 
 export function stopProxy() {
-  return trackCoreBusy(invoke<ProxyStatus>("stop_proxy"));
+  return keepProxy(trackCoreBusy(invoke<ProxyStatus>("stop_proxy")));
 }
 
 export function restartProxy() {
   // Slightly longer min hold so ⋯ / Overview restart never flash-clears.
-  return trackCoreBusy(invoke<ProxyStatus>("restart_proxy"), 700);
+  return keepProxy(trackCoreBusy(invoke<ProxyStatus>("restart_proxy"), 700));
 }
 
 export function setSystemProxy(enabled: boolean) {
-  return invoke<ProxyStatus>("set_system_proxy", { enabled });
+  return keepProxy(invoke<ProxyStatus>("set_system_proxy", { enabled }));
 }
 
 /** Toggle TUN; restarts core when running so config applies. */
 export function setTunEnabled(enabled: boolean) {
-  return trackCoreBusy(invoke<ProxyStatus>("set_tun_enabled", { enabled }));
+  return keepProxy(
+    trackCoreBusy(invoke<ProxyStatus>("set_tun_enabled", { enabled })),
+  );
 }
 
 /** Traffic capture mode: off | system | tun (mutually exclusive). */
 export function setCaptureMode(mode: "off" | "system" | "tun") {
-  return trackCoreBusy(invoke<ProxyStatus>("set_capture_mode", { mode }));
+  return keepProxy(
+    trackCoreBusy(invoke<ProxyStatus>("set_capture_mode", { mode })),
+  );
 }
 
 /** rule | global | direct — restarts core when running. */
 export function setOutboundMode(mode: "rule" | "global" | "direct") {
-  return trackCoreBusy(invoke<ProxyStatus>("set_outbound_mode", { mode }));
+  return keepProxy(
+    trackCoreBusy(invoke<ProxyStatus>("set_outbound_mode", { mode })),
+  );
 }
 
 export function getDnsSettings() {

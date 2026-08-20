@@ -5,8 +5,9 @@ import {
   useRef,
   useState,
   type FormEvent,
-  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from "react";
+import { useRulesetDragSort } from "../hooks/useRulesetDragSort";
 import { listen } from "@tauri-apps/api/event";
 import {
   createRuleSet,
@@ -17,6 +18,7 @@ import {
   listAllNodes,
   listRemoteRuleItems,
   listRuleSets,
+  peekSettings,
   removeRule,
   refreshRemoteRuleSet,
   updateRuleSet,
@@ -87,7 +89,12 @@ export function RulesPage({ embedded = false }: Props) {
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [routeFinal, setRouteFinal] = useState<RouteFinal>("proxy");
+  // Seed from the cross-mount settings snapshot so re-mounting on tab switch
+  // paints the persisted final directly instead of flashing the default.
+  const [routeFinal, setRouteFinal] = useState<RouteFinal>(() => {
+    const saved = peekSettings()?.route_final?.toLowerCase();
+    return saved === "direct" || saved === "block" ? saved : "proxy";
+  });
   const [finalBusy, setFinalBusy] = useState(false);
 
   const [editOpen, setEditOpen] = useState(false);
@@ -147,17 +154,8 @@ export function RulesPage({ embedded = false }: Props) {
   const [batchSmartInclude, setBatchSmartInclude] = useState("");
   const [batchSmartExclude, setBatchSmartExclude] = useState("");
 
-  /** Pointer drag (HTML5 DnD is unreliable in Tauri WebView). */
-  const [draggingId, setDraggingId] = useState<string | null>(null);
   const setsRef = useRef(sets);
   setsRef.current = sets;
-  const dragRef = useRef<{
-    id: string;
-    startIds: string[];
-    items: RuleSetSummary[];
-    pointerId: number;
-    moved: boolean;
-  } | null>(null);
   const persistLockRef = useRef(false);
 
   const reloadSets = useCallback(async () => {
@@ -976,67 +974,18 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
-  function onHandlePointerDown(id: string, e: ReactPointerEvent<HTMLElement>) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const snapshot = setsRef.current.map((s) => ({ ...s }));
-    dragRef.current = {
-      id,
-      startIds: snapshot.map((s) => s.id),
-      items: snapshot,
-      pointerId: e.pointerId,
-      moved: false,
-    };
-    setDraggingId(id);
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  function onHandlePointerMove(e: ReactPointerEvent<HTMLElement>) {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    e.preventDefault();
-    // Use list geometry (midpoints), not elementFromPoint — after live reorder the
-    // pointer often still sits on the dragged row and HTML5/DOM hit-tests stick.
-    const nodes = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-ruleset-id]"),
-    );
-    if (nodes.length === 0) return;
-    let targetIndex = nodes.length - 1;
-    for (let i = 0; i < nodes.length; i++) {
-      const rect = nodes[i].getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) {
-        targetIndex = i;
-        break;
-      }
-    }
-    const fromIndex = d.items.findIndex((s) => s.id === d.id);
-    if (fromIndex < 0 || fromIndex === targetIndex) return;
-    const next = [...d.items];
-    const [moved] = next.splice(fromIndex, 1);
-    next.splice(targetIndex, 0, moved);
-    d.items = next;
-    d.moved = true;
-    setSets(next);
-  }
-
-  function finishPointerDrag(e: ReactPointerEvent<HTMLElement>) {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    setDraggingId(null);
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    if (!d.moved) return;
-    void persistOrder(d.items, d.startIds);
-  }
+  /**
+   * Pointer-based card sorting (HTML5 DnD is unreliable in Tauri WebView):
+   * lift a fixed clone out of the list, open a highlighted insertion gap,
+   * then persist the committed order.
+   */
+  const { drag, onItemPointerDown } = useRulesetDragSort<RuleSetSummary>({
+    items: sets,
+    onReorder: (next, startIds) => {
+      setSets(next);
+      void persistOrder(next, startIds);
+    },
+  });
 
   async function moveSet(id: string, dir: -1 | 1) {
     const list = setsRef.current;
@@ -1051,6 +1000,213 @@ export function RulesPage({ embedded = false }: Props) {
       next,
       list.map((s) => s.id),
     );
+  }
+
+  // Sidebar cards. During a drag the source card leaves the list (a fixed
+  // clone follows the pointer) and a highlighted gap opens at the live
+  // insertion slot; numbering follows rendered slots so the pending order is
+  // visible while dragging. Iterating the gap over the *others* sequence (the
+  // source excluded) keeps exactly one gap per render — keying it over the
+  // raw list duplicated the gap whenever insertIndex === fromIndex and left
+  // orphaned gap nodes behind after the drag.
+  const setCards: ReactNode[] = [];
+  {
+    const others = drag ? sets.filter((s) => s.id !== drag.id) : sets;
+    for (let index = 0; index < others.length; index++) {
+      const s = others[index];
+      if (drag && setCards.length === drag.insertIndex) {
+        setCards.push(
+          <div
+            key="ruleset-drop-gap"
+            className="ruleset-drop-gap"
+            style={{ height: drag.height }}
+            aria-hidden="true"
+          />,
+        );
+      }
+      setCards.push(
+        <div
+          key={s.id}
+          data-ruleset-id={s.id}
+          className={[
+            "ruleset-item",
+            viewSetId === s.id ? "selected" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          onPointerDown={(e) => onItemPointerDown(s.id, e)}
+          onClick={() => setViewSetId(s.id)}
+          role="listitem"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              setViewSetId(s.id);
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              void moveSet(s.id, -1);
+            }
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              void moveSet(s.id, 1);
+            }
+          }}
+        >
+          <div className="ruleset-item-top">
+            <span
+              className="ruleset-drag"
+              title={t("rules.dragPrio")}
+              aria-hidden="true"
+            >
+              ⋮⋮
+            </span>
+            <span className="ruleset-prio muted">{setCards.length + 1}</span>
+            <span className="ruleset-name">{s.name}</span>
+            {s.remote &&
+              (remoteBusyIds.has(s.id) ||
+                s.remote.download_status === "downloading") && (
+                <span
+                  className="lat-spinner ruleset-download-spinner"
+                  title={t("rules.downloadingTooltip")}
+                  aria-label={t("rules.downloadingTooltip")}
+                />
+              )}
+            {togglingIds.has(s.id) && (
+              <span
+                className="lat-spinner ruleset-toggle-spinner"
+                title={t("rules.applyingTooltip")}
+                aria-label={t("rules.applyingTooltip")}
+              />
+            )}
+            <GlassSwitchControl
+              checked={s.enabled}
+              size="sm"
+              disabled={!s.enabled && s.rule_count === 0}
+              title={
+                !s.enabled && s.rule_count === 0
+                  ? t("rules.enableEmptyHint")
+                  : s.enabled
+                    ? t("rules.disableSet")
+                    : t("rules.enableSet")
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+              onChange={(checked) => void onToggleSet(s.id, checked)}
+            />
+            <div className="rule-menu" data-ruleset-menu>
+              <button
+                type="button"
+                className="rule-menu-trigger"
+                aria-label={t("rules.setMenuAria", { name: s.name })}
+                aria-haspopup="menu"
+                aria-expanded={menuSetId === s.id}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuRuleId(null);
+                  setMenuSetId((id) => (id === s.id ? null : s.id));
+                }}
+              >
+                ⋮
+              </button>
+              {menuSetId === s.id && (
+                <div
+                  className={`rule-menu-pop ruleset-menu-pop${
+                    index < Math.ceil(sets.length / 2) ? " open-down" : ""
+                  }`}
+                  role="menu"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="rule-menu-item"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEditSet(s);
+                    }}
+                  >
+                    {t("rules.editSet")}
+                  </button>
+                  {isFactorySet(s) && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="rule-menu-item"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuSetId(null);
+                        void onResetFactory(s);
+                      }}
+                    >
+                      {t("rules.resetFactory")}
+                    </button>
+                  )}
+                  {s.remote && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="rule-menu-item"
+                      disabled={remoteBusyIds.has(s.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuSetId(null);
+                        void onRefreshRemoteSet(s.id);
+                      }}
+                    >
+                      {t("common.update")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="rule-menu-item danger"
+                    disabled={
+                      !!s.remote &&
+                      (remoteBusyIds.has(s.id) ||
+                        s.remote.download_status === "downloading")
+                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setMenuSetId(null);
+                      void onDeleteSet(s);
+                    }}
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {t("rules.rulesCount", { n: s.rule_count })} · {strategyLabel(s.strategy)} · DNS{" "}
+            {s.strategy === "block" ? t("rules.dnsReject") : dnsStrategyLabel(s.dns_strategy)}
+            {s.remote && (
+              <> · {t("rules.autoUpdateShort", {
+                interval: t(
+                  s.remote.update_interval === "1h"
+                    ? "rules.autoUpdate1h"
+                    : s.remote.update_interval === "12h"
+                      ? "rules.autoUpdate12h"
+                      : s.remote.update_interval === "24h"
+                        ? "rules.autoUpdate24h"
+                        : "rules.autoUpdateDisabled",
+                ),
+              })}</>
+            )}
+          </div>
+        </div>,
+      );
+    }
+    if (drag && setCards.length === drag.insertIndex) {
+      setCards.push(
+        <div
+          key="ruleset-drop-gap-end"
+          className="ruleset-drop-gap"
+          style={{ height: drag.height }}
+          aria-hidden="true"
+        />,
+      );
+    }
   }
 
   const body = (
@@ -1111,187 +1267,7 @@ export function RulesPage({ embedded = false }: Props) {
             {t("rules.sets")}
             <span className="ruleset-list-hint">{t("rules.dragHint")}</span>
           </div>
-          {sets.map((s, index) => (
-            <div
-              key={s.id}
-              data-ruleset-id={s.id}
-              className={[
-                "ruleset-item",
-                viewSetId === s.id ? "selected" : "",
-                draggingId === s.id ? "dragging" : "",
-                draggingId && draggingId !== s.id ? "drag-targetable" : "",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              onClick={() => {
-                if (dragRef.current?.moved) return;
-                setViewSetId(s.id);
-              }}
-              role="listitem"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  setViewSetId(s.id);
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  void moveSet(s.id, -1);
-                }
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  void moveSet(s.id, 1);
-                }
-              }}
-            >
-              <div className="ruleset-item-top">
-                <span
-                  className="ruleset-drag"
-                  title={t("rules.dragPrio")}
-                  role="button"
-                  tabIndex={-1}
-                  onPointerDown={(e) => onHandlePointerDown(s.id, e)}
-                  onPointerMove={onHandlePointerMove}
-                  onPointerUp={finishPointerDrag}
-                  onPointerCancel={finishPointerDrag}
-                >
-                  ⋮⋮
-                </span>
-                <span className="ruleset-prio muted">{index + 1}</span>
-                <span className="ruleset-name">{s.name}</span>
-                {s.remote &&
-                  (remoteBusyIds.has(s.id) ||
-                    s.remote.download_status === "downloading") && (
-                    <span
-                      className="lat-spinner ruleset-download-spinner"
-                      title={t("rules.downloadingTooltip")}
-                      aria-label={t("rules.downloadingTooltip")}
-                    />
-                  )}
-                {togglingIds.has(s.id) && (
-                  <span
-                    className="lat-spinner ruleset-toggle-spinner"
-                    title={t("rules.applyingTooltip")}
-                    aria-label={t("rules.applyingTooltip")}
-                  />
-                )}
-                <GlassSwitchControl
-                  checked={s.enabled}
-                  size="sm"
-                  disabled={!s.enabled && s.rule_count === 0}
-                  title={
-                    !s.enabled && s.rule_count === 0
-                      ? t("rules.enableEmptyHint")
-                      : s.enabled
-                        ? t("rules.disableSet")
-                        : t("rules.enableSet")
-                  }
-                  onClick={(e) => {
-                    e.stopPropagation();
-                  }}
-                  onChange={(checked) => void onToggleSet(s.id, checked)}
-                />
-                <div className="rule-menu" data-ruleset-menu>
-                  <button
-                    type="button"
-                    className="rule-menu-trigger"
-                    aria-label={t("rules.setMenuAria", { name: s.name })}
-                    aria-haspopup="menu"
-                    aria-expanded={menuSetId === s.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuRuleId(null);
-                      setMenuSetId((id) => (id === s.id ? null : s.id));
-                    }}
-                  >
-                    ⋮
-                  </button>
-                  {menuSetId === s.id && (
-                    <div
-                      className={`rule-menu-pop ruleset-menu-pop${
-                        index < Math.ceil(sets.length / 2) ? " open-down" : ""
-                      }`}
-                      role="menu"
-                    >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="rule-menu-item"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEditSet(s);
-                        }}
-                      >
-                        {t("rules.editSet")}
-                      </button>
-                      {isFactorySet(s) && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="rule-menu-item"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMenuSetId(null);
-                            void onResetFactory(s);
-                          }}
-                        >
-                          {t("rules.resetFactory")}
-                        </button>
-                      )}
-                      {s.remote && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="rule-menu-item"
-                          disabled={remoteBusyIds.has(s.id)}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMenuSetId(null);
-                            void onRefreshRemoteSet(s.id);
-                          }}
-                        >
-                          {t("common.update")}
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="rule-menu-item danger"
-                        disabled={
-                          !!s.remote &&
-                          (remoteBusyIds.has(s.id) ||
-                            s.remote.download_status === "downloading")
-                        }
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setMenuSetId(null);
-                          void onDeleteSet(s);
-                        }}
-                      >
-                        {t("common.delete")}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {t("rules.rulesCount", { n: s.rule_count })} · {strategyLabel(s.strategy)} · DNS{" "}
-                {s.strategy === "block" ? t("rules.dnsReject") : dnsStrategyLabel(s.dns_strategy)}
-                {s.remote && (
-                  <> · {t("rules.autoUpdateShort", {
-                    interval: t(
-                      s.remote.update_interval === "1h"
-                        ? "rules.autoUpdate1h"
-                        : s.remote.update_interval === "12h"
-                          ? "rules.autoUpdate12h"
-                          : s.remote.update_interval === "24h"
-                            ? "rules.autoUpdate24h"
-                            : "rules.autoUpdateDisabled",
-                    ),
-                  })}</>
-                )}
-              </div>
-            </div>
-          ))}
+          {setCards}
         </aside>
 
         <section className="rules-main">

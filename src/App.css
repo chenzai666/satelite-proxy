@@ -91,18 +91,25 @@
   color-scheme: light;
   --bg: #eef0f4;
   --bg-deep: #e4e7ed;
-  --surface: rgba(255, 255, 255, 0.78);
-  --surface-2: rgba(255, 255, 255, 0.92);
+  /* Cards lean on their backdrop-filter frost. The page bg is near-white,
+     so the alpha must be low AND the background must carry colour for the
+     translucency to read (white glass over white is invisible). Menus and
+     modals stay on the opaque --panel-* vars. */
+  --surface: rgba(255, 255, 255, 0.3);
+  --surface-2: rgba(255, 255, 255, 0.55);
   --text: rgba(18, 22, 28, 0.92);
-  --muted: rgba(18, 22, 28, 0.55);
-  --faint: rgba(18, 22, 28, 0.35);
+  /* Gray text lifted for readability on the light surfaces: muted sat at
+     ~4.0:1 contrast (below the 4.5:1 AA bar for body text), faint/placeholder
+     at ~2.2:1. These land at ~5.6 / ~2.9 / ~4.0 respectively. */
+  --muted: rgba(18, 22, 28, 0.65);
+  --faint: rgba(18, 22, 28, 0.45);
   --border: rgba(0, 0, 0, 0.08);
   --border-subtle: rgba(0, 0, 0, 0.05);
   --border-strong: rgba(0, 0, 0, 0.14);
   --grid: transparent;
   --grid-line: transparent;
-  --placeholder: rgba(18, 22, 28, 0.35);
-  --nav-label: rgba(18, 22, 28, 0.4);
+  --placeholder: rgba(18, 22, 28, 0.45);
+  --nav-label: rgba(18, 22, 28, 0.55);
   --hover-wash: rgba(0, 0, 0, 0.04);
   --code-bg: rgba(0, 0, 0, 0.04);
   --code-fg: rgba(18, 22, 28, 0.8);
@@ -258,15 +265,9 @@ button {
   width: 100%;
   max-width: 100%;
   overflow: hidden;
-  background:
-    var(--page-glow),
-    linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
-  color: var(--text);
-}
-
-/* Carry the hero's green atmosphere behind the top navigation. This gives
-   the glass capsule real colour variation to refract instead of a flat fill. */
-.dashboard-shell {
+  /* The hero's green atmosphere on every page (was dashboard-only): mostly
+     lives behind the top navigation so the glass capsule keeps some colour
+     variation to refract instead of a flat fill. */
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
@@ -277,20 +278,23 @@ button {
     ),
     var(--page-glow),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
+  color: var(--text);
 }
 
+/* The green atmosphere moved to .app-shell (all pages); .dashboard-shell
+   now only tunes the navbar liquid for the hero area. */
 .dashboard-shell .topnav {
   --topnav-liquid: rgba(22, 32, 30, 0.5);
   background: rgba(15, 20, 23, 0.42);
 }
 
-[data-theme="day"] .dashboard-shell {
+[data-theme="day"] .app-shell {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(48, 155, 119, 0.2) 0%,
-      rgba(77, 158, 132, 0.12) 36%,
-      rgba(112, 164, 148, 0.05) 60%,
+      rgba(48, 155, 119, 0.26) 0%,
+      rgba(77, 158, 132, 0.16) 36%,
+      rgba(112, 164, 148, 0.07) 60%,
       transparent 77%
     ),
     var(--page-glow),
@@ -499,6 +503,23 @@ button {
   pointer-events: none;
 }
 
+/* Day theme: the translucent white glass is invisible on the light navbar,
+   leaving the drop shadow as the only visible highlight — and that shadow
+   is square-clipped by .topnav-items' overflow, reading as a weird
+   straight-edged halo around the rounded pill. Paint a crisp white capsule
+   instead (same treatment as the day .glass-seg-indicator). */
+[data-theme="day"] .topnav-indicator {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="day"] .topnav-indicator::before {
+  display: none;
+}
+
 .topnav-item {
   border: none !important;
   background: transparent !important;
@@ -632,6 +653,9 @@ button {
   max-width: 100%;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Reserve the scrollbar gutter so tab switches between short and tall
+     pages (rules <-> dns) don't wobble the content box width sideways. */
+  scrollbar-gutter: stable;
   overscroll-behavior-x: none;
   padding: 0.75rem 1.5rem 1.75rem;
   background: transparent;
@@ -639,7 +663,7 @@ button {
 
 /* Page switch: fade-in + gentle rise on mount (keyed remount in App.tsx). */
 .page-enter {
-  animation: page-enter 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: page-enter var(--page-enter-ms, 240ms) cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 @keyframes page-enter {
@@ -653,8 +677,40 @@ button {
   }
 }
 
+/* While page-enter runs, its animating opacity puts the subtree in a
+   semi-transparent group: backdrop-filter inside samples only that group and
+   misses the dark page background behind it, so glass controls read as
+   briefly bright before settling ("先亮后暗"). Hold their backdrop-filter off
+   for exactly the entrance duration; with the default fill-mode it flips
+   back on the same frame the group flattens. Keep the duration in sync
+   with .page-enter via --page-enter-ms. */
+:root {
+  --page-enter-ms: 240ms;
+}
+
+.page-enter .glass-seg,
+.page-enter .glass-btn,
+.page-enter .glass-switch-track {
+  animation: glass-backdrop-in var(--page-enter-ms, 240ms);
+}
+
+@keyframes glass-backdrop-in {
+  from,
+  to {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .page-enter {
+    animation: none;
+  }
+
+  /* No entrance group ever forms — nothing to bridge. */
+  .page-enter .glass-seg,
+  .page-enter .glass-btn,
+  .page-enter .glass-switch-track {
     animation: none;
   }
 }
@@ -1013,11 +1069,19 @@ tr.row-active {
 /* WebView2 can flash a white compositor tile over settings and traffic cards
    when the glass navbar repaints on hover. The card fill already provides the
    intended translucent surface, so avoid a second backdrop-filter layer on
-   these pages. */
+   these pages — except in the day theme, where cards sit at 42% white and
+   need the frost to behave like everywhere else (and a white flash tile is
+   invisible on light surfaces anyway). */
 .settings-page .card,
 .traffic-page .card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
+}
+
+[data-theme="day"] .settings-page .card,
+[data-theme="day"] .traffic-page .card {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .settings-tabs {
@@ -2077,7 +2141,7 @@ button.node-card:disabled,
   border-radius: 8px;
   padding: 0.55rem 0.65rem;
   font-weight: 500;
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
   transition: border-color 0.12s, background 0.12s, opacity 0.12s;
 }
@@ -2091,15 +2155,68 @@ button.node-card:disabled,
   background: var(--primary-muted);
 }
 
-.ruleset-item.dragging {
-  opacity: 0.65;
-  border-color: var(--primary);
-  background: var(--primary-muted);
-  box-shadow: var(--shadow-elevated);
+/* --- Ruleset drag-sort (pointer-based; see useRulesetDragSort) --- */
+
+body.ruleset-dragging,
+body.ruleset-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
 }
 
-.ruleset-item.drag-targetable {
-  border-style: dashed;
+body.ruleset-dragging .ruleset-item:not(.selected):hover {
+  background: transparent;
+}
+
+.ruleset-drop-gap {
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1.5px dashed var(--primary-border);
+  background: var(--primary-muted);
+  animation: ruleset-gap-in 0.12s ease-out;
+}
+
+@keyframes ruleset-gap-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Floating "picked up" card: pixel-aligned clone of the source card. The
+ * host's translate property is driven per-frame by JS, so the lift transform
+ * below can keep its own transition without fighting the follow movement. */
+.ruleset-drag-host {
+  will-change: translate;
+}
+
+.ruleset-drag-preview {
+  z-index: 1000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16), 0 18px 48px rgba(0, 0, 0, 0.3);
+  opacity: 0.98;
+  transform: scale(1) rotate(0deg);
+  transition:
+    transform 0.15s ease-out,
+    box-shadow 0.15s ease-out,
+    border-color 0.15s ease-out;
+}
+
+.ruleset-drag-preview.lifted {
+  border-color: var(--primary-border);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2), 0 26px 64px rgba(0, 0, 0, 0.38);
+  transform: scale(1.03) rotate(0.5deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ruleset-drop-gap {
+    animation: none;
+  }
+  .ruleset-drag-preview {
+    transition: none;
+  }
 }
 
 .ruleset-item-top {
@@ -2127,11 +2244,6 @@ button.node-card:disabled,
 .ruleset-drag:hover {
   color: var(--muted);
   background: var(--border-subtle);
-}
-
-.ruleset-item.dragging .ruleset-drag {
-  cursor: grabbing;
-  color: var(--primary);
 }
 
 .ruleset-prio {
@@ -3032,6 +3144,16 @@ code {
   max-width: 46rem;
 }
 
+/* Rules / DNS tabs both overflow .main once loaded, but they mount with an
+   empty/loading body that briefly fits the viewport — the scrollbar thumb
+   would flash out and back on every tab switch. Keep the embed overflowing
+   through the async load so the thumb stays put. Generous margin below the
+   visible-area threshold (~100vh - 11rem of chrome) and still shorter than
+   both pages' loaded height, so no permanent empty tail. */
+.settings-scroll-embed {
+  min-height: calc(100vh - 9rem);
+}
+
 /* Ports tab: shared toolbar on top (save applies to both columns), then the
    main port form (left) beside the extra-listeners panel (right). */
 .settings-ports-toolbar {
@@ -3377,7 +3499,8 @@ code {
 .dns-panel-head {
   padding: 0.7rem 0.95rem 0.6rem;
   border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 55%, var(--surface));
+  /* No strip fill: the card surface is translucent in both themes, and a
+     solid header band read as an opaque card. The border separates. */
   flex-shrink: 0;
 }
 
@@ -3705,7 +3828,7 @@ button.check.on {
   margin-top: auto;
   padding: 0.7rem 0.85rem 0.85rem;
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 40%, var(--surface));
+  /* Same as .dns-panel-head: no strip fill, translucency stays uniform. */
 }
 
 .dns-add-title {
@@ -6191,6 +6314,8 @@ button.active-soft {
   box-sizing: border-box;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Same gutter reservation as .main — no sideways wobble on tab switch. */
+  scrollbar-gutter: stable;
 }
 
 .simple-main .page-enter {
