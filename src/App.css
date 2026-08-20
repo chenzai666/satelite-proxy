@@ -1648,6 +1648,7 @@ button.node-card,
   width: 100%;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   font-weight: 400;
   font-size: inherit;
   box-shadow: none;
@@ -1705,6 +1706,7 @@ button.node-card:disabled,
 }
 
 .node-card-latency {
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   font-size: 0.608rem; /* 80% of 0.76rem */
@@ -1739,6 +1741,8 @@ button.node-card:disabled,
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   min-height: 1.3em;
 }
 
