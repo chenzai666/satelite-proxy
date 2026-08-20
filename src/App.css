@@ -1908,6 +1908,39 @@ button.node-card:disabled,
   color: var(--danger);
 }
 
+.ruleset-strategy-label,
+.ruleset-origin-label {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  margin-right: 0.35rem;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-weight: 600;
+}
+
+.ruleset-strategy-label.strategy-proxy {
+  color: var(--accent-blue);
+}
+
+.ruleset-strategy-label.strategy-direct {
+  color: #2e9e5b;
+}
+
+.ruleset-strategy-label.strategy-block {
+  color: var(--danger);
+}
+
+.ruleset-origin-label.origin-remote {
+  color: var(--primary);
+}
+
+.ruleset-origin-label.origin-local {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
 .pill.target-node {
   background: var(--primary-muted);
   color: var(--primary);

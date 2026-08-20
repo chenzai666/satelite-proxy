@@ -1178,21 +1178,11 @@ export function RulesPage({ embedded = false }: Props) {
             </div>
           </div>
           <div className="muted" style={{ fontSize: 12 }}>
-            {t("rules.rulesCount", { n: s.rule_count })} · {strategyLabel(s.strategy)} · DNS{" "}
-            {s.strategy === "block" ? t("rules.dnsReject") : dnsStrategyLabel(s.dns_strategy)}
-            {s.remote && (
-              <> · {t("rules.autoUpdateShort", {
-                interval: t(
-                  s.remote.update_interval === "1h"
-                    ? "rules.autoUpdate1h"
-                    : s.remote.update_interval === "12h"
-                      ? "rules.autoUpdate12h"
-                      : s.remote.update_interval === "24h"
-                        ? "rules.autoUpdate24h"
-                        : "rules.autoUpdateDisabled",
-                ),
-              })}</>
-            )}
+            <span className={`ruleset-strategy-label strategy-${s.strategy}`}>
+              {strategyLabel(s.strategy)}
+            </span>
+            {" · "}
+            {t("rules.rulesCount", { n: s.rule_count })}
           </div>
         </div>,
       );
