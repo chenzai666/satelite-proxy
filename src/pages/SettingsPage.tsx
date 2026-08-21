@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
   checkCoreUpdate,
@@ -16,6 +17,8 @@ import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { TrayIconPicker } from "../components/TrayIconPicker";
+import { DecryptReveal } from "../components/DecryptReveal";
+import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS } from "../theme/accents";
 import { useTheme } from "../theme";
@@ -59,6 +62,17 @@ export function SettingsPage() {
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  /** Sponsor easter-egg panel (decrypt-reveal over the sponsor QR). */
+  const [sponsorOpen, setSponsorOpen] = useState(false);
+
+  // Any click anywhere dismisses the sponsor panel; the link's own click is
+  // excluded below so opening doesn't immediately bubble into a close.
+  useEffect(() => {
+    if (!sponsorOpen) return;
+    const close = () => setSponsorOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [sponsorOpen]);
   const [mixed, setMixed] = useState("2080");
   /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
   const [allowLan, setAllowLan] = useState(false);
@@ -491,6 +505,13 @@ export function SettingsPage() {
   const visibleTab =
     customRuntime && CUSTOM_BLOCKED_TABS.has(tab) ? "app" : tab;
 
+  // The sponsor easter egg renders on the app tab only; leaving the tab
+  // unmounts it — reset the open state so coming back doesn't resurrect
+  // a stale panel.
+  useEffect(() => {
+    if (visibleTab !== "app") setSponsorOpen(false);
+  }, [visibleTab]);
+
   const needsSettings =
     visibleTab === "app" || visibleTab === "ports" || visibleTab === "core";
   if (needsSettings && !settings && !error) {
@@ -507,6 +528,47 @@ export function SettingsPage() {
           <p className="page-desc">{activeTab.hint}</p>
         </div>
       </header>
+
+      {/* Sponsor easter egg — corner link opens a decrypt-reveal panel.
+       * Portaled to <body>: a transformed ancestor (the page-enter entrance
+       * animation wrapper) becomes the containing block for position:fixed
+       * descendants, which made the link jump once when the animation ended.
+       * App tab only. */}
+      {visibleTab === "app" &&
+        createPortal(
+          <>
+            <button
+              type="button"
+              className="sponsor-link"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSponsorOpen((v) => !v);
+              }}
+            >
+              {t("settings.sponsor")}
+            </button>
+            {sponsorOpen && (
+              <div
+                className="sponsor-panel"
+                role="dialog"
+                aria-label={t("settings.sponsor")}
+              >
+                <DecryptReveal radius={140} dismissOnLeave>
+                  <img
+                    className="sponsor-qr"
+                    src={buymecoffeeUrl}
+                    alt={t("settings.sponsorScan")}
+                    draggable={false}
+                  />
+                </DecryptReveal>
+                <div className="sponsor-caption muted">
+                  {t("settings.sponsorScan")}
+                </div>
+              </div>
+            )}
+          </>,
+          document.body,
+        )}
 
       <GlassSeg
         value={visibleTab}

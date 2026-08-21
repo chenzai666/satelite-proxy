@@ -2754,7 +2754,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2767,7 +2767,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -3219,9 +3219,10 @@ code {
 }
 
 /* App tab alone since the ports card moved to its own tab: cap the
-   preferences card near its old width in the former two-column layout. */
+   preferences card at the same width the ports tab uses, so tab switches
+   don't shift the card edge and wide windows still fill the row. */
 .settings-app-page .settings-panel {
-  max-width: 46rem;
+  max-width: 56rem;
 }
 
 /* Rules / DNS tabs both overflow .main once loaded, but they mount with an
@@ -7564,4 +7565,81 @@ button.simple-link-row {
   transform: translateX(-50%);
   cursor: pointer;
   text-align: left;
+}
+
+/* DecryptReveal — scramble grid that dissolves into the content beneath. */
+.decrypt-reveal {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+.decrypt-reveal .dr-backdrop {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  border-radius: inherit;
+}
+.decrypt-reveal-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Sponsor easter egg — corner link + decrypt-reveal panel.
+ * The link is plain text only: no background/border in any state. */
+.sponsor-link {
+  position: fixed;
+  right: 18px;
+  bottom: 14px;
+  z-index: 90;
+  /* appearance is what actually kills the native Aqua capsule on WKWebView —
+   * background/border alone leave it visible. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  outline: none;
+  background: none;
+  box-shadow: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1;
+  padding: 6px 8px;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+.sponsor-link:hover,
+.sponsor-link:active,
+.sponsor-link:focus-visible {
+  background: none;
+  box-shadow: none;
+}
+.sponsor-link:hover {
+  opacity: 1;
+}
+.sponsor-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 44px;
+  z-index: 90;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--panel-solid, #14181d);
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+.sponsor-qr {
+  display: block;
+  width: 216px;
+  height: 216px;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.sponsor-caption {
+  margin-top: 8px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.4;
 }
