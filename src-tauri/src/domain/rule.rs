@@ -56,17 +56,6 @@ impl RuleTarget {
             Self::Block => "REJECT",
         }
     }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_uppercase().as_str() {
-            "DIRECT" => Some(Self::Direct),
-            "PROXY" => Some(Self::Proxy),
-            "BLOCK" | "REJECT" | "REJECT-NO-DROP" => Some(Self::Block),
-            "NODE" => Some(Self::Node),
-            "SMART" => Some(Self::Smart),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

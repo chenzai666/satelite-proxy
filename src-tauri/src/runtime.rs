@@ -107,7 +107,6 @@ impl PassiveNodeStats {
             || self.consecutive_recent_sus >= 5
     }
 }
-/// Skip redundant HTTP refresh when journal pushed a snapshot this recently.
 
 pub struct Runtime {
     pub core: CoreManager,
