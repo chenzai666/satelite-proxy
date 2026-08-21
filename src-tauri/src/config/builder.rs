@@ -41,6 +41,14 @@ pub struct BuildOptions {
     /// Resolve the originating process per connection (sing-box
     /// `find_process_mode`: on → always, off → off).
     pub find_process: bool,
+    /// Include an IPv6 address on the TUN interface. Off by default: most
+    /// budget VPS nodes have no IPv6 egress, and an IPv6-addressed tun makes
+    /// the OS treat the machine as dual-stack — apps (notably Chrome) then
+    /// prefer AAAA/v6 and black-hole against a node with no v6 route out.
+    pub tun_ipv6: bool,
+    /// Reject sniffed QUIC (UDP/443) traffic so browsers fall back to TCP.
+    /// See `AppSettings::block_quic` doc for the congestion-control rationale.
+    pub block_quic: bool,
 }
 
 impl BuildOptions {
@@ -169,6 +177,15 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
     route_rules.push(json!({ "action": "sniff" }));
+    if opts.block_quic {
+        // QUIC relayed through XUDP-in-TCP carries two independent congestion
+        // controllers (inner QUIC, outer TCP); on a mediocre link that fights
+        // itself and stutters video. Rejecting sniffed QUIC makes browsers
+        // fall back to TCP-based HTTP, which the proxy handles natively.
+        // Must run after sniff (needs the detected protocol) and is safe
+        // ahead of the DNS hijack rule below since DNS is a distinct protocol.
+        route_rules.push(json!({ "protocol": "quic", "action": "reject" }));
+    }
     if built_dns.want_hijack || opts.tun_enabled {
         route_rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
     }
@@ -200,16 +217,21 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     }
 
     if opts.tun_enabled {
-        // strict_route is mainly a Windows multi-homed DNS workaround; on macOS it
-        // can break host → 127.0.0.1 (clash_api / mixed) while TUN is up.
-        // Always exclude loopback so the app can reach clash_api for health checks.
+        // strict_route drops packets that don't match auto_route's rules —
+        // on macOS this used to be Windows-only over concern it could block
+        // host → 127.0.0.1 (clash_api / mixed) while TUN is up. In practice
+        // `route_exclude_address` below already carves out the loopback
+        // range, so that conflict doesn't materialize; leaving strict_route
+        // off on macOS/Linux instead lets traffic silently bypass the tunnel
+        // (e.g. via a same-subnet route to the LAN gateway — see the DNS
+        // pollution writeup). Enable it on every platform.
         inbounds.push(json!({
             "type": "tun",
             "tag": "tun-in",
-            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "address": tun_addresses(opts.tun_ipv6),
             "mtu": 9000,
             "auto_route": true,
-            "strict_route": cfg!(target_os = "windows"),
+            "strict_route": true,
             "route_exclude_address": ["127.0.0.0/8", "::1/128"],
             "stack": opts.normalized_tun_stack()
         }));
@@ -239,6 +261,17 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
                 "external_controller": format!("127.0.0.1:{}", opts.api_port),
                 "secret": opts.api_secret,
                 "default_mode": opts.outbound_mode.as_str()
+            },
+            // Persist the fakeip mapping table across core restarts. Without
+            // this, every restart resets 198.18.x.x ⇄ domain mappings to
+            // empty, and OS/app-level caches of the old fakeip briefly point
+            // nowhere ("works after a moment"). `cache.db` is a relative path
+            // — the core's cwd is anchored to the config directory (always
+            // writable) by `CoreManager::start_with_ports`.
+            "cache_file": {
+                "enabled": true,
+                "path": "cache.db",
+                "store_fakeip": true
             }
         }
     });
@@ -253,8 +286,19 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     })
 }
 
-fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
-    if sets.is_empty() {
+/// TUN interface addresses. IPv4 is always present; IPv6 is opt-in (see
+/// `BuildOptions::tun_ipv6` doc) since most nodes have no v6 egress and an
+/// IPv6-addressed tun makes the OS (and Chrome specifically) prefer AAAA/v6,
+/// black-holing every connection.
+fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
+    let mut addrs = vec!["172.19.0.1/30"];
+    if ipv6 {
+        addrs.push("fdfe:dcba:9876::1/126");
+    }
+    addrs
+}
+
+fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {    if sets.is_empty() {
         return fallback.to_vec();
     }
     let mut out = Vec::new();
@@ -1310,6 +1354,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1633,6 +1679,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1744,6 +1792,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1783,6 +1833,8 @@ mod tests {
             auto_select: crate::domain::AutoSelectMode::Off,
             probe_url: "https://www.gstatic.com/generate_204".into(),
             find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -1827,6 +1879,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1888,6 +1942,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1924,6 +1980,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Kernel,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1965,6 +2023,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -1973,6 +2033,13 @@ mod tests {
         assert_eq!(inbounds[1]["type"], "tun");
         assert_eq!(inbounds[1]["auto_route"], true);
         assert_eq!(inbounds[1]["stack"], "mixed");
+        // strict_route must be on on every platform now (problem 5): the
+        // Windows-only carve-out is gone, and route_exclude_address below
+        // already protects host → 127.0.0.1 (clash_api / mixed) on macOS.
+        assert_eq!(inbounds[1]["strict_route"], true);
+        // IPv6 off by default (problem 1): a dual-stack tun makes Chrome
+        // prefer AAAA/v6 even when the node has no v6 egress.
+        assert_eq!(inbounds[1]["address"], json!(["172.19.0.1/30"]));
         assert!(inbounds[1]["route_exclude_address"]
             .as_array()
             .is_some_and(|a| a.iter().any(|v| v == "127.0.0.0/8")));
@@ -1990,6 +2057,142 @@ mod tests {
         assert!(rules
             .iter()
             .any(|r| r.get("action") == Some(&json!("hijack-dns"))));
+
+        // fakeip persistence (problem 2): cache_file must be on with
+        // store_fakeip so restarting the core doesn't reset the 198.18.x.x
+        // mapping table (the "brief disconnect after restart" bug).
+        let experimental = &built.value["experimental"];
+        assert_eq!(experimental["cache_file"]["enabled"], true);
+        assert_eq!(experimental["cache_file"]["store_fakeip"], true);
+    }
+
+    #[test]
+    fn tun_ipv6_flag_adds_the_v6_tun_address() {
+        let nodes = vec![sample_ss()];
+        let base = |ipv6: bool| BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            tun_enabled: true,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: ipv6,
+            block_quic: false,
+        };
+
+        let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
+        let addrs = v4_only.value["inbounds"][1]["address"]
+            .as_array()
+            .unwrap();
+        assert_eq!(addrs.len(), 1, "default must be IPv4-only: {addrs:?}");
+        assert_eq!(addrs[0], "172.19.0.1/30");
+
+        let dual_stack = build_singbox_config(&nodes, &base(true)).unwrap();
+        let addrs = dual_stack.value["inbounds"][1]["address"]
+            .as_array()
+            .unwrap();
+        assert_eq!(addrs.len(), 2, "opt-in must add the v6 address: {addrs:?}");
+        assert!(addrs.iter().any(|a| a == "fdfe:dcba:9876::1/126"));
+    }
+
+    #[test]
+    fn cache_file_persists_fakeip_even_without_tun() {
+        // The fix targets sing-box restarts in general, not just TUN — a
+        // non-TUN (system proxy / mixed-only) run also loses its fakeip table
+        // on restart without cache_file.
+        let nodes = vec![sample_ss()];
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                allow_lan: false,
+                api_port: 19090,
+                extra_inbounds: vec![],
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                rule_sets: vec![],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(built.value["experimental"]["cache_file"]["enabled"], true);
+        assert_eq!(
+            built.value["experimental"]["cache_file"]["store_fakeip"],
+            true
+        );
+    }
+
+    #[test]
+    fn block_quic_injects_a_protocol_reject_rule_after_sniff() {
+        let nodes = vec![sample_ss()];
+        let base = |block_quic: bool| BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic,
+        };
+
+        let off = build_singbox_config(&nodes, &base(false)).unwrap();
+        let rules = off.value["route"]["rules"].as_array().unwrap();
+        assert!(
+            !rules.iter().any(|r| r.get("protocol") == Some(&json!("quic"))),
+            "block_quic off must not add a quic rule"
+        );
+
+        let on = build_singbox_config(&nodes, &base(true)).unwrap();
+        let rules = on.value["route"]["rules"].as_array().unwrap();
+        let sniff_idx = rules
+            .iter()
+            .position(|r| r.get("action") == Some(&json!("sniff")))
+            .expect("sniff rule present");
+        let quic_idx = rules
+            .iter()
+            .position(|r| {
+                r.get("protocol") == Some(&json!("quic"))
+                    && r.get("action") == Some(&json!("reject"))
+            })
+            .expect("quic reject rule present when block_quic is on");
+        assert!(
+            quic_idx > sniff_idx,
+            "quic reject must come after sniff (needs the detected protocol)"
+        );
     }
 
     #[test]
@@ -2053,6 +2256,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap_err();
@@ -2082,6 +2287,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -2112,6 +2319,8 @@ mod tests {
                     auto_select: crate::domain::AutoSelectMode::Off,
                     probe_url: "https://www.gstatic.com/generate_204".into(),
                     find_process: true,
+                    tun_ipv6: false,
+                    block_quic: false,
                 },
             )
             .unwrap();
@@ -2148,6 +2357,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -2190,6 +2401,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -2233,6 +2446,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
@@ -2280,6 +2495,8 @@ mod tests {
                 auto_select: crate::domain::AutoSelectMode::Off,
                 probe_url: "https://www.gstatic.com/generate_204".into(),
                 find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
             },
         )
         .unwrap();
