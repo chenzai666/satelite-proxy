@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   checkCoreUpdate,
+  diagnoseNetwork,
   downloadCore,
   getCoreInfo,
   getProxyStatus,
@@ -22,6 +23,7 @@ import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  DiagnosticIssue,
   ExtraInbound,
   HeroStyle,
   ThemeId,
@@ -63,6 +65,12 @@ export function SettingsPage() {
   const [api, setApi] = useState("19090");
   const [probe, setProbe] = useState("");
   const [tunStack, setTunStack] = useState("mixed");
+  /** IPv6 address on the TUN interface. Off by default — most nodes have no
+   * v6 egress and a dual-stack tun makes Chrome prefer AAAA/v6, black-holing
+   * every connection. */
+  const [tunIpv6, setTunIpv6] = useState(false);
+  /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. */
+  const [blockQuic, setBlockQuic] = useState(false);
   /** Extra inbound drafts — applied on card save (needs core restart). */
   const [extra, setExtra] = useState<ExtraInbound[]>([]);
   // Extra-inbound editor modal (add / edit share one form).
@@ -77,6 +85,9 @@ export function SettingsPage() {
   const [secretCopied, setSecretCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Detection-only network diagnostics (e.g. system DNS bypassing TUN).
+   * Re-checked whenever TUN transitions off → on; never auto-applied. */
+  const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
   const [core, setCore] = useState<CoreInfo | null>(null);
   const [coreBusy, setCoreBusy] = useState(false);
@@ -169,6 +180,8 @@ export function SettingsPage() {
         setApi(String(s.api_port));
         setProbe(s.probe_url);
         setTunStack(s.tun_stack || "mixed");
+        setTunIpv6(!!s.tun_ipv6_enabled);
+        setBlockQuic(!!s.block_quic);
         setExtra(s.extra_inbounds ?? []);
       })
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
@@ -216,6 +229,24 @@ export function SettingsPage() {
    * from its own finally when the user edited mid-flight). */
   const autoApplyRef = useRef<() => Promise<void>>(async () => {});
   const applyingRef = useRef(false);
+  /** Previous tun_enabled value, to detect the off → on transition. */
+  const prevTunEnabledRef = useRef<boolean | undefined>(undefined);
+
+  // Re-run detection-only network diagnostics whenever TUN turns on. Never
+  // fires on every settings refresh — only on the actual off → on edge —
+  // since the check involves a couple of shell-outs on macOS.
+  useEffect(() => {
+    const wasOn = prevTunEnabledRef.current;
+    const isOn = !!settings?.tun_enabled;
+    prevTunEnabledRef.current = isOn;
+    if (wasOn === undefined || wasOn === isOn || !isOn) {
+      if (!isOn) setNetDiagnostics([]);
+      return;
+    }
+    diagnoseNetwork()
+      .then((r) => setNetDiagnostics(r.issues))
+      .catch(() => setNetDiagnostics([]));
+  }, [settings?.tun_enabled]);
 
   /** Auto-commit the ports tab: save every draft (ports / LAN / probe /
    * stack / listeners) and restart the core when it is running. Drafts that
@@ -228,6 +259,8 @@ export function SettingsPage() {
       String(settings.api_port) !== api.trim() ||
       (settings.probe_url ?? "") !== probe ||
       (settings.tun_stack || "mixed") !== tunStack ||
+      !!settings.tun_ipv6_enabled !== tunIpv6 ||
+      !!settings.block_quic !== blockQuic ||
       !sameInbounds(settings.extra_inbounds ?? [], extra);
     if (!dirty) return;
     // Invalid drafts (mid-typing or left behind): surface why we can't apply
@@ -261,6 +294,8 @@ export function SettingsPage() {
         extraInbounds: extra,
         probeUrl: probe.trim() || null,
         tunStack: tunStack.trim() || "mixed",
+        tunIpv6Enabled: tunIpv6,
+        blockQuic,
       });
       setSettings(s);
       // These options are consumed when sing-box starts; apply them together.
@@ -276,7 +311,7 @@ export function SettingsPage() {
       // Pick up edits made while we were applying.
       void autoApplyRef.current();
     }
-  }, [allowLan, api, extra, mixed, probe, settings, t, tunStack]);
+  }, [allowLan, api, blockQuic, extra, mixed, probe, settings, t, tunIpv6, tunStack]);
 
   autoApplyRef.current = autoApplyNetwork;
 
@@ -288,7 +323,7 @@ export function SettingsPage() {
     return () => clearTimeout(timer);
     // Fire on any draft change; autoApplyNetwork itself decides if there is
     // anything valid and dirty to commit.
-  }, [settings, mixed, allowLan, api, probe, tunStack, extra]);
+  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, extra]);
 
   // —— Extra inbound listeners (draft rows + modal editor) ——
 
@@ -795,6 +830,42 @@ export function SettingsPage() {
                   </span>
                 </span>
               </div>
+              <div className="via-proxy-row field-span-2">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.tunIpv6")}</div>
+                  <div className="sys-proxy-desc">{t("settings.tunIpv6Desc")}</div>
+                </div>
+                <GlassSwitchControl
+                  checked={tunIpv6}
+                  title={t("settings.tunIpv6")}
+                  disabled={busy}
+                  onChange={setTunIpv6}
+                />
+              </div>
+              <div className="via-proxy-row field-span-2">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.blockQuic")}</div>
+                  <div className="sys-proxy-desc">{t("settings.blockQuicDesc")}</div>
+                </div>
+                <GlassSwitchControl
+                  checked={blockQuic}
+                  title={t("settings.blockQuic")}
+                  disabled={busy}
+                  onChange={setBlockQuic}
+                />
+              </div>
+              {netDiagnostics.length > 0 && (
+                <div className="field-span-2 diagnostic-banner-list">
+                  {netDiagnostics.map((d) => (
+                    <div className="diagnostic-banner" key={d.id}>
+                      <div className="diagnostic-banner-issue">{d.issue}</div>
+                      <div className="diagnostic-banner-suggestion">
+                        {d.suggestion}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="card settings-form settings-inbounds-card">
               <div className="settings-network-card-head">

@@ -5,6 +5,8 @@ mod elevate;
 mod job;
 #[cfg(target_os = "macos")]
 mod macos_auth;
+#[cfg(target_os = "macos")]
+pub mod macos_net;
 pub mod manager;
 mod memory;
 mod paths;

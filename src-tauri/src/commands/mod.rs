@@ -1,6 +1,7 @@
 mod config;
 mod connections;
 mod core;
+mod diagnostics;
 mod dns;
 mod latency;
 mod logs;
@@ -11,6 +12,7 @@ pub mod subscription;
 pub use config::*;
 pub use connections::*;
 pub use core::*;
+pub use diagnostics::*;
 pub use dns::*;
 pub use latency::*;
 pub use logs::*;

@@ -223,6 +223,12 @@ export function getSettings() {
   return keepSettings(invoke<AppSettings>("get_settings"));
 }
 
+/** Detection-only network diagnostics (e.g. system DNS bypassing TUN).
+ * Never mutates system settings. */
+export function diagnoseNetwork() {
+  return invoke<import("./types").NetworkDiagnosticsResult>("diagnose_network");
+}
+
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
@@ -233,6 +239,8 @@ export interface SettingsUpdatePayload {
   probeUrl?: string | null;
   tunEnabled?: boolean | null;
   tunStack?: string | null;
+  tunIpv6Enabled?: boolean | null;
+  blockQuic?: boolean | null;
   closeToTray?: boolean | null;
   launchAtLogin?: boolean | null;
   silentStart?: boolean | null;
@@ -280,6 +288,8 @@ function scheduleSettingsWrite() {
       probeUrl: payload.probeUrl ?? null,
       tunEnabled: payload.tunEnabled ?? null,
       tunStack: payload.tunStack ?? null,
+      tunIpv6Enabled: payload.tunIpv6Enabled ?? null,
+      blockQuic: payload.blockQuic ?? null,
       closeToTray: payload.closeToTray ?? null,
       launchAtLogin: payload.launchAtLogin ?? null,
       silentStart: payload.silentStart ?? null,

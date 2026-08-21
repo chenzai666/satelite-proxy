@@ -201,6 +201,19 @@ pub struct AppSettings {
     /// TUN TCP/IP stack: `system` | `gvisor` | `mixed` (default mixed).
     #[serde(default = "default_tun_stack")]
     pub tun_stack: String,
+    /// Include an IPv6 address on the TUN interface. Off by default: most
+    /// budget VPS nodes have no IPv6 egress, and an IPv6-addressed tun makes
+    /// the OS (Chrome especially) prefer AAAA/v6 and black-hole every
+    /// connection when the node can't actually route v6 out. Turn on only if
+    /// your node has real IPv6 egress.
+    #[serde(default)]
+    pub tun_ipv6_enabled: bool,
+    /// Reject sniffed QUIC (UDP/443) traffic so browsers fall back to TCP.
+    /// QUIC relayed through XUDP-in-TCP gets double congestion control
+    /// (inner QUIC CC + outer TCP CC), which stutters video on mediocre
+    /// links. Off by default — most users are fine with QUIC passthrough.
+    #[serde(default)]
+    pub block_quic: bool,
     /// Rule / Global / Direct (Clash-style).
     #[serde(default)]
     pub outbound_mode: OutboundMode,
@@ -349,6 +362,8 @@ impl Default for AppSettings {
             tun_enabled: false,
             capture_mode: CaptureMode::Off,
             tun_stack: default_tun_stack(),
+            tun_ipv6_enabled: false,
+            block_quic: false,
             outbound_mode: OutboundMode::Rule,
             route_final: default_route_final(),
             close_to_tray: true,

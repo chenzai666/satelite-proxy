@@ -345,6 +345,7 @@ pub fn run() {
             commands::list_custom_config_nodes,
             commands::get_settings,
             commands::update_settings,
+            commands::diagnose_network,
             commands::regenerate_api_secret,
             commands::set_current_node,
             commands::rename_node,
