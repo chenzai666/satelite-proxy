@@ -746,6 +746,11 @@ pub fn update_rule_set(
                         "远程规则集 URL 必须以 http:// 或 https:// 开头".into(),
                     ));
                 }
+                if crate::domain::is_builtin_remote_id(&id) && url != remote.url {
+                    return Err(crate::error::AppError::Config(
+                        "内置规则集的 URL 不能修改".into(),
+                    ));
+                }
                 let interval = update_interval.as_deref().unwrap_or("disabled");
                 let interval = crate::domain::normalize_remote_update_interval(interval)
                     .ok_or_else(|| {

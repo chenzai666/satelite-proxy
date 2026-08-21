@@ -542,6 +542,7 @@ const en = {
     "Restore the three built-in rule sets (geosite-cn, geoip-cn, geolocation-!cn) to factory settings?\nUser-created / imported sets are not affected.",
   "rules.dnsReject": "Reject",
   "rules.remoteUrlInvalid": "Enter a remote rule set URL starting with http:// or https://",
+  "rules.systemUrlLocked": "The URL of a built-in rule set cannot be changed",
   "rules.resetSingleConfirm":
     "Restore “{name}” to factory settings?\nYour edits to this set (name, URL, route, update interval) will be lost.\n(Restarting the app does not reset it — only Reset does; your edits are otherwise kept.)",
   "rules.resetAllBuiltinHint":
@@ -1277,6 +1278,7 @@ const zh: Record<MessageKey, string> = {
     "将三条内置规则集（国内站点 / 国内ip / 海外网站）恢复为出厂设置？\n用户创建和导入的规则集不受影响。",
   "rules.dnsReject": "拒绝",
   "rules.remoteUrlInvalid": "请输入以 http:// 或 https:// 开头的远程规则集 URL",
+  "rules.systemUrlLocked": "内置规则集的 URL 不能修改",
   "rules.resetSingleConfirm":
     "将「{name}」恢复为出厂设置？\n当前对该集的编辑（名称、URL、路由、更新周期）会丢失。\n（重启程序不会自动重置，只会保留你的修改。）",
   "rules.resetAllBuiltinHint": "将三条内置规则集恢复为出厂设置，不影响用户规则集",

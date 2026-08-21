@@ -2095,7 +2095,13 @@ export function RulesPage({ embedded = false }: Props) {
                       value={editSetUrl}
                       onChange={(e) => setEditSetUrl(e.target.value)}
                       placeholder="https://example.com/rules.json"
+                      disabled={editSetTarget.resettable}
                     />
+                    {editSetTarget.resettable && (
+                      <span className="field-hint muted">
+                        {t("rules.systemUrlLocked")}
+                      </span>
+                    )}
                   </label>
                   <label className="field">
                     <span>{t("rules.autoUpdate")}</span>
