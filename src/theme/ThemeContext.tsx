@@ -48,6 +48,7 @@ function persistThemePref(theme: ThemeId, accent: string) {
 export function normalizeHeroStyle(raw: string | null | undefined): HeroStyle {
   const t = (raw ?? "").trim().toLowerCase();
   if (t === "classic") return "classic";
+  if (t === "smiley") return "smiley";
   return "particle";
 }
 

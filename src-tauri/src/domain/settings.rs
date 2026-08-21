@@ -256,7 +256,7 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
-    /// Overview hero visual: `particle` | `classic`.
+    /// Overview hero visual: `particle` | `classic` | `smiley`.
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.

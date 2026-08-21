@@ -731,6 +731,7 @@ export function SettingsPage() {
                   options={[
                     { value: "particle", label: t("settings.heroStyleParticle") },
                     { value: "classic", label: t("settings.heroStyleClassic") },
+                    { value: "smiley", label: t("settings.heroStyleSmiley") },
                   ]}
                 />
               </div>

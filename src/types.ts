@@ -298,7 +298,7 @@ export interface AppSettings {
   theme?: string;
   /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
   accent?: string;
-  /** Overview hero visual: particle | classic */
+  /** Overview hero visual: particle | classic | smiley */
   hero_style?: HeroStyle;
   /** Tray mark: badge | mark | ghost | buddy */
   tray_icon?: TrayIconStyle;
@@ -319,7 +319,7 @@ export type AutoSelectMode = "off" | "smart" | "kernel";
 
 export type ThemeId = "aerospace" | "day";
 
-export type HeroStyle = "particle" | "classic";
+export type HeroStyle = "particle" | "classic" | "smiley";
 
 export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid";
 
