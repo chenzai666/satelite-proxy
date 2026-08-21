@@ -1867,6 +1867,33 @@ button.node-card:disabled,
   line-height: 1.45;
 }
 
+.diagnostic-banner-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+.diagnostic-banner {
+  border: 1px solid color-mix(in srgb, #e0a030 55%, var(--border));
+  background: color-mix(in srgb, #e0a030 10%, transparent);
+  border-radius: 10px;
+  padding: 0.65rem 0.8rem;
+}
+
+.diagnostic-banner-issue {
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.diagnostic-banner-suggestion {
+  margin-top: 0.35rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .rules-form {
   padding: 1rem;
   margin-bottom: 0.85rem;

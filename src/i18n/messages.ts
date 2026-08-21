@@ -244,6 +244,12 @@ const en = {
   "settings.probeUrl": "Latency probe URL",
   "settings.tunStack": "TUN stack",
   "settings.tunStackHint": "TUN toggle lives on Dashboard · now",
+  "settings.tunIpv6": "TUN IPv6 address",
+  "settings.tunIpv6Desc":
+    "Off by default. Most nodes have no IPv6 egress — enabling this on such a node makes Chrome prefer AAAA/v6 and black-holes every connection. Only turn on if your node has real IPv6 egress.",
+  "settings.blockQuic": "Block QUIC (reject sniffed UDP/443)",
+  "settings.blockQuicDesc":
+    "Forces browsers to fall back to TCP. QUIC relayed through the proxy carries two independent congestion controllers, which can stutter video on mediocre links.",
   "settings.extraInbounds": "Multi-listen ports",
   "settings.extraInboundsEmpty":
     "No extra listeners yet. Add one so sing-box listens on more ports.",
@@ -980,6 +986,12 @@ const zh: Record<MessageKey, string> = {
   "settings.probeUrl": "延迟测试 URL",
   "settings.tunStack": "TUN 协议栈",
   "settings.tunStackHint": "TUN 开关在概览页 · 当前",
+  "settings.tunIpv6": "TUN 启用 IPv6 地址",
+  "settings.tunIpv6Desc":
+    "默认关闭。多数节点没有 IPv6 出口，若节点无 v6 出口而开启此项，Chrome 会优先走 AAAA/v6 导致连接黑洞。仅当你的节点确实有 IPv6 出口时才开启。",
+  "settings.blockQuic": "拦截 QUIC（拒绝识别到的 UDP/443）",
+  "settings.blockQuicDesc":
+    "强制浏览器回退到 TCP。经代理中转的 QUIC 会有两层独立的拥塞控制，线路一般时容易导致视频卡顿。",
   "settings.extraInbounds": "多监听端口",
   "settings.extraInboundsEmpty": "暂无额外监听，新增端口可让 sing-box 同时监听多个端口。",
   "settings.extraInboundsDesc":

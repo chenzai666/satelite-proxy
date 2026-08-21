@@ -268,6 +268,13 @@ export interface AppSettings {
   capture_mode?: "off" | "system" | "tun";
   /** system | gvisor | mixed */
   tun_stack?: string;
+  /** Include an IPv6 address on the TUN interface. Off by default — most
+   * nodes have no v6 egress and a dual-stack tun makes Chrome prefer AAAA/v6,
+   * black-holing every connection. */
+  tun_ipv6_enabled?: boolean;
+  /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. Off by
+   * default. */
+  block_quic?: boolean;
   /** rule | global | direct */
   outbound_mode?: OutboundMode;
   /** route.final in Rule mode: proxy | direct | block */
@@ -356,6 +363,17 @@ export type CoreState =
   | "running"
   | "stopping"
   | "error";
+
+/** One detected network issue (detection only — the app never auto-applies a fix). */
+export interface DiagnosticIssue {
+  id: string;
+  issue: string;
+  suggestion: string;
+}
+
+export interface NetworkDiagnosticsResult {
+  issues: DiagnosticIssue[];
+}
 
 export interface ProxyStatus {
   running: boolean;
