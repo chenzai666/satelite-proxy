@@ -914,7 +914,9 @@ export function RulesPage({ embedded = false }: Props) {
 
   function isFactorySet(s: RuleSetSummary | undefined | null) {
     if (!s) return false;
-    return s.id.startsWith("builtin-");
+    // Only the bundled remote rule sets are resettable; legacy `builtin-*`
+    // list sets are recognized but no longer restorable.
+    return s.resettable;
   }
 
   async function onResetFactory(target: RuleSetSummary | null | undefined = viewSet) {
@@ -1181,6 +1183,9 @@ export function RulesPage({ embedded = false }: Props) {
             <span className={`ruleset-strategy-label strategy-${s.strategy}`}>
               {strategyLabel(s.strategy)}
             </span>
+            {s.builtin && (
+              <span className="ruleset-builtin-label">{t("rules.builtin")}</span>
+            )}
             {" · "}
             {t("rules.rulesCount", { n: s.rule_count })}
           </div>

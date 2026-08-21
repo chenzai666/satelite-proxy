@@ -1,8 +1,9 @@
 use crate::domain::{
-    default_rules, is_factory_set_id, load_builtin_rule_sets, load_factory_rule_set,
-    sanitize_rules, AppSettings, DnsAction, DnsRuleSetKind, DnsSettings, DomainMatcher, ProxyNode,
-    Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy, RuleSetSummary,
-    RuleTarget, RuleType, Subscription, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
+    build_builtin_remote_set, builtin_remote_spec, default_rules, is_builtin_remote_id,
+    is_factory_set_id, load_builtin_rule_sets, load_factory_rule_set, sanitize_rules, AppSettings,
+    DnsAction, DnsRuleSetKind, DnsSettings, DomainMatcher, ProxyNode, Rule, RuleSet,
+    RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy, RuleSetSummary, RuleTarget, RuleType,
+    Subscription, BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID,
     GENERAL_SET_NAME,
 };
 use crate::error::{AppError, AppResult};
@@ -72,6 +73,8 @@ impl AppStore {
         store.migrate_redundant_general_rule_set();
         store.migrate_remote_update_policy();
         store.migrate_plain_set_rule_targets();
+        store.migrate_builtin_remote_rule_sets();
+        store.migrate_remove_general_rule_set();
         store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
         if schema_before < 5 && source_raw.is_some() {
@@ -82,6 +85,18 @@ impl AppStore {
         }
         if schema_before < 6 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v6.backup.json");
+            if !backup.exists() {
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
+            }
+        }
+        if schema_before < 7 && source_raw.is_some() {
+            let backup = path.with_file_name("store.pre-v7.backup.json");
+            if !backup.exists() {
+                let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
+            }
+        }
+        if schema_before < 8 && source_raw.is_some() {
+            let backup = path.with_file_name("store.pre-v8.backup.json");
             if !backup.exists() {
                 let _ = fs::write(backup, source_raw.as_deref().unwrap_or_default());
             }
@@ -566,6 +581,44 @@ impl AppStore {
         self.schema_version = VERSION;
     }
 
+    /// v7: the factory rule sets became the three bundled remote rule sets
+    /// (geo cn / geoip cn / geolocation-!cn). Insert any missing one at the
+    /// front in match-priority order. Runs once — afterwards deleting a
+    /// builtin remote set sticks until Reset restores it. Legacy `builtin-*`
+    /// list sets (e.g. `builtin-ruleset`) are deliberately left untouched:
+    /// still recognized, deletable, never resurrected by Reset.
+    pub fn migrate_builtin_remote_rule_sets(&mut self) {
+        const VERSION: u32 = 7;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        let mut insert_at = 0;
+        for spec in BUILTIN_REMOTE_RULE_SETS.iter() {
+            if self.rule_sets.iter().any(|set| set.id == spec.id) {
+                continue;
+            }
+            self.rule_sets
+                .insert(insert_at, build_builtin_remote_set(spec));
+            insert_at += 1;
+        }
+        self.schema_version = VERSION;
+    }
+
+    /// v8: the 通用规则 set is gone — LAN/localhost bypass became a routing
+    /// setting (`AppSettings::bypass_lan`) and the builtin remote rule sets
+    /// cover geo routing. Remove any remaining general set (including
+    /// user-edited copies preserved by v4) and legacy flat rule leftovers.
+    pub fn migrate_remove_general_rule_set(&mut self) {
+        const VERSION: u32 = 8;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        self.rule_sets
+            .retain(|set| set.id != GENERAL_SET_ID);
+        self.rules.clear();
+        self.schema_version = VERSION;
+    }
+
     pub fn save(&self, path: &Path) -> AppResult<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -919,14 +972,9 @@ impl AppStore {
             rules.sort_by_key(|r| r.ord);
             out.extend(rules);
         }
-        if out.is_empty()
-            && !self
-                .rule_sets
-                .iter()
-                .any(|set| set.enabled && set.remote.is_some())
-        {
-            return sanitize_rules(&default_rules());
-        }
+        // No implicit fallback list anymore: localhost/LAN bypass comes from
+        // the `bypass_lan` setting (builder-level), geo defaults from the
+        // builtin remote rule sets.
         out
     }
 
@@ -946,6 +994,7 @@ impl AppStore {
                 ownership: s.ownership,
                 strategy: s.strategy,
                 dns_strategy: s.dns_strategy,
+                resettable: is_builtin_remote_id(&s.id),
                 remote: s.remote.clone(),
             })
             .collect()
@@ -1169,13 +1218,21 @@ impl AppStore {
         Ok(())
     }
 
-    /// Reload **one** factory set from `resources/rules/{id}.list` (+ optional `.dns.list`).
-    /// Preserves `enabled`. Fails if id is not a factory template.
+    /// Reload **one** factory set. The bundled remote rule sets restore from
+    /// their packaged `.srs` copy; `resources/rules/{id}.list` is only
+    /// honored for ids still matching [`is_factory_set_id`], so legacy
+    /// `builtin-*` list sets (recognized, deletable) can no longer be reset.
+    /// Returns the restored set plus stale cache files to delete after the
+    /// core restart (the running core may still be reading them).
     pub fn reset_rule_set(
         &mut self,
+        app_data_dir: &Path,
         resource_dir: Option<&Path>,
         set_id: &str,
-    ) -> AppResult<RuleSet> {
+    ) -> AppResult<(RuleSet, Vec<PathBuf>)> {
+        if let Some(spec) = builtin_remote_spec(set_id) {
+            return self.reset_builtin_remote_set(app_data_dir, resource_dir, spec);
+        }
         if !is_factory_set_id(set_id) {
             return Err(AppError::Config("只能重置内置规则集".into()));
         }
@@ -1185,27 +1242,86 @@ impl AppStore {
             let was_enabled = s.enabled;
             *s = template;
             s.enabled = was_enabled;
-            Ok(s.clone())
+            Ok((s.clone(), Vec::new()))
         } else {
             let mut inserted = template;
             inserted.enabled = true;
             self.rule_sets.push(inserted.clone());
-            Ok(inserted)
+            Ok((inserted, Vec::new()))
         }
     }
 
-    /// Reload all `builtin-*` factory sets from disk (legacy bulk reset).
-    pub fn reset_all_builtin_rule_sets(&mut self, resource_dir: Option<&Path>) -> Vec<String> {
-        let removed: Vec<String> = self
+    /// Restore one bundled remote rule set to factory defaults (name, url,
+    /// target, interval) while keeping the user's `enabled` choice. The
+    /// packaged `.srs` is re-copied to the stable cache path.
+    fn reset_builtin_remote_set(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        spec: &crate::domain::BuiltinRemoteRuleSpec,
+    ) -> AppResult<(RuleSet, Vec<PathBuf>)> {
+        let cache_dir = crate::builtin_remote_rules::cache_dir(app_data_dir);
+        let mut stale = self.stale_cache_paths(spec.id, &cache_dir);
+        let mut restored =
+            crate::builtin_remote_rules::restore_set(app_data_dir, resource_dir, spec);
+        if let Some(index) = self.rule_sets.iter().position(|x| x.id == spec.id) {
+            restored.enabled = self.rule_sets[index].enabled;
+            self.rule_sets[index] = restored.clone();
+        } else {
+            self.rule_sets.insert(0, restored.clone());
+        }
+        // The stable path is live again; only superseded caches are stale.
+        let stable = crate::builtin_remote_rules::stable_cache_path(app_data_dir, spec);
+        stale.retain(|path| *path != stable);
+        Ok((restored, stale))
+    }
+
+    /// local_path of one set inside the cache dir, if it has one.
+    fn stale_cache_paths(&self, set_id: &str, cache_dir: &Path) -> Vec<PathBuf> {
+        self.rule_sets
+            .iter()
+            .find(|set| set.id == set_id)
+            .and_then(|set| set.remote.as_ref())
+            .and_then(|remote| remote.local_path.as_ref())
+            .map(PathBuf::from)
+            .filter(|path| path.parent() == Some(cache_dir))
+            .into_iter()
+            .collect()
+    }
+
+    /// Reset the three bundled remote rule sets to factory defaults. Legacy
+    /// `builtin-*` list sets are intentionally untouched — recognized but no
+    /// longer restored. Returns (restored sets, stale cache files, ids whose
+    /// `.list` exports should be removed).
+    pub fn reset_all_builtin_rule_sets(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+    ) -> (Vec<RuleSet>, Vec<PathBuf>, Vec<String>) {
+        let cache_dir = crate::builtin_remote_rules::cache_dir(app_data_dir);
+        let mut stale = Vec::new();
+        for spec in BUILTIN_REMOTE_RULE_SETS.iter() {
+            stale.extend(self.stale_cache_paths(spec.id, &cache_dir));
+        }
+        let export_ids: Vec<String> = self
             .rule_sets
             .iter()
-            .filter(|set| set.ownership == RuleSetOwnership::Builtin)
+            .filter(|set| is_builtin_remote_id(&set.id))
             .map(|set| set.id.clone())
             .collect();
-        self.rule_sets
-            .retain(|set| set.ownership != RuleSetOwnership::Builtin);
-        self.rule_sets.extend(load_builtin_rule_sets(resource_dir));
-        removed
+        self.rule_sets.retain(|set| !is_builtin_remote_id(&set.id));
+        let mut restored = Vec::new();
+        for (index, spec) in BUILTIN_REMOTE_RULE_SETS.iter().enumerate() {
+            let set = crate::builtin_remote_rules::restore_set(app_data_dir, resource_dir, spec);
+            self.rule_sets.insert(index, set.clone());
+            restored.push(set);
+        }
+        let stable: std::collections::HashSet<PathBuf> = BUILTIN_REMOTE_RULE_SETS
+            .iter()
+            .map(|spec| crate::builtin_remote_rules::stable_cache_path(app_data_dir, spec))
+            .collect();
+        stale.retain(|path| !stable.contains(path));
+        (restored, stale, export_ids)
     }
 }
 
@@ -1649,7 +1765,7 @@ mod tests {
         store.save(&path).unwrap();
 
         let loaded = AppStore::load(&path, None).unwrap();
-        assert_eq!(loaded.schema_version, 6);
+        assert_eq!(loaded.schema_version, 8);
         let pre_v6 = path.with_file_name("store.pre-v6.backup.json");
         assert!(pre_v6.exists(), "pre-v6 snapshot must be written on upgrade");
         let snap = parse_store(&fs::read_to_string(&pre_v6).unwrap()).unwrap();
@@ -1657,7 +1773,7 @@ mod tests {
         // Reloading the migrated store must not resurrect the backup logic.
         fs::remove_file(&pre_v6).unwrap();
         let again = AppStore::load(&path, None).unwrap();
-        assert_eq!(again.schema_version, 6);
+        assert_eq!(again.schema_version, 8);
         assert!(!pre_v6.exists(), "v6 store skips the backup on reload");
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -2138,30 +2254,121 @@ mod tests {
     }
 
     #[test]
-    fn deleted_builtin_is_restored_only_when_still_bundled() {
+    fn deleted_builtin_sets_are_not_resurrected() {
         let mut store = AppStore::default();
-        let bundled = load_builtin_rule_sets(None)
-            .into_iter()
-            .next()
-            .expect("bundled rule set");
-        let bundled_id = bundled.id.clone();
-        store.rule_sets.push(bundled);
-        let mut obsolete = RuleSet::new_user("过时内置", Vec::new());
-        obsolete.id = "builtin-obsolete".into();
-        obsolete.builtin = true;
-        obsolete.ownership = RuleSetOwnership::Builtin;
-        store.rule_sets.push(obsolete);
+        let mut legacy = RuleSet::new_user("旧内置", Vec::new());
+        legacy.id = BUILTIN_SET_ID.into();
+        legacy.builtin = true;
+        legacy.ownership = RuleSetOwnership::Builtin;
+        store.rule_sets.push(legacy);
+        store.migrate_builtin_remote_rule_sets();
+        let builtin_remote_id = BUILTIN_REMOTE_RULE_SETS[0].id.to_string();
+        assert!(store.get_rule_set(&builtin_remote_id).is_some());
 
-        store.delete_rule_set(&bundled_id).unwrap();
-        store.delete_rule_set("builtin-obsolete").unwrap();
+        // Deleting either kind sticks: no factory list templates remain and
+        // the v7 migration never runs again (schema guard).
+        store.delete_rule_set(&builtin_remote_id).unwrap();
+        store.delete_rule_set(BUILTIN_SET_ID).unwrap();
         store.ensure_rule_sets(None);
-
-        assert!(store.get_rule_set(&bundled_id).is_some());
-        assert!(store.get_rule_set("builtin-obsolete").is_none());
+        store.migrate_builtin_remote_rule_sets();
+        assert!(store.get_rule_set(&builtin_remote_id).is_none());
+        assert!(store.get_rule_set(BUILTIN_SET_ID).is_none());
     }
 
     #[test]
-    fn reset_all_builtin_preserves_user_sets() {
+    fn v7_migration_runs_once_and_orders_specs_first() {
+        let mut store = AppStore {
+            schema_version: 6,
+            ..AppStore::default()
+        };
+        store
+            .rule_sets
+            .push(RuleSet::new_user("已有规则", Vec::new()));
+
+        store.migrate_builtin_remote_rule_sets();
+        assert_eq!(store.schema_version, 7);
+        let ids: Vec<&str> = store.rule_sets.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids[..3],
+            BUILTIN_REMOTE_RULE_SETS
+                .iter()
+                .map(|spec| spec.id)
+                .collect::<Vec<_>>()[..]
+        );
+        assert_eq!(store.rule_sets.len(), 4);
+
+        // Idempotent: a user deletion after v7 is never undone by reload.
+        store.delete_rule_set(BUILTIN_REMOTE_RULE_SETS[1].id).unwrap();
+        store.migrate_builtin_remote_rule_sets();
+        assert_eq!(store.rule_sets.len(), 3);
+    }
+
+    #[test]
+    fn v8_removes_general_rule_set_and_legacy_flat_rules() {
+        let mut store = AppStore {
+            schema_version: 7,
+            ..AppStore::default()
+        };
+        let mut general = RuleSet::new_user(GENERAL_SET_NAME, default_rules());
+        general.id = GENERAL_SET_ID.into();
+        store.rule_sets.push(general);
+        let user = RuleSet::new_user("用户集", Vec::new());
+        store.rule_sets.push(user);
+        // Legacy flat leftovers that ensure_rule_sets would fold into the
+        // general set before v8 runs — both must disappear together.
+        store
+            .rules
+            .push(Rule::new(RuleType::DomainSuffix, "old.com".into(), RuleTarget::Direct, 10));
+
+        store.migrate_remove_general_rule_set();
+
+        assert_eq!(store.schema_version, 8);
+        assert!(
+            !store.rule_sets.iter().any(|set| set.id == GENERAL_SET_ID),
+            "general set removed"
+        );
+        assert!(
+            store.rule_sets.iter().any(|set| set.name == "用户集"),
+            "user sets survive"
+        );
+        assert!(store.rules.is_empty(), "legacy flat rules cleared");
+        // Idempotent: schema guard keeps later user choices intact.
+        store.migrate_remove_general_rule_set();
+        assert_eq!(store.rule_sets.len(), 1);
+    }
+
+    #[test]
+    fn v7_load_writes_pre_v7_backup() {
+        let path = test_store_path("pre-v7");
+        let mut store = AppStore {
+            schema_version: 6,
+            ..AppStore::default()
+        };
+        store
+            .rule_sets
+            .push(RuleSet::new_user("v6集", Vec::new()));
+        store.save(&path).unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.schema_version, 8);
+        let pre_v7 = path.with_file_name("store.pre-v7.backup.json");
+        assert!(pre_v7.exists(), "pre-v7 snapshot must be written on upgrade");
+        let snap = parse_store(&fs::read_to_string(&pre_v7).unwrap()).unwrap();
+        assert_eq!(snap.schema_version, 6);
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn reset_all_builtin_restores_only_the_three_remote_sets() {
+        let dir = std::env::temp_dir().join(format!(
+            "satelite-reset-all-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         let mut store = AppStore::default();
         let user = RuleSet::new_remote(
             "用户远程",
@@ -2170,22 +2377,83 @@ mod tests {
         );
         let user_id = user.id.clone();
         store.rule_sets.push(user);
-        store.rule_sets.push(RuleSet {
-            id: "builtin-old".into(),
-            name: "旧内置".into(),
-            builtin: true,
-            enabled: true,
-            ownership: RuleSetOwnership::Builtin,
-            strategy: RuleSetStrategy::Proxy,
-            dns_strategy: RuleSetDnsStrategy::Remote,
-            remote: None,
-            dns_rules: Vec::new(),
-            rules: Vec::new(),
-        });
+        let mut legacy = RuleSet::new_user("旧内置", Vec::new());
+        legacy.id = "builtin-ruleset".into();
+        legacy.builtin = true;
+        legacy.ownership = RuleSetOwnership::Builtin;
+        store.rule_sets.push(legacy);
+        store.migrate_builtin_remote_rule_sets();
 
-        let removed = store.reset_all_builtin_rule_sets(None);
-        assert!(removed.iter().any(|id| id == "builtin-old"));
-        assert!(store.rule_sets.iter().any(|set| set.id == user_id));
+        let (restored, _stale, export_ids) = store.reset_all_builtin_rule_sets(&dir, None);
+
+        assert_eq!(restored.len(), 3);
+        let ids: Vec<&str> = store.rule_sets.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 5);
+        assert!(ids[..3]
+            .iter()
+            .all(|id| is_builtin_remote_id(id)));
+        // User set and the legacy builtin list set both survive the reset.
+        assert!(store.get_rule_set(&user_id).is_some());
+        assert!(store.get_rule_set("builtin-ruleset").is_some());
+        assert!(!export_ids.iter().any(|id| id == "builtin-ruleset"));
+        // With bundled copies available the sets reference their stable
+        // cache file; without them they stay on the URL fallback.
+        for set in &restored {
+            let spec = crate::domain::builtin_remote_spec(&set.id).unwrap();
+            match set.remote.as_ref().unwrap().local_path.as_deref() {
+                Some(path) => {
+                    let stable = crate::builtin_remote_rules::stable_cache_path(&dir, spec);
+                    assert_eq!(path, stable.to_str().unwrap());
+                    assert!(stable.is_file());
+                }
+                None => {}
+            }
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_single_builtin_remote_restores_defaults_and_keeps_enabled() {
+        let dir = std::env::temp_dir().join(format!(
+            "satelite-reset-one-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut store = AppStore::default();
+        store.migrate_builtin_remote_rule_sets();
+        let spec = &BUILTIN_REMOTE_RULE_SETS[2];
+        {
+            let set = store.rule_sets.iter_mut().find(|s| s.id == spec.id).unwrap();
+            set.name = "改名".into();
+            set.enabled = false;
+            set.remote.as_mut().unwrap().update_interval = "disabled".into();
+        }
+
+        let (restored, _stale) = store
+            .reset_rule_set(&dir, None, spec.id)
+            .expect("reset builtin remote set");
+
+        assert_eq!(restored.name, spec.name);
+        assert!(!restored.enabled, "user's disabled state survives reset");
+        assert_eq!(restored.remote.as_ref().unwrap().update_interval, "24h");
+        assert_eq!(
+            store
+                .rule_sets
+                .iter()
+                .find(|s| s.id == spec.id)
+                .unwrap()
+                .name,
+            spec.name
+        );
+
+        // Legacy builtin list ids are no longer resettable at all.
+        assert!(store.reset_rule_set(&dir, None, BUILTIN_SET_ID).is_err());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

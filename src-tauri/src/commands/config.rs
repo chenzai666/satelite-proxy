@@ -75,6 +75,7 @@ pub fn update_settings(
     tun_stack: Option<String>,
     tun_ipv6_enabled: Option<bool>,
     block_quic: Option<bool>,
+    bypass_lan: Option<bool>,
     close_to_tray: Option<bool>,
     launch_at_login: Option<bool>,
     silent_start: Option<bool>,
@@ -98,6 +99,7 @@ pub fn update_settings(
     )> = None;
     let mut route_final_changed = false;
     let mut find_process_changed = false;
+    let mut bypass_lan_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -159,6 +161,12 @@ pub fn update_settings(
             }
             if let Some(v) = block_quic {
                 store.settings.block_quic = v;
+            }
+            if let Some(v) = bypass_lan {
+                if store.settings.bypass_lan != v {
+                    bypass_lan_changed = true;
+                    store.settings.bypass_lan = v;
+                }
             }
             if let Some(v) = close_to_tray {
                 store.settings.close_to_tray = v;
@@ -286,6 +294,7 @@ pub fn update_settings(
     // selector ↔ urltest also needs a full restart (outbound type changes).
     let need_restart = route_final_changed
         || find_process_changed
+        || bypass_lan_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -621,6 +630,7 @@ pub async fn generate_singbox_config(
                 find_process: settings.find_process,
                 tun_ipv6: settings.tun_ipv6_enabled,
                 block_quic: settings.block_quic,
+                bypass_lan: settings.bypass_lan,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -709,6 +719,7 @@ pub async fn preview_singbox_config(
                 find_process: settings.find_process,
                 tun_ipv6: settings.tun_ipv6_enabled,
                 block_quic: settings.block_quic,
+                bypass_lan: settings.bypass_lan,
             },
         )
         .map_err(|e| e.to_string())?;

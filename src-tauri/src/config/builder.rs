@@ -49,6 +49,10 @@ pub struct BuildOptions {
     /// Reject sniffed QUIC (UDP/443) traffic so browsers fall back to TCP.
     /// See `AppSettings::block_quic` doc for the congestion-control rationale.
     pub block_quic: bool,
+    /// Bypass localhost and LAN segments with built-in direct rules appended
+    /// after the rule sets (a safety net ahead of `route.final`). Rule mode
+    /// only; Global proxies everything by explicit user choice.
+    pub bypass_lan: bool,
 }
 
 impl BuildOptions {
@@ -197,6 +201,25 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
         } else {
             route_rules.extend(grouped_route_rules);
+        }
+        if opts.bypass_lan {
+            // localhost + LAN safety net before route.final. Emitted after the
+            // rule sets so explicit user rules keep winning, and so domain
+            // classification (geosite sets) happens before any IP matching —
+            // an earlier bare ip rule would force DNS resolution for every
+            // domain connection and break the DNS split.
+            route_rules.push(json!({
+                "domain_suffix": ["local", "localhost"],
+                "action": "route",
+                "outbound": "direct"
+            }));
+            // ip_is_private covers loopback, RFC1918, link-local and their
+            // IPv6 counterparts in one matcher.
+            route_rules.push(json!({
+                "ip_is_private": true,
+                "action": "route",
+                "outbound": "direct"
+            }));
         }
     }
 
@@ -1356,6 +1379,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -1681,6 +1705,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -1794,6 +1819,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -1835,6 +1861,7 @@ mod tests {
             find_process: true,
             tun_ipv6: false,
             block_quic: false,
+            bypass_lan: false,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -1881,6 +1908,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -1944,6 +1972,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -1982,6 +2011,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2025,6 +2055,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2089,6 +2120,7 @@ mod tests {
             find_process: true,
             tun_ipv6: ipv6,
             block_quic: false,
+            bypass_lan: false,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2134,6 +2166,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2167,6 +2200,7 @@ mod tests {
             find_process: true,
             tun_ipv6: false,
             block_quic,
+            bypass_lan: false,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2193,6 +2227,81 @@ mod tests {
             quic_idx > sniff_idx,
             "quic reject must come after sniff (needs the detected protocol)"
         );
+    }
+
+    #[test]
+    fn bypass_lan_appends_direct_rules_after_rule_sets() {
+        let nodes = vec![sample_ss()];
+        let mut set = RuleSet::new_user(
+            "直连集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "example.com".into(),
+                RuleTarget::Direct,
+                10,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Direct;
+        let base = |bypass_lan: bool| BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![set.clone()],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan,
+        };
+
+        let off = build_singbox_config(&nodes, &base(false)).unwrap();
+        let rules = off.value["route"]["rules"].as_array().unwrap();
+        assert!(
+            !rules
+                .iter()
+                .any(|r| r.get("ip_is_private") == Some(&json!(true))),
+            "bypass_lan off must not add LAN rules"
+        );
+
+        let on = build_singbox_config(&nodes, &base(true)).unwrap();
+        let rules = on.value["route"]["rules"].as_array().unwrap();
+        let set_idx = rules
+            .iter()
+            .position(|r| r.get("rule_set").is_some())
+            .expect("rule set route present");
+        let domain_idx = rules
+            .iter()
+            .position(|r| r.get("domain_suffix").is_some_and(|v| v == &json!(["local", "localhost"])))
+            .expect("localhost bypass rule present");
+        let private_idx = rules
+            .iter()
+            .position(|r| r.get("ip_is_private") == Some(&json!(true)))
+            .expect("private CIDR bypass rule present");
+        assert!(
+            domain_idx > set_idx && private_idx > set_idx,
+            "bypass rules append after the rule sets (DNS split + user rules win)"
+        );
+        for idx in [domain_idx, private_idx] {
+            assert_eq!(rules[idx]["action"], json!("route"));
+            assert_eq!(rules[idx]["outbound"], json!("direct"));
+        }
+        // Global mode proxies everything by choice: no bypass there.
+        let mut global = base(true);
+        global.outbound_mode = OutboundMode::Global;
+        let built = build_singbox_config(&nodes, &global).unwrap();
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        assert!(!rules.iter().any(|r| r.get("ip_is_private") == Some(&json!(true))));
     }
 
     #[test]
@@ -2258,6 +2367,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap_err();
@@ -2289,6 +2399,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2321,6 +2432,7 @@ mod tests {
                     find_process: true,
                     tun_ipv6: false,
                     block_quic: false,
+                bypass_lan: false,
                 },
             )
             .unwrap();
@@ -2359,6 +2471,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2403,6 +2516,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2448,6 +2562,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();
@@ -2497,6 +2612,7 @@ mod tests {
                 find_process: true,
                 tun_ipv6: false,
                 block_quic: false,
+                bypass_lan: false,
             },
         )
         .unwrap();

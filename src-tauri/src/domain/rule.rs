@@ -480,6 +480,9 @@ pub struct RuleSetSummary {
     pub ownership: RuleSetOwnership,
     pub strategy: RuleSetStrategy,
     pub dns_strategy: RuleSetDnsStrategy,
+    /// Restorable by Reset: only the bundled remote rule sets.
+    #[serde(default)]
+    pub resettable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteRuleSetConfig>,
 }
@@ -490,6 +493,71 @@ pub const GENERAL_SET_NAME: &str = "通用规则";
 /// Legacy / known id for the large default list file `builtin-ruleset.list`.
 pub const BUILTIN_SET_ID: &str = "builtin-ruleset";
 pub const BUILTIN_SET_NAME: &str = "内置规则集";
+
+/// One bundled remote rule set shipped in `resources/rule-sets/`.
+#[derive(Debug)]
+pub struct BuiltinRemoteRuleSpec {
+    /// Stable store id (also the sing-box rule-set tag).
+    pub id: &'static str,
+    pub name: &'static str,
+    /// Stable cache file name under `remote-rule-sets/`.
+    pub file: &'static str,
+    /// Remote source the set refreshes from; the bundled copy only seeds it.
+    pub url: &'static str,
+    /// Whole-set route strategy.
+    pub target: RuleTarget,
+}
+
+/// Factory remote rule sets, in match-priority order (store order wins).
+/// Seeded from bundled `.srs` copies at startup; Reset restores these three.
+pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
+    BuiltinRemoteRuleSpec {
+        id: "builtin-remote-geolocation-not-cn",
+        name: "海外网站",
+        file: "builtin-remote-geolocation-not-cn.srs",
+        url: "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
+        target: RuleTarget::Proxy,
+    },
+    BuiltinRemoteRuleSpec {
+        id: "builtin-remote-geoip-cn",
+        name: "国内ip",
+        file: "builtin-remote-geoip-cn.srs",
+        url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs",
+        target: RuleTarget::Direct,
+    },
+    BuiltinRemoteRuleSpec {
+        id: "builtin-remote-geosite-cn",
+        name: "国内站点",
+        file: "builtin-remote-geosite-cn.srs",
+        url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs",
+        target: RuleTarget::Direct,
+    },
+];
+
+pub fn is_builtin_remote_id(id: &str) -> bool {
+    BUILTIN_REMOTE_RULE_SETS
+        .iter()
+        .any(|spec| spec.id == id)
+}
+
+pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {
+    BUILTIN_REMOTE_RULE_SETS.iter().find(|spec| spec.id == id)
+}
+
+/// Factory entry for one bundled remote rule set. `local_path` is filled in
+/// by the startup seeding step once the bundled copy lands in the cache dir.
+pub fn build_builtin_remote_set(spec: &BuiltinRemoteRuleSpec) -> RuleSet {
+    let mut set = RuleSet::new_remote(spec.name, spec.url, spec.target);
+    set.id = spec.id.into();
+    set.builtin = true;
+    set.ownership = RuleSetOwnership::Builtin;
+    set.enabled = true;
+    if let Some(remote) = set.remote.as_mut() {
+        remote.format = "binary".into();
+        remote.update_interval = "24h".into();
+    }
+    set
+}
 
 /// Whether a source rule must remain one logical row in the remote rule viewer.
 pub fn remote_rule_is_complex(rule: &serde_json::Value) -> bool {
@@ -523,14 +591,17 @@ pub fn remote_rule_display_count(rule: &serde_json::Value) -> usize {
     count.max(1)
 }
 
-/// Sets that ship as factory templates under `resources/rules/`.
-/// - **Restart**: store edits are kept (templates only fill missing sets).
-/// - **Reset**: reloads that set from the resource file.
+/// Factory sets currently shipped with the app: the bundled remote rule
+/// sets below. Legacy `builtin-*` list sets (e.g. `builtin-ruleset`) are
+/// still recognized via their `builtin` flag but are no longer factory:
+/// deletions stick and Reset never restores them.
 pub fn is_factory_set_id(id: &str) -> bool {
-    id.starts_with("builtin-")
+    is_builtin_remote_id(id)
 }
 
-/// Minimal direct fallback when no rule set is enabled.
+/// Historical general-set payload (used by the v4 migration to detect an
+/// untouched 通用规则 set). No longer a routing fallback — LAN/localhost
+/// bypass comes from `AppSettings::bypass_lan` in the config builder.
 pub fn default_rules() -> Vec<Rule> {
     vec![
         Rule::new(
@@ -966,37 +1037,60 @@ FINAL,PROXY
     }
 
     #[test]
-    fn scan_rules_dir_loads_factory_templates() {
+    fn scan_rules_dir_handles_missing_factory_templates() {
+        // The legacy `builtin-ruleset.list` factory template is gone; the
+        // scan must simply yield nothing instead of failing.
         let files = load_builtin_rule_files(None);
         assert!(
-            !files.is_empty(),
-            "expected resources/rules under CARGO_MANIFEST_DIR"
+            files.iter().all(|file| file.id != BUILTIN_SET_ID),
+            "legacy builtin-ruleset must no longer ship as a factory template"
         );
+    }
 
-        let large = files.iter().find(|f| f.id == BUILTIN_SET_ID);
-        assert!(large.is_some());
-        assert!(large.unwrap().factory_builtin);
-        assert!(large.unwrap().rules.len() > 100);
-        assert!(!large
-            .unwrap()
-            .rules
-            .iter()
-            .any(|r| matches!(r.rule_type, RuleType::Geoip)));
+    #[test]
+    fn builtin_remote_specs_are_well_formed() {
+        let mut ids = std::collections::HashSet::new();
+        for spec in BUILTIN_REMOTE_RULE_SETS.iter() {
+            assert!(
+                ids.insert(spec.id),
+                "duplicate builtin remote id {}",
+                spec.id
+            );
+            assert!(spec.id.starts_with("builtin-"));
+            assert_eq!(spec.file, format!("{}.srs", spec.id));
+            assert!(spec.url.starts_with("https://"));
+            assert!(matches!(
+                spec.target,
+                RuleTarget::Proxy | RuleTarget::Direct
+            ));
+            assert!(is_builtin_remote_id(spec.id));
+            assert!(is_factory_set_id(spec.id));
+        }
+        // Legacy list ids are recognizable but no longer factory.
+        assert!(!is_factory_set_id(BUILTIN_SET_ID));
+        assert!(!is_factory_set_id("builtin-ruleset-proxy"));
+        assert!(!is_builtin_remote_id(BUILTIN_SET_ID));
+    }
 
-        let sets = load_builtin_rule_sets(None);
-        let proxy = sets
-            .iter()
-            .find(|set| set.id == "builtin-ruleset-proxy")
-            .expect("mixed builtin proxy split");
-        let direct = sets
-            .iter()
-            .find(|set| set.id == "builtin-ruleset-direct")
-            .expect("mixed builtin direct split");
-        assert_eq!(proxy.strategy, RuleSetStrategy::Proxy);
-        assert_eq!(direct.strategy, RuleSetStrategy::Direct);
+    #[test]
+    fn build_builtin_remote_set_shape() {
+        let spec = &BUILTIN_REMOTE_RULE_SETS[0];
+        let set = build_builtin_remote_set(spec);
+        assert_eq!(set.id, spec.id);
+        assert!(set.builtin);
+        assert_eq!(set.ownership, RuleSetOwnership::Builtin);
+        assert!(set.enabled);
+        let remote = set.remote.expect("remote config");
+        assert_eq!(remote.url, spec.url);
+        assert_eq!(remote.format, "binary");
+        assert_eq!(remote.update_interval, "24h");
+        assert_eq!(remote.target, spec.target);
+        assert_eq!(remote.local_path, None);
+        assert_eq!(set.strategy, RuleSetStrategy::from_target(spec.target));
+        // DNS pairing follows the route target.
         assert_eq!(
-            proxy.rules.len() + direct.rules.len(),
-            large.unwrap().rules.len()
+            set.dns_strategy,
+            RuleSetStrategy::from_target(spec.target).recommended_dns_strategy().unwrap()
         );
     }
 }

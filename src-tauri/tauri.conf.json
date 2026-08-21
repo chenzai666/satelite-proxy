@@ -36,7 +36,7 @@
     "resources": [
       "resources/bin/darwin-arm64/sing-box",
       "resources/bin/darwin-arm64/version.txt",
-      "resources/rules",
+      "resources/rule-sets",
       "resources/dns"
     ]
   },

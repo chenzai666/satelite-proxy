@@ -86,6 +86,9 @@
 # 安装依赖
 pnpm install
 
+# 下载打包资源（sing-box 内核 + 三条内置远程规则集 .srs，缺省时应用会回退到在线下载）
+./scripts/fetch-bundled-rule-sets.sh
+
 # 启动开发模式
 pnpm tauri dev
 

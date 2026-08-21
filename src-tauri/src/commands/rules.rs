@@ -808,54 +808,58 @@ pub fn delete_rule_set(
     Ok(())
 }
 
-/// Reset one builtin factory set from `resources/rules/{id}.list`.
+/// Reset one factory rule set. The bundled remote rule sets restore from
+/// their packaged `.srs` copies; legacy `builtin-*` list sets are gone and
+/// can no longer be reset.
 #[tauri::command]
 pub fn reset_rule_set(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<RuleSet, String> {
-    let set = state
-        .with_store_mut(|store| store.reset_rule_set(state.resource_dir.as_deref(), &id))
+    let (set, stale_cache) = state
+        .with_store_mut(|store| {
+            store.reset_rule_set(&state.app_data_dir, state.resource_dir.as_deref(), &id)
+        })
         .map_err(|e| e.to_string())?;
+    remove_rule_set_files(&state.app_data_dir, &set.id);
+    if crate::domain::is_builtin_remote_id(&set.id) {
+        // Superseded cache files are deleted only after the core restart
+        // (the running core may still be reading them).
+        crate::rule_apply::request_restart(app, stale_cache);
+        return Ok(set);
+    }
     dump_set(&state, &set.id);
     apply_running(&app);
     Ok(set)
 }
 
-/// Legacy: reset all `builtin-*` sets.
+/// Reset the three bundled remote rule sets to factory defaults. Legacy
+/// `builtin-*` list sets stay untouched — recognized but never restored.
 #[tauri::command]
 pub fn reset_builtin_rule_set(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RuleSet, String> {
-    let set = state
+    let (restored, stale_cache) = state
         .with_store_mut(|store| {
-            let removed = store.reset_all_builtin_rule_sets(state.resource_dir.as_deref());
-            for id in removed {
-                remove_rule_set_files(&state.app_data_dir, &id);
+            let (sets, stale, export_ids) = store.reset_all_builtin_rule_sets(
+                &state.app_data_dir,
+                state.resource_dir.as_deref(),
+            );
+            for id in &export_ids {
+                remove_rule_set_files(&state.app_data_dir, id);
             }
-            store
-                .get_rule_set(crate::domain::BUILTIN_SET_ID)
-                .cloned()
-                .or_else(|| store.rule_sets.iter().find(|s| s.builtin).cloned())
-                .ok_or_else(|| crate::error::AppError::NotFound("builtin".into()))
+            sets.into_iter()
+                .next()
+                .map(|set| (set, stale))
+                .ok_or_else(|| {
+                    crate::error::AppError::NotFound("builtin remote rule sets".into())
+                })
         })
         .map_err(|e| e.to_string())?;
-    // Dump every builtin factory set
-    if let Ok(sets) = state.with_store(|s| {
-        Ok(s.rule_sets
-            .iter()
-            .filter(|x| x.builtin)
-            .cloned()
-            .collect::<Vec<_>>())
-    }) {
-        for s in sets {
-            let _ = crate::config::dump_rule_set_files(&state.app_data_dir, &s);
-        }
-    }
-    apply_running(&app);
-    Ok(set)
+    crate::rule_apply::request_restart(app, stale_cache);
+    Ok(restored)
 }
 
 /// List rules of a set (default: active set).

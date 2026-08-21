@@ -214,6 +214,11 @@ pub struct AppSettings {
     /// links. Off by default — most users are fine with QUIC passthrough.
     #[serde(default)]
     pub block_quic: bool,
+    /// Bypass localhost and LAN segments (loopback, RFC1918 private ranges,
+    /// link-local) as built-in direct rules appended after the rule sets.
+    /// Not exposed as a rule set — it is a routing setting only.
+    #[serde(default = "default_true")]
+    pub bypass_lan: bool,
     /// Rule / Global / Direct (Clash-style).
     #[serde(default)]
     pub outbound_mode: OutboundMode,
@@ -364,6 +369,7 @@ impl Default for AppSettings {
             tun_stack: default_tun_stack(),
             tun_ipv6_enabled: false,
             block_quic: false,
+            bypass_lan: true,
             outbound_mode: OutboundMode::Rule,
             route_final: default_route_final(),
             close_to_tray: true,

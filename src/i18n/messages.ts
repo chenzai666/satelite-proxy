@@ -250,6 +250,9 @@ const en = {
   "settings.blockQuic": "Block QUIC (reject sniffed UDP/443)",
   "settings.blockQuicDesc":
     "Forces browsers to fall back to TCP. QUIC relayed through the proxy carries two independent congestion controllers, which can stutter video on mediocre links.",
+  "settings.bypassLan": "Bypass localhost and LAN",
+  "settings.bypassLanDesc":
+    "Built-in direct rules for localhost and private network segments (loopback, 192.168.x / 10.x / 172.16–31.x, link-local), applied after your rule sets. On by default.",
   "settings.extraInbounds": "Multi-listen ports",
   "settings.extraInboundsEmpty":
     "No extra listeners yet. Add one so sing-box listens on more ports.",
@@ -455,7 +458,7 @@ const en = {
   "rules.resetBuiltin": "Reset built-in",
   "rules.resetFactory": "Reset",
   "rules.resetFactoryHint":
-    "Reload this set from the app resource file. Restart keeps your edits; only Reset discards them.",
+    "Restore this bundled remote rule set to factory settings (URL, route, update interval). Restart keeps your edits; only Reset discards them.",
   "rules.deleteSet": "Delete set",
   "rules.filter": "Filter rules…",
   "rules.empty": "No rules",
@@ -536,13 +539,13 @@ const en = {
   "rules.noNodes": "No nodes — import a subscription first",
   "rules.restartFailed": "Restart core failed",
   "rules.resetAllBuiltinConfirm":
-    "Restore all built-in rule sets to factory? User-created / imported sets are not deleted.",
+    "Restore the three built-in rule sets (geosite-cn, geoip-cn, geolocation-!cn) to factory settings?\nUser-created / imported sets are not affected.",
   "rules.dnsReject": "Reject",
   "rules.remoteUrlInvalid": "Enter a remote rule set URL starting with http:// or https://",
   "rules.resetSingleConfirm":
-    "Restore “{name}” to its factory file?\nYour edits to this set will be lost.\n(Restarting the app does not reset it — only Reset does; your edits are otherwise kept.)",
+    "Restore “{name}” to factory settings?\nYour edits to this set (name, URL, route, update interval) will be lost.\n(Restarting the app does not reset it — only Reset does; your edits are otherwise kept.)",
   "rules.resetAllBuiltinHint":
-    "Delete and reload all built-in rules; user rules are not affected",
+    "Restore the three built-in rule sets to factory; user rule sets are not affected",
   "rules.resetAllBuiltin": "Reset all",
   "rules.downloadingTooltip": "Downloading remote rule set",
   "rules.enableEmptyHint": "No effective rules yet — cannot enable",
@@ -992,6 +995,9 @@ const zh: Record<MessageKey, string> = {
   "settings.blockQuic": "拦截 QUIC（拒绝识别到的 UDP/443）",
   "settings.blockQuicDesc":
     "强制浏览器回退到 TCP。经代理中转的 QUIC 会有两层独立的拥塞控制，线路一般时容易导致视频卡顿。",
+  "settings.bypassLan": "绕过本地和局域网",
+  "settings.bypassLanDesc":
+    "内置直连规则覆盖 localhost 与局域网段（回环、192.168.x / 10.x / 172.16–31.x、链路本地地址），在规则集之后生效。默认开启。",
   "settings.extraInbounds": "多监听端口",
   "settings.extraInboundsEmpty": "暂无额外监听，新增端口可让 sing-box 同时监听多个端口。",
   "settings.extraInboundsDesc":
@@ -1188,7 +1194,7 @@ const zh: Record<MessageKey, string> = {
   "rules.resetBuiltin": "重置内置",
   "rules.resetFactory": "重置",
   "rules.resetFactoryHint":
-    "从应用资源文件重新加载本集。重启会保留你的修改；只有点重置才会丢掉编辑。",
+    "将此内置远程规则集恢复为出厂设置（URL、路由、更新周期）。重启会保留你的修改；只有点重置才会丢掉编辑。",
   "rules.deleteSet": "删除集",
   "rules.filter": "过滤规则…",
   "rules.empty": "暂无规则",
@@ -1268,12 +1274,12 @@ const zh: Record<MessageKey, string> = {
   "rules.noNodes": "暂无节点，请先导入订阅",
   "rules.restartFailed": "重启内核失败",
   "rules.resetAllBuiltinConfirm":
-    "完全恢复所有内置规则集？\n用户创建和导入的规则集不会被删除。",
+    "将三条内置规则集（国内站点 / 国内ip / 海外网站）恢复为出厂设置？\n用户创建和导入的规则集不受影响。",
   "rules.dnsReject": "拒绝",
   "rules.remoteUrlInvalid": "请输入以 http:// 或 https:// 开头的远程规则集 URL",
   "rules.resetSingleConfirm":
-    "将「{name}」恢复为出厂配置文件？\n当前对该集的编辑会丢失。\n（重启程序不会自动重置，只会保留你的修改。）",
-  "rules.resetAllBuiltinHint": "删除并重新加载所有内置规则，不影响用户规则",
+    "将「{name}」恢复为出厂设置？\n当前对该集的编辑（名称、URL、路由、更新周期）会丢失。\n（重启程序不会自动重置，只会保留你的修改。）",
+  "rules.resetAllBuiltinHint": "将三条内置规则集恢复为出厂设置，不影响用户规则集",
   "rules.resetAllBuiltin": "重置",
   "rules.downloadingTooltip": "正在下载远程规则集",
   "rules.enableEmptyHint": "暂无可生效的规则，无法启用",

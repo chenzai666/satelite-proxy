@@ -686,6 +686,7 @@ impl Runtime {
                 find_process: store.settings.find_process,
                 tun_ipv6: store.settings.tun_ipv6_enabled,
                 block_quic: store.settings.block_quic,
+                bypass_lan: store.settings.bypass_lan,
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;

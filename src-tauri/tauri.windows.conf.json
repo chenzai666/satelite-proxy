@@ -5,7 +5,7 @@
       "resources/bin/windows-amd64/sing-box.exe",
       "resources/bin/windows-amd64/libcronet.dll",
       "resources/bin/windows-amd64/version.txt",
-      "resources/rules",
+      "resources/rule-sets",
       "resources/dns"
     ]
   }

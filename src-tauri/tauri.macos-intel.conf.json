@@ -4,7 +4,7 @@
     "resources": [
       "resources/bin/darwin-amd64/sing-box",
       "resources/bin/darwin-amd64/version.txt",
-      "resources/rules",
+      "resources/rule-sets",
       "resources/dns"
     ]
   }

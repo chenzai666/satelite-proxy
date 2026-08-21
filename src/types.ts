@@ -275,6 +275,9 @@ export interface AppSettings {
   /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. Off by
    * default. */
   block_quic?: boolean;
+  /** Bypass localhost and LAN segments with built-in direct rules. On by
+   * default; applied in Rule mode only, after the rule sets. */
+  bypass_lan?: boolean;
   /** rule | global | direct */
   outbound_mode?: OutboundMode;
   /** route.final in Rule mode: proxy | direct | block */
@@ -430,6 +433,8 @@ export interface RuleSetSummary {
   ownership: "builtin" | "user" | "system";
   strategy: RuleSetStrategy;
   dns_strategy: RuleSetDnsStrategy;
+  /** Restorable by Reset: only the bundled remote rule sets. */
+  resettable: boolean;
   remote?: RemoteRuleSetConfig | null;
 }
 

@@ -241,6 +241,8 @@ export interface SettingsUpdatePayload {
   tunStack?: string | null;
   tunIpv6Enabled?: boolean | null;
   blockQuic?: boolean | null;
+  /** Bypass localhost and LAN segments with built-in direct rules. */
+  bypassLan?: boolean | null;
   closeToTray?: boolean | null;
   launchAtLogin?: boolean | null;
   silentStart?: boolean | null;
@@ -290,6 +292,7 @@ function scheduleSettingsWrite() {
       tunStack: payload.tunStack ?? null,
       tunIpv6Enabled: payload.tunIpv6Enabled ?? null,
       blockQuic: payload.blockQuic ?? null,
+      bypassLan: payload.bypassLan ?? null,
       closeToTray: payload.closeToTray ?? null,
       launchAtLogin: payload.launchAtLogin ?? null,
       silentStart: payload.silentStart ?? null,
@@ -615,12 +618,12 @@ export function deleteRuleSet(id: string) {
   return invoke<void>("delete_rule_set", { id });
 }
 
-/** Reset one builtin factory set from resources. */
+/** Reset one bundled remote rule set to factory settings. */
 export function resetRuleSet(id: string) {
   return invoke<RuleSet>("reset_rule_set", { id });
 }
 
-/** Legacy: reset all builtin-* sets only. Prefer `resetRuleSet(id)`. */
+/** Reset the three bundled remote rule sets (geosite-cn / geoip-cn / geolocation-!cn). */
 export function resetBuiltinRuleSet() {
   return invoke<RuleSet>("reset_builtin_rule_set");
 }

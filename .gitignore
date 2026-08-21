@@ -33,5 +33,8 @@ src-tauri/resources/bin/**/sing-box
 src-tauri/resources/bin/**/sing-box.exe
 src-tauri/resources/bin/**/libcronet.*
 src-tauri/resources/bin/**/*.tar.gz
+
+# Bundled built-in rule sets (download via scripts/fetch-bundled-rule-sets.sh)
+src-tauri/resources/rule-sets/*.srs
 nul
 .zcode

@@ -1940,7 +1940,8 @@ button.node-card:disabled,
 }
 
 .ruleset-strategy-label,
-.ruleset-origin-label {
+.ruleset-origin-label,
+.ruleset-builtin-label {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
@@ -1949,6 +1950,10 @@ button.node-card:disabled,
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   background: color-mix(in srgb, currentColor 12%, transparent);
   font-weight: 600;
+}
+
+.ruleset-builtin-label {
+  color: var(--primary);
 }
 
 .ruleset-strategy-label.strategy-proxy {

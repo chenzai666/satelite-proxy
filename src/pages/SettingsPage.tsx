@@ -71,6 +71,8 @@ export function SettingsPage() {
   const [tunIpv6, setTunIpv6] = useState(false);
   /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. */
   const [blockQuic, setBlockQuic] = useState(false);
+  /** Bypass localhost and LAN segments with built-in direct rules. */
+  const [bypassLan, setBypassLan] = useState(true);
   /** Extra inbound drafts — applied on card save (needs core restart). */
   const [extra, setExtra] = useState<ExtraInbound[]>([]);
   // Extra-inbound editor modal (add / edit share one form).
@@ -182,6 +184,7 @@ export function SettingsPage() {
         setTunStack(s.tun_stack || "mixed");
         setTunIpv6(!!s.tun_ipv6_enabled);
         setBlockQuic(!!s.block_quic);
+        setBypassLan(s.bypass_lan !== false);
         setExtra(s.extra_inbounds ?? []);
       })
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
@@ -261,6 +264,7 @@ export function SettingsPage() {
       (settings.tun_stack || "mixed") !== tunStack ||
       !!settings.tun_ipv6_enabled !== tunIpv6 ||
       !!settings.block_quic !== blockQuic ||
+      (settings.bypass_lan !== false) !== bypassLan ||
       !sameInbounds(settings.extra_inbounds ?? [], extra);
     if (!dirty) return;
     // Invalid drafts (mid-typing or left behind): surface why we can't apply
@@ -296,6 +300,7 @@ export function SettingsPage() {
         tunStack: tunStack.trim() || "mixed",
         tunIpv6Enabled: tunIpv6,
         blockQuic,
+        bypassLan,
       });
       setSettings(s);
       // These options are consumed when sing-box starts; apply them together.
@@ -311,7 +316,7 @@ export function SettingsPage() {
       // Pick up edits made while we were applying.
       void autoApplyRef.current();
     }
-  }, [allowLan, api, blockQuic, extra, mixed, probe, settings, t, tunIpv6, tunStack]);
+  }, [allowLan, api, blockQuic, bypassLan, extra, mixed, probe, settings, t, tunIpv6, tunStack]);
 
   autoApplyRef.current = autoApplyNetwork;
 
@@ -323,7 +328,7 @@ export function SettingsPage() {
     return () => clearTimeout(timer);
     // Fire on any draft change; autoApplyNetwork itself decides if there is
     // anything valid and dirty to commit.
-  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, extra]);
+  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, bypassLan, extra]);
 
   // —— Extra inbound listeners (draft rows + modal editor) ——
 
@@ -852,6 +857,18 @@ export function SettingsPage() {
                   title={t("settings.blockQuic")}
                   disabled={busy}
                   onChange={setBlockQuic}
+                />
+              </div>
+              <div className="via-proxy-row field-span-2">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.bypassLan")}</div>
+                  <div className="sys-proxy-desc">{t("settings.bypassLanDesc")}</div>
+                </div>
+                <GlassSwitchControl
+                  checked={bypassLan}
+                  title={t("settings.bypassLan")}
+                  disabled={busy}
+                  onChange={setBypassLan}
                 />
               </div>
               {netDiagnostics.length > 0 && (

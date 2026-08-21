@@ -1,6 +1,7 @@
 mod api;
 mod app_log;
 mod autostart;
+mod builtin_remote_rules;
 mod commands;
 mod config;
 mod conn_journal;
@@ -163,6 +164,28 @@ pub fn run() {
 
             app.manage(app_state);
             app_log::info("app", "Satelite started");
+
+            // Seed bundled remote rule sets: copy the packaged `.srs` files
+            // into the remote cache and heal their store entries. Must run
+            // before `remote_rule_auto::spawn` so the copies are referenced
+            // before its orphan cleanup wakes up.
+            if let Some(state) = app.try_state::<AppState>() {
+                let app_data_dir = state.app_data_dir.clone();
+                let resource_dir = state.resource_dir.clone();
+                if let Err(error) = state.with_store_mut(|store| {
+                    crate::builtin_remote_rules::seed(
+                        &app_data_dir,
+                        resource_dir.as_deref(),
+                        store,
+                    );
+                    Ok(())
+                }) {
+                    app_log::warn(
+                        "builtin_rules",
+                        format!("seed bundled rule sets failed: {error}"),
+                    );
+                }
+            }
 
             // Build reqwest blocking client on a plain OS thread so its internal
             // Tokio runtime is never created/dropped on a tauri async worker.

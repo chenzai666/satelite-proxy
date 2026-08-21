@@ -54,6 +54,30 @@ if (-not (Test-Path $CoreExe)) {
   & (Join-Path $PSScriptRoot "fetch-bundled-core-windows-amd64.ps1") -Version $CoreVersion -Proxy $Proxy
 }
 
+# --- 2b. Stage built-in remote rule sets -------------------------------------
+# Keep in sync with BUILTIN_REMOTE_RULE_SETS in src-tauri/src/domain/rule.rs.
+$RuleSets = @(
+  @{ Name = "builtin-remote-geolocation-not-cn.srs"; Url = "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs" },
+  @{ Name = "builtin-remote-geoip-cn.srs";           Url = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs" },
+  @{ Name = "builtin-remote-geosite-cn.srs";         Url = "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs" }
+)
+$RuleSetsDir = Join-Path $ROOT "src-tauri\resources\rule-sets"
+New-Item -ItemType Directory -Force -Path $RuleSetsDir | Out-Null
+foreach ($set in $RuleSets) {
+  $out = Join-Path $RuleSetsDir $set.Name
+  if (Test-Path $out) { continue }
+  Write-Host "fetching $($set.Name)..."
+  $downloadArgs = @{ Uri = $set.Url; OutFile = $out; UseBasicParsing = $true }
+  if ($Proxy) { $downloadArgs.Proxy = $Proxy }
+  Invoke-WebRequest @downloadArgs
+  $magic = [System.Text.Encoding]::ASCII.GetString((Get-Content $out -AsByteStream -TotalCount 3))
+  if ($magic -ne "SRS") {
+    Remove-Item $out -ErrorAction SilentlyContinue
+    Write-Error "$($set.Name) is not a binary SRS (bad URL or HTML error page)"
+    exit 1
+  }
+}
+
 # --- 3. Frontend deps --------------------------------------------------------
 Write-Host "Installing JS dependencies..."
 pnpm install --frozen-lockfile
