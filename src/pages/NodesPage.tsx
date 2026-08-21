@@ -29,18 +29,24 @@ function gridColumns() {
   return 4;
 }
 
-/** Render latency cell: spinner / ms / timeout / dash */
+/** Render latency cell: spinner / ms / timeout / needs-core / dash */
 function LatencyDisplay({
   ms,
   latencyAt,
   testing,
+  unsupported,
 }: {
   ms?: number | null;
   latencyAt?: number | null;
   testing: boolean;
+  unsupported?: boolean;
 }) {
+  const { t } = useI18n();
   if (testing) {
     return <span className="lat-spinner" aria-label="测试中" />;
+  }
+  if (unsupported) {
+    return <span className="lat lat-none" title={t("nodes.latencyNeedsCore")}>{t("nodes.latencyNeedsCore")}</span>;
   }
   if (ms != null && ms >= 0) {
     return (
@@ -86,6 +92,9 @@ export function NodesPage() {
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  // Node ids whose last test used method "unsupported" (UDP-only protocol,
+  // core not running) — shown as "start core to test" instead of "timeout".
+  const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
   const [columnCount, setColumnCount] = useState(gridColumns);
 
   useEffect(() => {
@@ -207,6 +216,9 @@ export function NodesPage() {
         ? await testCustomNodesLatency(3000)
         : await testNodesLatency(ids, 3000);
       const map = new Map(batch.results.map((r) => [r.id, r]));
+      setUnsupportedIds(
+        new Set(batch.results.filter((r) => r.method === "unsupported").map((r) => r.id)),
+      );
       if (customRuntime) {
         // Session-only — remember results across filter / sort / page reloads.
         setCustomLatency((prev) => {
@@ -375,6 +387,7 @@ export function NodesPage() {
                         ms={n.latency_ms}
                         latencyAt={n.latency_at}
                         testing={isTesting}
+                        unsupported={unsupportedIds.has(n.id)}
                       />
                     </td>
                   </tr>
@@ -426,6 +439,7 @@ export function NodesPage() {
                         ms={n.latency_ms}
                         latencyAt={n.latency_at}
                         testing={isTesting}
+                        unsupported={unsupportedIds.has(n.id)}
                       />
                     </span>
                   </div>

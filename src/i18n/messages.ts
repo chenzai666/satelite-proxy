@@ -360,6 +360,7 @@ const en = {
   "nodes.renamePlaceholder": "Display name",
   "nodes.renameSave": "Save",
   "nodes.switchingManual": "Switched to manual mode — restarting core…",
+  "nodes.latencyNeedsCore": "Start core to test",
 
   // traffic (active + closed)
   "traffic.title": "Traffic",
@@ -1091,6 +1092,7 @@ const zh: Record<MessageKey, string> = {
   "nodes.renamePlaceholder": "显示名称",
   "nodes.renameSave": "保存",
   "nodes.switchingManual": "已切换为手动模式，正在重启内核…",
+  "nodes.latencyNeedsCore": "需启动内核后测试",
 
   "traffic.title": "流量",
   "traffic.desc": "连接中与已关闭的连接记录",
