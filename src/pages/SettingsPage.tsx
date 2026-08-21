@@ -64,6 +64,7 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
+  const [sponsorSession, setSponsorSession] = useState("0000");
 
   // Click outside the panel/link dismisses it. Ignore clicks inside either
   // node: the link is portaled to <body>, so React stopPropagation does not
@@ -550,29 +551,43 @@ export function SettingsPage() {
               className="sponsor-link"
               onClick={(e) => {
                 e.stopPropagation();
-                setSponsorOpen((v) => !v);
+                setSponsorOpen((v) => {
+                  if (!v) {
+                    setSponsorSession(
+                      Math.floor(Math.random() * 0xffff)
+                        .toString(16)
+                        .padStart(4, "0"),
+                    );
+                  }
+                  return !v;
+                });
               }}
             >
               {t("settings.sponsor")}
             </button>
             {sponsorOpen && (
               <div
-                className="sponsor-panel"
+                className="sponsor-panel sponsor-session"
                 role="dialog"
                 aria-label={t("settings.sponsor")}
                 onClick={(e) => e.stopPropagation()}
               >
-                <DecryptReveal radius={140} dismissOnLeave>
-                  <img
-                    className="sponsor-qr"
-                    src={buymecoffeeUrl}
-                    alt={t("settings.sponsorScan")}
-                    draggable={false}
-                  />
-                </DecryptReveal>
-                <div className="sponsor-caption muted">
-                  {t("settings.sponsorScan")}
+                <div className="sponsor-session-bar" aria-hidden="true">
+                  <span>session {sponsorSession}</span>
+                  <span className="sponsor-cursor" />
                 </div>
+                <div className="sponsor-session-view">
+                  <DecryptReveal radius={140} dismissOnLeave>
+                    <img
+                      className="sponsor-qr"
+                      src={buymecoffeeUrl}
+                      alt={t("settings.sponsorScan")}
+                      draggable={false}
+                    />
+                  </DecryptReveal>
+                </div>
+                <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
+; optional :p`}</pre>
               </div>
             )}
           </>,
