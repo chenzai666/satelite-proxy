@@ -7567,17 +7567,12 @@ button.simple-link-row {
   text-align: left;
 }
 
-/* DecryptReveal — scramble grid that dissolves into the content beneath. */
+/* DecryptReveal — scramble grid that dissolves into the content beneath.
+ * The inner image stays visible; the canvas is only an overlay. */
 .decrypt-reveal {
   position: relative;
   display: inline-block;
   line-height: 0;
-}
-.decrypt-reveal .dr-backdrop {
-  position: absolute;
-  inset: 0;
-  background: #000;
-  border-radius: inherit;
 }
 .decrypt-reveal-canvas {
   position: absolute;
@@ -7587,7 +7582,7 @@ button.simple-link-row {
   pointer-events: none;
 }
 
-/* Sponsor easter egg — corner link + decrypt-reveal panel.
+/* Sponsor QR — corner link + panel.
  * The link is plain text only: no background/border in any state. */
 .sponsor-link {
   position: fixed;

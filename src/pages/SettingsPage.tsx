@@ -62,14 +62,24 @@ export function SettingsPage() {
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  /** Sponsor easter-egg panel (decrypt-reveal over the sponsor QR). */
+  /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
 
-  // Any click anywhere dismisses the sponsor panel; the link's own click is
-  // excluded below so opening doesn't immediately bubble into a close.
+  // Click outside the panel/link dismisses it. Ignore clicks inside either
+  // node: the link is portaled to <body>, so React stopPropagation does not
+  // reliably reach this native document listener.
   useEffect(() => {
     if (!sponsorOpen) return;
-    const close = () => setSponsorOpen(false);
+    const close = (e: MouseEvent) => {
+      const node = e.target;
+      if (
+        node instanceof Element &&
+        node.closest(".sponsor-panel, .sponsor-link")
+      ) {
+        return;
+      }
+      setSponsorOpen(false);
+    };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [sponsorOpen]);
@@ -529,11 +539,9 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {/* Sponsor easter egg — corner link opens a decrypt-reveal panel.
-       * Portaled to <body>: a transformed ancestor (the page-enter entrance
-       * animation wrapper) becomes the containing block for position:fixed
-       * descendants, which made the link jump once when the animation ended.
-       * App tab only. */}
+      {/* Sponsor QR — portaled to <body> so a transformed ancestor (the
+       * page-enter animation wrapper) cannot become the containing block
+       * for these position:fixed nodes. App tab only. */}
       {visibleTab === "app" &&
         createPortal(
           <>
@@ -552,6 +560,7 @@ export function SettingsPage() {
                 className="sponsor-panel"
                 role="dialog"
                 aria-label={t("settings.sponsor")}
+                onClick={(e) => e.stopPropagation()}
               >
                 <DecryptReveal radius={140} dismissOnLeave>
                   <img
