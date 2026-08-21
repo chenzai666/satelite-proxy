@@ -121,6 +121,8 @@ pub enum TrayIconStyle {
     Danger2,
     /// Pac-Man sheet ghost, recolored: white/green body, black eyes.
     Ghost2,
+    /// Face ID smiley; mint smile running, black frown (template) stopped.
+    Faceid,
 }
 
 impl TrayIconStyle {
@@ -133,6 +135,7 @@ impl TrayIconStyle {
             Self::Danger => "danger",
             Self::Danger2 => "danger2",
             Self::Ghost2 => "ghost2",
+            Self::Faceid => "faceid",
         }
     }
 
@@ -145,6 +148,7 @@ impl TrayIconStyle {
             "danger" | "warning" | "alert" => Some(Self::Danger),
             "danger2" => Some(Self::Danger2),
             "ghost2" => Some(Self::Ghost2),
+            "faceid" | "face" | "smile" => Some(Self::Faceid),
             _ => None,
         }
     }
@@ -464,6 +468,7 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("warning"), Some(TrayIconStyle::Danger));
         assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
+        assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
         assert_eq!(TrayIconStyle::parse("nope"), None);
     }
 

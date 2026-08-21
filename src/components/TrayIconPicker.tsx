@@ -7,6 +7,7 @@ import trayMark from "../../src-tauri/icons/tray/mark-on.png";
 import trayDanger from "../../src-tauri/icons/tray/danger-on.png";
 import trayDanger2 from "../../src-tauri/icons/tray/danger2-on.png";
 import trayGhost2 from "../../src-tauri/icons/tray/ghost2-on.png";
+import trayFaceid from "../../src-tauri/icons/tray/faceid-on.png";
 
 const TRAY_ICON_PICKS: {
   value: TrayIconStyle;
@@ -17,6 +18,7 @@ const TRAY_ICON_PICKS: {
   { value: "mark", src: trayMark, labelKey: "settings.trayIconMark" },
   { value: "ghost", src: trayGhost, labelKey: "settings.trayIconGhost" },
   { value: "ghost2", src: trayGhost2, labelKey: "settings.trayIconGhost2" },
+  { value: "faceid", src: trayFaceid, labelKey: "settings.trayIconFaceid" },
   { value: "buddy", src: trayBuddy, labelKey: "settings.trayIconBuddy" },
   { value: "danger", src: trayDanger, labelKey: "settings.trayIconDanger" },
   { value: "danger2", src: trayDanger2, labelKey: "settings.trayIconDanger2" },
