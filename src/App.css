@@ -1951,8 +1951,9 @@ button.node-card:disabled,
   font-weight: 600;
 }
 
-/* Compact badge (not a pill) marking factory-shipped sets. */
-.ruleset-builtin-label {
+/* Compact badge (not a pill) marking factory-shipped / user sets. */
+.ruleset-builtin-label,
+.ruleset-user-label {
   display: inline-flex;
   align-items: center;
   margin-right: 0.35rem;
@@ -1960,11 +1961,20 @@ button.node-card:disabled,
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  padding: 0.05rem 0.35rem;
+  border-radius: 2px;
+}
+
+.ruleset-builtin-label {
   color: var(--primary);
   background: var(--primary-muted);
   border: 1px solid var(--primary-border);
-  padding: 0.05rem 0.35rem;
-  border-radius: 2px;
+}
+
+.ruleset-user-label {
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 .ruleset-strategy-label.strategy-proxy {
@@ -2104,62 +2114,6 @@ button.node-card:disabled,
   min-width: 120px;
 }
 
-.rules-final-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem 1.25rem;
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.85rem;
-  flex-wrap: wrap;
-  position: relative;
-  /* Keep below open dropdown stack but above following layout by default */
-  z-index: 2;
-  overflow: visible;
-}
-
-/* Dropdown must paint over the rules grid (cards below create stacking contexts). */
-.rules-final-bar:has(.solid-select.open) {
-  z-index: 50;
-  overflow: visible;
-}
-
-.rules-final-text {
-  flex: 1;
-  min-width: 12rem;
-  padding-right: 0.25rem;
-}
-
-.rules-final-text strong {
-  display: block;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.rules-final-text .muted {
-  margin-top: 0.2rem;
-  line-height: 1.4;
-  max-width: 40rem;
-}
-
-.rules-final-control {
-  flex: 0 0 auto;
-  width: 10.5rem;
-  min-width: 9rem;
-  position: relative;
-  z-index: 1;
-}
-
-.rules-final-control .solid-select.open {
-  z-index: 60;
-}
-
-.rules-final-control .solid-select-pop {
-  z-index: 70;
-  min-width: 100%;
-}
-
 .rules-layout {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -2184,6 +2138,11 @@ button.node-card:disabled,
   overflow: auto;
 }
 
+.ruleset-list.rules-route-list {
+  max-height: none;
+  overflow: visible;
+}
+
 .ruleset-list-actions {
   display: flex;
   flex-wrap: nowrap;
@@ -2194,6 +2153,37 @@ button.node-card:disabled,
   flex: 1 1 0;
   justify-content: center;
   min-width: 0;
+}
+
+.ruleset-final {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding: 0.15rem 0 0.15rem;
+}
+
+.ruleset-final-label {
+  font-size: 0.7rem;
+  line-height: 1.2;
+  padding: 0 0.15rem;
+}
+
+.ruleset-final .glass-seg {
+  display: flex;
+  width: 100%;
+  padding: 0.09rem;
+}
+
+.ruleset-final .glass-seg-indicator {
+  top: 0.09rem;
+  bottom: 0.09rem;
+  left: 0.09rem;
+  width: calc((100% - 0.18rem) / var(--count, 3));
+}
+
+.ruleset-final .glass-seg-btn {
+  padding: 0.12rem 0.16rem !important;
+  font-size: 0.58rem !important;
 }
 
 .ruleset-list-title {
@@ -2343,7 +2333,7 @@ body.ruleset-dragging .ruleset-item:not(.selected):hover {
   white-space: nowrap;
 }
 
-.rules-route-list .ruleset-name {
+.ruleset-list .ruleset-name {
   font-size: 0.72rem;
 }
 
@@ -3235,12 +3225,7 @@ code {
   min-height: calc(100vh - 9rem);
 }
 
-/* Ports tab: shared toolbar on top (save applies to both columns), then the
-   main port form (left) beside the extra-listeners panel (right). */
-.settings-ports-toolbar {
-  max-width: 56rem;
-}
-
+/* Ports tab: main port form (left) beside the extra-listeners panel (right). */
 .settings-ports-columns {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
@@ -3343,80 +3328,9 @@ code {
   grid-column: 1 / -1;
 }
 
-.dns-cell-ruleset-nav {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.dns-cell-hosts,
-.dns-cell-rules,
 .dns-cell-fakeip,
 .dns-cell-diag {
   min-width: 0;
-}
-
-.dns-cell-rules,
-.dns-cell-hosts {
-  grid-column: 2;
-  grid-row: 2;
-}
-
-.dns-cell-fakeip {
-  grid-column: 1;
-  grid-row: 3;
-}
-
-.dns-cell-diag {
-  grid-column: 2;
-  grid-row: 3;
-}
-
-@media (min-width: 1180px) {
-  .dns-stack.dns-grid {
-    grid-template-columns: 210px minmax(0, 1.6fr) minmax(280px, 0.9fr);
-  }
-
-  .dns-cell-general {
-    grid-column: 1 / -1;
-  }
-
-  .dns-cell-ruleset-nav {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .dns-cell-rules,
-  .dns-cell-hosts {
-    grid-column: 2;
-    grid-row: 2 / span 2;
-  }
-
-  .dns-cell-fakeip {
-    grid-column: 3;
-    grid-row: 2;
-  }
-
-  .dns-cell-diag {
-    grid-column: 3;
-    grid-row: 3;
-  }
-
-}
-
-@media (max-width: 780px) {
-  .dns-stack.dns-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .dns-cell-general,
-  .dns-cell-ruleset-nav,
-  .dns-cell-rules,
-  .dns-cell-hosts,
-  .dns-cell-fakeip,
-  .dns-cell-diag {
-    grid-column: auto;
-    grid-row: auto;
-  }
 }
 
 .dns-ruleset-nav {
@@ -3426,29 +3340,6 @@ code {
 
 .dns-ruleset-nav .ruleset-item {
   width: 100%;
-}
-
-.dns-ruleset-meta {
-  font-size: 0.72rem;
-  line-height: 1.35;
-}
-
-.dns-ruleset-footer {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 0.45rem;
-  margin-top: 0.3rem;
-}
-
-.dns-ruleset-footer .dns-ruleset-meta {
-  flex: 1;
-  min-width: 0;
-}
-
-.dns-ruleset-type {
-  flex-shrink: 0;
-  align-self: flex-end;
 }
 
 .dns-rule-set-body {
@@ -3480,7 +3371,6 @@ code {
   }
 }
 
-/* Split settings tabs: DNS options and DNS rule sets each get a compact layout. */
 .dns-stack.dns-grid.dns-section-settings {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -3500,41 +3390,14 @@ code {
   grid-row: 2;
 }
 
-.dns-stack.dns-grid.dns-section-rules {
-  grid-template-columns: 230px minmax(0, 1fr);
-}
-
-.dns-section-rules .dns-cell-ruleset-nav {
-  grid-column: 1;
-  grid-row: 1;
-  max-height: calc(100vh - 190px);
-}
-
-.dns-section-rules .dns-cell-rules,
-.dns-section-rules .dns-cell-hosts {
-  grid-column: 2;
-  grid-row: 1;
-  max-height: calc(100vh - 190px);
-}
-
-.dns-section-rules .dns-rule-set-body {
-  min-height: 260px;
-  max-height: none;
-  overflow-y: auto;
-}
-
 @media (max-width: 780px) {
-  .dns-stack.dns-grid.dns-section-settings,
-  .dns-stack.dns-grid.dns-section-rules {
+  .dns-stack.dns-grid.dns-section-settings {
     grid-template-columns: 1fr;
   }
 
   .dns-section-settings .dns-cell-general,
   .dns-section-settings .dns-cell-fakeip,
-  .dns-section-settings .dns-cell-diag,
-  .dns-section-rules .dns-cell-ruleset-nav,
-  .dns-section-rules .dns-cell-rules,
-  .dns-section-rules .dns-cell-hosts {
+  .dns-section-settings .dns-cell-diag {
     grid-column: auto;
     grid-row: auto;
     max-height: none;
@@ -3585,13 +3448,6 @@ code {
   flex-shrink: 0;
 }
 
-.dns-panel-head-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
 .dns-panel-head h2 {
   margin: 0;
   font-size: 0.88rem;
@@ -3604,17 +3460,6 @@ code {
   font-size: 0.72rem;
   color: var(--muted);
   line-height: 1.3;
-}
-
-.dns-reset-btn {
-  flex-shrink: 0;
-  margin-top: 0.1rem;
-  font-size: 0.75rem !important;
-  opacity: 0.85;
-}
-
-.dns-reset-btn:hover:not(:disabled) {
-  opacity: 1;
 }
 
 .dns-panel-body {
@@ -3974,11 +3819,6 @@ button.check.on {
 /* Hosts: system / custom section dividers. */
 .dns-hosts-system {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-}
-
-/* Vertically center a master switch placed in the card header row. */
-.dns-panel-head-row > .switch {
-  margin-top: 0.15rem;
 }
 
 .dns-hosts-section-title {
@@ -7567,17 +7407,12 @@ button.simple-link-row {
   text-align: left;
 }
 
-/* DecryptReveal — scramble grid that dissolves into the content beneath. */
+/* DecryptReveal — scramble grid that dissolves into the content beneath.
+ * The inner image stays visible; the canvas is only an overlay. */
 .decrypt-reveal {
   position: relative;
   display: inline-block;
   line-height: 0;
-}
-.decrypt-reveal .dr-backdrop {
-  position: absolute;
-  inset: 0;
-  background: #000;
-  border-radius: inherit;
 }
 .decrypt-reveal-canvas {
   position: absolute;
@@ -7587,7 +7422,7 @@ button.simple-link-row {
   pointer-events: none;
 }
 
-/* Sponsor easter egg — corner link + decrypt-reveal panel.
+/* Sponsor QR — corner link + panel.
  * The link is plain text only: no background/border in any state. */
 .sponsor-link {
   position: fixed;
@@ -7637,9 +7472,52 @@ button.simple-link-row {
   border-radius: 10px;
   background: #ffffff;
 }
-.sponsor-caption {
-  margin-top: 8px;
-  text-align: center;
-  font-size: 12px;
-  line-height: 1.4;
+
+/* Terminal session chrome around the ASCII overlay (pointer-sweep decrypt). */
+.sponsor-session {
+  padding: 10px 12px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sponsor-session-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+  user-select: none;
+}
+.sponsor-cursor {
+  display: block;
+  width: 6px;
+  height: 11px;
+  background: var(--muted);
+  opacity: 0.75;
+  animation: sponsor-cursor-blink 1.1s steps(1) infinite;
+}
+@keyframes sponsor-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+.sponsor-session-view {
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  line-height: 0;
+}
+.sponsor-session-foot {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre;
+  user-select: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sponsor-cursor {
+    animation: none;
+  }
 }

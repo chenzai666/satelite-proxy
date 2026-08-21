@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { getSettings, updateSettings } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
 import { GlassSwitchControl } from "../../components/GlassSwitchControl";
-import { TrayIconPicker } from "../../components/TrayIconPicker";
 import { useI18n, type Locale } from "../../i18n";
 import { useTheme } from "../../theme";
 import type { AppSettings, HeroStyle, ThemeId } from "../../types";
@@ -103,20 +102,6 @@ export function SimpleSettingsPage() {
                   { value: "particle", label: t("settings.heroStyleParticle") },
                   { value: "classic", label: t("settings.heroStyleClassic") },
                 ]}
-              />
-            </div>
-            <div className="settings-app-row settings-app-pref settings-tray-icon-row">
-              <div className="settings-app-text">
-                <div className="settings-app-title">{t("settings.trayIcon")}</div>
-                <div className="settings-app-desc muted">
-                  {t("settings.trayIconDesc")}
-                </div>
-              </div>
-              <TrayIconPicker
-                value={settings?.tray_icon}
-                disabled={!ready}
-                aria-label={t("settings.trayIcon")}
-                onChange={(v) => void patchSettings({ trayIcon: v })}
               />
             </div>
           </div>

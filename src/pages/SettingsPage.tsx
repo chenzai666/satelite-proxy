@@ -62,14 +62,25 @@ export function SettingsPage() {
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  /** Sponsor easter-egg panel (decrypt-reveal over the sponsor QR). */
+  /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
+  const [sponsorSession, setSponsorSession] = useState("0000");
 
-  // Any click anywhere dismisses the sponsor panel; the link's own click is
-  // excluded below so opening doesn't immediately bubble into a close.
+  // Click outside the panel/link dismisses it. Ignore clicks inside either
+  // node: the link is portaled to <body>, so React stopPropagation does not
+  // reliably reach this native document listener.
   useEffect(() => {
     if (!sponsorOpen) return;
-    const close = () => setSponsorOpen(false);
+    const close = (e: MouseEvent) => {
+      const node = e.target;
+      if (
+        node instanceof Element &&
+        node.closest(".sponsor-panel, .sponsor-link")
+      ) {
+        return;
+      }
+      setSponsorOpen(false);
+    };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [sponsorOpen]);
@@ -529,11 +540,9 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {/* Sponsor easter egg — corner link opens a decrypt-reveal panel.
-       * Portaled to <body>: a transformed ancestor (the page-enter entrance
-       * animation wrapper) becomes the containing block for position:fixed
-       * descendants, which made the link jump once when the animation ended.
-       * App tab only. */}
+      {/* Sponsor QR — portaled to <body> so a transformed ancestor (the
+       * page-enter animation wrapper) cannot become the containing block
+       * for these position:fixed nodes. App tab only. */}
       {visibleTab === "app" &&
         createPortal(
           <>
@@ -542,28 +551,43 @@ export function SettingsPage() {
               className="sponsor-link"
               onClick={(e) => {
                 e.stopPropagation();
-                setSponsorOpen((v) => !v);
+                setSponsorOpen((v) => {
+                  if (!v) {
+                    setSponsorSession(
+                      Math.floor(Math.random() * 0xffff)
+                        .toString(16)
+                        .padStart(4, "0"),
+                    );
+                  }
+                  return !v;
+                });
               }}
             >
               {t("settings.sponsor")}
             </button>
             {sponsorOpen && (
               <div
-                className="sponsor-panel"
+                className="sponsor-panel sponsor-session"
                 role="dialog"
                 aria-label={t("settings.sponsor")}
+                onClick={(e) => e.stopPropagation()}
               >
-                <DecryptReveal radius={140} dismissOnLeave>
-                  <img
-                    className="sponsor-qr"
-                    src={buymecoffeeUrl}
-                    alt={t("settings.sponsorScan")}
-                    draggable={false}
-                  />
-                </DecryptReveal>
-                <div className="sponsor-caption muted">
-                  {t("settings.sponsorScan")}
+                <div className="sponsor-session-bar" aria-hidden="true">
+                  <span>session {sponsorSession}</span>
+                  <span className="sponsor-cursor" />
                 </div>
+                <div className="sponsor-session-view">
+                  <DecryptReveal radius={140} dismissOnLeave>
+                    <img
+                      className="sponsor-qr"
+                      src={buymecoffeeUrl}
+                      alt={t("settings.sponsorScan")}
+                      draggable={false}
+                    />
+                  </DecryptReveal>
+                </div>
+                <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
+; optional :p`}</pre>
               </div>
             )}
           </>,
@@ -616,7 +640,7 @@ export function SettingsPage() {
         {!customRuntime && visibleTab === "rules" && <RulesPage embedded />}
 
         {!customRuntime && visibleTab === "dns" && (
-          <DnsPage embedded section="settings" />
+          <DnsPage embedded />
         )}
         {!customRuntime && visibleTab === "hosts" && <HostsPage embedded />}
       {visibleTab === "app" && settings && (
@@ -783,14 +807,6 @@ export function SettingsPage() {
 
       {visibleTab === "ports" && settings && (
         <section className="settings-panel" aria-label="Ports">
-          {/* Note only — every change auto-commits below (and restarts a
-            running core); there is no save button on this tab. */}
-          <div className="settings-network-card-head settings-ports-toolbar">
-            <div>
-              <strong>{t("settings.networkOptions")}</strong>
-              <div className="muted">{t("settings.networkSaveNote")}</div>
-            </div>
-          </div>
           <div className="settings-ports-columns">
             <div className="card settings-form settings-form-grid">
               <label className="field">

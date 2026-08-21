@@ -1217,28 +1217,6 @@ export function RulesPage({ embedded = false }: Props) {
 
       {error && <div className="banner error">{error}</div>}
 
-      <div className="card rules-final-bar">
-        <div className="rules-final-text">
-          <strong>{t("rules.final")}</strong>
-          <div className="muted" style={{ fontSize: 12 }}>
-            {t("rules.finalHint")}
-          </div>
-        </div>
-        <div className="rules-final-control">
-          <GlassSeg
-            value={routeFinal}
-            ariaLabel={t("rules.final")}
-            disabled={finalBusy}
-            onChange={(v) => void onRouteFinalChange(v as RouteFinal)}
-            options={[
-              { value: "proxy", label: t("rules.finalProxy") },
-              { value: "direct", label: t("rules.finalDirect") },
-              { value: "block", label: t("rules.finalBlock") },
-            ]}
-          />
-        </div>
-      </div>
-
       <div className="rules-layout">
         <aside className="card ruleset-list rules-route-list">
           <div className="ruleset-list-actions">
@@ -1257,6 +1235,20 @@ export function RulesPage({ embedded = false }: Props) {
             >
               {t("rules.resetAllBuiltin")}
             </GlassButton>
+          </div>
+          <div className="ruleset-final" title={t("rules.finalHint")}>
+            <span className="muted ruleset-final-label">{t("rules.final")}</span>
+            <GlassSeg
+              value={routeFinal}
+              ariaLabel={t("rules.final")}
+              disabled={finalBusy}
+              onChange={(v) => void onRouteFinalChange(v as RouteFinal)}
+              options={[
+                { value: "proxy", label: t("rules.finalProxy") },
+                { value: "direct", label: t("rules.finalDirect") },
+                { value: "block", label: t("rules.finalBlock") },
+              ]}
+            />
           </div>
           <div className="ruleset-list-title">
             {t("rules.sets")}

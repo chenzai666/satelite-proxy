@@ -319,8 +319,24 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
             />
           </div>
           <div className="muted" style={{ fontSize: 12 }}>
-            {set.read_only ? t("hosts.systemReadonlyMeta") : t("hosts.mappingCount", { n: set.hosts.length })}
-            {set.enabled ? ` · ${t("common.enabled")}` : ` · ${t("common.disabled")}`}
+            <span
+              className={
+                set.read_only || set.builtin
+                  ? "ruleset-builtin-label"
+                  : "ruleset-user-label"
+              }
+            >
+              {set.read_only || set.builtin
+                ? t("hosts.systemBadge")
+                : t("hosts.userBadge")}
+            </span>
+            {" · "}
+            {t("rules.rulesCount", {
+              n:
+                set.id === SYSTEM_HOSTS_ID
+                  ? systemHosts.length
+                  : set.hosts.length,
+            })}
           </div>
         </div>,
       );
