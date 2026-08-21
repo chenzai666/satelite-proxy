@@ -370,6 +370,13 @@ impl CoreManager {
 
         let mut cmd = Command::new(binary);
         cmd.args(["run", "-c"]).arg(config);
+        // sing-box writes cache.db (fakeip/rule-set cache) relative to its cwd.
+        // GUI apps launched from Finder/Dock inherit cwd "/" (read-only), which
+        // makes cache_file init FATAL as soon as it's enabled. Anchor cwd to the
+        // config's own directory (always writable — active.json lives there).
+        if let Some(dir) = config.parent() {
+            cmd.current_dir(dir);
+        }
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let child = cmd
@@ -618,10 +625,15 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     let mut command = Command::new(binary);
     command
         .args(["run", "-c"])
-        .arg(config)
+        .arg(&config)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
+    // See start_with_ports: anchor cwd to the config dir so cache.db has a
+    // writable, predictable location regardless of the launcher's own cwd.
+    if let Some(dir) = config.parent() {
+        command.current_dir(dir);
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return Some(4),
@@ -984,4 +996,66 @@ fn strip_ansi(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    //! Regression coverage for the sing-box child process cwd (bug: GUI apps
+    //! launched from Finder/Dock inherit cwd "/", which is read-only and
+    //! makes `cache_file` init FATAL as soon as fakeip persistence is on).
+
+    /// The real fix is `Command::current_dir(config.parent())` in
+    /// `start_with_ports`/`try_run_elevated_log_helper`. We can't spawn the
+    /// real sing-box binary here, but we can prove the child process actually
+    /// inherits the directory we set — i.e. that `current_dir` on
+    /// `std::process::Command` does what the fix relies on, using the same
+    /// "config file lives in a directory, anchor cwd to its parent" shape.
+    #[test]
+    fn child_process_cwd_follows_config_parent_dir() {
+        let tmp = std::env::temp_dir().join(format!(
+            "satelite-cwd-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let config = tmp.join("active.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let mut cmd = std::process::Command::new("pwd");
+        if let Some(dir) = config.parent() {
+            cmd.current_dir(dir);
+        }
+        let out = cmd.output().expect("spawn pwd");
+        let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+        // Canonicalize both sides: macOS temp dirs are often symlinks
+        // (/tmp -> /private/tmp) and `pwd` prints the resolved path.
+        let expected = tmp.canonicalize().unwrap_or(tmp.clone());
+        let actual = std::path::PathBuf::from(&printed)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(&printed));
+        assert_eq!(actual, expected, "child cwd did not follow config parent");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// In practice `config` is always the absolute `active_config_path()`
+    /// (see `config::active_config_path`), so `.parent()` is always `Some`
+    /// with a real directory. This just documents that the fix's
+    /// `if let Some(dir) = config.parent()` guard never panics building the
+    /// command, even for a degenerate path — it stays a no-op instead.
+    #[test]
+    fn missing_parent_does_not_panic_building_the_command() {
+        let config = std::path::PathBuf::from("active.json");
+        let mut cmd = std::process::Command::new("true");
+        if let Some(dir) = config.parent() {
+            cmd.current_dir(dir);
+        }
+        // Building/inspecting the command must not panic regardless of what
+        // `parent()` returned for this degenerate path.
+        let _ = format!("{cmd:?}");
+    }
 }
