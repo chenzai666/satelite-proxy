@@ -125,6 +125,8 @@ pwsh scripts/build-windows.ps1
 
 也可以直接推送到 `main` 分支，GitHub Actions 会自动构建 Windows NSIS 安装包。构建完成后进入仓库的 **Actions → Windows 构建**，在任务页面底部下载 `Satelite-Windows-*` 构建产物；云端产物保留 14 天，也支持在 Actions 页面手动触发构建。
 
+正式发布时推送以 `v` 开头的版本标签（例如 `v1.0.8-fork.1`），工作流会在构建成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
+
 ### 局域网代理
 
 开启“允许局域网连接”后，主 mixed 入站会监听 `0.0.0.0:2080`（端口以应用设置为准）。局域网设备应把 HTTP/SOCKS 代理地址设置为 Satelite 所在电脑的局域网 IPv4 和该端口。Windows 用户还需要在防火墙提示中仅允许 `sing-box.exe` 访问专用网络；不要向公用网络或互联网开放该端口。
