@@ -188,7 +188,7 @@ const en = {
   "settings.hintApp": "Application preferences · tray · startup",
   "settings.hintPorts": "Ports · probe · TUN stack · extra listeners",
   "settings.hintCore": "sing-box binary",
-  "settings.networkOptions": "Network options",
+
   "settings.language": "Language",
   "settings.languageDesc":
     "Page content language. Sidebar labels stay English.",
@@ -270,8 +270,6 @@ const en = {
   "settings.inboundAddr": "Listen address",
   "settings.invalidExtraPort": "Invalid extra inbound port",
   "settings.dupPort": "Port {n} conflicts with another listener",
-  "settings.networkSaveNote":
-    "Changes save automatically and restart a running core to take effect.",
   "settings.coreStatus": "Status",
   "settings.coreBundled": "bundled",
   "settings.coreInstalled": "installed",
@@ -941,7 +939,6 @@ const zh: Record<MessageKey, string> = {
   "settings.hintApp": "应用偏好 · 托盘 · 启动",
   "settings.hintPorts": "端口 · 测速 · TUN 协议栈 · 多监听",
   "settings.hintCore": "sing-box 二进制",
-  "settings.networkOptions": "端口与网络",
   "settings.language": "语言",
   "settings.languageDesc": "页面文案语言。侧边栏始终英文。",
   "settings.langZh": "中文",
@@ -1018,8 +1015,6 @@ const zh: Record<MessageKey, string> = {
   "settings.inboundAddr": "监听地址",
   "settings.invalidExtraPort": "额外入站端口无效",
   "settings.dupPort": "端口 {n} 与其他监听端口冲突",
-  "settings.networkSaveNote":
-    "修改自动保存，内核运行时会自动重启使其生效。",
   "settings.coreStatus": "状态",
   "settings.coreBundled": "内置",
   "settings.coreInstalled": "已安装",
@@ -1183,7 +1178,7 @@ const zh: Record<MessageKey, string> = {
     "未命中任何规则时的出口。仅在「规则」模式下生效；概览页的全局/直连会覆盖此项。",
   "rules.finalProxy": "代理",
   "rules.finalDirect": "直连",
-  "rules.finalBlock": "拒绝",
+  "rules.finalBlock": "屏蔽",
   "rules.newSet": "新建",
   "rules.addRule": "添加规则",
   "rules.sets": "规则集",

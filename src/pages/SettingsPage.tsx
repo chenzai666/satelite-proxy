@@ -807,14 +807,6 @@ export function SettingsPage() {
 
       {visibleTab === "ports" && settings && (
         <section className="settings-panel" aria-label="Ports">
-          {/* Note only — every change auto-commits below (and restarts a
-            running core); there is no save button on this tab. */}
-          <div className="settings-network-card-head settings-ports-toolbar">
-            <div>
-              <strong>{t("settings.networkOptions")}</strong>
-              <div className="muted">{t("settings.networkSaveNote")}</div>
-            </div>
-          </div>
           <div className="settings-ports-columns">
             <div className="card settings-form settings-form-grid">
               <label className="field">

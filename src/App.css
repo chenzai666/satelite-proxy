@@ -2104,62 +2104,6 @@ button.node-card:disabled,
   min-width: 120px;
 }
 
-.rules-final-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem 1.25rem;
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.85rem;
-  flex-wrap: wrap;
-  position: relative;
-  /* Keep below open dropdown stack but above following layout by default */
-  z-index: 2;
-  overflow: visible;
-}
-
-/* Dropdown must paint over the rules grid (cards below create stacking contexts). */
-.rules-final-bar:has(.solid-select.open) {
-  z-index: 50;
-  overflow: visible;
-}
-
-.rules-final-text {
-  flex: 1;
-  min-width: 12rem;
-  padding-right: 0.25rem;
-}
-
-.rules-final-text strong {
-  display: block;
-  font-size: 0.9rem;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.rules-final-text .muted {
-  margin-top: 0.2rem;
-  line-height: 1.4;
-  max-width: 40rem;
-}
-
-.rules-final-control {
-  flex: 0 0 auto;
-  width: 10.5rem;
-  min-width: 9rem;
-  position: relative;
-  z-index: 1;
-}
-
-.rules-final-control .solid-select.open {
-  z-index: 60;
-}
-
-.rules-final-control .solid-select-pop {
-  z-index: 70;
-  min-width: 100%;
-}
-
 .rules-layout {
   display: grid;
   grid-template-columns: 240px 1fr;
@@ -2194,6 +2138,37 @@ button.node-card:disabled,
   flex: 1 1 0;
   justify-content: center;
   min-width: 0;
+}
+
+.ruleset-final {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  padding: 0.15rem 0 0.15rem;
+}
+
+.ruleset-final-label {
+  font-size: 0.7rem;
+  line-height: 1.2;
+  padding: 0 0.15rem;
+}
+
+.ruleset-final .glass-seg {
+  display: flex;
+  width: 100%;
+  padding: 0.09rem;
+}
+
+.ruleset-final .glass-seg-indicator {
+  top: 0.09rem;
+  bottom: 0.09rem;
+  left: 0.09rem;
+  width: calc((100% - 0.18rem) / var(--count, 3));
+}
+
+.ruleset-final .glass-seg-btn {
+  padding: 0.12rem 0.16rem !important;
+  font-size: 0.58rem !important;
 }
 
 .ruleset-list-title {
@@ -3235,12 +3210,7 @@ code {
   min-height: calc(100vh - 9rem);
 }
 
-/* Ports tab: shared toolbar on top (save applies to both columns), then the
-   main port form (left) beside the extra-listeners panel (right). */
-.settings-ports-toolbar {
-  max-width: 56rem;
-}
-
+/* Ports tab: main port form (left) beside the extra-listeners panel (right). */
 .settings-ports-columns {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
