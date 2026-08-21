@@ -170,6 +170,9 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
     // "Lift" pop on the next frame so the pickup transition is visible.
     requestAnimationFrame(() => preview.classList.add("lifted"));
     document.body.classList.add("ruleset-dragging");
+    // Belt-and-suspenders: a selection from before the press would otherwise
+    // paint across the cards while dragging.
+    window.getSelection()?.removeAllRanges();
 
     const session: Session = {
       id: p.id,
@@ -428,6 +431,13 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       ) {
         return;
       }
+      // Canceling pointerdown suppresses the compatibility mousedown, which
+      // is what starts the native text-selection drag. Without this, moving
+      // past a card's text selects it before the drag activates — the
+      // `body.ruleset-dragging` user-select rule comes too late to stop an
+      // already-running selection. `click` still fires (it is not a
+      // compatibility event), so card clicks keep working.
+      e.preventDefault();
       pendingRef.current = {
         id,
         pointerId: e.pointerId,
