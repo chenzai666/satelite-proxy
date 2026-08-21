@@ -12,6 +12,10 @@ use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 /// Matches frontend `windowLayout.ts` (logical px).
 const PRO_SIZE: (f64, f64) = (960.0, 720.0);
 const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
+/// Simple mode lets the user shrink the window; content scrolls below this.
+const SIMPLE_MIN: (f64, f64) = (320.0, 480.0);
+/// …but never grow past the default simple strip.
+const SIMPLE_MAX: (f64, f64) = SIMPLE_SIZE;
 
 fn ui_mode_file(app_data_dir: &std::path::Path) -> PathBuf {
     app_data_dir.join("data").join("ui_mode")
@@ -84,12 +88,20 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Satelite")
             .inner_size(w, h)
-            .resizable(false)
             .fullscreen(false)
             // Important on macOS: without activation policy / visible, Dock reopen
             // can recreate a window that never becomes key.
             .visible(true)
             .focused(true);
+        // Simple mode: user-resizable strip, shrink-only (frontend restores size).
+        let builder = if mode == "simple" {
+            builder
+                .resizable(true)
+                .min_inner_size(SIMPLE_MIN.0, SIMPLE_MIN.1)
+                .max_inner_size(SIMPLE_MAX.0, SIMPLE_MAX.1)
+        } else {
+            builder.resizable(false)
+        };
         match builder.build() {
             Ok(win) => {
                 let _ = win.show();
