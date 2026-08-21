@@ -17,19 +17,13 @@
 
 导入订阅、切节点、规则分流、智能 DNS、系统代理 / TUN、托盘常驻——日常该有的都有。  
 它**足够轻、足够稳、也足够好看**。
-
 <p align="center">
-  <img src="assets/index.png" alt="Satelite 概览" width="760" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/banner-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/banner-light.png">
+    <img src="./assets/banner-light.png" alt="Banner">
+  </picture>
 </p>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./assets/banner-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="./assets/banner-light.png">
-  <img src="./assets/banner-light.png" width="600">
-</picture>
-
----
-
 ## 为什么是 Satelite
 
 代理客户端已经够多了。Satelite 不想再做一个「功能清单更长」的壳，而是把 **sing-box** 收成一颗真正能放在桌面上的卫星：
