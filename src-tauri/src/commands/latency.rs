@@ -15,11 +15,10 @@ pub struct LatencyBatchResult {
     pub method: String,
 }
 
-/// Test latency via **direct TCP connect** to each node (never via proxy / clash delay API).
-///
-/// Previously used clash_api `/proxies/{tag}/delay` when the core was running, which measures
-/// through the outbound and is skewed by system proxy / current route. UI “测速” should
-/// report raw reachability to the node address instead.
+/// Test latency for each node: direct TCP connect for TCP-based protocols,
+/// clash delay API for UDP-only protocols (hysteria/hysteria2/tuic) when the
+/// core is running — a plain TCP connect to those ports always times out
+/// regardless of node health, so it can't report raw reachability for them.
 #[tauri::command]
 pub async fn test_nodes_latency(
     state: State<'_, AppState>,
@@ -49,8 +48,10 @@ pub async fn test_nodes_latency(
         });
     }
 
-    // Always TCP — do not pass clash API even when core is running.
-    let results = probe_nodes(&nodes, timeout_ms, Some(30), None, String::new())
+    let probe_url = state.lock_store().settings.probe_url.clone();
+    let clash = state.lock_runtime().clash_api_clone();
+
+    let results = probe_nodes(&nodes, timeout_ms, Some(30), clash, probe_url)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -68,13 +69,25 @@ pub async fn test_nodes_latency(
 
     let ok = results.iter().filter(|r| r.latency_ms.is_some()).count();
     let failed = results.len() - ok;
+    let method = batch_method(&results);
     Ok(LatencyBatchResult {
         tested: results.len(),
         ok,
         failed,
         results,
-        method: "tcp".into(),
+        method,
     })
+}
+
+/// `tcp` / `clash_api` if every result used that method, `mixed` otherwise
+/// (UDP-only protocols use clash_api, the rest use tcp — see [`test_nodes_latency`]).
+fn batch_method(results: &[LatencyResult]) -> String {
+    let mut methods = results.iter().map(|r| r.method.as_str());
+    match methods.next() {
+        None => "none".into(),
+        Some(first) if methods.all(|m| m == first) => first.into(),
+        _ => "mixed".into(),
+    }
 }
 
 /// Same direct-TCP probe as [`test_nodes_latency`], but for the read-only

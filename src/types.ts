@@ -171,6 +171,8 @@ export interface LatencyResult {
   latency_ms?: number | null;
   error?: string | null;
   tested_at: number;
+  /** `tcp` | `clash_api` | `unsupported` (needs core running) */
+  method?: string;
 }
 
 export interface LatencyBatchResult {

@@ -72,6 +72,13 @@ impl Protocol {
     pub fn from_singbox_type(t: &str) -> Option<Self> {
         Self::from_clash_type(t)
     }
+
+    /// True for protocols that never accept a plain TCP connect on
+    /// `server:port` (QUIC/UDP transport). Direct TCP latency probing
+    /// against these always times out regardless of node health.
+    pub fn is_udp_only(self) -> bool {
+        matches!(self, Self::Hysteria2 | Self::Hysteria | Self::Tuic)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

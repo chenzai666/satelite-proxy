@@ -1,6 +1,10 @@
 //! Latency probe helpers.
 //!
-//! - **UI 测速** (`test_nodes_latency`): always direct TCP to `server:port` (no proxy).
+//! - **UI 测速** (`test_nodes_latency`): direct TCP to `server:port` for
+//!   TCP-based protocols. UDP-only protocols (hysteria/hysteria2/tuic) never
+//!   accept a plain TCP connect, so they're routed through the clash delay
+//!   API instead when the core is running; otherwise they report timeout by
+//!   design rather than a misleading raw-reachability failure.
 //! - **Smart switch**: may pass clash API for through-outbound delay when core is up.
 //!
 //! Clash path uses **unified delay** (like mihomo / FlClash): probe twice and
@@ -127,7 +131,28 @@ fn spawn_probe_task(
         let server = node.server.clone();
         let port = node.port;
         let tag = outbound_tag(&node);
-        let key = if let Some(api) = &clash {
+        // UDP-only protocols (hysteria/hysteria2/tuic) never accept a plain
+        // TCP connect, so a direct-TCP probe always times out regardless of
+        // node health. Route those through the clash delay API instead when
+        // the core is up. Without the core there's no way to speak the
+        // protocol at all, so report that explicitly instead of running a
+        // TCP probe that can only ever time out and looks like a dead node.
+        let use_clash = node.protocol.is_udp_only() && clash.is_some();
+        if node.protocol.is_udp_only() && clash.is_none() {
+            return (
+                index,
+                LatencyResult {
+                    id,
+                    name,
+                    latency_ms: None,
+                    error: Some("core not running: start the proxy to test this protocol".into()),
+                    tested_at: now_secs(),
+                    method: "unsupported".into(),
+                },
+            );
+        }
+        let key = if use_clash {
+            let api = clash.as_ref().expect("checked by use_clash");
             format!(
                 "clash|{}|{}|{id}|{tag}|{probe_url}|{timeout_ms}",
                 api.base, api.secret
@@ -136,8 +161,8 @@ fn spawn_probe_task(
             format!("tcp|{id}|{server}|{port}|{timeout_ms}")
         };
         let result = probe_coalesced(key, move || async move {
-            if let Some(api) = clash {
-                probe_clash(api, id, name, tag, probe_url, timeout_ms).await
+            if use_clash {
+                probe_clash(clash.expect("checked by use_clash"), id, name, tag, probe_url, timeout_ms).await
             } else {
                 probe_tcp(id, name, &server, port, timeout_ms).await
             }
@@ -354,6 +379,83 @@ mod tests {
     fn unique_key(label: &str) -> String {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         format!("test|{label}|{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn node(protocol: crate::domain::Protocol) -> ProxyNode {
+        use crate::domain::ProtocolConfig;
+        ProxyNode {
+            id: unique_key("node"),
+            name: "test-node".into(),
+            protocol,
+            server: "127.0.0.1".into(),
+            // Nothing listens here; TCP connect fails fast (connection refused)
+            // instead of waiting out the timeout.
+            port: 1,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Hysteria2 {
+                password: "x".into(),
+                up_mbps: None,
+                down_mbps: None,
+                obfs: None,
+                obfs_password: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    // Hysteria2/Hysteria/Tuic are QUIC-only: a plain TCP connect to their port
+    // always fails regardless of node health, so probe_nodes must route them
+    // through the clash delay API (when available) instead of TCP. This is
+    // the behavior the UI "测速" bug report depended on — without it, every
+    // hy2 node reports a spurious timeout even when the node is reachable.
+    #[tokio::test]
+    async fn udp_only_protocols_use_clash_api_when_available_not_tcp() {
+        use crate::domain::Protocol;
+
+        // Nothing is listening on this port; ClashApi::delay will fail, but
+        // the point under test is *which* probe path ran, recorded in
+        // LatencyResult::method regardless of success.
+        let clash = crate::api::ClashApi::new("127.0.0.1", 1, "secret");
+
+        for protocol in [Protocol::Hysteria2, Protocol::Hysteria, Protocol::Tuic] {
+            let nodes = vec![node(protocol)];
+            let results = probe_nodes(&nodes, Some(200), Some(1), Some(clash.clone()), String::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                results[0].method, "clash_api",
+                "{protocol:?} must probe via clash_api, not raw TCP"
+            );
+        }
+
+        // A TCP-based protocol must keep using the direct-TCP probe even
+        // when a clash API is available (unchanged prior behavior).
+        let nodes = vec![node(Protocol::Shadowsocks)];
+        let results = probe_nodes(&nodes, Some(200), Some(1), Some(clash), String::new())
+            .await
+            .unwrap();
+        assert_eq!(results[0].method, "tcp");
+    }
+
+    // Without a running core there is no way to speak QUIC-only protocols at
+    // all — a raw TCP probe would always time out and look like a dead node,
+    // so probe_nodes must report "unsupported" explicitly instead of running
+    // a doomed TCP probe (the bug this behavior fixes: hy2 nodes always
+    // showing timeout even when perfectly reachable).
+    #[tokio::test]
+    async fn udp_only_protocols_report_unsupported_without_clash_api() {
+        use crate::domain::Protocol;
+        let nodes = vec![node(Protocol::Hysteria2)];
+        let results = probe_nodes(&nodes, Some(200), Some(1), None, String::new())
+            .await
+            .unwrap();
+        assert_eq!(results[0].method, "unsupported");
+        assert!(results[0].latency_ms.is_none());
+        assert!(results[0].error.is_some());
     }
 
     #[tokio::test]
