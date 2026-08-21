@@ -238,22 +238,26 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       const tdx = rect.left - s.originX;
       const tdy = rect.top - s.originY;
       s.preview.style.transition = "none";
+      // The drag displacement lives on the HOST (host.style.translate);
+      // preview.translate is still 0. Animate the preview by the REMAINING
+      // delta only — keyframing from (dx, dy) here would stack on the host's
+      // offset and teleport the card a full drag-distance on the first frame.
       const anim = s.preview.animate(
         [
           {
-            translate: `${s.dx}px ${s.dy}px`,
+            translate: "0px 0px",
             transform: getComputedStyle(s.preview).transform || "none",
             opacity: 1,
             offset: 0,
           },
           {
-            translate: `${tdx}px ${tdy}px`,
+            translate: `${tdx - s.dx}px ${tdy - s.dy}px`,
             transform: "scale(1)",
             opacity: 1,
             offset: 0.7,
           },
           {
-            translate: `${tdx}px ${tdy}px`,
+            translate: `${tdx - s.dx}px ${tdy - s.dy}px`,
             transform: "scale(1)",
             opacity: 0,
             offset: 1,
