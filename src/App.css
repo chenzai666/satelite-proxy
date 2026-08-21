@@ -2711,7 +2711,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument):not(.simple-spark) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2724,7 +2724,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-sub-row):not(.simple-link-row):not(.simple-section-toggle):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-instrument):not(.simple-spark):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -4756,6 +4756,9 @@ button.check.on {
 .simple-orbit.particle-orbit .particle-sphere-fallback {
   width: 280px;
   height: 280px;
+  /* Nudge the sphere above the button center so the visual sits higher on
+     the page without moving the click area. */
+  transform: translate(-50%, -50%) translateY(-20px);
 }
 
 .particle-sphere-canvas {
@@ -6456,13 +6459,17 @@ button.active-soft {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
+  /* Fill the free space so the start button lands center, slightly above
+     the bottom controls. */
+  flex: 1 1 auto;
+  min-height: 0;
   text-align: center;
   grid-template-columns: none;
   gap: 0.28rem;
   padding: 0.05rem 0 0.1rem;
   margin-bottom: 0;
   width: 100%;
-  flex-shrink: 0;
 }
 
 .simple-dash-copy {
@@ -6475,10 +6482,11 @@ button.active-soft {
 
 .simple-dash-copy .dash-kicker {
   margin-bottom: 0.12rem;
+  font-size: 0.78rem;
 }
 
 .simple-dash-copy .dash-hero-title {
-  font-size: 1.05rem;
+  font-size: 1.55rem;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6487,54 +6495,105 @@ button.active-soft {
 
 .simple-dash-copy .dash-hero-desc {
   margin-top: 0.12rem;
-  font-size: 0.7rem;
+  font-size: 0.9rem;
 }
 
-.simple-instruments {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.4rem;
-  flex-shrink: 0;
-}
-
-.simple-instrument.instrument {
-  min-height: 0;
-  padding: 0.45rem 0.55rem;
+/* Contextual info centered under the hero icon: running → live traffic;
+   stopped → enabled profile + capture seg. Text, no card chrome. */
+.simple-hero-traffic {
   appearance: none;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  width: 100%;
-  gap: 0.2rem;
-}
-
-.simple-instrument .instrument-value.sm {
-  font-size: 0.88rem;
-}
-
-.simple-instrument .instrument-traffic {
-  font-size: 0.82rem;
-}
-
-.simple-rail {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding: 0.1rem 0 0;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 0.4rem;
-  flex-shrink: 0;
+  align-items: center;
+  gap: 0.18rem;
+  margin-top: 0.45rem;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 100%;
 }
 
-.simple-rail > .dash-inline-row {
-  flex: 0 0 auto;
+.simple-hero-traffic .sht-speeds {
+  display: flex;
+  align-items: baseline;
+  gap: 1.2rem;
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
-.simple-rail .glass-seg {
-  flex: 1 1 auto;
+.simple-hero-traffic .sht-speeds .tr-dir {
+  margin-right: 0.32rem;
+}
+
+.simple-hero-traffic .sht-meta {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.simple-hero-traffic:hover .sht-meta {
+  color: var(--text);
+}
+
+/* Stopped state — profile name line + capture seg, centered. */
+.simple-hero-stopped {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.45rem;
   min-width: 0;
   width: 100%;
+}
+
+.simple-hero-subs {
+  appearance: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simple-hero-subs .shs-count {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+/* Capture row — compact inline group, centered under the profile name. */
+.simple-hero-capture {
   display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .simple-spark {
@@ -6912,8 +6971,8 @@ button.active-soft {
 }
 
 .simple-orbit {
-  width: 128px;
-  height: 128px;
+  width: 192px;
+  height: 192px;
   margin: 0;
   pointer-events: none;
 }
@@ -6922,18 +6981,14 @@ button.active-soft {
   pointer-events: auto;
 }
 
-.simple-orbit .orbit-sat {
-  transform-origin: 4px 53px;
-}
-
 .simple-orbit-power {
-  width: 38px;
-  height: 38px;
+  width: 56px;
+  height: 56px;
   display: grid;
   place-items: center;
   border-radius: 50%;
   background: rgba(8, 16, 14, 0.32);
-  font-size: 1.25rem;
+  font-size: 1.9rem;
   font-weight: 500;
   line-height: 1;
   color: rgba(255, 255, 255, 0.92);
@@ -7024,7 +7079,6 @@ button.simple-card:disabled,
 button.simple-node-item:disabled,
 button.simple-node-card:disabled,
 button.simple-link-row:disabled,
-button.simple-sub-row:disabled,
 button.node-card:disabled {
   cursor: default;
 }
@@ -7205,122 +7259,6 @@ button.simple-glass-bar:hover:not(:disabled) {
   text-transform: uppercase;
   padding: 0 0.15rem;
   color: var(--faint);
-}
-
-.simple-section-toggle {
-  appearance: none !important;
-  border: none !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  padding: 0.15rem 0 !important;
-  margin: 0;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  cursor: pointer;
-  color: inherit !important;
-  text-align: left;
-  font: inherit;
-  text-transform: none !important;
-}
-
-.simple-section-toggle:hover {
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-.simple-section-toggle .simple-section-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.simple-collapse-caret {
-  flex-shrink: 0;
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid var(--muted);
-  transition: transform 0.15s ease;
-}
-
-.simple-collapse-caret.collapsed {
-  transform: rotate(-90deg);
-}
-
-.simple-sub-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  width: 100%;
-  cursor: pointer;
-  padding: 0.55rem 0.75rem;
-}
-
-button.simple-sub-row {
-  appearance: none;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-}
-
-button.simple-sub-row:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: var(--surface-2) !important;
-  box-shadow: none !important;
-}
-
-button.simple-sub-row.active {
-  border-color: var(--primary-border-strong);
-  background: var(--surface) !important;
-  box-shadow: inset 0 0 0 1px var(--primary-border);
-}
-
-.simple-sub-main {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  min-width: 0;
-  flex: 1;
-}
-
-.simple-sub-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.82rem;
-}
-
-.simple-sub-title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-}
-
-.simple-sub-title-row strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.simple-sub-meta {
-  font-size: 0.68rem;
-  flex-shrink: 0;
-}
-
-/* Tighten the refresh pill so the subscription row matches node-item height. */
-.simple-sub-refresh {
-  padding: 0.25rem 0.6rem !important;
-  font-size: 0.68rem !important;
-  flex-shrink: 0;
 }
 
 .simple-node-list {
@@ -7571,9 +7509,7 @@ button.simple-orbit-btn,
 button.simple-card,
 button.simple-node-item,
 button.simple-node-card,
-button.simple-sub-row,
-button.simple-link-row,
-button.simple-section-toggle {
+button.simple-link-row {
   text-transform: none;
 }
 .global-apply-error {

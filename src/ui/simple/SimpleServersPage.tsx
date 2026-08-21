@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  activateSubscription,
   addSubscriptionFile,
   addSubscriptionNode,
   addSubscriptionSingbox,
@@ -11,9 +10,6 @@ import {
   listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
-  listSubscriptions,
-  refreshSubscription,
-  restartProxy,
   setCurrentNode,
   testCustomNodesLatency,
   testNodesLatency,
@@ -33,10 +29,9 @@ import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
 import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
-import type { AutoSelectMode, ProxyNode, SortMode, SubscriptionView } from "../../types";
+import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
-const SUBS_COLLAPSE_KEY = "simple.nodes.subsCollapsed";
 const VIRTUALIZE_AFTER = 200;
 const NODE_ROW_HEIGHT = 48;
 const PAGE_SIZE = 200;
@@ -49,14 +44,6 @@ function readSortMode(): SortMode {
     /* ignore */
   }
   return "latency";
-}
-
-function readSubsCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SUBS_COLLAPSE_KEY) === "1";
-  } catch {
-    return false;
-  }
 }
 
 /** Latency colors: green <200 · yellow <300 · red ≥300 (same as Nodes / Connect). */
@@ -91,7 +78,6 @@ function LatencyLabel({
 export function SimpleServersPage() {
   const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
-  const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [nodeTotal, setNodeTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -99,9 +85,7 @@ export function SimpleServersPage() {
   const [runtimeSource, setRuntimeSource] = useState("generated");
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
-  const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
-  const [subsCollapsed, setSubsCollapsed] = useState(() => readSubsCollapsed());
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [autoSelect, setAutoSelect] = useState<AutoSelectMode>("off");
@@ -120,8 +104,7 @@ export function SimpleServersPage() {
   const reload = useCallback(async (append = false) => {
     try {
       if (append) setLoadingMore(true);
-      const [s, settings] = await Promise.all([listSubscriptions(), getSettings()]);
-      setSubs(s);
+      const settings = await getSettings();
       setCurrentId(settings.current_node_id ?? null);
       setRuntimeSource(settings.runtime_source || "generated");
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
@@ -130,11 +113,11 @@ export function SimpleServersPage() {
         // Custom mode: read-only nodes extracted from the sing-box config,
         // overlaid with this session's latency results.
         const all = applyCustomLatency(await listCustomConfigNodes(), customLatency);
-        const filtered = filterCustomNodes(all, query, sortMode, offset, PAGE_SIZE);
+        const filtered = filterCustomNodes(all, "", sortMode, offset, PAGE_SIZE);
         setNodes((prev) => (append ? [...prev, ...filtered.nodes] : filtered.nodes));
         setNodeTotal(filtered.total);
       } else {
-        const page = await listNodesPage(query, sortMode, offset, PAGE_SIZE);
+        const page = await listNodesPage("", sortMode, offset, PAGE_SIZE);
         setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
         setNodeTotal(page.total);
       }
@@ -143,14 +126,14 @@ export function SimpleServersPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [nodes.length, query, sortMode, customLatency]);
+  }, [nodes.length, sortMode, customLatency]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void reload(false), 150);
     return () => window.clearTimeout(timer);
     // nodes.length changes when appending and must not reset pagination.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, sortMode]);
+  }, [sortMode]);
 
   // One-click subscribe deep link → open add modal prefilled.
   useEffect(() => {
@@ -174,24 +157,6 @@ export function SimpleServersPage() {
       /* ignore */
     }
   }, [sortMode]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SUBS_COLLAPSE_KEY, subsCollapsed ? "1" : "0");
-    } catch {
-      /* ignore */
-    }
-  }, [subsCollapsed]);
-
-  const activeSubId = useMemo(
-    () => subs.find((s) => s.enabled)?.id ?? null,
-    [subs],
-  );
-
-  const activeSubName = useMemo(
-    () => subs.find((s) => s.id === activeSubId)?.name ?? null,
-    [subs, activeSubId],
-  );
 
   const customRuntime = runtimeSource.startsWith("singbox:");
 
@@ -229,33 +194,11 @@ export function SimpleServersPage() {
     }
   }
 
-  /** Switch which subscription is active (exclusive); rebuild core if running. */
-  async function onSelectSub(id: string) {
-    if (busy) return;
-    if (activeSubId === id) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const list = await activateSubscription(id);
-      setSubs(list);
-      // Reload the page's node source (custom vs generated) after switching.
-      const status = await getProxyStatus().catch(() => null);
-      if (status?.running) {
-        await restartProxy();
-      }
-      await reload(false);
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function onTestAll() {
     if (testing || nodeTotal === 0) return;
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
     // loaded list because they are not in the node store.
-    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds();
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -303,22 +246,6 @@ export function SimpleServersPage() {
       // Custom results are session-only — keep the merged values instead of
       // re-reading the latency-less extracted list.
       if (!customRuntime) await reload(false);
-    }
-  }
-
-  async function onRefreshSub(id: string, e: React.MouseEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await refreshSubscription(id);
-      await reload();
-    } catch (err) {
-      setError(typeof err === "string" ? err : String(err));
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -380,14 +307,7 @@ export function SimpleServersPage() {
           <p className="page-desc">
             {t("nodes.desc")}
             {" · "}
-            <span className="mono">
-              {query.trim()
-                ? t("nodes.countFiltered", {
-                    shown: filtered.length,
-                    total: nodeTotal,
-                  })
-                : t("nodes.count", { n: nodeTotal })}
-            </span>
+            <span className="mono">{t("nodes.count", { n: nodeTotal })}</span>
           </p>
         </div>
         <div className="header-actions simple-head-actions">
@@ -400,27 +320,8 @@ export function SimpleServersPage() {
           >
             {testing ? t("nodes.testing") : t("nodes.testLatency")}
           </GlassButton>
-          <GlassButton
-            onClick={() => {
-              setModalError(null);
-              setModalInitial(null);
-              setModalOpen(true);
-            }}
-          >
-            {t("config.add")}
-          </GlassButton>
         </div>
       </header>
-
-      <input
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        className="search simple-search"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder={t("nodes.search")}
-      />
 
       {error && <div className="banner error">{error}</div>}
 
@@ -429,67 +330,6 @@ export function SimpleServersPage() {
           <span className="lat-spinner" aria-hidden />
           {t("nodes.switchingManual")}
         </div>
-      )}
-
-      {subs.length > 0 && (
-        <section className="simple-section">
-          <button
-            type="button"
-            className="simple-section-toggle"
-            aria-expanded={!subsCollapsed}
-            onClick={() => setSubsCollapsed((v) => !v)}
-          >
-            <span className="simple-section-label muted">
-              {t("simple.subs")}
-              {subsCollapsed && activeSubName
-                ? ` · ${activeSubName}`
-                : ` · ${t("config.clickUse")}`}
-            </span>
-            <span
-              className={`simple-collapse-caret muted ${subsCollapsed ? "collapsed" : ""}`}
-              aria-hidden
-            />
-          </button>
-          {!subsCollapsed &&
-            subs.map((s) => {
-              const active =
-                s.source_kind === "singbox"
-                  ? runtimeSource === `singbox:${s.id}`
-                  : s.enabled && runtimeSource === "generated";
-              // Custom mode: switching the active profile is a runtime-source
-              // change (homepage picker) — freeze subscription / local rows.
-              const rowDisabled = busy || (customRuntime && s.source_kind !== "singbox");
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  className={`card simple-sub-row ${active ? "active" : ""}`}
-                  disabled={rowDisabled}
-                  onClick={() => void onSelectSub(s.id)}
-                  aria-pressed={active}
-                >
-                  <span className="simple-radio node-dot" aria-hidden>
-                    {active ? "●" : "○"}
-                  </span>
-                  <strong className="simple-sub-name">{s.name}</strong>
-                  <span className="muted simple-sub-meta">
-                    {s.source_kind === "singbox"
-                      ? t("config.singboxReadonly")
-                      : t("config.nodes", { n: s.node_count })}
-                    {s.auto_update ? ` · ${t("common.enabled")}` : ""}
-                    {active ? ` · ${t("config.using")}` : ""}
-                  </span>
-                  <GlassButton
-                    className="simple-sub-refresh"
-                    disabled={busy}
-                    onClick={(e) => void onRefreshSub(s.id, e)}
-                  >
-                    {t("common.refresh")}
-                  </GlassButton>
-                </button>
-              );
-            })}
-        </section>
       )}
 
       <section className="simple-section">

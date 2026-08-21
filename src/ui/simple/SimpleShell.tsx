@@ -8,10 +8,6 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { getProxyStatus } from "../../api";
-import { ThemeSwitch } from "../../components/ThemeSwitch";
-import { useCoreBusy } from "../../coreBusy";
-import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
 import type { MessageKey } from "../../i18n";
@@ -50,17 +46,16 @@ function SimplePageFallback() {
 }
 
 export function SimpleShell() {
-  const { t, locale } = useI18n();
-  const coreBusy = useCoreBusy();
+  const { t } = useI18n();
   const [nav, setNav] = useState<SimpleNavKey>("connect");
-  const [running, setRunning] = useState(false);
-  const [coreState, setCoreState] = useState("stopped");
   const { token, prefill } = useImportIntent();
   const itemRefs = useRef<Record<string, HTMLButtonElement>>({});
+  const navItemsRef = useRef<HTMLElement>(null);
   const [indicatorStyle, setIndicatorStyle] = useState<CSSProperties>({
     opacity: 0,
   });
-  useLayoutEffect(() => {
+
+  const measureIndicator = useCallback(() => {
     const el = itemRefs.current[nav];
     if (!el) return;
     setIndicatorStyle({
@@ -68,55 +63,28 @@ export function SimpleShell() {
       transform: `translateX(${el.offsetLeft}px)`,
       width: `${el.offsetWidth}px`,
     });
-  }, [nav, locale]);
+  }, [nav]);
+
+  useLayoutEffect(() => {
+    measureIndicator();
+  }, [measureIndicator]);
+
+  // Startup race: the page can render before the window settles at the
+  // simple-mode width; tabs are flex-1, so the first measurement may be stale
+  // and leave an oversized indicator covering the tabs. Re-measure whenever
+  // the nav container is resized.
+  useEffect(() => {
+    const container = navItemsRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureIndicator());
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measureIndicator]);
 
   // One-click subscribe → open 节点 page (add subscription modal).
   useEffect(() => {
     if (token && prefill) setNav("servers");
   }, [token, prefill]);
-
-  const tick = useCallback(async () => {
-    try {
-      const status = await getProxyStatus().catch(() => null);
-      setRunning(status?.running ?? false);
-      setCoreState(status?.core_state ?? "stopped");
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  useEffect(() => {
-    void tick();
-  }, [tick]);
-
-  useVisibleInterval(() => {
-    if (coreBusy) return;
-    return tick();
-  }, 3000);
-
-  const wasCoreBusyRef = useRef(coreBusy);
-  useEffect(() => {
-    const wasCoreBusy = wasCoreBusyRef.current;
-    wasCoreBusyRef.current = coreBusy;
-    if (wasCoreBusy && !coreBusy) void tick();
-  }, [coreBusy, tick]);
-
-  const transitioning =
-    coreBusy ||
-    coreState === "starting" ||
-    coreState === "stopping";
-  const stateLabel = transitioning
-    ? "…"
-    : running
-      ? "RUN"
-      : coreState === "error"
-        ? "ERR"
-        : "OFF";
-  const dotClass = transitioning
-    ? "busy"
-    : running || coreState === "running"
-      ? "on"
-      : "off";
 
   return (
     <div
@@ -134,7 +102,10 @@ export function SimpleShell() {
             </span>
           </div>
           <div className="topnav-divider" aria-hidden />
-          <nav className="topnav-items simple-topnav-items">
+          <nav
+            className="topnav-items simple-topnav-items"
+            ref={navItemsRef}
+          >
             <span
               className="topnav-indicator"
               aria-hidden="true"
@@ -155,15 +126,6 @@ export function SimpleShell() {
             ))}
           </nav>
           <div className="topnav-tools simple-topnav-tools">
-            <ThemeSwitch />
-            <div
-              className="topnav-status"
-              title={transitioning ? t("dashboard.starting") : stateLabel}
-              aria-busy={transitioning}
-            >
-              <span className={`status-dot ${dotClass}`} />
-              <span className="topnav-status-text">{stateLabel}</span>
-            </div>
             <UiModeMenu />
           </div>
         </div>
