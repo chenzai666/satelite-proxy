@@ -22,6 +22,12 @@
   <img src="assets/index.png" alt="Satelite 概览" width="760" />
 </p>
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/banner-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="./assets/banner-light.png">
+  <img src="./assets/banner-light.png" width="600">
+</picture>
+
 ---
 
 ## 为什么是 Satelite
