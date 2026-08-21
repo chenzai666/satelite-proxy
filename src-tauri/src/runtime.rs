@@ -684,6 +684,8 @@ impl Runtime {
                 auto_select: store.settings.auto_select,
                 probe_url: store.settings.probe_url.clone(),
                 find_process: store.settings.find_process,
+                tun_ipv6: store.settings.tun_ipv6_enabled,
+                block_quic: store.settings.block_quic,
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;

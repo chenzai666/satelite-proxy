@@ -73,6 +73,8 @@ pub fn update_settings(
     probe_url: Option<String>,
     tun_enabled: Option<bool>,
     tun_stack: Option<String>,
+    tun_ipv6_enabled: Option<bool>,
+    block_quic: Option<bool>,
     close_to_tray: Option<bool>,
     launch_at_login: Option<bool>,
     silent_start: Option<bool>,
@@ -151,6 +153,12 @@ pub fn update_settings(
                 if matches!(s.as_str(), "system" | "gvisor" | "mixed") {
                     store.settings.tun_stack = s;
                 }
+            }
+            if let Some(v) = tun_ipv6_enabled {
+                store.settings.tun_ipv6_enabled = v;
+            }
+            if let Some(v) = block_quic {
+                store.settings.block_quic = v;
             }
             if let Some(v) = close_to_tray {
                 store.settings.close_to_tray = v;
@@ -611,6 +619,8 @@ pub async fn generate_singbox_config(
                 auto_select: settings.auto_select,
                 probe_url: settings.probe_url.clone(),
                 find_process: settings.find_process,
+                tun_ipv6: settings.tun_ipv6_enabled,
+                block_quic: settings.block_quic,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -697,6 +707,8 @@ pub async fn preview_singbox_config(
                 auto_select: settings.auto_select,
                 probe_url: settings.probe_url.clone(),
                 find_process: settings.find_process,
+                tun_ipv6: settings.tun_ipv6_enabled,
+                block_quic: settings.block_quic,
             },
         )
         .map_err(|e| e.to_string())?;
