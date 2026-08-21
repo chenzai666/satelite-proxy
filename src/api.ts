@@ -285,6 +285,7 @@ function scheduleSettingsWrite() {
     settingsWriteInFlight = true;
     void invoke<AppSettings>("update_settings", {
       mixedPort: payload.mixedPort ?? null,
+      allowLan: payload.allowLan ?? null,
       apiPort: payload.apiPort ?? null,
       extraInbounds: payload.extraInbounds ?? null,
       probeUrl: payload.probeUrl ?? null,

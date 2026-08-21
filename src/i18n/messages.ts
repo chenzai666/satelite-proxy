@@ -264,7 +264,8 @@ const en = {
   "settings.addInboundPort": "Add port",
   "settings.inboundType": "Inbound type",
   "settings.allowLan": "Allow LAN",
-  "settings.allowLanDesc": "Listen on 0.0.0.0 instead of 127.0.0.1",
+  "settings.allowLanDesc":
+    "Listen on 0.0.0.0; Windows Firewall must allow sing-box on private networks",
   "settings.editInboundTitle": "Edit inbound port",
   "settings.portLabel": "Port",
   "settings.inboundAddr": "Listen address",
@@ -1012,7 +1013,8 @@ const zh: Record<MessageKey, string> = {
   "settings.addInboundPort": "新增端口",
   "settings.inboundType": "入站类型",
   "settings.allowLan": "允许局域网连接",
-  "settings.allowLanDesc": "监听 0.0.0.0 而不是 127.0.0.1",
+  "settings.allowLanDesc":
+    "监听 0.0.0.0；Windows 防火墙需允许 sing-box 的专用网络入站",
   "settings.editInboundTitle": "编辑端口",
   "settings.portLabel": "端口",
   "settings.inboundAddr": "监听地址",
