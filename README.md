@@ -17,10 +17,11 @@
 
 导入订阅、切节点、规则分流、智能 DNS、系统代理 / TUN、托盘常驻——日常该有的都有。  
 它**足够轻、足够稳、也足够好看**。
-<p align="center">
-  <img src="./assets/banner-light.png#gh-light-mode-only" alt="Banner">
-  <img src="./assets/banner-dark.png#gh-dark-mode-only" alt="Banner">
-</p>
+<picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/banner-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/banner-light.png">
+    <img src="./assets/banner-light.png" alt="Banner">
+  </picture>
 
 ## 为什么是 Satelite
 
