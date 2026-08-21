@@ -1940,8 +1940,7 @@ button.node-card:disabled,
 }
 
 .ruleset-strategy-label,
-.ruleset-origin-label,
-.ruleset-builtin-label {
+.ruleset-origin-label {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
@@ -1952,8 +1951,20 @@ button.node-card:disabled,
   font-weight: 600;
 }
 
+/* Compact badge (not a pill) marking factory-shipped sets. */
 .ruleset-builtin-label {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.35rem;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--primary);
+  background: var(--primary-muted);
+  border: 1px solid var(--primary-border);
+  padding: 0.05rem 0.35rem;
+  border-radius: 2px;
 }
 
 .ruleset-strategy-label.strategy-proxy {
