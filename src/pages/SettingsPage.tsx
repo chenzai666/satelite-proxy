@@ -640,7 +640,7 @@ export function SettingsPage() {
         {!customRuntime && visibleTab === "rules" && <RulesPage embedded />}
 
         {!customRuntime && visibleTab === "dns" && (
-          <DnsPage embedded section="settings" />
+          <DnsPage embedded />
         )}
         {!customRuntime && visibleTab === "hosts" && <HostsPage embedded />}
       {visibleTab === "app" && settings && (
