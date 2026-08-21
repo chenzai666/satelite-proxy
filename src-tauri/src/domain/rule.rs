@@ -510,25 +510,27 @@ pub struct BuiltinRemoteRuleSpec {
 
 /// Factory remote rule sets, in match-priority order (store order wins).
 /// Seeded from bundled `.srs` copies at startup; Reset restores these three.
+/// Ids deliberately use the `system-` prefix: legacy `builtin-*` list sets
+/// must never be conflated with them.
 pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
     BuiltinRemoteRuleSpec {
-        id: "builtin-remote-geolocation-not-cn",
+        id: "system-geolocation-not-cn",
         name: "海外网站",
-        file: "builtin-remote-geolocation-not-cn.srs",
+        file: "system-geolocation-not-cn.srs",
         url: "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
         target: RuleTarget::Proxy,
     },
     BuiltinRemoteRuleSpec {
-        id: "builtin-remote-geoip-cn",
+        id: "system-geoip-cn",
         name: "国内ip",
-        file: "builtin-remote-geoip-cn.srs",
+        file: "system-geoip-cn.srs",
         url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs",
         target: RuleTarget::Direct,
     },
     BuiltinRemoteRuleSpec {
-        id: "builtin-remote-geosite-cn",
+        id: "system-geosite-cn",
         name: "国内站点",
-        file: "builtin-remote-geosite-cn.srs",
+        file: "system-geosite-cn.srs",
         url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs",
         target: RuleTarget::Direct,
     },
@@ -543,6 +545,17 @@ pub fn is_builtin_remote_id(id: &str) -> bool {
 pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {
     BUILTIN_REMOTE_RULE_SETS.iter().find(|spec| spec.id == id)
 }
+
+/// Ids used by the first (unreleased) iteration of the system sets; the v9
+/// migration renames lingering entries to the `system-` ids above.
+pub const LEGACY_BUILTIN_REMOTE_IDS: [(&str, &str); 3] = [
+    (
+        "builtin-remote-geolocation-not-cn",
+        "system-geolocation-not-cn",
+    ),
+    ("builtin-remote-geoip-cn", "system-geoip-cn"),
+    ("builtin-remote-geosite-cn", "system-geosite-cn"),
+];
 
 /// Factory entry for one bundled remote rule set. `local_path` is filled in
 /// by the startup seeding step once the bundled copy lands in the cache dir.
@@ -591,10 +604,10 @@ pub fn remote_rule_display_count(rule: &serde_json::Value) -> usize {
     count.max(1)
 }
 
-/// Factory sets currently shipped with the app: the bundled remote rule
-/// sets below. Legacy `builtin-*` list sets (e.g. `builtin-ruleset`) are
-/// still recognized via their `builtin` flag but are no longer factory:
-/// deletions stick and Reset never restores them.
+/// Factory sets currently shipped with the app: the bundled `system-*`
+/// remote rule sets only. Nothing is ever loaded from disk anymore, so
+/// legacy `builtin-*` list sets (or stale resource files) can never be
+/// re-inserted as factory content.
 pub fn is_factory_set_id(id: &str) -> bool {
     is_builtin_remote_id(id)
 }
@@ -652,122 +665,6 @@ pub fn sanitize_rules(rules: &[Rule]) -> Vec<Rule> {
         .collect()
 }
 
-/// Metadata from leading `# key: value` comments in a `.list` file.
-#[derive(Debug, Clone, Default)]
-pub struct RuleListMeta {
-    pub name: Option<String>,
-}
-
-/// One factory rule file discovered under `resources/rules/`.
-#[derive(Debug, Clone)]
-pub struct BuiltinRuleFile {
-    pub id: String,
-    pub name: String,
-    pub rules: Vec<Rule>,
-    /// `true` for `builtin-*.list`.
-    pub factory_builtin: bool,
-}
-
-impl BuiltinRuleFile {
-    pub fn into_rule_sets(self) -> Vec<RuleSet> {
-        let mut buckets: Vec<(&'static str, Vec<Rule>)> = Vec::new();
-        for rule in self.rules {
-            let key = match rule.target {
-                RuleTarget::Proxy => "proxy",
-                RuleTarget::Direct => "direct",
-                RuleTarget::Block => "block",
-                RuleTarget::Node | RuleTarget::Smart => "smart",
-            };
-            if let Some((_, rules)) = buckets.iter_mut().find(|(bucket, _)| *bucket == key) {
-                rules.push(rule);
-            } else {
-                buckets.push((key, vec![rule]));
-            }
-        }
-        let mixed = buckets.len() > 1;
-        buckets
-            .into_iter()
-            .map(|(key, rules)| {
-                let strategy = match key {
-                    "proxy" => RuleSetStrategy::Proxy,
-                    "direct" => RuleSetStrategy::Direct,
-                    "block" => RuleSetStrategy::Block,
-                    _ => RuleSetStrategy::Smart,
-                };
-                let suffix = match strategy {
-                    RuleSetStrategy::Proxy => "代理",
-                    RuleSetStrategy::Direct => "直连",
-                    RuleSetStrategy::Block => "拦截",
-                    RuleSetStrategy::Smart => "智能",
-                };
-                RuleSet {
-                    id: if mixed {
-                        format!("{}-{key}", self.id)
-                    } else {
-                        self.id.clone()
-                    },
-                    name: if mixed {
-                        format!("{} · {suffix}", self.name)
-                    } else {
-                        self.name.clone()
-                    },
-                    builtin: self.factory_builtin,
-                    enabled: true,
-                    ownership: RuleSetOwnership::Builtin,
-                    strategy,
-                    dns_strategy: if strategy == RuleSetStrategy::Direct {
-                        RuleSetDnsStrategy::Local
-                    } else {
-                        RuleSetDnsStrategy::Remote
-                    },
-                    remote: None,
-                    dns_rules: Vec::new(),
-                    rules,
-                }
-            })
-            .collect()
-    }
-}
-
-/// Parse Shadowrocket / Surge-like rule lines into Rules.
-/// Built-in lists: no DNS field → all `dns_policy = inherit`.
-pub fn parse_shadowrocket_rules(text: &str) -> Vec<Rule> {
-    let mut out = Vec::new();
-    let mut ord = 10i32;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-            continue;
-        }
-        // DOMAIN-SUFFIX,example.com,PROXY
-        // DOMAIN-KEYWORD,google,PROXY
-        // IP-CIDR,1.2.3.0/24,DIRECT,no-resolve
-        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let kind = parts[0].to_ascii_uppercase();
-        // FINAL,PROXY — skip, app uses route.final
-        if kind == "FINAL" || kind == "GEOIP" || kind == "IP-ASN" || kind == "USER-AGENT" {
-            continue;
-        }
-        let (rtype, payload) = match kind.as_str() {
-            "DOMAIN" => (RuleType::Domain, parts[1]),
-            "DOMAIN-SUFFIX" => (RuleType::DomainSuffix, parts[1]),
-            "DOMAIN-KEYWORD" => (RuleType::DomainKeyword, parts[1]),
-            "IP-CIDR" | "IP-CIDR6" => (RuleType::IpCidr, parts[1]),
-            "PROCESS-NAME" | "PROCESS" => (RuleType::Process, parts[1]),
-            _ => continue,
-        };
-        let Some(target) = RuleTarget::parse(parts[2]) else {
-            continue;
-        };
-        out.push(Rule::new(rtype, payload.to_string(), target, ord));
-        ord += 10;
-    }
-    out
-}
-
 /// Serialize a rule set to Clash-style `.list` (routing only; no DNS columns).
 pub fn format_clash_rules_list(set_name: &str, rules: &[Rule]) -> String {
     let mut lines = Vec::new();
@@ -804,152 +701,9 @@ pub fn format_clash_rules_list(set_name: &str, rules: &[Rule]) -> String {
     lines.join("\n")
 }
 
-/// Parse leading comment metadata (`# name: …`).
-pub fn parse_list_meta(text: &str) -> RuleListMeta {
-    let mut meta = RuleListMeta::default();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if !line.starts_with('#') {
-            break;
-        }
-        let rest = line.trim_start_matches('#').trim();
-        if let Some(v) = rest.strip_prefix("name:") {
-            let n = v.trim();
-            if !n.is_empty() {
-                meta.name = Some(n.to_string());
-            }
-        }
-    }
-    meta
-}
-
-/// Candidate directories for bundled rule lists (dev source tree + packaged resources).
-pub fn rules_dir_candidates(resource_dir: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
-    let mut out = Vec::new();
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    out.push(manifest.join("resources/rules"));
-    if let Some(res) = resource_dir {
-        out.push(res.join("resources/rules"));
-        out.push(res.join("rules"));
-    }
-    out
-}
-
-/// First existing rules directory.
-pub fn find_rules_dir(resource_dir: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
-    rules_dir_candidates(resource_dir)
-        .into_iter()
-        .find(|p| p.is_dir())
-}
-
-/// True for routing lists (`foo.list`).
-fn is_routing_list_path(path: &std::path::Path) -> bool {
-    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
-        return false;
-    };
-    name.to_ascii_lowercase().ends_with(".list")
-}
-
-/// Scan `resources/rules/*.list` (sorted by filename) as **factory templates**.
-///
-/// - `builtin-*.list` → `factory_builtin = true` (label 内置, cannot delete)
-pub fn load_builtin_rule_files(resource_dir: Option<&std::path::Path>) -> Vec<BuiltinRuleFile> {
-    let Some(dir) = find_rules_dir(resource_dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<std::path::PathBuf> = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_file() && is_routing_list_path(p))
-            .collect(),
-        Err(_) => return Vec::new(),
-    };
-    paths.sort();
-
-    let mut out = Vec::new();
-    for path in paths {
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if stem.is_empty() {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let meta = parse_list_meta(&text);
-        let rules = parse_shadowrocket_rules(&text);
-        if rules.is_empty() {
-            continue;
-        }
-        let factory_builtin = stem.starts_with("builtin-");
-        let name = meta.name.unwrap_or_else(|| humanize_list_stem(stem));
-        out.push(BuiltinRuleFile {
-            id: stem.to_string(),
-            name,
-            rules,
-            factory_builtin,
-        });
-    }
-    out
-}
-
-fn humanize_list_stem(stem: &str) -> String {
-    if stem == GENERAL_SET_ID {
-        return GENERAL_SET_NAME.into();
-    }
-    // builtin-didi → DIDI; builtin-ruleset → 内置规则集
-    if let Some(rest) = stem.strip_prefix("builtin-") {
-        if rest.eq_ignore_ascii_case("ruleset") {
-            return BUILTIN_SET_NAME.into();
-        }
-        return rest.to_ascii_uppercase();
-    }
-    stem.to_string()
-}
-
-/// Load one factory template by set id from resources (for Reset).
-pub fn load_factory_rule_set(
-    resource_dir: Option<&std::path::Path>,
-    set_id: &str,
-) -> Option<RuleSet> {
-    load_builtin_rule_files(resource_dir)
-        .into_iter()
-        .flat_map(BuiltinRuleFile::into_rule_sets)
-        .find(|set| set.id == set_id)
-}
-
-/// Factory rule sets from disk (filename order). Empty if directory missing.
-pub fn load_builtin_rule_sets(resource_dir: Option<&std::path::Path>) -> Vec<RuleSet> {
-    load_builtin_rule_files(resource_dir)
-        .into_iter()
-        .flat_map(BuiltinRuleFile::into_rule_sets)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_sample_lines() {
-        let text = r#"
-DOMAIN-SUFFIX,google.com,PROXY
-DOMAIN,api.openai.com,PROXY
-DOMAIN-KEYWORD,facebook,PROXY
-IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
-GEOIP,CN,DIRECT
-FINAL,PROXY
-"#;
-        let rules = parse_shadowrocket_rules(text);
-        assert_eq!(rules.len(), 4);
-        assert!(matches!(rules[0].rule_type, RuleType::DomainSuffix));
-        assert!(matches!(rules[2].rule_type, RuleType::DomainKeyword));
-    }
 
     #[test]
     fn smart_keywords_whitelist_or_blacklist_or() {
@@ -1030,24 +784,6 @@ FINAL,PROXY
     }
 
     #[test]
-    fn parse_meta_headers() {
-        let text = "# name: DIDI\n\nDOMAIN-SUFFIX,a.com,DIRECT\n";
-        let meta = parse_list_meta(text);
-        assert_eq!(meta.name.as_deref(), Some("DIDI"));
-    }
-
-    #[test]
-    fn scan_rules_dir_handles_missing_factory_templates() {
-        // The legacy `builtin-ruleset.list` factory template is gone; the
-        // scan must simply yield nothing instead of failing.
-        let files = load_builtin_rule_files(None);
-        assert!(
-            files.iter().all(|file| file.id != BUILTIN_SET_ID),
-            "legacy builtin-ruleset must no longer ship as a factory template"
-        );
-    }
-
-    #[test]
     fn builtin_remote_specs_are_well_formed() {
         let mut ids = std::collections::HashSet::new();
         for spec in BUILTIN_REMOTE_RULE_SETS.iter() {
@@ -1056,7 +792,7 @@ FINAL,PROXY
                 "duplicate builtin remote id {}",
                 spec.id
             );
-            assert!(spec.id.starts_with("builtin-"));
+            assert!(spec.id.starts_with("system-"));
             assert_eq!(spec.file, format!("{}.srs", spec.id));
             assert!(spec.url.starts_with("https://"));
             assert!(matches!(
@@ -1066,10 +802,17 @@ FINAL,PROXY
             assert!(is_builtin_remote_id(spec.id));
             assert!(is_factory_set_id(spec.id));
         }
-        // Legacy list ids are recognizable but no longer factory.
+        // System ids map 1:1 from their first-iteration ids.
+        assert_eq!(LEGACY_BUILTIN_REMOTE_IDS.len(), BUILTIN_REMOTE_RULE_SETS.len());
+        for (old, new) in LEGACY_BUILTIN_REMOTE_IDS {
+            assert_eq!(builtin_remote_spec(new).expect("mapped id exists").id, new);
+            assert_ne!(old, new);
+        }
+        // Legacy list ids are recognizable but never factory or system.
         assert!(!is_factory_set_id(BUILTIN_SET_ID));
         assert!(!is_factory_set_id("builtin-ruleset-proxy"));
         assert!(!is_builtin_remote_id(BUILTIN_SET_ID));
+        assert!(!is_builtin_remote_id(LEGACY_BUILTIN_REMOTE_IDS[0].0));
     }
 
     #[test]

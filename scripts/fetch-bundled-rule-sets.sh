@@ -22,9 +22,9 @@ fi
 
 # Keep in sync with BUILTIN_REMOTE_RULE_SETS in src-tauri/src/domain/rule.rs.
 NAMES=(
-  "builtin-remote-geolocation-not-cn.srs"
-  "builtin-remote-geoip-cn.srs"
-  "builtin-remote-geosite-cn.srs"
+  "system-geolocation-not-cn.srs"
+  "system-geoip-cn.srs"
+  "system-geosite-cn.srs"
 )
 URLS=(
   "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs"

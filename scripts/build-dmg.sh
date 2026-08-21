@@ -121,7 +121,7 @@ if [[ ! -x "$CORE_BIN" ]]; then
 fi
 
 RULE_SETS_DIR="$ROOT/src-tauri/resources/rule-sets"
-if [[ ! -f "$RULE_SETS_DIR/builtin-remote-geosite-cn.srs" ]]; then
+if [[ ! -f "$RULE_SETS_DIR/system-geosite-cn.srs" ]]; then
   echo "built-in rule sets missing, fetching..."
   "$ROOT/scripts/fetch-bundled-rule-sets.sh"
 fi

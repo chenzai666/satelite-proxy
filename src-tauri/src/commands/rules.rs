@@ -808,9 +808,9 @@ pub fn delete_rule_set(
     Ok(())
 }
 
-/// Reset one factory rule set. The bundled remote rule sets restore from
-/// their packaged `.srs` copies; legacy `builtin-*` list sets are gone and
-/// can no longer be reset.
+/// Reset one factory rule set (the bundled `system-*` remote sets) from its
+/// packaged `.srs` copy. Anything else — including legacy `builtin-*` ids —
+/// is not resettable.
 #[tauri::command]
 pub fn reset_rule_set(
     app: AppHandle,
@@ -823,14 +823,9 @@ pub fn reset_rule_set(
         })
         .map_err(|e| e.to_string())?;
     remove_rule_set_files(&state.app_data_dir, &set.id);
-    if crate::domain::is_builtin_remote_id(&set.id) {
-        // Superseded cache files are deleted only after the core restart
-        // (the running core may still be reading them).
-        crate::rule_apply::request_restart(app, stale_cache);
-        return Ok(set);
-    }
-    dump_set(&state, &set.id);
-    apply_running(&app);
+    // Superseded cache files are deleted only after the core restart
+    // (the running core may still be reading them).
+    crate::rule_apply::request_restart(app, stale_cache);
     Ok(set)
 }
 
