@@ -1421,22 +1421,14 @@ tr.row-active {
   font-family: var(--mono);
 }
 
-/* Tray icon + control style share one two-column row in the prefs grid.
-   Each half stacks its text above the control — the tray picker (~8 icon
-   buttons) doesn't fit next to the label in a half-width column. */
-.settings-app-pref.settings-duo-col {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.45rem;
-}
-
+/* Tray icon + control style share one two-column row: label left, control
+   right on a single line (the row's default flex). The text block shrinks
+   so the tray picker fits the half column; descriptions clamp to one line. */
 .settings-app-pref.settings-duo-col .settings-app-text {
-  flex: 0 0 auto;
-  width: 100%;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
-/* Half-width columns: keep the one-line rhythm, full text via title. */
 .settings-app-pref.settings-duo-col .settings-app-desc {
   white-space: nowrap;
   overflow: hidden;
