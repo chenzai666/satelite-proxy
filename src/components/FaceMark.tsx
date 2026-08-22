@@ -321,15 +321,21 @@ function createFaceEngine(canvas: HTMLCanvasElement): FaceEngine {
     }
     const relaxT = smootherstep(clamp01((phase - relaxStart) / RELAX_TWEEN));
     relaxActive = lerp(relaxFrom, relaxTarget, relaxT);
-    // Color cross-fade.
+    // Color cross-fade. Steady state pins to the target object instead of
+    // allocating a fresh {r,g,b,a} every frame (60fps GC churn while idle).
     const t = clamp01((phase - colorStart) / COLOR_TWEEN);
-    const from = colorFrom;
-    color = {
-      r: lerp(from.r, colorTarget.r, smootherstep(t)),
-      g: lerp(from.g, colorTarget.g, smootherstep(t)),
-      b: lerp(from.b, colorTarget.b, smootherstep(t)),
-      a: lerp(from.a, colorTarget.a, smootherstep(t)),
-    };
+    if (t >= 1) {
+      if (color !== colorTarget) color = colorTarget;
+    } else {
+      const from = colorFrom;
+      const k = smootherstep(t);
+      color = {
+        r: lerp(from.r, colorTarget.r, k),
+        g: lerp(from.g, colorTarget.g, k),
+        b: lerp(from.b, colorTarget.b, k),
+        a: lerp(from.a, colorTarget.a, k),
+      };
+    }
   }
 
   function frame(now: number) {
