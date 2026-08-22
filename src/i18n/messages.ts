@@ -221,8 +221,7 @@ const en = {
   "settings.trayIconDanger": "Danger",
   "settings.trayIconDanger2": "Danger (transparent)",
   "settings.unloadUi": "Low memory mode",
-  "settings.unloadUiDesc":
-    "Destroy the UI when closing to tray to free memory. Reopening recreates the window and may show a black screen briefly",
+  "settings.unloadUiDesc": "Free UI memory in tray; brief rebuild on reopen",
   "settings.closeToTray": "Close to tray",
   "settings.closeToTrayDesc":
     "Closing the window keeps tray + core; use tray Quit to exit fully",
@@ -943,8 +942,7 @@ const zh: Record<MessageKey, string> = {
   "settings.trayIconDanger": "危险",
   "settings.trayIconDanger2": "危险(透明)",
   "settings.unloadUi": "低内存模式",
-  "settings.unloadUiDesc":
-    "关闭到托盘时销毁界面以节省内存。再次打开会重建窗口，可能短暂黑屏",
+  "settings.unloadUiDesc": "托盘时释放界面内存，重开需短暂加载",
   "settings.closeToTray": "退出时最小化",
   "settings.closeToTrayDesc":
     "关闭窗口时保持托盘与内核（托盘「退出」可彻底退出）",
