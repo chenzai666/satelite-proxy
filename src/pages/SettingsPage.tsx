@@ -803,7 +803,21 @@ export function SettingsPage() {
                   ]}
                 />
               </div>
-              <div className="settings-app-row settings-app-pref settings-hero-row">
+              <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.trayIcon")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.trayIconDesc")}
+                  </div>
+                </div>
+                <TrayIconPicker
+                  value={settings?.tray_icon}
+                  disabled={busy}
+                  aria-label={t("settings.trayIcon")}
+                  onChange={(v) => void patchApp({ trayIcon: v })}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row settings-duo-col">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.glassFrost")}</div>
                   <div className="settings-app-desc muted">
@@ -819,20 +833,6 @@ export function SettingsPage() {
                     { value: "lite", label: t("settings.glassFrostLite") },
                     { value: "frost", label: t("settings.glassFrostFull") },
                   ]}
-                />
-              </div>
-              <div className="settings-app-row settings-app-pref settings-tray-icon-row">
-                <div className="settings-app-text">
-                  <div className="settings-app-title">{t("settings.trayIcon")}</div>
-                  <div className="settings-app-desc muted">
-                    {t("settings.trayIconDesc")}
-                  </div>
-                </div>
-                <TrayIconPicker
-                  value={settings?.tray_icon}
-                  disabled={busy}
-                  aria-label={t("settings.trayIcon")}
-                  onChange={(v) => void patchApp({ trayIcon: v })}
                 />
               </div>
             </div>
