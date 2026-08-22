@@ -378,6 +378,8 @@ pub fn run() {
             commands::get_core_info,
             commands::get_lan_ip,
             commands::check_core_update,
+            commands::check_app_update,
+            commands::get_app_install_path,
             commands::download_core,
             commands::fetch_core_latest,
             commands::test_nodes_latency,

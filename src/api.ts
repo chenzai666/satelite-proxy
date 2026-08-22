@@ -419,6 +419,24 @@ export function checkCoreUpdate(localVersion?: string | null) {
   }>("check_core_update", { localVersion: localVersion ?? null });
 }
 
+/** Latest app release tag from GitHub; routes via the running proxy.
+ * `force` bypasses the 6h local cache (manual check button); auto checks
+ * on tab open reuse a fresh cached result to spare the API quota. */
+export function checkAppUpdate(force = false) {
+  return invoke<{
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    cached: boolean;
+    checked_at: number | null;
+  }>("check_app_update", { force });
+}
+
+/** Absolute path of the app's own executable (install location). */
+export function getAppInstallPath() {
+  return invoke<string>("get_app_install_path");
+}
+
 export function downloadCore(tag?: string | null) {
   return invoke<CoreDownloadResult>("download_core", { tag: tag ?? null });
 }

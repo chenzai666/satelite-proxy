@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  checkAppUpdate,
   checkCoreUpdate,
   diagnoseNetwork,
   downloadCore,
+  getAppInstallPath,
   getCoreInfo,
   getProxyStatus,
   getSettings,
@@ -39,6 +43,11 @@ type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "core";
 
 const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
 
+/** Repository link shown in the bottom-right corner of the settings page. */
+const PROJECT_URL = "https://github.com/zn0wii/satelite-proxy/";
+/** Always-latest app release page, opened from the version tab. */
+const RELEASES_URL = "https://github.com/zn0wii/satelite-proxy/releases/latest";
+
 // Accent preset names are picked from the i18n catalog rather than
 // AccentPreset.name (theme/accents.ts), which is display data only and not
 // locale-aware.
@@ -65,6 +74,12 @@ export function SettingsPage() {
   /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorSession, setSponsorSession] = useState("0000");
+  /** Anchor + viewport position for the sponsor popup (portaled to <body>,
+   * fixed above the trigger button so opening it never reflows the card). */
+  const sponsorBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [sponsorPos, setSponsorPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
 
   // Click outside the panel/link dismisses it. Ignore clicks inside either
   // node: the link is portaled to <body>, so React stopPropagation does not
@@ -123,6 +138,22 @@ export function SettingsPage() {
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
   const [coreProgress, setCoreProgress] =
     useState<CoreDownloadProgress | null>(null);
+
+  // App's own version card: local version is instant (getVersion), the
+  // latest GitHub tag needs a network check that routes via the proxy
+  // when the kernel is running (same strategy as the core check).
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [appUpdate, setAppUpdate] = useState<{
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    cached: boolean;
+    checked_at: number | null;
+  } | null>(null);
+  const [appChecking, setAppChecking] = useState(false);
+  const [appError, setAppError] = useState<string | null>(null);
+  /** Absolute path of the app's own executable, shown like the kernel path. */
+  const [appPath, setAppPath] = useState<string | null>(null);
 
   const tabs = useMemo(
     () =>
@@ -215,6 +246,37 @@ export function SettingsPage() {
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
     void reloadCore();
   }, [reloadCore]);
+
+  /** reportError: surface failures (manual click). force: bypass the 6h
+   * cache and hit the network — manual checks always refresh, auto checks
+   * on tab open reuse a fresh cached result. */
+  const runAppUpdateCheck = useCallback(
+    async (reportError: boolean, force = false) => {
+      setAppChecking(true);
+      if (reportError) setAppError(null);
+      try {
+        setAppUpdate(await checkAppUpdate(force));
+      } catch (e) {
+        if (reportError) {
+          setAppError(typeof e === "string" ? e : String(e));
+        }
+      } finally {
+        setAppChecking(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (tab !== "core") return;
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+    void getAppInstallPath()
+      .then(setAppPath)
+      .catch(() => setAppPath(null));
+    void runAppUpdateCheck(false);
+  }, [tab, runAppUpdateCheck]);
 
   useEffect(() => {
     if (tab !== "core") return;
@@ -540,59 +602,8 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {/* Sponsor QR — portaled to <body> so a transformed ancestor (the
-       * page-enter animation wrapper) cannot become the containing block
-       * for these position:fixed nodes. App tab only. */}
-      {visibleTab === "app" &&
-        createPortal(
-          <>
-            <button
-              type="button"
-              className="sponsor-link"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSponsorOpen((v) => {
-                  if (!v) {
-                    setSponsorSession(
-                      Math.floor(Math.random() * 0xffff)
-                        .toString(16)
-                        .padStart(4, "0"),
-                    );
-                  }
-                  return !v;
-                });
-              }}
-            >
-              {t("settings.sponsor")}
-            </button>
-            {sponsorOpen && (
-              <div
-                className="sponsor-panel sponsor-session"
-                role="dialog"
-                aria-label={t("settings.sponsor")}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="sponsor-session-bar" aria-hidden="true">
-                  <span>session {sponsorSession}</span>
-                  <span className="sponsor-cursor" />
-                </div>
-                <div className="sponsor-session-view">
-                  <DecryptReveal radius={140} dismissOnLeave>
-                    <img
-                      className="sponsor-qr"
-                      src={buymecoffeeUrl}
-                      alt={t("settings.sponsorScan")}
-                      draggable={false}
-                    />
-                  </DecryptReveal>
-                </div>
-                <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
-; optional :p`}</pre>
-              </div>
-            )}
-          </>,
-          document.body,
-        )}
+      {/* Corner links moved into the version tab's app card (project home +
+       * sponsor easter egg live next to the app's own version info). */}
 
       <GlassSeg
         value={visibleTab}
@@ -1065,16 +1076,23 @@ export function SettingsPage() {
       )}
 
       {visibleTab === "core" && (
-        <section className="settings-panel" aria-label="Core">
+        <section className="settings-panel version-split" aria-label="Version">
           {coreError && <div className="banner error">{coreError}</div>}
 
-          <div className="card core-card">
-            <div className="core-row">
-              <div>
-                <div className="stat-label">{t("settings.coreStatus")}</div>
-                <div className="core-status">
+          <div className="version-col">
+          <div className="version-block-title">
+            {t("settings.coreVersionTitle")}
+          </div>
+          <div className="card core-card kernel-card">
+            <div className="ver-hero">
+              <div className="ver-mark" aria-hidden>
+                ⬢
+              </div>
+              <div className="ver-id">
+                <div className="ver-name">
+                  sing-box
                   {core?.installed ? (
-                    <span className="pill ok">
+                    <span className={`pill ${core.source === "bundled" ? "ok" : ""}`}>
                       {core.source === "bundled"
                         ? t("settings.coreBundled")
                         : t("settings.coreInstalled")}
@@ -1082,10 +1100,35 @@ export function SettingsPage() {
                   ) : (
                     <span className="pill warn">{t("settings.coreMissing")}</span>
                   )}
-                  <span className="muted mono">{core?.platform ?? "…"}</span>
+                </div>
+                <div className="ver-sub muted mono">{core?.platform ?? "…"}</div>
+              </div>
+              <div className="ver-side">
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="ver-ver mono">
+                  {core?.version ?? "—"}
+                  {core?.source === "downloaded" ? (
+                    <span className="pill">{t("settings.coreUser")}</span>
+                  ) : null}
                 </div>
               </div>
-              <div className="core-actions">
+            </div>
+
+            <div className="ver-grid">
+              <div>
+                <span className="stat-label">{t("settings.coreBundledLabel")}</span>
+                <div className="mono ver-stat">{core?.bundled_version ?? "—"}</div>
+              </div>
+              <div>
+                <span className="stat-label">{t("settings.coreLatestLabel")}</span>
+                <div className="mono ver-stat">
+                  {core?.latest_version ?? "—"}
+                  {core?.update_available ? (
+                    <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="ver-grid-actions">
                 <GlassButton
                   icon="↻"
                   disabled={coreBusy || coreChecking || !core}
@@ -1112,42 +1155,12 @@ export function SettingsPage() {
               </div>
             </div>
 
-            <div className="core-meta">
-              <div>
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="mono">
-                  {core?.version ?? "—"}
-                  {core?.source === "bundled" ? (
-                    <span className="pill ok" style={{ marginLeft: 8 }}>
-                      {t("settings.coreBundled")}
-                    </span>
-                  ) : null}
-                  {core?.source === "downloaded" ? (
-                    <span className="pill" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUser")}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div>
-                <span className="stat-label">
-                  {t("settings.coreBundledLatest")}
-                </span>
-                <div className="mono">
-                  {core?.bundled_version ?? "—"} / {core?.latest_version ?? "—"}
-                  {core?.update_available ? (
-                    <span className="pill warn" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUpdateAvail")}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-
             {core?.path && (
               <div className="core-path">
                 <span className="stat-label">{t("settings.corePath")}</span>
-                <code className="path-text mono">{core.path}</code>
+                <code className="path-text mono" title={core.path}>
+                  {core.path}
+                </code>
               </div>
             )}
 
@@ -1200,6 +1213,180 @@ export function SettingsPage() {
             )}
 
             <p className="hint">{t("settings.coreHint")}</p>
+          </div>
+          </div>
+
+          <div className="version-col">
+          <div className="version-block-title">
+            {t("settings.appVersionTitle")}
+          </div>
+          <div className="card core-card app-card">
+            <div className="ver-hero">
+              <div className="ver-mark app-mark" aria-hidden>
+                ◈
+              </div>
+              <div className="ver-id">
+                <div className="ver-name">Satelite</div>
+                <div className="ver-sub muted">{t("settings.appTagline")}</div>
+              </div>
+              <div className="ver-side">
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="ver-ver mono">{appVersion ?? "…"}</div>
+              </div>
+            </div>
+
+            <div className="ver-grid">
+              <div>
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="mono ver-stat">{appVersion ?? "—"}</div>
+              </div>
+              <div>
+                <span className="stat-label">{t("settings.appLatest")}</span>
+                <div className="mono ver-stat">
+                  {appChecking && !appUpdate
+                    ? "…"
+                    : (appUpdate?.latest_version ?? "—")}
+                  {appUpdate?.update_available ? (
+                    <span className="pill warn">
+                      {t("settings.coreUpdateAvail")}
+                    </span>
+                  ) : appUpdate ? (
+                    <span className="pill ok">{t("settings.appUpToDate")}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="ver-grid-actions">
+                <GlassButton
+                  icon="↻"
+                  disabled={appChecking}
+                  onClick={() => void runAppUpdateCheck(true, true)}
+                >
+                  {appChecking
+                    ? t("settings.coreChecking")
+                    : t("settings.coreCheck")}
+                </GlassButton>
+                {/* The app has no in-app downloader — "re-download" simply
+                   opens the latest GitHub release page in the browser. */}
+                <GlassButton
+                  variant="primary"
+                  icon="⤓"
+                  onClick={() => void openUrl(RELEASES_URL)}
+                >
+                  {t("settings.coreRedownload")}
+                </GlassButton>
+              </div>
+            </div>
+
+            {appError && <div className="banner error">{appError}</div>}
+
+            <div className="core-path">
+              <span className="stat-label">{t("settings.corePath")}</span>
+              <code className="path-text mono" title={appPath ?? undefined}>
+                {appPath ?? "—"}
+              </code>
+            </div>
+
+            <div
+              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
+            >
+              <span className="core-route-dot" aria-hidden />
+              <span>
+                {coreProxyAvailable
+                  ? t("settings.appProxyRoute")
+                  : t("settings.appDirectRoute")}
+              </span>
+            </div>
+
+            <div className="ver-links">
+              <button
+                type="button"
+                className="corner-link project-link"
+                onClick={() => {
+                  openUrl(PROJECT_URL).catch((e) =>
+                    setError(typeof e === "string" ? e : String(e)),
+                  );
+                }}
+              >
+                {t("settings.projectHome")}
+              </button>
+              <button
+                type="button"
+                className="corner-link sponsor-link"
+                ref={sponsorBtnRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const rect = sponsorBtnRef.current?.getBoundingClientRect();
+                  if (rect) {
+                    // Popup bounds (QR 216 + padding + session chrome).
+                    const PANEL_W = 246;
+                    const PANEL_H = 302;
+                    const right = Math.min(
+                      Math.max(12, window.innerWidth - rect.right),
+                      Math.max(12, window.innerWidth - PANEL_W - 12),
+                    );
+                    const top =
+                      rect.top - PANEL_H - 10 >= 12
+                        ? rect.top - PANEL_H - 10
+                        : Math.min(
+                            rect.bottom + 10,
+                            window.innerHeight - PANEL_H - 12,
+                          );
+                    setSponsorPos({ top, right });
+                  }
+                  setSponsorOpen((v) => {
+                    if (!v) {
+                      setSponsorSession(
+                        Math.floor(Math.random() * 0xffff)
+                          .toString(16)
+                          .padStart(4, "0"),
+                      );
+                    }
+                    return !v;
+                  });
+                }}
+              >
+                {t("settings.sponsor")}
+              </button>
+            </div>
+
+            {createPortal(
+              sponsorOpen && (
+                <div
+                  className="sponsor-panel sponsor-session"
+                  role="dialog"
+                  aria-label={t("settings.sponsor")}
+                  onClick={(e) => e.stopPropagation()}
+                  style={
+                    sponsorPos
+                      ? {
+                          top: sponsorPos.top,
+                          right: sponsorPos.right,
+                          bottom: "auto",
+                        }
+                      : undefined
+                  }
+                >
+                  <div className="sponsor-session-bar" aria-hidden="true">
+                    <span>session {sponsorSession}</span>
+                    <span className="sponsor-cursor" />
+                  </div>
+                  <div className="sponsor-session-view">
+                    <DecryptReveal radius={140} dismissOnLeave>
+                      <img
+                        className="sponsor-qr"
+                        src={buymecoffeeUrl}
+                        alt={t("settings.sponsorScan")}
+                        draggable={false}
+                      />
+                    </DecryptReveal>
+                  </div>
+                  <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
+; optional :p`}</pre>
+                </div>
+              ),
+              document.body,
+            )}
+          </div>
           </div>
         </section>
       )}

@@ -154,6 +154,16 @@
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(61, 111, 176, 0.08), transparent 55%);
   --panel-solid: #ffffff;
   --panel-elevated: #f3f4f7;
+  /* Menu/option row hover. --panel-elevated (#f3f4f7) over the pure-white
+     popup is near-invisible in daylight; this clearly readable cool gray
+     keeps hover feedback legible without reading warm/yellowish. */
+  --menu-hover: #e8ebf2;
+  /* Form-control fill. Inputs paint WHITE with a crisper border in daylight:
+     the flat --panel-elevated gray fill read as a dingy patch on the
+     pure-white modal cards, while frosted page cards expect bright controls
+     (same white as .glass-seg-indicator / switch thumbs). */
+  --input-bg: #ffffff;
+  --input-border: rgba(0, 0, 0, 0.14);
 }
 
 * {
@@ -235,8 +245,8 @@ textarea {
 input,
 select,
 textarea {
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--input-bg, var(--panel-elevated));
+  border: 1px solid var(--input-border, var(--border));
   color: var(--text);
   border-radius: var(--radius);
 }
@@ -882,7 +892,7 @@ button {
 }
 
 .search {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: var(--radius);
   padding: 0.38rem 0.6rem;
   min-width: 200px;
@@ -976,8 +986,12 @@ button {
 .path-text {
   display: block;
   margin-top: 0.45rem;
-  word-break: break-all;
   font-size: 0.85rem;
+  /* Always one line — truncate with an ellipsis; the full path is available
+     via the title tooltip on the element. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Config preview: a large, near-fullscreen dialog (copy + line filter live
@@ -1174,8 +1188,8 @@ tr.row-active {
   padding: 0.45rem 0.6rem;
   font-size: 0.88rem;
   border-radius: var(--radius);
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--input-bg, var(--panel-elevated));
+  border: 1px solid var(--input-border, var(--border));
   color: var(--text);
 }
 
@@ -1361,42 +1375,225 @@ tr.row-active {
   font-weight: 500;
 }
 
+/* Section titles inside the Settings version tab: kernel card first, the
+   app's own version card below. */
+.version-block-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  margin: 0.55rem 0 0.05rem;
+  padding: 0 0.15rem;
+}
+
+/* Version tab: kernel and app cards side by side, stacking under ~760px.
+   Each column owns its block title so the pair reads as two panels. Grid
+   rows stretch by default, so both cards share the taller one's height. */
+.settings-panel.version-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.settings-panel.version-split > .banner {
+  grid-column: 1 / -1;
+}
+
+.version-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.version-col .core-card {
+  flex: 1 1 auto;
+}
+
+.version-split .version-block-title {
+  margin: 0.1rem 0 0.35rem;
+}
+
+.version-split .core-card {
+  max-width: none;
+}
+
+/* Mirror of the app card's anchored link row: when the kernel card is the
+   shorter one (sponsor panel open, error banner), its hint sinks to the
+   bottom so the slack sits above it, not as trailing whitespace. The
+   hairline matches the app card's link-row divider. */
+.kernel-card > .hint {
+  margin-top: auto;
+  padding-top: 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+/* Equal-height stretching hands the app card slack. Split it in half: one
+   auto margin above the route line, one above the link row — two modest
+   gaps read as breathing room instead of one dead block. */
+.app-card .core-download-route {
+  margin-top: auto;
+}
+
+/* Default app window is 960px — keep the pair side by side below that and
+   only stack on genuinely narrow windows. */
+@media (max-width: 760px) {
+  .settings-panel.version-split {
+    grid-template-columns: 1fr;
+  }
+}
+
 .core-card {
   padding: 1rem 1.05rem;
   width: 100%;
   max-width: 48rem;
 }
 
-.core-row {
+/* —— Version tab: hero row + update strip ——
+   Both cards (kernel, app) share the same anatomy: a mark tile with the
+   name/platform on the left, the big current version on the right, then a
+   stats/actions grid. The app card adds a state-tinted latest-release strip
+   and the quiet project/sponsor links along the bottom hairline. */
+
+.ver-hero {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
-  margin-bottom: 0.85rem;
+  align-items: center;
+  gap: 0.85rem;
+  margin-bottom: 0.95rem;
 }
 
-.core-actions {
+.ver-mark {
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
+  display: grid;
+  place-items: center;
+  font-size: 1.02rem;
+  line-height: 1;
+  color: var(--muted);
+  border-radius: 0.72rem;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text) 7%, transparent),
+    color-mix(in srgb, var(--text) 2.5%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+/* Brand diamond gets the primary tint + a soft glow, echoing the navbar. */
+.ver-mark.app-mark {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 9%, transparent),
+    0 0 18px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+.ver-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.ver-sub {
+  font-size: 0.68rem;
+  margin-top: 0.18rem;
+  letter-spacing: 0.03em;
+}
+
+.ver-side {
+  margin-left: auto;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ver-side .stat-label {
+  margin-bottom: 0.2rem;
+}
+
+.ver-ver {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0.55rem;
+  gap: 0.5rem;
+  font-size: 1.16rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stats + actions row. Flex-wrap (not a fixed grid): the version cards sit
+   side by side, so this row must adapt to card width, not viewport width. */
+.ver-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1.1rem;
+  align-items: center;
+  margin-bottom: 0.8rem;
+  font-size: 0.9rem;
+}
+
+.ver-grid > div:not(.ver-grid-actions) {
+  min-width: 7.2rem;
+}
+
+.ver-grid-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
   flex-wrap: wrap;
 }
 
-.core-status {
+.ver-stat {
   display: flex;
   align-items: center;
-  gap: 0.65rem;
-  margin-top: 0.25rem;
+  gap: 0.5rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.core-meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
+/* Quiet link row along the card's bottom hairline. margin-top:auto anchors
+   it to the card bottom: when equal-height stretching gives the app card
+   extra room, the slack lands above this row instead of trailing space. */
+.ver-links {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+  margin-top: auto;
+  padding-top: 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
 }
+
+.ver-links .corner-link {
+  padding: 4px 0;
+}
+
+.ver-links .corner-link:hover {
+  color: var(--text);
+}
+
+/* Both links sit together in the card's bottom-right corner. */
+.ver-links .project-link {
+  margin-left: auto;
+}
+
+/* Sponsor easter-egg popup: portaled to <body> and fixed above the trigger
+   button (inline position passed from the button's bounding rect at click
+   time), so opening it never reflows the version cards. */
+
+@media (max-width: 720px) {
+  .ver-grid-actions {
+    /* Own line, aligned with the stats when the viewport gets tight. */
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
+/* (.core-row / .core-actions / .core-status / .core-meta were replaced by
+   the .ver-hero / .ver-grid anatomy on the version tab.) */
 
 .core-path {
   margin-bottom: 0.5rem;
@@ -2157,33 +2354,36 @@ button.node-card:disabled,
 
 .ruleset-final {
   display: flex;
-  flex-direction: column;
-  gap: 0.28rem;
-  padding: 0.15rem 0 0.15rem;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
 }
 
 .ruleset-final-label {
   font-size: 0.7rem;
   line-height: 1.2;
-  padding: 0 0.15rem;
+  padding: 0 0 0.15rem;
 }
 
+/* Content-sized seg shares the row with the label instead of stretching. */
 .ruleset-final .glass-seg {
-  display: flex;
-  width: 100%;
-  padding: 0.09rem;
+  flex: 0 0 auto;
+  width: 9.2rem;
+  padding: 0.12rem;
 }
 
 .ruleset-final .glass-seg-indicator {
-  top: 0.09rem;
-  bottom: 0.09rem;
-  left: 0.09rem;
-  width: calc((100% - 0.18rem) / var(--count, 3));
+  top: 0.12rem;
+  bottom: 0.12rem;
+  left: 0.12rem;
+  width: calc((100% - 0.24rem) / var(--count, 3));
 }
 
 .ruleset-final .glass-seg-btn {
-  padding: 0.12rem 0.16rem !important;
-  font-size: 0.58rem !important;
+  padding: 0.22rem 0.3rem !important;
+  font-size: 0.72rem !important;
 }
 
 .ruleset-list-title {
@@ -2735,16 +2935,16 @@ tr.rule-row:hover {
 }
 
 .modal-body select {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
   padding: 0.5rem 0.65rem;
-  background: var(--panel-elevated);
+  background: var(--input-bg, var(--panel-elevated));
   color: var(--text);
   color-scheme: inherit;
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.sponsor-link) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2757,7 +2957,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.sponsor-link):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -3777,9 +3977,9 @@ button.check.on {
   width: 100%;
   min-width: 0;
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
-  background: var(--panel-elevated);
+  background: var(--input-bg, var(--panel-elevated));
   color: var(--text);
   font-size: 0.85rem;
 }
@@ -4061,7 +4261,7 @@ button.check.on {
 }
 
 .field input {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
   padding: 0.5rem 0.65rem;
   outline: none;
@@ -5800,9 +6000,9 @@ select:not([size]),
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0 0.7rem;
-  border: 1px solid var(--border) !important;
+  border: 1px solid var(--input-border, var(--border)) !important;
   border-radius: 8px !important;
-  background: var(--panel-elevated) !important;
+  background: var(--input-bg, var(--panel-elevated)) !important;
   color: var(--text) !important;
   font-size: 0.85rem !important;
   font-weight: 500 !important;
@@ -5909,7 +6109,7 @@ select:not([size]),
 }
 
 .solid-select-option:hover:not(:disabled) {
-  background: var(--panel-elevated) !important;
+  background: var(--menu-hover, var(--panel-elevated)) !important;
   box-shadow: none !important;
 }
 
@@ -7458,13 +7658,12 @@ button.simple-link-row {
   pointer-events: none;
 }
 
-/* Sponsor QR — corner link + panel.
- * The link is plain text only: no background/border in any state. */
-.sponsor-link {
-  position: fixed;
-  right: 18px;
-  bottom: 14px;
-  z-index: 90;
+/* Bottom-right corner links on the settings page (project home + sponsor).
+ * Cluster container is the fixed anchor; individual links are plain text
+ * only: no background/border in any state. */
+/* Corner-link base styles — the links now live in the version tab's
+   .ver-links row; .corner-link is kept as the shared quiet-button look. */
+.corner-link {
   /* appearance is what actually kills the native Aqua capsule on WKWebView —
    * background/border alone leave it visible. */
   appearance: none;
@@ -7481,13 +7680,13 @@ button.simple-link-row {
   opacity: 0.8;
   transition: opacity 0.15s ease;
 }
-.sponsor-link:hover,
-.sponsor-link:active,
-.sponsor-link:focus-visible {
+.corner-link:hover,
+.corner-link:active,
+.corner-link:focus-visible {
   background: none;
   box-shadow: none;
 }
-.sponsor-link:hover {
+.corner-link:hover {
   opacity: 1;
 }
 .sponsor-panel {
