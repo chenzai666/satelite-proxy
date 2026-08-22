@@ -263,9 +263,10 @@ pub struct AppSettings {
     #[serde(default)]
     pub tray_icon: TrayIconStyle,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
-    /// memory. Default false — hide only so reopen is instant. When true, next
-    /// wake recreates the WebView (brief black screen).
-    #[serde(default)]
+    /// memory. Default true — the WebView tree costs 300-400MB resident and
+    /// tray-only sessions don't need it. When true, next wake recreates the
+    /// WebView (brief skeleton before React repaints).
+    #[serde(default = "default_unload_ui_on_tray")]
     pub unload_ui_on_tray: bool,
     /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
@@ -341,6 +342,12 @@ fn default_true() -> bool {
     true
 }
 
+/// Low-memory mode defaults ON — the WebView2 tree holds 300-400MB resident
+/// and tray-only sessions don't need it (docs/webview2-memory-optimization-plan.md).
+fn default_unload_ui_on_tray() -> bool {
+    true
+}
+
 fn default_locale() -> String {
     "zh".into()
 }
@@ -386,7 +393,7 @@ impl Default for AppSettings {
             accent: default_accent(),
             hero_style: default_hero_style(),
             tray_icon: TrayIconStyle::default(),
-            unload_ui_on_tray: false,
+            unload_ui_on_tray: default_unload_ui_on_tray(),
             auto_select: AutoSelectMode::Off,
             find_process: true,
             smart_switch: false,

@@ -9,10 +9,16 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
+
+/** Past this many rows the table renders only the visible window. */
+const VIRTUALIZE_AFTER = 200;
+/** Mirrors the fixed `.conn-table tbody tr` height in App.css. */
+const ROW_H = 35;
 
 function fmtTime(ms?: number | null) {
   if (!ms) return "—";
@@ -163,6 +169,15 @@ export function FailuresPage({ embedded = false }: Props) {
       }),
     [scoped],
   );
+  const virtualized = scopedMeta.length > VIRTUALIZE_AFTER;
+  const range = useVirtualRange({
+    itemCount: scopedMeta.length,
+    itemSize: ROW_H,
+    enabled: virtualized,
+  });
+  const visibleMeta = virtualized
+    ? scopedMeta.slice(range.start, range.end)
+    : scopedMeta;
   const scopeOpts = useMemo(
     () => [
       { value: "all", label: t("traffic.scopeAll") },
@@ -317,8 +332,13 @@ export function FailuresPage({ embedded = false }: Props) {
                 <th className="conn-th-actions">{t("common.actions")}</th>
               </tr>
             </thead>
-            <tbody>
-              {scopedMeta.map(({ row: r, host, suffix }) => (
+            <tbody ref={range.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {range.paddingTop > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingTop }} />
+                </tr>
+              )}
+              {visibleMeta.map(({ row: r, host, suffix }) => (
                   <tr key={`${r.id}-${r.closed_at ?? r.last_seen ?? 0}`}>
                     <td className="conn-time">
                       <div className="conn-cell" title={fmtTime(r.closed_at ?? r.last_seen)}>
@@ -368,6 +388,11 @@ export function FailuresPage({ embedded = false }: Props) {
                     </td>
                   </tr>
                 ))}
+              {range.paddingBottom > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

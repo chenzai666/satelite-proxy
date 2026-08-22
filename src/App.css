@@ -2352,6 +2352,13 @@ button.node-card:disabled,
   vertical-align: middle;
 }
 
+/* Fixed row height — the tables virtualize past 200 rows and the windowing
+   math needs an exact per-row size (all cells are single-line by rule above,
+   so the natural height never exceeds this). */
+.conn-table tbody tr {
+  height: 35px;
+}
+
 /* Fixed column widths (≈ page width, no overflow). destination absorbs the
    leftover since it has no explicit width. Node / rule / traffic are widened
    and share the space taken from the (narrower) destination column. */
@@ -6333,6 +6340,9 @@ select:not([size]):disabled {
   padding: 0.2rem 0.25rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 55%, transparent);
   align-items: baseline;
+  /* Fixed height — the log list virtualizes past 200 lines (single-line
+     messages, full text via the title tooltip). */
+  height: 25px;
 }
 
 .log-line:last-child {
@@ -6375,8 +6385,10 @@ select:not([size]):disabled {
 }
 
 .log-msg {
-  word-break: break-word;
-  white-space: pre-wrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 button.active-soft {
@@ -7818,4 +7830,11 @@ button.simple-link-row {
   .sponsor-cursor {
     animation: none;
   }
+}
+
+/* —— Virtualization spacers (tables & log list) —— */
+tr.virt-pad > td,
+li.virt-pad {
+  padding: 0;
+  border: none;
 }

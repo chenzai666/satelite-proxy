@@ -179,16 +179,19 @@ export function SimpleTrafficSpark({
   const { t } = useI18n();
   const [rows, setRows] = useState<ConnectionView[]>([]);
   const revisionRef = useRef<number | null>(null);
+  const orderRevRef = useRef<number | null>(null);
 
   const reloadLinks = useCallback(async () => {
     if (!running) {
       revisionRef.current = null;
+      orderRevRef.current = null;
       setRows([]);
       return;
     }
     try {
-      const batch = await listConnectionChanges(revisionRef.current);
+      const batch = await listConnectionChanges(revisionRef.current, orderRevRef.current);
       revisionRef.current = batch.revision;
+      orderRevRef.current = batch.order_revision;
       if (!batch.unchanged) {
         setRows((current) => applyConnectionChanges(current, batch));
       }

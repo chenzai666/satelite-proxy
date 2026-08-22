@@ -700,10 +700,26 @@ export function listConnections() {
   return invoke<ConnectionView[]>("list_connections");
 }
 
-export function listConnectionChanges(sinceRevision?: number | null) {
+export function listConnectionChanges(
+  sinceRevision?: number | null,
+  lastOrderRevision?: number | null,
+) {
   return invoke<import("./types").LiveConnectionBatch>("list_connection_changes", {
     sinceRevision: sinceRevision ?? null,
+    lastOrderRevision: lastOrderRevision ?? null,
   });
+}
+
+export interface WebViewMemoryReport {
+  process_count: number;
+  total_ws_bytes: number;
+  total_private_bytes: number;
+}
+
+/** Aggregate memory of the app's WebView process tree (null when the
+ * platform can't read it — the UI hides the row). */
+export function getWebviewMemory() {
+  return invoke<WebViewMemoryReport | null>("get_webview_memory");
 }
 
 export interface RequestBatch {

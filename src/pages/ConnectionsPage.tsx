@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getProxyStatus, listConnectionChanges } from "../api";
 import { GlassSeg } from "../components/GlassSeg";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
 import { applyConnectionChanges } from "../connectionChanges";
+
+/** Past this many rows the table renders only the visible window (see
+ * useVirtualRange); below it a plain map keeps the code path simple. */
+const VIRTUALIZE_AFTER = 200;
+/** Mirrors the fixed `.conn-table tbody tr` height in App.css. */
+const ROW_H = 35;
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -36,15 +43,17 @@ export function ConnectionsPage({ embedded = false }: Props) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<TrafficScope>("all");
   const revisionRef = useRef<number | null>(null);
+  const orderRevRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnectionChanges(revisionRef.current),
+        listConnectionChanges(revisionRef.current, orderRevRef.current),
       ]);
       setRunning(!!status?.running);
       revisionRef.current = batch.revision;
+      orderRevRef.current = batch.order_revision;
       if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {
@@ -80,6 +89,14 @@ export function ConnectionsPage({ embedded = false }: Props) {
         return hay.includes(q);
       })
     : scoped;
+
+  const virtualized = filtered.length > VIRTUALIZE_AFTER;
+  const range = useVirtualRange({
+    itemCount: filtered.length,
+    itemSize: ROW_H,
+    enabled: virtualized,
+  });
+  const visibleRows = virtualized ? filtered.slice(range.start, range.end) : filtered;
 
   const scopeOpts = useMemo(
     () => [
@@ -144,8 +161,13 @@ export function ConnectionsPage({ embedded = false }: Props) {
                 <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
-            <tbody>
-              {filtered.map((r) => (
+            <tbody ref={range.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {range.paddingTop > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingTop }} />
+                </tr>
+              )}
+              {visibleRows.map((r) => (
                 <tr key={r.id}>
                   <td className="conn-time">
                     <div className="conn-cell" title={fmtIso(r.start)}>
@@ -190,6 +212,11 @@ export function ConnectionsPage({ embedded = false }: Props) {
                   </td>
                 </tr>
               ))}
+              {range.paddingBottom > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

@@ -554,7 +554,10 @@ export interface ConnectionView {
 export interface LiveConnectionBatch {
   rows: ConnectionView[];
   removed_ids: string[];
-  order_ids: string[];
+  /** Full id order. Omitted when membership is unchanged since the client's
+   * last `order_revision` — then merge `rows` in place without reordering. */
+  order_ids?: string[] | null;
+  order_revision: number;
   revision: number;
   unchanged: boolean;
   full: boolean;

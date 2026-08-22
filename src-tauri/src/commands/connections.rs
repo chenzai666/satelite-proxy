@@ -18,12 +18,13 @@ pub async fn list_connections(app: AppHandle) -> Result<Vec<ConnectionView>, Str
 pub async fn list_connection_changes(
     app: AppHandle,
     since_revision: Option<u64>,
+    last_order_revision: Option<u64>,
 ) -> Result<LiveConnectionBatch, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
-        Ok(state.live_connection_batch(since_revision))
+        Ok(state.live_connection_batch(since_revision, last_order_revision))
     })
     .await
     .map_err(|e| format!("list connection changes task: {e}"))?
