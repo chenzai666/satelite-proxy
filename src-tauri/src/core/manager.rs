@@ -1024,6 +1024,17 @@ mod cwd_tests {
         let config = tmp.join("active.json");
         std::fs::write(&config, "{}").unwrap();
 
+        // Use the native shell on Windows. Git's MSYS `pwd` rewrites
+        // C:\Users\...\Temp to /tmp/..., so comparing that output to a native
+        // canonical PathBuf produces a false failure even when current_dir is
+        // correct.
+        #[cfg(windows)]
+        let mut cmd = {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/D", "/C", "cd"]);
+            command
+        };
+        #[cfg(not(windows))]
         let mut cmd = std::process::Command::new("pwd");
         if let Some(dir) = config.parent() {
             cmd.current_dir(dir);
