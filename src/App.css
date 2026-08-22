@@ -4130,6 +4130,25 @@ button.check.on {
   margin-top: 0.25rem;
 }
 
+.system-proxy-restart-backdrop {
+  z-index: 70;
+}
+
+.system-proxy-restart-modal {
+  border-color: var(--primary-border);
+  box-shadow: var(--shadow-modal), 0 0 0 1px var(--primary-muted);
+}
+
+.system-proxy-restart-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.system-proxy-restart-body p {
+  margin: 0;
+  line-height: 1.65;
+}
+
 /* ═══════════════════════════════════════════
    style3 — Dashboard mission + instruments
    ═══════════════════════════════════════════ */

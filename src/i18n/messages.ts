@@ -101,6 +101,12 @@ const en = {
   "dashboard.captureSwitching": "Switching capture…",
   "dashboard.captureSystemHint":
     "Set system proxy and CLI environment to the mixed port; restart existing CLI/Codex apps",
+  "dashboard.restartAppsTitle": "Restart apps to finish switching",
+  "dashboard.restartAppsNotice":
+    "System proxy is now active. Fully quit and reopen ChatGPT, Codex, terminals, and other already-running CLI apps so they use Satelite.",
+  "dashboard.restartAppsDetail":
+    "Closing a window may leave background processes running. Exit them from the tray or Task Manager before reopening.",
+  "dashboard.restartAppsAcknowledge": "Got it",
   "dashboard.captureTunHint":
     "Global capture via utun (admin once for service install)",
   "dashboard.smartSwitch": "Smart switch",
@@ -808,6 +814,12 @@ const zh: Record<MessageKey, string> = {
   "dashboard.captureSwitching": "切换中…",
   "dashboard.captureSystemHint":
     "同步设置系统代理和命令行代理环境；已运行的 CLI/Codex 需重启",
+  "dashboard.restartAppsTitle": "重启应用以完成代理切换",
+  "dashboard.restartAppsNotice":
+    "系统代理已经启用。请完全退出并重新打开 ChatGPT、Codex、终端及其他已运行的命令行应用，它们才会改用 Satelite。",
+  "dashboard.restartAppsDetail":
+    "只关闭窗口可能仍有后台进程；请从托盘或任务管理器彻底退出后再重新打开。",
+  "dashboard.restartAppsAcknowledge": "我知道了",
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":

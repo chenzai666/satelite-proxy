@@ -55,23 +55,17 @@ export function useCaptureModeSwitch(
     inFlightRef.current = true;
     setCaptureBusy(true);
 
-    // TUN enter/leave restarts core; track across multi-click drain batch.
-    let touchedTun = baselineModeRef.current === "tun";
-
     try {
       while (desiredRef.current != null) {
         const mode = desiredRef.current;
         desiredRef.current = null;
-        if (mode === "tun") touchedTun = true;
         try {
           const s = await setCaptureMode(mode);
           // Newer click arrived while we awaited — apply that next.
           if (desiredRef.current != null) continue;
           setProxy(s);
           setCaptureUi(null);
-          if (touchedTun) {
-            onApplied?.(mode, baselineModeRef.current);
-          }
+          onApplied?.(mode, baselineModeRef.current);
         } catch (e) {
           if (desiredRef.current != null) continue;
           const msg = typeof e === "string" ? e : String(e);

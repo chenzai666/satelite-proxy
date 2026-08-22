@@ -27,6 +27,7 @@ import { useI18n } from "../i18n";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
+import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import type {
   AutoSelectMode,
@@ -192,6 +193,7 @@ export function DashboardPage({
   const [latencyProbing, setLatencyProbing] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [showSystemRestartNotice, setShowSystemRestartNotice] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
@@ -277,9 +279,11 @@ export function DashboardPage({
     setError(msg);
   }, []);
 
-  // Hook only invokes this when the drain batch touched TUN (core restart).
-  const onCaptureApplied = useCallback(() => {
+  const onCaptureApplied = useCallback((mode: "off" | "system" | "tun", prevMode: "off" | "system" | "tun") => {
     void reload();
+    if (mode === "system" && prevMode !== "system") {
+      setShowSystemRestartNotice(true);
+    }
   }, [reload]);
 
   const { captureMode, captureBusy, requestCaptureMode } = useCaptureModeSwitch(
@@ -1394,6 +1398,10 @@ export function DashboardPage({
           </div>
         </div>
       )}
+      <SystemProxyRestartNotice
+        open={showSystemRestartNotice}
+        onClose={() => setShowSystemRestartNotice(false)}
+      />
     </div>
   );
 }
