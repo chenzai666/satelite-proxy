@@ -153,6 +153,16 @@ export function FailuresPage({ embedded = false }: Props) {
   );
 
   const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  // Per-row host/suffix parsing memoized so the 2.5s poll re-renders don't
+  // re-split/regex every row (up to 800) on each pass.
+  const scopedMeta = useMemo(
+    () =>
+      scoped.map((r) => {
+        const host = rowHost(r);
+        return { row: r, host, suffix: extractDomainSuffix(host) };
+      }),
+    [scoped],
+  );
   const scopeOpts = useMemo(
     () => [
       { value: "all", label: t("traffic.scopeAll") },
@@ -308,10 +318,7 @@ export function FailuresPage({ embedded = false }: Props) {
               </tr>
             </thead>
             <tbody>
-              {scoped.map((r) => {
-                const host = rowHost(r);
-                const suffix = extractDomainSuffix(host);
-                return (
+              {scopedMeta.map(({ row: r, host, suffix }) => (
                   <tr key={`${r.id}-${r.closed_at ?? r.last_seen ?? 0}`}>
                     <td className="conn-time">
                       <div className="conn-cell" title={fmtTime(r.closed_at ?? r.last_seen)}>
@@ -360,8 +367,7 @@ export function FailuresPage({ embedded = false }: Props) {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+                ))}
             </tbody>
           </table>
         </div>

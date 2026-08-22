@@ -500,6 +500,13 @@ export function DashboardPage({
     }
   }
 
+  function closePreview() {
+    setShowPreview(false);
+    // Release the preview string + its split-lines array — generated configs
+    // reach hundreds of KB and the dashboard is the always-mounted home page.
+    setResult(null);
+  }
+
   async function onProbeLatency() {
     if (!currentNode || latencyProbing) return;
     setLatencyProbing(true);
@@ -1348,7 +1355,7 @@ export function DashboardPage({
               <button
                 type="button"
                 className="icon-btn"
-                onClick={() => setShowPreview(false)}
+                onClick={closePreview}
                 aria-label={t("common.close")}
               >
                 ×

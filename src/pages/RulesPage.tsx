@@ -267,6 +267,10 @@ export function RulesPage({ embedded = false }: Props) {
   }, [menuRuleId, menuSetId, toolbarMenuOpen]);
 
   useEffect(() => {
+    // RulesPage remounts on every settings-tab switch; if it unmounts before
+    // listen() resolves, dispose immediately — otherwise the listener (and
+    // its closure over this page's setters) leaks onto the global bus.
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<{ id: string; status: string; error?: string | null }>(
       "remote-rule-set-status",
@@ -282,12 +286,17 @@ export function RulesPage({ embedded = false }: Props) {
         void reloadSets();
       },
     ).then((dispose) => {
-      unlisten = dispose;
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [reloadSets]);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<{
       id: string;
@@ -323,9 +332,13 @@ export function RulesPage({ embedded = false }: Props) {
       }
       setError(applyError ?? t("rules.restartFailed"));
     }).then((dispose) => {
-      unlisten = dispose;
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [reloadSets]);
 
   const filtered = useMemo(() => {

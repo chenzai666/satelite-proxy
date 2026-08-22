@@ -313,14 +313,21 @@ export function SettingsPage() {
   }, [menuInboundId]);
 
   useEffect(() => {
+    // Settings tabs remount pages often; if this unmounts before listen()
+    // resolves, dispose immediately so the listener doesn't leak.
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<CoreDownloadProgress>("core-download-progress", (event) => {
       setCoreProgress(event.payload);
       setCoreProxyAvailable(event.payload.via_proxy);
     }).then((dispose) => {
-      unlisten = dispose;
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   /** Latest auto-apply fn (called from the debounced effect and re-queued
