@@ -4320,6 +4320,21 @@ button.check.on {
   min-height: 0;
 }
 
+/* Rule-form modals (create/edit set, add/edit rule, batch targets) grow
+   tall once the 指定/过滤 strategy config expands — same cap-and-scroll
+   pattern as config-add-modal. All SolidSelects inside use inline `list`
+   mode, so no popover is clipped by the scrolling body. */
+.modal.rules-form-modal {
+  max-height: min(92vh, 860px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.rules-form-modal .modal-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: 1fr 7.5rem;

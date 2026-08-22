@@ -1715,7 +1715,7 @@ export function RulesPage({ embedded = false }: Props) {
 
       {batchOpen && viewSet && (
         <div className="modal-backdrop">
-          <div className="modal">
+          <div className="modal rules-form-modal">
             <header className="modal-header">
               <h2>{t("rules.batchTitle")}</h2>
               <button type="button" className="icon-btn" onClick={() => setBatchOpen(false)}>
@@ -1859,7 +1859,7 @@ export function RulesPage({ embedded = false }: Props) {
 
       {editOpen && (
         <div className="modal-backdrop">
-          <div className="modal">
+          <div className="modal rules-form-modal">
             <header className="modal-header">
               <h2>{editRule ? t("rules.editRule") : t("rules.addRuleTitle")}</h2>
               <button type="button" className="icon-btn" onClick={() => setEditOpen(false)}>
@@ -2069,7 +2069,7 @@ export function RulesPage({ embedded = false }: Props) {
         <div
           className="modal-backdrop"
         >
-          <div className="modal">
+          <div className="modal rules-form-modal">
             <header className="modal-header">
               <h2>{t("rules.newSetTitle")}</h2>
               <button
@@ -2290,7 +2290,7 @@ export function RulesPage({ embedded = false }: Props) {
         <div
           className="modal-backdrop"
         >
-          <div className="modal">
+          <div className="modal rules-form-modal">
             <header className="modal-header">
               <h2>{t("rules.editSetTitle")}</h2>
               <button
