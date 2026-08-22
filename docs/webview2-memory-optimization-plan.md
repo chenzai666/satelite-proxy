@@ -13,7 +13,7 @@
 | 固定开销 | browser 42MB + utility×2 23MB + crashpad 3MB ≈ **68MB**（不可优化） |
 | 全树合计 | 私有提交 **275MB（冷启）→ 421MB（活跃峰值）**；WS 合计 432~509MB |
 | 最大单项优化 | 托盘隐藏时销毁 WebView（`unloadUiOnTray` 已实现）→ 托盘态全树归零 |
-| 前台最大优化 | Glass 控件家族去 backdrop-filter → GPU 预期 -30~80MB |
+| 前台最大优化 | ~~Glass 控件家族去 backdrop-filter~~ **实测修正：blur 烧的是每帧合成 GPU 时间而非常驻显存，内存收益≈0**；前台真正确定的是表格虚拟化（DOM -91%） |
 
 ---
 
@@ -83,13 +83,15 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 
 ## 4. 优化项清单
 
-### P0 · GPU 进程减负（预期合计 -40~110MB 活跃态）
+### P0 · GPU 进程减负（**⚠️ 2026-08-22 实测修正：本节 blur 相关的内存预估全部作废，见 P0-1**）
 
-**P0-1 Glass 控件家族去 backdrop-filter**（预期 GPU -30~80MB）
-- 证据：`App.css:5449`（.glass-seg blur18）、`App.css:5548`（.glass-btn blur18）、`App.css:5679`（.glass-switch-track blur14）；设置页同屏 7+ 开关 → 14+ 独立模糊层。
-- 改法：重复小控件改为**静态半透明底 + 1px inset 高光**（视觉近似、零 backdrop 采样）；或每张卡片只保留一个共享模糊底板层，控件继承。`.topnav`（blur20，唯一容器）和 `.card`（每页个位数）可保留。
-- 风险：视觉微差；需截屏对比 6 主题色 × 深/浅主题。
-- 验证：GPU priv 活跃峰值对比（预期 272 → 200MB 以内）。
+**P0-1 Glass 控件家族去 backdrop-filter**（**❌ 内存收益实测≈0，预估作废**；保留为风格选项）
+- 原预估 -30~80MB 是**错的**：`backdrop-filter` 的代价是**每帧合成 GPU 时间**（backdrop 采样
+  render pass + 每帧临时模糊纹理），而**不是常驻显存**——静态 UI 不重绘时成本≈零，动态区域
+  重绘时烧的是 GPU 时间/功耗。同机同会话 A/B（注入样式动态开关 23 个 blur 层）与最终
+  `glass_frost` 设置开关实测均无法在 GPU 进程内存上分辨差异（弹性逐出噪声 >> 效应量）。
+- 已实施为 `glass_frost` 设置开关（默认关=实色）：真正的价值是合成效率与低配机器的
+  GPU 时间，以及给用户选择权；**不要再用「省 XX MB」描述这项**。
 
 **P0-2 ParticleSphere 补 `forceContextLoss()`**（**❌ 2026-08-22 实验否决，勿做**）
 - 实测：加 `forceContextLoss()` 后，连续 6 次快速切换 heroStyle（粒子↔经典↔笑脸）会触发
@@ -122,17 +124,20 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 **P3-1 内置内存仪表**：诊断页/概览展示 `performance.memory.usedJSHeapSize` + Rust 侧 webview2 进程树 RSS（复用本次 proc_mem 逻辑）——让「内存回归」可见。
 **P3-2 测量脚本固化**：将 `%TEMP%\satelite-mem` 的 `cdp.mjs`/`proc_mem.ps1` 收进 `scripts/memory-profile/`，README 注明启动方式（env var + 9222）。
 
-## 5. 预期收益汇总
+## 5. 预期收益汇总（**2026-08-22 终版：按实测修正**）
 
-| 措施 | 前台活跃态 | 托盘态 | 成本 |
+| 措施 | 前台活跃态 | 托盘态 | 实测状态 |
 |---|---|---|---|
-| P0-1 glass 去 blur | **-30~80MB (GPU)** | — | 视觉调优 |
-| P0-2/0-3 hero 治理 | -10~30MB (GPU) | — | 一行+小改 |
-| P1 全部 | -5~15MB (renderer) + 防膨胀 | — | 中 |
-| P2-1 托盘销毁默认开 | — | **≈-300~420MB** | 改默认值 |
-| **合计** | 421 → **~300-350MB**；静置 ~250MB | **≈0（仅剩 Rust+内核）** | |
+| P0-1 glass 去 blur | **≈0 MB**（合成 GPU 时间↓，内存不变） | — | ❌ 原预估作废，改为风格开关 |
+| P0-2 forceContextLoss | — | — | ❌ 实验否决（触发 WebGL 失败窗口） |
+| P0-3 hero 空闲治理 | 防 GC churn（MB 级不可测） | — | ✅ 已实施 |
+| P1-1 表格虚拟化 | **DOM -91%**（271 行：4144→381 节点，实测） | — | ✅ 已实施+实测 |
+| P1-2 order_ids 协议 | payload **-98%**（N=1000 时，实测协议行为） | — | ✅ 已实施+实测 |
+| P1 其余（泄漏/滞留/上限） | 防膨胀 + 数 MB | — | ✅ 已实施 |
+| P2-1 托盘销毁默认开 | — | **WebView2 树归零（实测 0 进程 / 0MB）** | ✅ 已实施+实测 |
+| **最终结论** | 前台 ≈ 平台地板 **~220MB**（同机 SearchHost 对照 221MB）+ 应用增量（hero WebGL 为主） | **0MB** | |
 
-绝对下限说明：Chromium 六进程固定开销 ~68MB + 应用 DOM/JS 基线，**前台状态下任何优化都无法低于 ~200MB 私有**；「200+MB」中有相当比例是 WebView2 平台固有成本。真正把数字打下去的是托盘态销毁（P2-1）。
+绝对下限说明：Chromium 六进程固定开销 ~68MB + 应用 DOM/JS 基线，**前台状态下任何优化都无法低于 ~200MB 私有**——这是 WebView2 的平台成本而非应用成本。**真正把数字打下去的只有托盘态销毁（P2-1）**；前台侧确定有效的只有虚拟化（DOM）与协议（payload），两者防的是数据规模失控而非砍基线。
 
 ## 6. 验证流程（发版前回归）
 
@@ -151,7 +156,7 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 
 | 项 | 状态 | 备注 |
 |---|---|---|
-| P0-1 glass 控件去 blur | ✅ 已实施 | `.glass-seg/.glass-btn/.glass-switch-track` 改实色（#232a37/#262d3a，与 modal opaque 方案同族）；计算样式验证 backdropFilter=none；设置页截图人工+视觉模型复核无缺陷；浅色主题走原有 day 覆盖 |
+| P0-1 glass 控件去 blur | ✅ 已实施（**后修正：内存收益≈0**） | 改实色 + 最终做成 `glass_frost` 开关（默认实色）；实测 blur 开/关 GPU 内存无差异——blur 烧每帧合成时间而非常驻显存，收益是合成效率与 GPU 功耗，不是 MB |
 | P0-2 forceContextLoss | ❌ 实验否决 | 见 §4 P0-2，反而触发 WebView2 WebGL 失败窗口 |
 | P0-3 FaceMark 稳态零分配 | ✅ 已实施 | 补间完成后直接引用 colorTarget，稳态不再每帧 new {r,g,b,a} |
 | P1-3 预览释放 | ✅ 已实施 | closePreview() 同时 setResult(null) |
