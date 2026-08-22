@@ -371,6 +371,7 @@ export interface AppLogEntry {
 export interface AppLogBatch {
   entries: AppLogEntry[];
   cursor: number;
+  session: number;
 }
 
 export function listAppLogs(opts?: {

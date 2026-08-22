@@ -11,6 +11,21 @@ use std::time::{Duration, Instant};
 const KERNEL_SELECTION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const KERNEL_SELECTION_HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 
+fn log_proxy_status(action: &str, status: &ProxyStatus) {
+    app_log::info(
+        "core",
+        format!(
+            "{action}: running={} state={:?} capture={} outbound={} mixed_port={} auto_select={}",
+            status.running,
+            status.core_state,
+            status.capture_mode,
+            status.outbound_mode,
+            status.mixed_port,
+            status.auto_select
+        ),
+    );
+}
+
 #[derive(Default)]
 struct KernelSelectionPoll {
     in_flight: bool,
@@ -614,6 +629,10 @@ impl AppState {
         resource_dir: Option<&Path>,
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
+        if let Err(error) = app_log::clear() {
+            app_log::warn("app_log", format!("start session clear failed: {error}"));
+        }
+        app_log::info("core", "proxy start requested");
         let _transition = self.begin_core_transition()?;
         self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
@@ -653,10 +672,12 @@ impl AppState {
         }
         store.save(&self.store_path)?;
         self.cache_status(&status);
+        log_proxy_status("proxy started", &status);
         Ok(status)
     }
 
     pub fn stop_proxy(&self) -> AppResult<ProxyStatus> {
+        app_log::info("core", "proxy stop requested");
         let _transition = self.begin_core_transition()?;
         self.mark_cached_core_state(CoreState::Stopping);
         let mut runtime = self.lock_runtime();
@@ -669,10 +690,16 @@ impl AppState {
             );
         }
         self.cache_status(&status);
+        // A successful user stop ends the diagnostic session. On failure the
+        // request and error remain available for troubleshooting.
+        if let Err(error) = app_log::clear() {
+            app_log::warn("app_log", format!("stop session clear failed: {error}"));
+        }
         Ok(status)
     }
 
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
+        app_log::info("core", "proxy restart requested");
         let _transition = self.begin_core_transition()?;
         self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
@@ -696,6 +723,7 @@ impl AppState {
         }
         store.save(&self.store_path)?;
         self.cache_status(&status);
+        log_proxy_status("proxy restarted", &status);
         Ok(status)
     }
 
@@ -1197,6 +1225,7 @@ impl AppState {
         let want_sys = mode == crate::domain::CaptureMode::System;
         let tun_now = store.settings.tun_enabled;
         let sys_now = runtime.system_proxy_on;
+        let previous_mode = store.settings.capture_mode;
 
         // Runtime state is process-local. After an unclean exit it may say
         // "off" while the OS still points at our dead loopback endpoint.
@@ -1246,6 +1275,15 @@ impl AppState {
 
         let status = runtime.status(&store);
         self.cache_status(&status);
+        app_log::info(
+            "settings",
+            format!(
+                "capture_mode {} → {}",
+                previous_mode.as_str(),
+                mode.as_str()
+            ),
+        );
+        log_proxy_status("capture mode applied", &status);
         Ok(status)
     }
 
@@ -1270,6 +1308,7 @@ impl AppState {
             self.cache_status(&status);
             return Ok(status);
         }
+        let previous_mode = store.settings.outbound_mode;
         store.settings.outbound_mode = mode;
         store.save(&self.store_path)?;
 
@@ -1279,10 +1318,27 @@ impl AppState {
             let status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
             store.save(&self.store_path)?;
             self.cache_status(&status);
+            app_log::info(
+                "settings",
+                format!(
+                    "outbound_mode {} → {}",
+                    previous_mode.as_str(),
+                    mode.as_str()
+                ),
+            );
+            log_proxy_status("outbound mode applied", &status);
             Ok(status)
         } else {
             let status = runtime.status(&store);
             self.cache_status(&status);
+            app_log::info(
+                "settings",
+                format!(
+                    "outbound_mode {} → {}",
+                    previous_mode.as_str(),
+                    mode.as_str()
+                ),
+            );
             Ok(status)
         }
     }

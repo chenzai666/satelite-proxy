@@ -61,10 +61,14 @@ pub struct LogEntry {
 pub struct LogBatch {
     pub entries: Vec<LogEntry>,
     pub cursor: u64,
+    /// Changes whenever the current diagnostic session is cleared. The UI uses
+    /// this to discard rows that belonged to the previous proxy run.
+    pub session: u64,
 }
 
 struct LogRing {
     next_id: u64,
+    session: u64,
     entries: VecDeque<LogEntry>,
 }
 
@@ -79,6 +83,7 @@ impl LogRing {
     fn new() -> Self {
         Self {
             next_id: 1,
+            session: 1,
             entries: VecDeque::with_capacity(256),
         }
     }
@@ -144,11 +149,16 @@ impl LogRing {
             entries.reverse();
             (entries, self.next_id.saturating_sub(1))
         };
-        LogBatch { entries, cursor }
+        LogBatch {
+            entries,
+            cursor,
+            session: self.session,
+        }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.session = self.session.saturating_add(1);
     }
 }
 
@@ -168,6 +178,40 @@ impl LogSink {
         self.file = None;
         self.file_bytes = 0;
         let _ = crate::log_retention::cleanup_current_hour(&log_dir);
+    }
+
+    /// Remove only Satelite's internal application logs. sing-box output and
+    /// panic diagnostics are intentionally retained because they have separate
+    /// lifecycle and forensic value.
+    fn clear_app_files(&mut self) -> Result<(), String> {
+        self.file = None;
+        self.file_hour = None;
+        self.file_bytes = 0;
+
+        let Some(dir) = self.log_dir.as_ref() else {
+            return Ok(());
+        };
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("read log directory: {error}")),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("read log entry: {error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("inspect log entry: {error}"))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("app-") && name.ends_with(".log") {
+                std::fs::remove_file(entry.path())
+                    .map_err(|error| format!("remove {name}: {error}"))?;
+            }
+        }
+        Ok(())
     }
 
     fn persist_entry(&mut self, entry: &LogEntry) {
@@ -222,6 +266,9 @@ impl LogSink {
 }
 
 static RING: LazyLock<Mutex<LogRing>> = LazyLock::new(|| Mutex::new(LogRing::new()));
+/// Serializes a ring mutation with its matching writer command. Without this,
+/// an entry from the old session could be queued after the clear command.
+static LOG_OPERATION: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 static PANIC_HOOK: Once = Once::new();
 
@@ -229,6 +276,7 @@ enum WriterMessage {
     Configure(PathBuf, mpsc::Sender<()>),
     Entry(LogEntry, Option<mpsc::Sender<()>>),
     Flush(mpsc::Sender<()>),
+    Clear(mpsc::Sender<Result<(), String>>),
 }
 
 static WRITER: LazyLock<SyncSender<WriterMessage>> = LazyLock::new(|| {
@@ -260,6 +308,9 @@ fn writer_loop(rx: Receiver<WriterMessage>) {
                 }
                 let _ = ack.send(());
             }
+            WriterMessage::Clear(ack) => {
+                let _ = ack.send(sink.clear_app_files());
+            }
         }
     }
 }
@@ -274,6 +325,11 @@ pub fn init(log_dir: PathBuf) {
     let (ack_tx, ack_rx) = mpsc::channel();
     if send_writer_bounded(WriterMessage::Configure(log_dir, ack_tx)) {
         let _ = ack_rx.recv_timeout(PERSIST_ACK_TIMEOUT);
+    }
+    // Each process starts with a fresh diagnostic session. A crash may leave
+    // files behind, so startup cleanup complements graceful-exit cleanup.
+    if let Err(error) = clear() {
+        eprintln!("[satelite][warn][app_log] startup clear failed: {error}");
     }
 }
 
@@ -328,6 +384,7 @@ pub fn install_panic_hook() {
 }
 
 pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<String>) {
+    let _operation = LOG_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
     let target = target.into();
     let message = message.into();
     // Mirror to stderr for dev / Console.app
@@ -388,8 +445,16 @@ pub fn list(
     lock_ring().list(min_level, limit, query, after_id)
 }
 
-pub fn clear() {
+pub fn clear() -> Result<(), String> {
+    let _operation = LOG_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
     lock_ring().clear();
+    let (ack_tx, ack_rx) = mpsc::channel();
+    if !send_writer_bounded(WriterMessage::Clear(ack_tx)) {
+        return Err("log writer unavailable".into());
+    }
+    ack_rx
+        .recv_timeout(PERSIST_ACK_TIMEOUT)
+        .map_err(|_| "timed out while clearing persisted logs".to_string())?
 }
 
 pub fn info(target: &str, message: impl Into<String>) {
@@ -498,6 +563,33 @@ mod tests {
         assert!(content.contains("[error] [test] persist-before-ack"));
         drop(tx);
         writer.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clear_files_removes_only_internal_app_logs() {
+        let dir = test_log_dir("clear");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sink = LogSink::new();
+        sink.configure(dir.clone());
+        sink.persist_entry(&LogEntry {
+            id: 1,
+            ts_ms: now_ms(),
+            level: LogLevel::Info,
+            target: "test".into(),
+            message: "before-clear".into(),
+        });
+        let app_path = crate::log_retention::hourly_path(&dir, "app");
+        let core_path = crate::log_retention::hourly_path(&dir, "sing-box");
+        let panic_path = dir.join("panic.log");
+        File::create(&core_path).unwrap();
+        File::create(&panic_path).unwrap();
+
+        sink.clear_app_files().unwrap();
+
+        assert!(!app_path.exists());
+        assert!(core_path.exists());
+        assert!(panic_path.exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -47,6 +47,7 @@ export function LogsPage() {
   const [autoScroll, setAutoScroll] = useState(true);
   const listRef = useRef<HTMLDivElement>(null);
   const cursorRef = useRef(0);
+  const sessionRef = useRef(0);
   const generationRef = useRef(0);
   const fullReloadGenerationRef = useRef<number | null>(null);
 
@@ -61,6 +62,7 @@ export function LogsPage() {
       });
       if (generation !== generationRef.current) return;
       cursorRef.current = batch.cursor;
+      sessionRef.current = batch.session;
       setRows(batch.entries);
       setError(null);
     } catch (e) {
@@ -84,7 +86,14 @@ export function LogsPage() {
         afterId: cursorRef.current,
       });
       if (generation !== generationRef.current) return;
+      const sessionChanged = batch.session !== sessionRef.current;
       cursorRef.current = batch.cursor;
+      sessionRef.current = batch.session;
+      if (sessionChanged) {
+        setRows(batch.entries);
+        setError(null);
+        return;
+      }
       if (batch.entries.length > 0) {
         setRows((current) => [...current, ...batch.entries].slice(-800));
       }
@@ -111,6 +120,7 @@ export function LogsPage() {
       await clearAppLogs();
       generationRef.current += 1;
       cursorRef.current = 0;
+      sessionRef.current += 1;
       setRows([]);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));

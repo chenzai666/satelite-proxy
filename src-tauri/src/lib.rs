@@ -133,6 +133,10 @@ pub fn run() {
             }
             app_log::init(dir.join("logs"));
             app_log::install_panic_hook();
+            app_log::info(
+                "app",
+                format!("Satelite {} starting", app.package_info().version),
+            );
             let resource_dir = app.path().resource_dir().ok();
             let app_state = match AppState::load(dir.clone(), resource_dir) {
                 Ok(state) => state,
@@ -163,7 +167,22 @@ pub fn run() {
             let _ = autostart::set_launch_at_login(launch);
 
             app.manage(app_state);
-            app_log::info("app", "Satelite started");
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Ok(status) = state.proxy_status() {
+                    app_log::info(
+                        "app",
+                        format!(
+                            "startup ready: capture={} outbound={} mixed_port={} auto_select={}",
+                            status.capture_mode,
+                            status.outbound_mode,
+                            status.mixed_port,
+                            status.auto_select
+                        ),
+                    );
+                } else {
+                    app_log::info("app", "startup ready");
+                }
+            }
 
             // Seed bundled remote rule sets: copy the packaged `.srs` files
             // into the remote cache and heal their store entries. Must run
@@ -455,6 +474,9 @@ pub fn run() {
                         state.shutdown_runtime();
                     }
                     app_log::flush();
+                    if let Err(error) = app_log::clear() {
+                        eprintln!("[satelite][warn][app_log] exit clear failed: {error}");
+                    }
                 }
                 // macOS Dock / “reopen”: user clicked the app icon while no visible window
                 // (UI destroyed or hidden to tray). Tray already calls show_main; Dock did not.

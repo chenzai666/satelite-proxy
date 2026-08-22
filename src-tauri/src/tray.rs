@@ -210,13 +210,17 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
             "start" => {
                 if let Some(state) = app.try_state::<AppState>() {
                     let res = app.path().resource_dir().ok();
-                    let _ = state.start_proxy(res.as_deref(), true);
+                    if let Err(error) = state.start_proxy(res.as_deref(), true) {
+                        crate::app_log::error("core", format!("tray start failed: {error}"));
+                    }
                 }
                 refresh_icon(app);
             }
             "stop" => {
                 if let Some(state) = app.try_state::<AppState>() {
-                    let _ = state.stop_proxy();
+                    if let Err(error) = state.stop_proxy() {
+                        crate::app_log::error("core", format!("tray stop failed: {error}"));
+                    }
                 }
                 refresh_icon(app);
             }

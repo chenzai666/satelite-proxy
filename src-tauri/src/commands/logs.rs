@@ -21,6 +21,5 @@ pub async fn list_app_logs(
 
 #[tauri::command]
 pub fn clear_app_logs() -> Result<(), String> {
-    app_log::clear();
-    Ok(())
+    app_log::clear()
 }

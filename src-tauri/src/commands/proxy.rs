@@ -32,6 +32,9 @@ pub async fn start_proxy(
     .await
     .map_err(|e| format!("start proxy task: {e}"))?;
     crate::tray::refresh_icon(&app);
+    if let Err(error) = &result {
+        crate::app_log::error("core", format!("proxy start failed: {error}"));
+    }
     result
 }
 
@@ -119,6 +122,9 @@ pub async fn stop_proxy(app: AppHandle) -> Result<ProxyStatus, String> {
     .await
     .map_err(|e| format!("stop proxy task: {e}"))?;
     crate::tray::refresh_icon(&app);
+    if let Err(error) = &result {
+        crate::app_log::error("core", format!("proxy stop failed: {error}"));
+    }
     result
 }
 
@@ -126,7 +132,7 @@ pub async fn stop_proxy(app: AppHandle) -> Result<ProxyStatus, String> {
 pub async fn restart_proxy(app: AppHandle) -> Result<ProxyStatus, String> {
     let resource_dir = app.path().resource_dir().ok();
     let worker_app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let state = worker_app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
@@ -135,7 +141,11 @@ pub async fn restart_proxy(app: AppHandle) -> Result<ProxyStatus, String> {
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("restart proxy task: {e}"))?
+    .map_err(|e| format!("restart proxy task: {e}"))?;
+    if let Err(error) = &result {
+        crate::app_log::error("core", format!("proxy restart failed: {error}"));
+    }
+    result
 }
 
 /// Enable-time bootstrap: probe candidates and switch to best node once.

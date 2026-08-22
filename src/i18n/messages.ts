@@ -165,7 +165,7 @@ const en = {
 
   // logs
   "logs.title": "Logs",
-  "logs.desc": "In-app diagnostics (smart switch, core, settings). Not sing-box access logs.",
+  "logs.desc": "Current-session diagnostics (smart switch, core, settings). Cleared when the proxy stops; not sing-box access logs.",
   "logs.level": "Level",
   "logs.minLevel": "Minimum level",
   "logs.filter": "Filter message / target…",
@@ -869,7 +869,7 @@ const zh: Record<MessageKey, string> = {
   "dashboard.goAddProfile": "去添加订阅",
 
   "logs.title": "日志",
-  "logs.desc": "应用内部诊断日志（智能切换、内核、设置等），不是 sing-box 访问日志。",
+  "logs.desc": "本次运行的应用内部诊断日志（智能切换、内核、设置等）；停止代理后自动清空，不是 sing-box 访问日志。",
   "logs.level": "级别",
   "logs.minLevel": "最低级别",
   "logs.filter": "过滤消息 / 模块…",
