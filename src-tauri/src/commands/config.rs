@@ -85,6 +85,7 @@ pub fn update_settings(
     theme: Option<String>,
     accent: Option<String>,
     hero_style: Option<String>,
+    glass_frost: Option<bool>,
     tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
@@ -218,6 +219,9 @@ pub fn update_settings(
                 if matches!(hs.as_str(), "particle" | "classic" | "smiley") {
                     store.settings.hero_style = hs;
                 }
+            }
+            if let Some(v) = glass_frost {
+                store.settings.glass_frost = v;
             }
             if let Some(raw) = tray_icon {
                 if let Some(style) = crate::domain::TrayIconStyle::parse(&raw) {

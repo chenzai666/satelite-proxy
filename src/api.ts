@@ -252,6 +252,7 @@ export interface SettingsUpdatePayload {
   theme?: string | null;
   accent?: string | null;
   heroStyle?: string | null;
+  glassFrost?: boolean | null;
   trayIcon?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
@@ -302,6 +303,7 @@ function scheduleSettingsWrite() {
       theme: payload.theme ?? null,
       accent: payload.accent ?? null,
       heroStyle: payload.heroStyle ?? null,
+      glassFrost: payload.glassFrost ?? null,
       trayIcon: payload.trayIcon ?? null,
       unloadUiOnTray: payload.unloadUiOnTray ?? null,
       smartSwitch: payload.smartSwitch ?? null,

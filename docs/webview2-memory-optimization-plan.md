@@ -164,5 +164,6 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 | P0-3 收尾 visibilitychange | ✅ 第二批实施 | ParticleSphere 显式停/启 rAF（配合 IntersectionObserver） |
 | P3-1 内置内存仪表 | ✅ 第二批实施 | `get_webview_memory` command（NT 进程表按父链过滤 msedgewebview2，含 WS/private）+ 设置·版本 tab 实时显示 WebView2 内存与 JS 堆 |
 | P3-2 测量脚本固化 | ✅ 第二批实施 | `scripts/memory-profile/`（cdp.mjs + proc_mem.ps1 + README） |
+| P0-1 补充：毛玻璃开关 | ✅ 第三批实施 | `glass_frost` 设置（默认关=实色省内存）；设置·应用→「控件风格」轻量/毛玻璃切换，经 `data-glass-frost` 属性恢复三类控件的 backdrop blur；实测往返切换计算样式 `none ↔ blur(18px)`、store 持久化正常 |
 
 **第二批实测**（2026-08-22，dev + CDP）：265 条已关闭请求仅渲染 20 数据行 + 占位（DOM 全页 381 节点）；连接页 26 活跃连接下协议正常刷新；版本 tab 读出「WebView2 352MB·6× / JS 堆 15MB」与外部 proc_mem.ps1 口径一致。

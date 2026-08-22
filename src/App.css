@@ -5559,6 +5559,26 @@ button.check.on {
     0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
+/* Opt-in frosted look (settings → control style). Re-adds the backdrop blur
+   on the repeated controls for users who prefer it — each blurred control
+   is a GPU compositing pass (docs/webview2-memory-optimization-plan.md).
+   background-color (not background) so .glass-btn keeps its gradient. */
+[data-glass-frost] .glass-seg {
+  background-color: rgba(16, 24, 26, 0.36);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+[data-glass-frost] .glass-btn {
+  background-color: rgba(16, 24, 26, 0.36);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+[data-glass-frost] .glass-switch-track {
+  background-color: rgba(16, 24, 26, 0.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
+}
+
 .glass-seg-indicator {
   position: absolute;
   top: 0.18rem;

@@ -300,6 +300,9 @@ export interface AppSettings {
   accent?: string;
   /** Overview hero visual: particle | classic | smiley */
   hero_style?: HeroStyle;
+  /** Frosted-glass look for repeated glass controls (costs backdrop-filter
+   * GPU layers; default off = solid fills). */
+  glass_frost?: boolean;
   /** Tray mark: badge | mark | ghost | buddy */
   tray_icon?: TrayIconStyle;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */

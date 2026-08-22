@@ -259,6 +259,11 @@ pub struct AppSettings {
     /// Overview hero visual: `particle` | `classic` | `smiley`.
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
+    /// Frosted-glass look for the repeated glass controls (seg / buttons /
+    /// switches). Default false — solid fills cost no backdrop-filter GPU
+    /// layers (docs/webview2-memory-optimization-plan.md).
+    #[serde(default)]
+    pub glass_frost: bool,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.
     #[serde(default)]
     pub tray_icon: TrayIconStyle,
@@ -392,6 +397,7 @@ impl Default for AppSettings {
             theme: default_theme(),
             accent: default_accent(),
             hero_style: default_hero_style(),
+            glass_frost: false,
             tray_icon: TrayIconStyle::default(),
             unload_ui_on_tray: default_unload_ui_on_tray(),
             auto_select: AutoSelectMode::Off,

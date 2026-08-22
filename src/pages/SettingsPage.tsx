@@ -76,7 +76,7 @@ function fmtCoreBytes(value: number) {
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle } =
+  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -800,6 +800,24 @@ export function SettingsPage() {
                     { value: "particle", label: t("settings.heroStyleParticle") },
                     { value: "classic", label: t("settings.heroStyleClassic") },
                     { value: "smiley", label: t("settings.heroStyleSmiley") },
+                  ]}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glassFrost")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glassFrostDesc")}
+                  </div>
+                </div>
+                <GlassSeg
+                  value={glassFrost ? "frost" : "lite"}
+                  ariaLabel={t("settings.glassFrost")}
+                  disabled={busy}
+                  onChange={(v) => void setGlassFrost(v === "frost")}
+                  options={[
+                    { value: "lite", label: t("settings.glassFrostLite") },
+                    { value: "frost", label: t("settings.glassFrostFull") },
                   ]}
                 />
               </div>

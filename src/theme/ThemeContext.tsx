@@ -61,6 +61,12 @@ export function applyThemeToDom(theme: ThemeId, accent: string) {
   persistThemePref(theme, accent);
 }
 
+/** Toggle the frosted-glass control look (see docs/webview2-memory-optimization-plan.md). */
+export function applyGlassFrostToDom(frost: boolean) {
+  if (frost) document.documentElement.dataset.glassFrost = "true";
+  else delete document.documentElement.dataset.glassFrost;
+}
+
 interface ThemeContextValue {
   theme: ThemeId;
   setTheme: (next: ThemeId) => Promise<void>;
@@ -68,6 +74,8 @@ interface ThemeContextValue {
   setAccent: (next: string) => Promise<void>;
   heroStyle: HeroStyle;
   setHeroStyle: (next: HeroStyle) => Promise<void>;
+  glassFrost: boolean;
+  setGlassFrost: (next: boolean) => Promise<void>;
   ready: boolean;
 }
 
@@ -77,6 +85,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>(readStoredTheme);
   const [accent, setAccentState] = useState<string>(readStoredAccent);
   const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
+  const [glassFrost, setGlassFrostState] = useState(false);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -90,7 +99,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setThemeState(nextTheme);
         setAccentState(nextAccent);
         setHeroStyleState(nextHero);
+        setGlassFrostState(s.glass_frost === true);
         applyThemeToDom(nextTheme, nextAccent);
+        applyGlassFrostToDom(s.glass_frost === true);
       })
       .catch(() => {
         applyThemeToDom(readStoredTheme(), readStoredAccent());
@@ -140,6 +151,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const setGlassFrost = useCallback(async (next: boolean) => {
+    setGlassFrostState(next);
+    applyGlassFrostToDom(next);
+    try {
+      await updateSettings({ glassFrost: next });
+    } catch {
+      /* UI already switched */
+    }
+  }, []);
+
   const value = useMemo(
     () => ({
       theme,
@@ -148,9 +169,21 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setAccent,
       heroStyle,
       setHeroStyle,
+      glassFrost,
+      setGlassFrost,
       ready,
     }),
-    [theme, setTheme, accent, setAccent, heroStyle, setHeroStyle, ready],
+    [
+      theme,
+      setTheme,
+      accent,
+      setAccent,
+      heroStyle,
+      setHeroStyle,
+      glassFrost,
+      setGlassFrost,
+      ready,
+    ],
   );
 
   return (
