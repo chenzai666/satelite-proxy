@@ -157,5 +157,12 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 | P1-3 预览释放 | ✅ 已实施 | closePreview() 同时 setResult(null) |
 | P1-4 listen() 竞态 | ✅ 已实施 | RulesPage×2 + SettingsPage，disposed 标志模式 |
 | P1-5 死 CSS + FailuresPage memo | ✅ 已实施 | 删 .simple-card/.simple-glass-bar/.simple-info-*/.simple-kv-*/pulse-dot（TSX 零引用）；行级 host/suffix 移入 useMemo |
-| P1-1/P1-2 表格虚拟化与连接上限 | ⏳ 未做 | 改动面大，留待下一批 |
-| P2-1 unloadUiOnTray 默认开 | ⏳ 未做 | 设置项已有（「低内存模式」），是否默认开待产品决策 |
+| P1-1 四表虚拟化 | ✅ 第二批实施 | Connections/Requests/Failures/Logs 过 200 行只渲染视口窗口（spacer 行/占位 li），`.conn-table` 行高固定 35px、`.log-line` 25px 单行化（完整文本进 title）；实测 265 条 → DOM 仅 20 数据行+2 占位 |
+| P1-2 连接上限 + order_ids 协议 | ✅ 第二批实施 | 前端 MAX_LIVE_ROWS=1000（保最新端）；Rust 新增 `live_order_revision`，纯计数更新 delta 不再下发 O(N) order_ids（serde skip none），前端原地合并；跨平台单测覆盖（runtime::live_batch_tests） |
+| P2-1 unloadUiOnTray 默认开 | ✅ 第二批实施 | serde default fn + Default impl 均改 true；已有 store 显式存值不受影响（serde 仅对缺省字段取默认） |
+| P2-2 托盘轮询降频 | ✅ 第二批实施 | WS_INTERVAL_BACKGROUND_MS 400→1000ms |
+| P0-3 收尾 visibilitychange | ✅ 第二批实施 | ParticleSphere 显式停/启 rAF（配合 IntersectionObserver） |
+| P3-1 内置内存仪表 | ✅ 第二批实施 | `get_webview_memory` command（NT 进程表按父链过滤 msedgewebview2，含 WS/private）+ 设置·版本 tab 实时显示 WebView2 内存与 JS 堆 |
+| P3-2 测量脚本固化 | ✅ 第二批实施 | `scripts/memory-profile/`（cdp.mjs + proc_mem.ps1 + README） |
+
+**第二批实测**（2026-08-22，dev + CDP）：265 条已关闭请求仅渲染 20 数据行 + 占位（DOM 全页 381 节点）；连接页 26 活跃连接下协议正常刷新；版本 tab 读出「WebView2 352MB·6× / JS 堆 15MB」与外部 proc_mem.ps1 口径一致。

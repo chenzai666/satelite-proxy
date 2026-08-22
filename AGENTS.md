@@ -76,6 +76,7 @@ scripts/fetch-bundled-core-darwin-arm64.sh        # macOS arm64 sing-box（默�
 scripts/fetch-bundled-core-darwin-amd64.sh        # macOS Intel
 pwsh scripts/fetch-bundled-core-windows-amd64.ps1 # Windows sing-box v1.13.15 + libcronet.dll，支持 -Proxy
 scripts/fetch-bundled-rule-sets.sh                # 3 条内置 .srs 规则集（校验 SRS 魔数，--force 重下）
+scripts/memory-profile/                           # WebView2 内存剖析（CDP 堆采样 + 进程树 RSS，见其 README 与 docs/webview2-memory-optimization-plan.md）
 ```
 
 - 这些二进制**不入 git**（`.gitignore` 排除 `resources/bin/**/sing-box*`、`libcronet.*`、`resources/rule-sets/*.srs`），本地缺失属正常
@@ -221,7 +222,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.8 commands/ 分层（前端 invoke 的直接实现）
 
-`config.rs`（订阅 CRUD/激活/mix）、`core.rs`（启停/重启/capture_mode/内核下载更新）、`connections.rs`（连接/请求/失败）、`diagnostics.rs`、`dns.rs`（DNS+hosts）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
+`config.rs`（订阅 CRUD/激活/mix）、`core.rs`（启停/重启/capture_mode/内核下载更新）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`（`diagnose_network` + `get_webview_memory` WebView2 进程树内存）、`dns.rs`（DNS+hosts）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 
 ## 6. 前端模块详解（src/）
 
