@@ -1342,6 +1342,85 @@ tr.row-active {
   cursor: default;
 }
 
+/* —— Custom accent picker modal ——
+   Saturation/value square + hue strip + hex field. The SV square and hue
+   strip backgrounds are CSS-gradient compositions (inline hue layer set from
+   React); the dots are absolutely positioned, pointer-events: none — the
+   parent handles the pointer capture drag. */
+.accent-picker-modal {
+  width: min(360px, 100%);
+}
+
+.accent-sv {
+  position: relative;
+  height: 11rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.accent-sv-dot {
+  position: absolute;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.accent-hue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.accent-hue {
+  position: relative;
+  flex: 1;
+  height: 0.9rem;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    to right,
+    #f00,
+    #ff0,
+    #0f0,
+    #0ff,
+    #00f,
+    #f0f,
+    #f00
+  );
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.accent-hue-thumb {
+  position: absolute;
+  top: 50%;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.accent-preview {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.accent-hex-field input {
+  font-family: var(--mono);
+}
+
 .settings-tray-icon-row {
   grid-column: 1 / -1;
   border-left: none !important;

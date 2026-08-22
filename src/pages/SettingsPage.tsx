@@ -24,7 +24,8 @@ import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
-import { ACCENTS } from "../theme/accents";
+import { ACCENTS, isCustomHexAccent, resolveAccent } from "../theme/accents";
+import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
 import { useTheme } from "../theme";
 import type {
   AppSettings,
@@ -60,6 +61,11 @@ const ACCENT_LABEL_KEY: Record<string, MessageKey> = {
   cyan: "accent.cyan",
 };
 
+/** Idle custom swatch: a rainbow ring hinting "pick any colour". Replaced by
+ *  the stored custom hex (inline style) once a custom accent is active. */
+const CUSTOM_DOT_RAINBOW =
+  "conic-gradient(from 90deg, #f66, #fc6, #6c6, #6cd, #66c, #c6c, #f66)";
+
 function fmtCoreBytes(value: number) {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -74,6 +80,8 @@ export function SettingsPage() {
   /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorSession, setSponsorSession] = useState("0000");
+  /** Custom accent color picker (the extra swatch after the presets). */
+  const [accentPickerOpen, setAccentPickerOpen] = useState(false);
   /** Anchor + viewport position for the sponsor popup (portaled to <body>,
    * fixed above the trigger button so opening it never reflows the card). */
   const sponsorBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -725,6 +733,26 @@ export function SettingsPage() {
                       )}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(accent) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(accent)
+                        ? { background: accent, color: accent }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(accent)}
+                    disabled={busy}
+                    onClick={() => setAccentPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(accent) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
                 </div>
               </div>
               <div className="settings-app-row settings-app-pref settings-hero-row">
@@ -1468,6 +1496,22 @@ export function SettingsPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {accentPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(accent) ? accent : resolveAccent(accent)[theme]
+          }
+          title={t("settings.accentCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onApply={(hex) => {
+            setAccentPickerOpen(false);
+            void setAccent(hex);
+          }}
+          onClose={() => setAccentPickerOpen(false)}
+        />
       )}
       </div>
     </div>

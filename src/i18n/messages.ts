@@ -703,6 +703,8 @@ const en = {
   "accent.pink": "Peach",
   "accent.orange": "Cream Orange",
   "accent.cyan": "Lake Blue",
+  "accent.custom": "Custom",
+  "settings.accentCustomTitle": "Custom accent color",
 
   // modal add config
   "modal.addTitle": "Add profile",
@@ -1386,6 +1388,8 @@ const zh: Record<MessageKey, string> = {
   "accent.pink": "蜜桃",
   "accent.orange": "奶橙",
   "accent.cyan": "湖蓝",
+  "accent.custom": "自定义",
+  "settings.accentCustomTitle": "自定义主题色",
 
   "modal.addTitle": "添加配置",
   "modal.editTitle": "编辑配置",

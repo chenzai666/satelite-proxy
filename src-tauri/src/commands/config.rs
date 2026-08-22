@@ -200,10 +200,16 @@ pub fn update_settings(
             }
             if let Some(ac) = accent {
                 let ac = ac.trim().to_ascii_lowercase();
+                // Preset ids, or a custom accent picked in the color picker
+                // (stored verbatim as `#rrggbb`).
+                let is_hex = ac.len() == 7
+                    && ac.starts_with('#')
+                    && ac[1..].chars().all(|c| c.is_ascii_hexdigit());
                 if matches!(
                     ac.as_str(),
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
-                ) {
+                ) || is_hex
+                {
                     store.settings.accent = ac;
                 }
             }
