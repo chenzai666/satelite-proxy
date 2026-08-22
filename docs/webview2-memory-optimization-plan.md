@@ -48,7 +48,10 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 
 要点：
 
-1. **GPU 进程私有内存随「见过的界面多样度」单调爬升**（137→235→272MB），静置后 Chromium 会部分逐出 GPU 资源缓存（回落至 ~165MB），再操作又涨。这是用户感知「200+MB」的最主要成分。
+1. **GPU 进程私有内存随「见过的界面多样度」爬升**（137→235→272MB），**闲置数分钟后会被
+   Chromium 主动逐出回落**（实测 235→164MB；同会话注入样式 A/B 中 blur ON/OFF 差异被逐出
+   噪声淹没，说明该指标只能测峰值与趋势，测不出层级别增量）。blur 的成本是架构性的
+   （每层独立 backdrop 采样 pass），体现在合成开销与峰值上。这是用户感知「200+MB」的最主要成分。
 2. WS 合计跨进程重复计算共享页，**私有合计（275~421MB）才是真实足迹**。
 3. 应用自身 Rust 进程仅 42~62MB，sing-box ~47MB，均与本计划无关。
 
@@ -88,10 +91,12 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 - 风险：视觉微差；需截屏对比 6 主题色 × 深/浅主题。
 - 验证：GPU priv 活跃峰值对比（预期 272 → 200MB 以内）。
 
-**P0-2 ParticleSphere 补 `forceContextLoss()`**（防堆积 + -10~30MB）
-- 证据：`ParticleSphere.tsx:746` 仅 `renderer.dispose()`。
-- 改法：destroy 中 dispose 后调用 `renderer.forceContextLoss()`；可选：DPR 上限 2→1.5、`powerPreference` 不设 high-performance。
-- 验证：heroStyle 粒子↔笑脸↔经典 连续切换 10 次，GPU priv 不阶梯上涨。
+**P0-2 ParticleSphere 补 `forceContextLoss()`**（**❌ 2026-08-22 实验否决，勿做**）
+- 实测：加 `forceContextLoss()` 后，连续 6 次快速切换 heroStyle（粒子↔经典↔笑脸）会触发
+  WebView2 (151.0.4129.93) 渲染进程的 WebGL 上下文创建失败窗口——随后 `new THREE.WebGLRenderer`
+  抛异常，hero 永久落到 fallback（组件把失败缓存在 state）；去掉 forceContextLoss 后同样操作
+  完全正常。上下文耗尽（~16 个）只在用户极频繁切换 heroStyle 时才可能发生，属可接受场景。
+- 保留原状：`renderer.dispose()` 即可。
 
 **P0-3 hero 动画空闲治理**
 - FaceMark 每帧 3 次分配（`FaceMark.tsx:302/327/292`：Path2D/颜色对象/模板字符串）→ 按 mood 缓存 Path2D、颜色原地复用；
@@ -141,3 +146,16 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 - debug 构建（release 前端产物未测，V8 编译缓存/代码量略不同）；
 - 浸泡段被真实用户操作打断（样本已按 `nav` 标签注明页面），静置数据来自并行进程采样；
 - WS 与私有内存双口径已区分；长跑样本为用户此前会话，无法追溯页面路径。
+
+## 8. 实施记录（perf/webview2-memory 分支，2026-08-22）
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| P0-1 glass 控件去 blur | ✅ 已实施 | `.glass-seg/.glass-btn/.glass-switch-track` 改实色（#232a37/#262d3a，与 modal opaque 方案同族）；计算样式验证 backdropFilter=none；设置页截图人工+视觉模型复核无缺陷；浅色主题走原有 day 覆盖 |
+| P0-2 forceContextLoss | ❌ 实验否决 | 见 §4 P0-2，反而触发 WebView2 WebGL 失败窗口 |
+| P0-3 FaceMark 稳态零分配 | ✅ 已实施 | 补间完成后直接引用 colorTarget，稳态不再每帧 new {r,g,b,a} |
+| P1-3 预览释放 | ✅ 已实施 | closePreview() 同时 setResult(null) |
+| P1-4 listen() 竞态 | ✅ 已实施 | RulesPage×2 + SettingsPage，disposed 标志模式 |
+| P1-5 死 CSS + FailuresPage memo | ✅ 已实施 | 删 .simple-card/.simple-glass-bar/.simple-info-*/.simple-kv-*/pulse-dot（TSX 零引用）；行级 host/suffix 移入 useMemo |
+| P1-1/P1-2 表格虚拟化与连接上限 | ⏳ 未做 | 改动面大，留待下一批 |
+| P2-1 unloadUiOnTray 默认开 | ⏳ 未做 | 设置项已有（「低内存模式」），是否默认开待产品决策 |
