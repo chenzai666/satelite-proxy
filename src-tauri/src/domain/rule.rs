@@ -506,7 +506,8 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
         id: "system-geolocation-not-cn",
         name: "海外网站",
         file: "system-geolocation-not-cn.srs",
-        url: "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
+        url:
+            "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
         target: RuleTarget::Proxy,
     },
     BuiltinRemoteRuleSpec {
@@ -525,10 +526,166 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
     },
 ];
 
+/// User-specific rule preset mirrored from chenzai666/sub-ini/new_config.ini.
+/// These are inserted once as ordinary user sets, so users may edit/delete
+/// them without the factory Reset action resurrecting their choices.
+#[derive(Debug)]
+pub struct UserRulePresetSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub url: &'static str,
+    pub target: RuleTarget,
+}
+
+pub const USER_RULE_PRESET_SPECS: &[UserRulePresetSpec] = &[
+    UserRulePresetSpec {
+        id: "preset-local-area-network",
+        name: "🔒 局域网",
+        url: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.list",
+        target: RuleTarget::Direct,
+    },
+    UserRulePresetSpec {
+        id: "preset-download",
+        name: "🧲 下载工具",
+        url: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/Download.list",
+        target: RuleTarget::Direct,
+    },
+    UserRulePresetSpec {
+        id: "preset-private-tracker",
+        name: "🚀 节点选择 · PT",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/PrivateTracker/PrivateTracker.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-ban-ad",
+        name: "🛑 广告域名",
+        url: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanAD.list",
+        target: RuleTarget::Block,
+    },
+    UserRulePresetSpec {
+        id: "preset-ban-program-ad",
+        name: "🍃 应用净化",
+        url: "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/BanProgramAD.list",
+        target: RuleTarget::Block,
+    },
+    UserRulePresetSpec {
+        id: "preset-adobe-activation",
+        name: "🅰️ Adobe 验证",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/AdobeActivation/AdobeActivation.list",
+        target: RuleTarget::Block,
+    },
+    UserRulePresetSpec {
+        id: "preset-search-google",
+        name: "🔍 搜索引擎 · Google",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GoogleSearch/GoogleSearch.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-search-bing",
+        name: "🔍 搜索引擎 · Bing",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Bing/Bing.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-search-duckduckgo",
+        name: "🔍 搜索引擎 · DuckDuckGo",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Duckduckgo/Duckduckgo.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-search-yandex",
+        name: "🔍 搜索引擎 · Yandex",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Yandex/Yandex.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-search-naver",
+        name: "🔍 搜索引擎 · Naver",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Naver/Naver.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-overseas-ai",
+        name: "🤖 AI 域名",
+        url: "https://raw.githubusercontent.com/chenzai666/OverseasAI.list/refs/heads/main/rule/Clash/OverseasAI/OverseasAI.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-game",
+        name: "🎮 游戏平台",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Game/Game.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-global-media",
+        name: "🎞️ 国际媒体",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GlobalMedia/GlobalMedia.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-china-media",
+        name: "📺 大陆媒体",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/ChinaMedia/ChinaMedia.list",
+        target: RuleTarget::Direct,
+    },
+    UserRulePresetSpec {
+        id: "preset-microsoft",
+        name: "Ⓜ️ Microsoft 域名",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Microsoft/Microsoft.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-apple",
+        name: "🍎 Apple 域名",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Apple/Apple.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-google-fcm",
+        name: "📢 Google FCM",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/GoogleFCM/GoogleFCM.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-telegram",
+        name: "🚀 节点选择 · Telegram",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Telegram/Telegram.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-proxy",
+        name: "🚀 节点选择 · Proxy",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Proxy/Proxy.list",
+        target: RuleTarget::Proxy,
+    },
+    UserRulePresetSpec {
+        id: "preset-china",
+        name: "🇨🇳 大陆域名及 IP · China",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/China/China.list",
+        target: RuleTarget::Direct,
+    },
+    UserRulePresetSpec {
+        id: "preset-cloud-cn",
+        name: "🇨🇳 大陆域名及 IP · CloudCN",
+        url: "https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/Cloud/CloudCN/CloudCN.list",
+        target: RuleTarget::Direct,
+    },
+];
+
+pub fn build_user_rule_preset(spec: &UserRulePresetSpec) -> RuleSet {
+    let mut set = RuleSet::new_remote(spec.name, spec.url, spec.target);
+    set.id = spec.id.into();
+    set.builtin = false;
+    set.ownership = RuleSetOwnership::User;
+    if let Some(remote) = set.remote.as_mut() {
+        remote.format = "source".into();
+        remote.update_interval = "24h".into();
+    }
+    set
+}
+
 pub fn is_builtin_remote_id(id: &str) -> bool {
-    BUILTIN_REMOTE_RULE_SETS
-        .iter()
-        .any(|spec| spec.id == id)
+    BUILTIN_REMOTE_RULE_SETS.iter().any(|spec| spec.id == id)
 }
 
 pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {
@@ -792,7 +949,10 @@ mod tests {
             assert!(is_factory_set_id(spec.id));
         }
         // System ids map 1:1 from their first-iteration ids.
-        assert_eq!(LEGACY_BUILTIN_REMOTE_IDS.len(), BUILTIN_REMOTE_RULE_SETS.len());
+        assert_eq!(
+            LEGACY_BUILTIN_REMOTE_IDS.len(),
+            BUILTIN_REMOTE_RULE_SETS.len()
+        );
         for (old, new) in LEGACY_BUILTIN_REMOTE_IDS {
             assert_eq!(builtin_remote_spec(new).expect("mapped id exists").id, new);
             assert_ne!(old, new);
@@ -822,7 +982,9 @@ mod tests {
         // DNS pairing follows the route target.
         assert_eq!(
             set.dns_strategy,
-            RuleSetStrategy::from_target(spec.target).recommended_dns_strategy().unwrap()
+            RuleSetStrategy::from_target(spec.target)
+                .recommended_dns_strategy()
+                .unwrap()
         );
     }
 }

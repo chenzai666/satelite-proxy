@@ -25,6 +25,7 @@ type LONG = i32;
 type HKEY = *mut CVoid;
 type PHKEY = *mut HKEY;
 type LPCWSTR = *const u16;
+type LPWSTR = *mut u16;
 
 const HKEY_CURRENT_USER: HKEY = 0x8000_0001usize as HKEY;
 const KEY_QUERY_VALUE: DWORD = 0x0001;
@@ -36,7 +37,71 @@ const ERROR_FILE_NOT_FOUND: LONG = 2;
 
 const INTERNET_OPTION_SETTINGS_CHANGED: DWORD = 39;
 const INTERNET_OPTION_REFRESH: DWORD = 37;
+const INTERNET_OPTION_PER_CONNECTION_OPTION: DWORD = 75;
 const REG_EXPAND_SZ: DWORD = 2;
+
+const INTERNET_PER_CONN_FLAGS: DWORD = 1;
+const INTERNET_PER_CONN_PROXY_SERVER: DWORD = 2;
+const INTERNET_PER_CONN_PROXY_BYPASS: DWORD = 3;
+const INTERNET_PER_CONN_AUTOCONFIG_URL: DWORD = 4;
+const PROXY_TYPE_DIRECT: DWORD = 0x0000_0001;
+const PROXY_TYPE_PROXY: DWORD = 0x0000_0002;
+const PROXY_TYPE_AUTO_PROXY_URL: DWORD = 0x0000_0004;
+const PROXY_TYPE_AUTO_DETECT: DWORD = 0x0000_0008;
+const ERROR_BUFFER_TOO_SMALL: DWORD = 603;
+const RAS_MAX_ENTRY_NAME: usize = 256;
+const MAX_PATH: usize = 260;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FileTime {
+    low: DWORD,
+    high: DWORD,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+union InternetPerConnOptionValue {
+    value: DWORD,
+    string: LPWSTR,
+    file_time: FileTime,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct InternetPerConnOption {
+    option: DWORD,
+    value: InternetPerConnOptionValue,
+}
+
+#[repr(C)]
+struct InternetPerConnOptionList {
+    size: DWORD,
+    connection: LPWSTR,
+    option_count: DWORD,
+    option_error: DWORD,
+    options: *mut InternetPerConnOption,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RasEntryName {
+    size: DWORD,
+    entry_name: [u16; RAS_MAX_ENTRY_NAME + 1],
+    flags: DWORD,
+    phonebook_path: [u16; MAX_PATH + 1],
+}
+
+impl Default for RasEntryName {
+    fn default() -> Self {
+        Self {
+            size: core::mem::size_of::<Self>() as DWORD,
+            entry_name: [0; RAS_MAX_ENTRY_NAME + 1],
+            flags: 0,
+            phonebook_path: [0; MAX_PATH + 1],
+        }
+    }
+}
 
 #[link(name = "advapi32")]
 extern "system" {
@@ -75,6 +140,17 @@ extern "system" {
         lpBuffer: *mut CVoid,
         dwBufferLength: DWORD,
     ) -> BOOL;
+}
+
+#[link(name = "rasapi32")]
+extern "system" {
+    fn RasEnumEntriesW(
+        reserved: LPCWSTR,
+        phonebook: LPCWSTR,
+        entries: *mut RasEntryName,
+        buffer_size: *mut DWORD,
+        entry_count: *mut DWORD,
+    ) -> DWORD;
 }
 
 /// Encode a Rust string as UTF-16 **with** a trailing NUL, as Win32 expects.
@@ -283,6 +359,8 @@ struct WindowsProxySnapshot {
     proxy_server: Option<String>,
     proxy_override: Option<String>,
     auto_config_url: Option<String>,
+    #[serde(default)]
+    auto_detect: Option<DWORD>,
 }
 
 impl WindowsProxySnapshot {
@@ -293,6 +371,7 @@ impl WindowsProxySnapshot {
             proxy_server: query_sz(h, "ProxyServer")?,
             proxy_override: query_sz(h, "ProxyOverride")?,
             auto_config_url: query_sz(h, "AutoConfigURL")?,
+            auto_detect: query_dword(h, "AutoDetect")?,
         })
     }
 
@@ -302,6 +381,7 @@ impl WindowsProxySnapshot {
         restore_optional_sz(h, "ProxyServer", self.proxy_server.as_deref())?;
         restore_optional_sz(h, "ProxyOverride", self.proxy_override.as_deref())?;
         restore_optional_sz(h, "AutoConfigURL", self.auto_config_url.as_deref())?;
+        restore_optional_dword(h, "AutoDetect", self.auto_detect)?;
         restore_optional_dword(h, "ProxyEnable", self.proxy_enable)?;
         Ok(())
     }
@@ -313,6 +393,198 @@ impl WindowsProxySnapshot {
 
     fn decode(detail: &str) -> Option<Self> {
         serde_json::from_str(detail).ok()
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PerConnectionSettings<'a> {
+    flags: DWORD,
+    proxy: Option<&'a str>,
+    bypass: Option<&'a str>,
+    pac: Option<&'a str>,
+}
+
+impl WindowsProxySnapshot {
+    fn per_connection_settings(&self) -> PerConnectionSettings<'_> {
+        let mut flags = PROXY_TYPE_DIRECT;
+        let proxy = self
+            .proxy_server
+            .as_deref()
+            .filter(|value| self.proxy_enable.unwrap_or(0) != 0 && !value.trim().is_empty());
+        if proxy.is_some() {
+            flags |= PROXY_TYPE_PROXY;
+        }
+        let pac = self
+            .auto_config_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
+        if pac.is_some() {
+            flags |= PROXY_TYPE_AUTO_PROXY_URL;
+        }
+        if self.auto_detect.unwrap_or(0) != 0 {
+            flags |= PROXY_TYPE_AUTO_DETECT;
+        }
+        PerConnectionSettings {
+            flags,
+            proxy,
+            bypass: self.proxy_override.as_deref(),
+            pac,
+        }
+    }
+}
+
+fn utf16_string(buffer: &[u16]) -> String {
+    let len = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..len])
+}
+
+fn ras_connection_names() -> AppResult<Vec<String>> {
+    let mut first = RasEntryName::default();
+    let mut buffer_size = core::mem::size_of::<RasEntryName>() as DWORD;
+    let mut entry_count = 0;
+    let rc = unsafe {
+        RasEnumEntriesW(
+            core::ptr::null(),
+            core::ptr::null(),
+            &mut first,
+            &mut buffer_size,
+            &mut entry_count,
+        )
+    };
+    if rc == ERROR_SUCCESS as DWORD {
+        return Ok((entry_count > 0)
+            .then(|| utf16_string(&first.entry_name))
+            .filter(|name| !name.is_empty())
+            .into_iter()
+            .collect());
+    }
+    if rc != ERROR_BUFFER_TOO_SMALL {
+        return Err(AppError::Core(format!("RasEnumEntriesW failed (rc={rc})")));
+    }
+
+    let item_size = core::mem::size_of::<RasEntryName>();
+    let capacity = ((buffer_size as usize + item_size - 1) / item_size)
+        .max(entry_count as usize)
+        .max(1);
+    let mut entries = vec![RasEntryName::default(); capacity];
+    buffer_size = (capacity * item_size) as DWORD;
+    let rc = unsafe {
+        RasEnumEntriesW(
+            core::ptr::null(),
+            core::ptr::null(),
+            entries.as_mut_ptr(),
+            &mut buffer_size,
+            &mut entry_count,
+        )
+    };
+    if rc != ERROR_SUCCESS as DWORD {
+        return Err(AppError::Core(format!(
+            "RasEnumEntriesW retry failed (rc={rc})"
+        )));
+    }
+    Ok(entries
+        .iter()
+        .take(entry_count as usize)
+        .map(|entry| utf16_string(&entry.entry_name))
+        .filter(|name| !name.is_empty())
+        .collect())
+}
+
+fn set_connection_proxy(
+    connection: Option<&str>,
+    settings: PerConnectionSettings<'_>,
+) -> AppResult<()> {
+    let mut connection_wide = connection.map(wide);
+    let mut proxy_wide = settings.proxy.map(wide);
+    let mut bypass_wide = settings.bypass.map(wide);
+    let mut pac_wide = settings.pac.map(wide);
+
+    let mut options = Vec::with_capacity(4);
+    options.push(InternetPerConnOption {
+        option: INTERNET_PER_CONN_FLAGS,
+        value: InternetPerConnOptionValue {
+            value: settings.flags,
+        },
+    });
+    if let Some(value) = proxy_wide.as_mut() {
+        options.push(InternetPerConnOption {
+            option: INTERNET_PER_CONN_PROXY_SERVER,
+            value: InternetPerConnOptionValue {
+                string: value.as_mut_ptr(),
+            },
+        });
+    }
+    if let Some(value) = bypass_wide.as_mut() {
+        options.push(InternetPerConnOption {
+            option: INTERNET_PER_CONN_PROXY_BYPASS,
+            value: InternetPerConnOptionValue {
+                string: value.as_mut_ptr(),
+            },
+        });
+    }
+    if let Some(value) = pac_wide.as_mut() {
+        options.push(InternetPerConnOption {
+            option: INTERNET_PER_CONN_AUTOCONFIG_URL,
+            value: InternetPerConnOptionValue {
+                string: value.as_mut_ptr(),
+            },
+        });
+    }
+    let mut list = InternetPerConnOptionList {
+        size: core::mem::size_of::<InternetPerConnOptionList>() as DWORD,
+        connection: connection_wide
+            .as_mut()
+            .map(|value| value.as_mut_ptr())
+            .unwrap_or(core::ptr::null_mut()),
+        option_count: options.len() as DWORD,
+        option_error: 0,
+        options: options.as_mut_ptr(),
+    };
+    let ok = unsafe {
+        InternetSetOptionW(
+            core::ptr::null_mut(),
+            INTERNET_OPTION_PER_CONNECTION_OPTION,
+            (&mut list as *mut InternetPerConnOptionList).cast::<CVoid>(),
+            list.size,
+        )
+    };
+    if ok == 0 {
+        return Err(AppError::Core(format!(
+            "WinINet per-connection proxy failed for {} (option={}): {}",
+            connection.unwrap_or("LAN"),
+            list.option_error,
+            std::io::Error::last_os_error()
+        )));
+    }
+    Ok(())
+}
+
+fn set_all_connections(settings: PerConnectionSettings<'_>) -> AppResult<()> {
+    // Null means the active LAN profile used by ordinary Ethernet and Wi-Fi.
+    // It is mandatory; RAS/VPN profiles are best-effort parity with v2rayN.
+    set_connection_proxy(None, settings)?;
+    match ras_connection_names() {
+        Ok(connections) => {
+            for connection in connections {
+                if let Err(error) = set_connection_proxy(Some(&connection), settings) {
+                    crate::app_log::warn("system_proxy", error.to_string());
+                }
+            }
+        }
+        Err(error) => crate::app_log::warn("system_proxy", error.to_string()),
+    }
+    Ok(())
+}
+
+fn satelite_connection_settings<'a>(server: &'a str, bypass: &'a str) -> PerConnectionSettings<'a> {
+    PerConnectionSettings {
+        flags: PROXY_TYPE_DIRECT | PROXY_TYPE_PROXY,
+        proxy: Some(server),
+        bypass: Some(bypass),
+        pac: None,
     }
 }
 
@@ -355,18 +627,16 @@ impl SystemProxy for WindowsSystemProxy {
         let snapshot =
             with_internet_settings(|h| WindowsProxySnapshot::capture(h, server.clone()))?;
         let snapshot_detail = snapshot.encode()?;
+        let bypass = "<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*";
 
         let apply_result = with_internet_settings(|h| {
             // Write endpoint and bypasses first, then enable last. A PAC URL
             // can take precedence over the manual proxy in WinINet clients,
             // so suspend it while Satelite owns the system proxy.
             set_sz(h, "ProxyServer", &server)?;
-            set_sz(
-                h,
-                "ProxyOverride",
-                "<local>;localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*",
-            )?;
+            set_sz(h, "ProxyOverride", bypass)?;
             delete_value(h, "AutoConfigURL")?;
+            set_dword(h, "AutoDetect", 0)?;
             set_dword(h, "ProxyEnable", 1)
         });
         if let Err(error) = apply_result {
@@ -374,8 +644,15 @@ impl SystemProxy for WindowsSystemProxy {
             let _ = notify_changed();
             return Err(error);
         }
+        if let Err(error) = set_all_connections(satelite_connection_settings(&server, bypass)) {
+            let _ = with_internet_settings(|h| snapshot.restore(h));
+            let _ = set_all_connections(snapshot.per_connection_settings());
+            let _ = notify_changed();
+            return Err(error);
+        }
         if let Err(error) = notify_changed() {
             let _ = with_internet_settings(|h| snapshot.restore(h));
+            let _ = set_all_connections(snapshot.per_connection_settings());
             let _ = notify_changed();
             return Err(error);
         }
@@ -387,6 +664,7 @@ impl SystemProxy for WindowsSystemProxy {
         })?;
         if !verified {
             let _ = with_internet_settings(|h| snapshot.restore(h));
+            let _ = set_all_connections(snapshot.per_connection_settings());
             let _ = notify_changed();
             return Err(AppError::Core(format!(
                 "Windows 系统代理写入后校验失败，预期端点 {server}"
@@ -414,6 +692,7 @@ impl SystemProxy for WindowsSystemProxy {
                 return Ok(());
             }
             with_internet_settings(|h| previous.restore(h))?;
+            set_all_connections(previous.per_connection_settings())?;
             return notify_changed();
         }
 
@@ -423,16 +702,35 @@ impl SystemProxy for WindowsSystemProxy {
         let expected = snapshot
             .map(|snapshot| snapshot.detail.trim())
             .filter(|s| !s.is_empty());
-        with_internet_settings(|h| {
+        let disabled = with_internet_settings(|h| {
             if let Some(expected) = expected {
                 let enabled = query_dword(h, "ProxyEnable")?.unwrap_or(0) != 0;
                 let current = query_sz(h, "ProxyServer")?.unwrap_or_default();
                 if !enabled || !proxy_server_is_exact_endpoint_value(&current, expected) {
-                    return Ok(());
+                    return Ok(false);
                 }
             }
-            set_dword(h, "ProxyEnable", 0)
+            set_dword(h, "ProxyEnable", 0)?;
+            Ok(true)
         })?;
+        if !disabled {
+            return Ok(());
+        }
+        set_all_connections(PerConnectionSettings {
+            flags: PROXY_TYPE_DIRECT,
+            proxy: None,
+            bypass: None,
+            pac: None,
+        })?;
+        notify_changed()
+    }
+
+    fn refresh(&self, host: &str, port: u16) -> AppResult<()> {
+        let server = format!("{host}:{port}");
+        let bypass = with_internet_settings(|h| {
+            Ok(query_sz(h, "ProxyOverride")?.unwrap_or_else(|| "<local>".into()))
+        })?;
+        set_all_connections(satelite_connection_settings(&server, &bypass))?;
         notify_changed()
     }
 
@@ -501,6 +799,7 @@ mod tests {
             proxy_server: Some("127.0.0.1:10808".into()),
             proxy_override: Some("<local>".into()),
             auto_config_url: Some("http://127.0.0.1/proxy.pac".into()),
+            auto_detect: Some(1),
         };
         let encoded = snapshot.encode().unwrap();
         assert_eq!(WindowsProxySnapshot::decode(&encoded), Some(snapshot));

@@ -1,9 +1,10 @@
 use crate::domain::{
-    build_builtin_remote_set, builtin_remote_spec, default_rules, is_builtin_remote_id,
-    is_factory_set_id, sanitize_rules, AppSettings, DnsAction, DnsRuleSetKind, DnsSettings,
-    DomainMatcher, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership,
-    RuleSetStrategy, RuleSetSummary, RuleTarget, RuleType, Subscription, BUILTIN_REMOTE_RULE_SETS,
-    BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME, LEGACY_BUILTIN_REMOTE_IDS,
+    build_builtin_remote_set, build_user_rule_preset, builtin_remote_spec, default_rules,
+    is_builtin_remote_id, is_factory_set_id, sanitize_rules, AppSettings, DnsAction,
+    DnsRuleSetKind, DnsSettings, DomainMatcher, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy,
+    RuleSetOwnership, RuleSetStrategy, RuleSetSummary, RuleTarget, RuleType, Subscription,
+    BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID, BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME,
+    LEGACY_BUILTIN_REMOTE_IDS, USER_RULE_PRESET_SPECS,
 };
 use crate::error::{AppError, AppResult};
 use serde::de::DeserializeOwned;
@@ -75,6 +76,7 @@ impl AppStore {
         store.migrate_builtin_remote_rule_sets();
         store.migrate_remove_general_rule_set();
         store.migrate_system_rule_set_ids();
+        store.migrate_user_rule_presets();
         store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
         if schema_before < 5 && source_raw.is_some() {
@@ -120,8 +122,7 @@ impl AppStore {
             Ok(raw) => match parse_store(&raw) {
                 Ok(store) => {
                     if store.subscriptions.is_empty() {
-                        if let Some((richer, snapshot_raw, origin)) =
-                            load_richer_snapshot(path, 0)
+                        if let Some((richer, snapshot_raw, origin)) = load_richer_snapshot(path, 0)
                         {
                             crate::app_log::warn(
                                 "storage",
@@ -162,10 +163,7 @@ impl AppStore {
                 if let Some((store, snapshot_raw, origin)) = load_valid_snapshot(path) {
                     crate::app_log::warn(
                         "storage",
-                        format!(
-                            "store.json was missing; restored {}",
-                            origin.display()
-                        ),
+                        format!("store.json was missing; restored {}", origin.display()),
                     );
                     Ok((store, Some(snapshot_raw)))
                 } else {
@@ -593,8 +591,7 @@ impl AppStore {
         if self.schema_version >= VERSION {
             return;
         }
-        self.rule_sets
-            .retain(|set| set.id != GENERAL_SET_ID);
+        self.rule_sets.retain(|set| set.id != GENERAL_SET_ID);
         self.rules.clear();
         self.schema_version = VERSION;
     }
@@ -632,6 +629,27 @@ impl AppStore {
                 set.builtin = false;
                 set.ownership = RuleSetOwnership::User;
             }
+        }
+        self.schema_version = VERSION;
+    }
+
+    /// v10: import the enabled rules from the user's sub-converter preset as
+    /// ordinary remote sets. They are placed before broad geo rules so AI,
+    /// media, download and block decisions are not shadowed. This migration
+    /// runs once; afterwards user edits and deletions are respected.
+    pub fn migrate_user_rule_presets(&mut self) {
+        const VERSION: u32 = 10;
+        if self.schema_version >= VERSION {
+            return;
+        }
+        let mut insert_at = 0;
+        for spec in USER_RULE_PRESET_SPECS {
+            if self.rule_sets.iter().any(|set| set.id == spec.id) {
+                continue;
+            }
+            self.rule_sets
+                .insert(insert_at, build_user_rule_preset(spec));
+            insert_at += 1;
         }
         self.schema_version = VERSION;
     }
@@ -808,10 +826,7 @@ impl AppStore {
     }
 
     /// Homepage ··· menu: `generated` or a stored complete sing-box archive.
-    pub fn set_runtime_source(
-        &mut self,
-        source: crate::domain::RuntimeSource,
-    ) -> AppResult<()> {
+    pub fn set_runtime_source(&mut self, source: crate::domain::RuntimeSource) -> AppResult<()> {
         if let crate::domain::RuntimeSource::Singbox { id } = &source {
             let ok = self.subscriptions.iter().any(|s| {
                 s.id == *id && matches!(s.source, crate::domain::SubscriptionSource::Singbox { .. })
@@ -1109,9 +1124,7 @@ impl AppStore {
                 .iter()
                 .find(|stored| stored.node.id == nid)
                 .map(|stored| stored.node.name.clone())
-                .ok_or_else(|| {
-                    crate::error::AppError::Config("指定的节点不存在".into())
-                })?;
+                .ok_or_else(|| crate::error::AppError::Config("指定的节点不存在".into()))?;
             Some((nid.to_string(), name))
         } else {
             None
@@ -1350,7 +1363,10 @@ fn parse_store(raw: &str) -> Result<AppStore, serde_json::Error> {
 fn store_from_json(value: Value) -> AppStore {
     let mut store = AppStore::default();
     let Some(obj) = value.as_object() else {
-        crate::app_log::warn("storage", "store root is not an object; using defaults for missing fields");
+        crate::app_log::warn(
+            "storage",
+            "store root is not an object; using defaults for missing fields",
+        );
         return store;
     };
 
@@ -1595,7 +1611,7 @@ mod tests {
     #[test]
     fn batch_set_rule_targets_node_forces_smart_and_pins_all() {
         use crate::domain::{
-            ProxyNode, Protocol, ProtocolConfig, Rule, RuleSet, RuleSetStrategy, RuleTarget,
+            Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetStrategy, RuleTarget,
             RuleType,
         };
         let mut store = AppStore::default();
@@ -1627,20 +1643,19 @@ mod tests {
             "批量集",
             vec![
                 Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 1),
-                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 2),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "b.com".into(),
+                    RuleTarget::Direct,
+                    2,
+                ),
             ],
         );
         store.rule_sets = vec![set];
         let id = store.rule_sets[0].id.clone();
 
         let (updated, _) = store
-            .batch_set_rule_targets(
-                &id,
-                RuleTarget::Node,
-                Some("node-1".into()),
-                vec![],
-                vec![],
-            )
+            .batch_set_rule_targets(&id, RuleTarget::Node, Some("node-1".into()), vec![], vec![])
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Smart);
         assert!(updated.rules.iter().all(|r| {
@@ -1681,11 +1696,9 @@ mod tests {
         );
 
         // Node / smart stay local-only for remote sets.
-        assert!(
-            store
-                .batch_set_rule_targets(&set.id, RuleTarget::Smart, None, vec![], vec![])
-                .is_err()
-        );
+        assert!(store
+            .batch_set_rule_targets(&set.id, RuleTarget::Smart, None, vec![], vec![])
+            .is_err());
     }
 
     #[test]
@@ -1695,7 +1708,10 @@ mod tests {
         let set = store.create_local_rule_set("本地直连集", RuleSetStrategy::Direct);
         assert_eq!(set.strategy, RuleSetStrategy::Direct);
         // DNS pairing follows the same recommendation as a strategy flip.
-        assert_eq!(set.dns_strategy, RuleSetStrategy::Direct.recommended_dns_strategy().unwrap());
+        assert_eq!(
+            set.dns_strategy,
+            RuleSetStrategy::Direct.recommended_dns_strategy().unwrap()
+        );
         assert!(store.rule_sets[0].id == set.id, "new set lands on top");
     }
 
@@ -1765,15 +1781,18 @@ mod tests {
         store.save(&path).unwrap();
 
         let loaded = AppStore::load(&path, None).unwrap();
-        assert_eq!(loaded.schema_version, 9);
+        assert_eq!(loaded.schema_version, 10);
         let pre_v6 = path.with_file_name("store.pre-v6.backup.json");
-        assert!(pre_v6.exists(), "pre-v6 snapshot must be written on upgrade");
+        assert!(
+            pre_v6.exists(),
+            "pre-v6 snapshot must be written on upgrade"
+        );
         let snap = parse_store(&fs::read_to_string(&pre_v6).unwrap()).unwrap();
         assert_eq!(snap.schema_version, 5);
         // Reloading the migrated store must not resurrect the backup logic.
         fs::remove_file(&pre_v6).unwrap();
         let again = AppStore::load(&path, None).unwrap();
-        assert_eq!(again.schema_version, 9);
+        assert_eq!(again.schema_version, 10);
         assert!(!pre_v6.exists(), "v6 store skips the backup on reload");
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -1965,8 +1984,7 @@ mod tests {
 
         let path = test_store_path("retain-unknown");
         store.save(&path).unwrap();
-        let written: Value =
-            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let written: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         let kinds: Vec<&str> = written["subscriptions"]
             .as_array()
             .unwrap()
@@ -2029,11 +2047,7 @@ mod tests {
         let mut rich = AppStore::default();
         rich.subscriptions.push(sample_url_sub("keep-me"));
         let snapshot = path.with_file_name("store.corrupt-999.json");
-        fs::write(
-            &snapshot,
-            serde_json::to_string(&rich).unwrap(),
-        )
-        .unwrap();
+        fs::write(&snapshot, serde_json::to_string(&rich).unwrap()).unwrap();
 
         let recovered = AppStore::load(&path, None).unwrap();
         assert_eq!(recovered.subscriptions.len(), 1);
@@ -2112,7 +2126,12 @@ mod tests {
         let mut set = RuleSet::new_user(
             "遗留混合",
             vec![
-                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Direct, 1),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "a.com".into(),
+                    RuleTarget::Direct,
+                    1,
+                ),
                 Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Block, 2),
             ],
         );
@@ -2134,12 +2153,10 @@ mod tests {
         };
         store.migrate_plain_set_rule_targets();
         // Plain set normalized to its strategy; smart set untouched.
-        assert!(
-            store.rule_sets[0]
-                .rules
-                .iter()
-                .all(|r| r.target == RuleTarget::Proxy)
-        );
+        assert!(store.rule_sets[0]
+            .rules
+            .iter()
+            .all(|r| r.target == RuleTarget::Proxy));
         assert!(store.rule_sets[1].rules[0].target == RuleTarget::Node);
         assert_eq!(store.schema_version, 6);
         // Idempotent: a post-migration per-rule choice survives reload.
@@ -2327,7 +2344,7 @@ mod tests {
                 .any(|set| set.id == BUILTIN_REMOTE_RULE_SETS[0].id),
             "system set intact"
         );
-        assert_eq!(loaded.schema_version, 9);
+        assert_eq!(loaded.schema_version, 10);
 
         // Even a legacy set that still exists loses its 内置 badge.
         let mut store = AppStore {
@@ -2388,7 +2405,9 @@ mod tests {
             schema_version: 8,
             ..AppStore::default()
         };
-        store.rule_sets.push(build_builtin_remote_set(&BUILTIN_REMOTE_RULE_SETS[1]));
+        store
+            .rule_sets
+            .push(build_builtin_remote_set(&BUILTIN_REMOTE_RULE_SETS[1]));
         store.rule_sets.push(dup);
         store.migrate_system_rule_set_ids();
         let count = store
@@ -2422,7 +2441,9 @@ mod tests {
         assert_eq!(store.rule_sets.len(), 4);
 
         // Idempotent: a user deletion after v7 is never undone by reload.
-        store.delete_rule_set(BUILTIN_REMOTE_RULE_SETS[1].id).unwrap();
+        store
+            .delete_rule_set(BUILTIN_REMOTE_RULE_SETS[1].id)
+            .unwrap();
         store.migrate_builtin_remote_rule_sets();
         assert_eq!(store.rule_sets.len(), 3);
     }
@@ -2440,9 +2461,12 @@ mod tests {
         store.rule_sets.push(user);
         // Legacy flat leftovers that ensure_rule_sets would fold into the
         // general set before v8 runs — both must disappear together.
-        store
-            .rules
-            .push(Rule::new(RuleType::DomainSuffix, "old.com".into(), RuleTarget::Direct, 10));
+        store.rules.push(Rule::new(
+            RuleType::DomainSuffix,
+            "old.com".into(),
+            RuleTarget::Direct,
+            10,
+        ));
 
         store.migrate_remove_general_rule_set();
 
@@ -2468,15 +2492,16 @@ mod tests {
             schema_version: 6,
             ..AppStore::default()
         };
-        store
-            .rule_sets
-            .push(RuleSet::new_user("v6集", Vec::new()));
+        store.rule_sets.push(RuleSet::new_user("v6集", Vec::new()));
         store.save(&path).unwrap();
 
         let loaded = AppStore::load(&path, None).unwrap();
-        assert_eq!(loaded.schema_version, 9);
+        assert_eq!(loaded.schema_version, 10);
         let pre_v7 = path.with_file_name("store.pre-v7.backup.json");
-        assert!(pre_v7.exists(), "pre-v7 snapshot must be written on upgrade");
+        assert!(
+            pre_v7.exists(),
+            "pre-v7 snapshot must be written on upgrade"
+        );
         let snap = parse_store(&fs::read_to_string(&pre_v7).unwrap()).unwrap();
         assert_eq!(snap.schema_version, 6);
 
@@ -2513,9 +2538,7 @@ mod tests {
         assert_eq!(restored.len(), 3);
         let ids: Vec<&str> = store.rule_sets.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids.len(), 5);
-        assert!(ids[..3]
-            .iter()
-            .all(|id| is_builtin_remote_id(id)));
+        assert!(ids[..3].iter().all(|id| is_builtin_remote_id(id)));
         // User set and the legacy builtin list set both survive the reset.
         assert!(store.get_rule_set(&user_id).is_some());
         assert!(store.get_rule_set("builtin-ruleset").is_some());
@@ -2551,7 +2574,11 @@ mod tests {
         store.migrate_builtin_remote_rule_sets();
         let spec = &BUILTIN_REMOTE_RULE_SETS[2];
         {
-            let set = store.rule_sets.iter_mut().find(|s| s.id == spec.id).unwrap();
+            let set = store
+                .rule_sets
+                .iter_mut()
+                .find(|s| s.id == spec.id)
+                .unwrap();
             set.name = "改名".into();
             set.enabled = false;
             set.remote.as_mut().unwrap().update_interval = "disabled".into();
@@ -2598,6 +2625,37 @@ mod tests {
         );
         assert_eq!(store.rule_sets[0].id, remote.id);
         assert_eq!(store.rule_sets[1].id, local.id);
+    }
+
+    #[test]
+    fn v10_user_presets_are_one_time_user_sets_before_geo_rules() {
+        let mut store = AppStore {
+            schema_version: 9,
+            ..AppStore::default()
+        };
+        store
+            .rule_sets
+            .push(build_builtin_remote_set(&BUILTIN_REMOTE_RULE_SETS[0]));
+
+        store.migrate_user_rule_presets();
+
+        assert_eq!(store.schema_version, 10);
+        assert_eq!(store.rule_sets[0].id, USER_RULE_PRESET_SPECS[0].id);
+        assert_eq!(
+            store.rule_sets[USER_RULE_PRESET_SPECS.len()].id,
+            BUILTIN_REMOTE_RULE_SETS[0].id
+        );
+        assert!(store.rule_sets[..USER_RULE_PRESET_SPECS.len()]
+            .iter()
+            .all(|set| !set.builtin && set.ownership == RuleSetOwnership::User));
+
+        let count = store.rule_sets.len();
+        store.migrate_user_rule_presets();
+        assert_eq!(
+            store.rule_sets.len(),
+            count,
+            "migration must not duplicate presets"
+        );
     }
 
     fn sample_hy2(id: &str, name: &str) -> ProxyNode {
@@ -2653,7 +2711,9 @@ mod tests {
         let mut sub = sample_url_sub("s");
         sub.id = "sb1".into();
         sub.source = crate::domain::SubscriptionSource::Singbox {
-            content: r#"{"inbounds":[{"type":"mixed","listen_port":1}],"outbounds":[{"type":"direct"}]}"#.into(),
+            content:
+                r#"{"inbounds":[{"type":"mixed","listen_port":1}],"outbounds":[{"type":"direct"}]}"#
+                    .into(),
         };
         store.upsert_subscription(sub, Vec::new()).unwrap();
         store

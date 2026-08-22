@@ -47,7 +47,7 @@
 - **订阅与配置**：Clash 订阅、sing-box JSON、节点分享链接；链接 / 文件 / 浏览器深链导入；订阅可定时更新。也可以把一份完整 sing-box 配置直接当运行时。
 - **协议**：SS、VMess、VLESS、Trojan、Hysteria2、TUIC、AnyTLS、SOCKS5 等，一键测速，秒切节点
 - **智能选路**：手动 · 应用智能避障 · 内核 urltest，按场景选，不绑死一种策略
-- **规则分流**：多规则集（本地 / 远程 `.srs`），拖拽优先级；内置国内站点 / 国内 IP / 海外规则；兜底出口代理 / 直连 / 屏蔽。规则 / 全局 / 直连一键切换
+- **规则分流**：多规则集（本地 / 远程 sing-box JSON、`.srs`、Clash `.list`），拖拽优先级；内置国内站点 / 国内 IP / 海外规则；兜底出口代理 / 直连 / 屏蔽。规则 / 全局 / 直连一键切换
 - **DNS 与 Hosts**：DoH / DoT / FakeIP，DNS 规则集、系统 Hosts、默认解析器，还能测解析
 - **系统代理 / TUN**：系统代理一键接管；TUN（system / gvisor / mixed）；绕过局域网、可选 TUN IPv6、可拦 QUIC
 - **端口**：mixed / Clash API、多监听、允许局域网
@@ -144,6 +144,12 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 ### 局域网代理
 
 开启“允许局域网连接”后，主 mixed 入站会监听 `0.0.0.0:2080`（端口以应用设置为准）。局域网设备应把 HTTP/SOCKS 代理地址设置为 Satelite 所在电脑的局域网 IPv4 和该端口。Windows 用户还需要在防火墙提示中仅允许 `sing-box.exe` 访问专用网络；不要向公用网络或互联网开放该端口。
+
+### Windows 系统代理与 Clash 规则
+
+Windows 系统代理会同时更新注册表、当前 LAN 连接以及已有拨号/VPN 连接，并在规则模式重启内核后重新通知系统应用，减少浏览器、ChatGPT 和软件下载器继续使用旧代理的情况。
+
+远程规则集可直接填写 sing-box source JSON、二进制 `.srs` 或 Clash classical `.list` / `payload:` YAML；Clash 列表会在本地转换为 sing-box source JSON。列表里的第三列策略不会被信任，实际出口仍以 Satelite 中该规则集选择的“代理 / 直连 / 屏蔽”为准。
 
 ### UDP 节点兼容模式
 

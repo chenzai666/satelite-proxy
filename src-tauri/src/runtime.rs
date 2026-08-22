@@ -5,10 +5,10 @@ use crate::config::{
     apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
     inspect_singbox_config, outbound_tag, write_active_config, write_custom_config, BuildOptions,
 };
-use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
+use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
@@ -848,10 +848,7 @@ impl Runtime {
         self.custom_has_tun = insight.has_tun;
 
         if insight.has_clash_api() {
-            let host = insight
-                .clash_api_host
-                .as_deref()
-                .unwrap_or("127.0.0.1");
+            let host = insight.clash_api_host.as_deref().unwrap_or("127.0.0.1");
             let port = insight.clash_api_port.unwrap_or(9090);
             let secret = insight.clash_api_secret.clone().unwrap_or_default();
             let api = ClashApi::new(host, port, &secret);
@@ -924,6 +921,18 @@ impl Runtime {
     pub fn set_system_proxy(&mut self, store: &AppStore, enabled: bool) -> AppResult<ProxyStatus> {
         self.core.poll();
         if enabled == self.system_proxy_on {
+            if enabled {
+                let port = if store.settings.runtime_source().is_custom() {
+                    self.custom_inbound_port.ok_or_else(|| {
+                        AppError::Core(
+                            "当前自写配置没有 mixed/http/socks inbound，无法刷新系统代理".into(),
+                        )
+                    })?
+                } else {
+                    store.settings.mixed_port
+                };
+                self.system_proxy.refresh("127.0.0.1", port)?;
+            }
             return Ok(self.status(store));
         }
         if enabled {

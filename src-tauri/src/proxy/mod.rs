@@ -28,6 +28,12 @@ pub struct SystemProxySnapshot {
 pub trait SystemProxy: Send + Sync {
     fn enable(&self, host: &str, port: u16) -> AppResult<SystemProxySnapshot>;
     fn disable(&self, snapshot: Option<&SystemProxySnapshot>) -> AppResult<()>;
+    /// Re-announce an already-owned proxy after the local core was restarted.
+    /// Most platforms do not need this; Windows clients can cache per-
+    /// connection WinINet options across the short listener outage.
+    fn refresh(&self, _host: &str, _port: u16) -> AppResult<()> {
+        Ok(())
+    }
     /// Return a disable token only when the enabled OS proxy belongs entirely
     /// to this exact loopback endpoint. Mixed/foreign proxy settings are never claimed.
     fn detect_owned(&self, host: &str, port: u16) -> AppResult<Option<SystemProxySnapshot>>;

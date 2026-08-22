@@ -288,18 +288,27 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
         Ok(bytes) => bytes,
         Err(error) => return fail(app, id, error),
     };
-    let (format, source_rule_count, binary_scan) = match validate_source(&bytes) {
-        Ok(count) => (RuleSetFileFormat::Source, Some(count), None),
+    let (bytes, format, source_rule_count, binary_scan) = match validate_source(&bytes) {
+        Ok(count) => (bytes, RuleSetFileFormat::Source, Some(count), None),
         Err(_) if bytes.starts_with(b"SRS") => {
             // Structural parse validates the binary container without the
             // core, and is the only validation possible for AdGuard
             // rule-sets, which `sing-box rule-set decompile` refuses.
             match crate::srs::parse(&bytes) {
-                Ok(parsed) => (RuleSetFileFormat::Binary, None, Some(parsed)),
+                Ok(parsed) => (bytes, RuleSetFileFormat::Binary, None, Some(parsed)),
                 Err(error) => return fail(app, id, format!("SRS 校验失败: {error}")),
             }
         }
-        Err(error) => return fail(app, id, error),
+        Err(source_error) => match convert_clash_list_to_source(&bytes) {
+            Ok((converted, count)) => (converted, RuleSetFileFormat::Source, Some(count), None),
+            Err(clash_error) => {
+                return fail(
+                    app,
+                    id,
+                    format!("{source_error}; Clash 规则列表转换失败: {clash_error}"),
+                )
+            }
+        },
     };
 
     let cache_dir = match app.path().app_data_dir() {
@@ -455,6 +464,92 @@ fn validate_source(bytes: &[u8]) -> Result<u32, String> {
     u32::try_from(count).map_err(|_| "远程规则集条目数量过多".to_string())
 }
 
+/// Convert Clash classical `.list` / `payload:` YAML into a sing-box source
+/// rule-set. Policy columns are intentionally ignored: the Satelite rule-set
+/// strategy (proxy/direct/block) remains the single source of routing truth.
+fn convert_clash_list_to_source(bytes: &[u8]) -> Result<(Vec<u8>, u32), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let text =
+        std::str::from_utf8(bytes).map_err(|error| format!("文件不是 UTF-8 文本: {error}"))?;
+    let mut fields: BTreeMap<&'static str, BTreeSet<String>> = BTreeMap::new();
+    let mut ignored = 0u32;
+
+    for raw in text.lines() {
+        let mut line = raw.trim().trim_start_matches('\u{feff}').trim();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with(';')
+            || line.eq_ignore_ascii_case("payload:")
+        {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix('-') {
+            line = rest.trim();
+        }
+        line = line.trim_matches(|ch| ch == '\'' || ch == '"').trim();
+        let mut parts = line.split(',');
+        let kind = parts.next().unwrap_or_default().trim().to_ascii_uppercase();
+        let Some(raw_value) = parts.next() else {
+            ignored = ignored.saturating_add(1);
+            continue;
+        };
+        let mut value = raw_value
+            .trim()
+            .trim_matches(|ch| ch == '\'' || ch == '"')
+            .trim()
+            .to_string();
+        let field = match kind.as_str() {
+            "DOMAIN" => "domain",
+            "DOMAIN-SUFFIX" => {
+                value = value
+                    .trim_start_matches("+.")
+                    .trim_start_matches("*.")
+                    .trim_start_matches('.')
+                    .to_string();
+                "domain_suffix"
+            }
+            "DOMAIN-KEYWORD" => "domain_keyword",
+            "DOMAIN-REGEX" => "domain_regex",
+            "IP-CIDR" | "IP-CIDR6" => "ip_cidr",
+            "SRC-IP-CIDR" => "source_ip_cidr",
+            "PROCESS-NAME" => "process_name",
+            "PROCESS-PATH" => "process_path",
+            _ => {
+                ignored = ignored.saturating_add(1);
+                continue;
+            }
+        };
+        if value.is_empty() {
+            ignored = ignored.saturating_add(1);
+            continue;
+        }
+        fields.entry(field).or_default().insert(value);
+    }
+
+    let count: usize = fields.values().map(BTreeSet::len).sum();
+    if count == 0 {
+        return Err(format!(
+            "没有可转换的 DOMAIN/IP/PROCESS 规则（忽略 {ignored} 行）"
+        ));
+    }
+    let mut rule = serde_json::Map::new();
+    for (field, values) in fields {
+        rule.insert(
+            field.into(),
+            serde_json::Value::Array(values.into_iter().map(serde_json::Value::String).collect()),
+        );
+    }
+    let source = serde_json::json!({
+        "version": 3,
+        "rules": [serde_json::Value::Object(rule)]
+    });
+    let output = serde_json::to_vec_pretty(&source)
+        .map_err(|error| format!("生成 sing-box JSON 失败: {error}"))?;
+    let count = u32::try_from(count).map_err(|_| "规则数量过多".to_string())?;
+    Ok((output, count))
+}
+
 /// Decompile and validate a binary `.srs` with the active sing-box core.
 /// The temporary JSON is created beside the input and always removed.
 pub(crate) fn decompile_srs(core: &Path, input: &Path) -> Result<Vec<u8>, String> {
@@ -580,6 +675,30 @@ mod tests {
     fn rejects_html_and_empty_rules() {
         assert!(validate_source(b"<html>not a rule set</html>").is_err());
         assert!(validate_source(br#"{"version":3,"rules":[]}"#).is_err());
+    }
+
+    #[test]
+    fn converts_clash_list_and_payload_yaml_to_singbox_source() {
+        let input = br#"
+# classical list
+DOMAIN,api.openai.com,PROXY
+DOMAIN-SUFFIX,.chatgpt.com
+IP-CIDR,10.0.0.0/8,no-resolve
+payload:
+  - 'DOMAIN-KEYWORD,openai'
+  - PROCESS-NAME,ChatGPT.exe
+"#;
+        let (source, count) = convert_clash_list_to_source(input).unwrap();
+        assert_eq!(count, 5);
+        assert_eq!(validate_source(&source), Ok(5));
+        let value: serde_json::Value = serde_json::from_slice(&source).unwrap();
+        assert_eq!(value["rules"][0]["domain_suffix"][0], "chatgpt.com");
+        assert_eq!(value["rules"][0]["process_name"][0], "ChatGPT.exe");
+    }
+
+    #[test]
+    fn clash_list_conversion_rejects_only_meta_rules() {
+        assert!(convert_clash_list_to_source(b"GEOIP,CN\nMATCH,DIRECT\n").is_err());
     }
 
     #[test]
