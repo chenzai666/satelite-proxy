@@ -149,6 +149,8 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 
 Windows 系统代理会同时更新注册表、当前 LAN 连接以及已有拨号/VPN 连接，并在规则模式重启内核后重新通知系统应用，减少浏览器、ChatGPT 和软件下载器继续使用旧代理的情况。
 
+规则模式下，`cliproxy.yu8.lat`（兼容旧地址 `cpa.yu8.lat`）使用“直连优先、代理回退”：内核每分钟通过直连和当前代理组探测反代首页，直连可用时保持直连，直连失败时自动切换到当前手动节点。OpenAI 与 ChatGPT 官方域名仍按 AI 规则走代理。该机制同时适用于系统代理和 TUN，不需要把整个应用切到全局模式。
+
 远程规则集可直接填写 sing-box source JSON、二进制 `.srs` 或 Clash classical `.list` / `payload:` YAML；Clash 列表会在本地转换为 sing-box source JSON。列表里的第三列策略不会被信任，实际出口仍以 Satelite 中该规则集选择的“代理 / 直连 / 屏蔽”为准。
 
 ### UDP 节点兼容模式

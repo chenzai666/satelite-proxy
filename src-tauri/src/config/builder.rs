@@ -10,6 +10,10 @@ use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+const CLIPROXY_FALLBACK_TAG: &str = "cliproxy-auto";
+const CLIPROXY_HEALTH_URL: &str = "https://cliproxy.yu8.lat/";
+const CLIPROXY_DOMAINS: [&str; 2] = ["cliproxy.yu8.lat", "cpa.yu8.lat"];
+
 pub struct BuildOptions {
     pub mixed_port: u16,
     /// Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
@@ -190,6 +194,24 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "default": selected_tag,
         }));
     }
+    let use_cliproxy_fallback = matches!(opts.outbound_mode, OutboundMode::Rule);
+    if use_cliproxy_fallback {
+        // Prefer the user's known-good direct path, but automatically switch
+        // this endpoint to the current manual/automatic proxy group when the
+        // direct health check is unavailable. A large tolerance keeps direct
+        // selected while it remains usable instead of chasing small latency
+        // differences between the two paths.
+        outbounds.push(json!({
+            "type": "urltest",
+            "tag": CLIPROXY_FALLBACK_TAG,
+            "outbounds": ["direct", "proxy"],
+            "url": CLIPROXY_HEALTH_URL,
+            "interval": "1m",
+            "tolerance": 10_000,
+            "idle_timeout": "5m",
+            "interrupt_exist_connections": true,
+        }));
+    }
     // Per-rule smart selectors (keyword-filtered node pools).
     outbounds.extend(build_smart_rule_selectors(&effective_rules, nodes, &tags));
     outbounds.extend(node_outbounds);
@@ -236,6 +258,15 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     // domain directly to the outbound without performing a DNS query.
     route_rules.extend(build_hosts_route_rules(&opts.dns.effective_hosts()));
     if apply_user_rules {
+        // This must precede broad AI, China/CDN and geolocation sets. It keeps
+        // the CLIProxyAPI Responses/SSE stream direct when possible and lets
+        // the URLTest outbound fail over to the selected proxy when direct
+        // access is unavailable.
+        route_rules.push(json!({
+            "domain": CLIPROXY_DOMAINS,
+            "action": "route",
+            "outbound": CLIPROXY_FALLBACK_TAG
+        }));
         if opts.rule_sets.is_empty() {
             route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
         } else {
@@ -2114,6 +2145,58 @@ mod tests {
             .unwrap()
             .iter()
             .all(|t| t != "direct"));
+    }
+
+    #[test]
+    fn rule_mode_cliproxy_prefers_direct_with_proxy_fallback() {
+        let nodes = vec![sample_ss()];
+        let built = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                mixed_port: 2080,
+                allow_lan: false,
+                api_port: 19090,
+                extra_inbounds: vec![],
+                api_secret: "test".into(),
+                current_node_id: None,
+                log_level: "info".into(),
+                rules: vec![],
+                rule_sets: vec![],
+                tun_enabled: false,
+                tun_stack: "mixed".into(),
+                dns: DnsSettings::default(),
+                outbound_mode: OutboundMode::Rule,
+                route_final: "proxy".into(),
+                auto_select: crate::domain::AutoSelectMode::Off,
+                probe_url: "https://www.gstatic.com/generate_204".into(),
+                find_process: true,
+                tun_ipv6: false,
+                block_quic: false,
+                bypass_lan: false,
+            },
+        )
+        .unwrap();
+
+        let fallback = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == CLIPROXY_FALLBACK_TAG)
+            .unwrap();
+        assert_eq!(fallback["type"], "urltest");
+        assert_eq!(fallback["outbounds"], json!(["direct", "proxy"]));
+        assert_eq!(fallback["url"], CLIPROXY_HEALTH_URL);
+        assert_eq!(fallback["tolerance"], 10_000);
+        assert_eq!(fallback["interrupt_exist_connections"], true);
+
+        let route = built.value["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["outbound"] == CLIPROXY_FALLBACK_TAG)
+            .unwrap();
+        assert_eq!(route["domain"], json!(CLIPROXY_DOMAINS));
+        assert_eq!(route["action"], "route");
     }
 
     #[test]
