@@ -1,7 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-08-22（v1.0.8）。
+最后核对：2026-08-22（v1.0.9）。
 
 ## 0. 阅读与维护规则（必读）
 
@@ -177,7 +177,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 |---|---|
 | `domain/node.rs` | `Protocol`（SS/VMess/VLESS/Trojan/Hysteria2/TUIC/AnyTLS/SOCKS5…）、`ProtocolConfig`、`TlsConfig`、`Transport`、`ProxyNode`、`ParseResult`、`ManualNodeDraft`（表单模型） |
 | `domain/settings.rs` | `AppSettings`（~40 字段：端口/TUN/capture_mode/outbound_mode/auto_select/locale/theme/accent/hero_style/tray_icon…）、`OutboundMode`、`CaptureMode`、`AutoSelectMode`、`ExtraInbound`、`RuntimeSource` |
-| `domain/rule.rs` | `Rule`、`RuleSet`（本地/远程/内置，ownership/strategy/dns_strategy）、`RuleType`、`RuleTarget`、`BUILTIN_REMOTE_RULE_SETS`（3 条内置远程规则，需与 `scripts/fetch-bundled-rule-sets.sh` 同步） |
+| `domain/rule.rs` | `Rule`、`RuleSet`（本地/远程/内置，ownership/strategy/dns_strategy；strategy 6 值 proxy/direct/block/node/filter/smart，node=整组指定节点、filter=整组关键词过滤池，参数存集级 node_id/smart_include 等字段）、`RuleType`、`RuleTarget`、`BUILTIN_REMOTE_RULE_SETS`（3 条内置远程规则，需与 `scripts/fetch-bundled-rule-sets.sh` 同步） |
 | `domain/dns.rs` | `DnsSettings`、`DnsRule`、`DnsAction`、FakeIP、Hosts 配置 |
 | `domain/subscription.rs` | `Subscription`、`SubscriptionSource`（url/file/text/node/singbox）、`SubscriptionView` |
 
@@ -297,7 +297,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 8. 构建细节与产物
 
-- **版本号**：`package.json`（1.0.8）是唯一真源，`tauri.conf.json` 引用它；`Cargo.toml`（1.0.4）落后且不自动同步——发版时手动检查三处。
+- **版本号**：`package.json`（1.0.9）是唯一真源，`tauri.conf.json` 引用它；`Cargo.toml`（1.0.4）落后且不自动同步——发版时手动检查三处。
 - **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`）。
 - **Rust 测试布局**：集成测试 `src-tauri/tests/parse_subscription.rs`（fixtures 在 `tests/fixtures/`：clash yaml ×2、singbox json ×1）；`download_core_live.rs` 为 `#[ignore]` 真网测试；单测散落各文件 `#[cfg(test)]`。
 - **换行符**：`.gitattributes` 规定源码 eol=lf、`.ps1/.bat/.cmd` 为 CRLF。

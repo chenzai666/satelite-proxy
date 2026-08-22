@@ -230,10 +230,23 @@ pub struct RuleSet {
     pub enabled: bool,
     #[serde(default)]
     pub ownership: RuleSetOwnership,
-    /// Ordinary groups apply one strategy to every item. Smart groups preserve
-    /// the legacy per-item target / node-pool settings.
+    /// Ordinary groups apply one strategy to every item. `Node`/`Filter` are
+    /// whole-set pins (parameters below); `Smart` (Mixed) preserves the
+    /// legacy per-item target / node-pool settings.
     #[serde(default)]
     pub strategy: RuleSetStrategy,
+    /// When `strategy == Node`: stable node id the whole set is pinned to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    /// Snapshot of node display name at pin time (for stale-node UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    /// When `strategy == Filter`: whitelist — name must contain any keyword (OR). Empty = all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_include: Vec<String>,
+    /// When `strategy == Filter`: blacklist — name containing any keyword is skipped (OR).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_exclude: Vec<String>,
     /// Whole-set DNS resolver policy, independent from the route strategy.
     #[serde(default)]
     pub dns_strategy: RuleSetDnsStrategy,
@@ -263,7 +276,12 @@ pub enum RuleSetStrategy {
     Proxy,
     Direct,
     Block,
-    /// Per-item route/DNS decisions.
+    /// Whole set pinned to one node (`node_id` on [`RuleSet`]).
+    Node,
+    /// Whole set routed to a keyword-filtered node pool
+    /// (`smart_include`/`smart_exclude` on [`RuleSet`]).
+    Filter,
+    /// Per-item route/DNS decisions (emergent "Mixed" tag).
     Smart,
 }
 
@@ -292,7 +310,8 @@ impl RuleSetStrategy {
             RuleTarget::Proxy => Self::Proxy,
             RuleTarget::Direct => Self::Direct,
             RuleTarget::Block => Self::Block,
-            RuleTarget::Node | RuleTarget::Smart => Self::Smart,
+            RuleTarget::Node => Self::Node,
+            RuleTarget::Smart => Self::Filter,
         }
     }
 
@@ -301,7 +320,7 @@ impl RuleSetStrategy {
             Self::Proxy => Some(RuleTarget::Proxy),
             Self::Direct => Some(RuleTarget::Direct),
             Self::Block => Some(RuleTarget::Block),
-            Self::Smart => None,
+            Self::Node | Self::Filter | Self::Smart => None,
         }
     }
 
@@ -309,7 +328,9 @@ impl RuleSetStrategy {
     /// Block has no editable DNS policy because it always emits DNS reject.
     pub fn recommended_dns_strategy(self) -> Option<RuleSetDnsStrategy> {
         match self {
-            Self::Proxy | Self::Smart => Some(RuleSetDnsStrategy::Remote),
+            Self::Proxy | Self::Node | Self::Filter | Self::Smart => {
+                Some(RuleSetDnsStrategy::Remote)
+            }
             Self::Direct => Some(RuleSetDnsStrategy::Local),
             Self::Block => None,
         }
@@ -323,7 +344,8 @@ pub struct RemoteRuleSetConfig {
     pub format: String,
     #[serde(default = "default_update_interval")]
     pub update_interval: String,
-    /// Whole-set route strategy. Remote sets intentionally do not support node/smart.
+    /// Whole-set route strategy. `node`/`smart` pin the set via the set-level
+    /// `node_id` / `smart_include`/`smart_exclude` fields on [`RuleSet`].
     pub target: RuleTarget,
     /// Rust-managed downloaded source JSON or binary SRS file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -397,6 +419,10 @@ impl RuleSet {
             enabled: true,
             ownership: RuleSetOwnership::User,
             strategy: RuleSetStrategy::Proxy,
+            node_id: None,
+            node_name: None,
+            smart_include: Vec::new(),
+            smart_exclude: Vec::new(),
             dns_strategy: RuleSetDnsStrategy::Remote,
             remote: None,
             dns_rules: Vec::new(),
@@ -423,6 +449,14 @@ impl RuleSet {
             set.dns_strategy = dns_strategy;
         }
         set
+    }
+
+    /// Selector outbound tag for a whole-set (Filter) keyword pool. Same shape
+    /// as `Rule::smart_outbound_tag` — set ids (`rs-*` / `system-*`) never
+    /// collide with rule hash ids, and smart_switch probes sets through a
+    /// stand-in rule so both sides must agree on this tag.
+    pub fn smart_set_outbound_tag(&self) -> String {
+        format!("smart-{}", &self.id[..self.id.len().min(16)])
     }
 }
 
@@ -468,6 +502,15 @@ pub struct RuleSetSummary {
     pub enabled: bool,
     pub ownership: RuleSetOwnership,
     pub strategy: RuleSetStrategy,
+    /// Set-level route parameters (strategy == Node / Filter).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_include: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub smart_exclude: Vec<String>,
     pub dns_strategy: RuleSetDnsStrategy,
     /// Restorable by Reset: only the bundled remote rule sets.
     #[serde(default)]
@@ -753,7 +796,46 @@ mod tests {
             RuleSetStrategy::Smart.recommended_dns_strategy(),
             Some(RuleSetDnsStrategy::Remote)
         );
+        assert_eq!(
+            RuleSetStrategy::Node.recommended_dns_strategy(),
+            Some(RuleSetDnsStrategy::Remote)
+        );
+        assert_eq!(
+            RuleSetStrategy::Filter.recommended_dns_strategy(),
+            Some(RuleSetDnsStrategy::Remote)
+        );
         assert_eq!(RuleSetStrategy::Block.recommended_dns_strategy(), None);
+    }
+
+    #[test]
+    fn whole_set_strategies_map_from_targets() {
+        assert_eq!(
+            RuleSetStrategy::from_target(RuleTarget::Node),
+            RuleSetStrategy::Node
+        );
+        // RuleTarget::Smart is the keyword pool → whole-set Filter strategy.
+        assert_eq!(
+            RuleSetStrategy::from_target(RuleTarget::Smart),
+            RuleSetStrategy::Filter
+        );
+        assert_eq!(RuleSetStrategy::Node.route_target(), None);
+        assert_eq!(RuleSetStrategy::Filter.route_target(), None);
+        assert_eq!(
+            RuleSetStrategy::Proxy.route_target(),
+            Some(RuleTarget::Proxy)
+        );
+    }
+
+    #[test]
+    fn smart_set_tag_is_stable_and_never_collides_with_rule_tags() {
+        let mut set = RuleSet::new_user("过滤池", vec![]);
+        set.id = "system-geolocation-not-cn".into();
+        let tag = set.smart_set_outbound_tag();
+        assert_eq!(tag, "smart-system-geolocati");
+        // Rule ids are 24-char hex — the "rs-"/"system-" prefixes keep the
+        // tag spaces disjoint.
+        let rule = Rule::new(RuleType::DomainSuffix, "x.com".into(), RuleTarget::Smart, 1);
+        assert_ne!(tag, rule.smart_outbound_tag());
     }
 
     #[test]

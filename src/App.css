@@ -2215,6 +2215,12 @@ button.node-card:disabled,
   color: var(--danger);
 }
 
+/* Whole-set route pill: node / filter strategies (toolbar badge). */
+.pill.target-filter {
+  background: var(--primary-muted);
+  color: var(--primary);
+}
+
 .ruleset-strategy-label,
 .ruleset-origin-label {
   display: inline-flex;
@@ -2263,6 +2269,14 @@ button.node-card:disabled,
 
 .ruleset-strategy-label.strategy-block {
   color: var(--danger);
+}
+
+.ruleset-strategy-label.strategy-node {
+  color: var(--primary);
+}
+
+.ruleset-strategy-label.strategy-filter {
+  color: var(--accent-blue);
 }
 
 .ruleset-origin-label.origin-remote {

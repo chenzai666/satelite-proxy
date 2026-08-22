@@ -567,8 +567,14 @@ const en = {
   "rules.editSetTitle": "Edit rule set",
   "rules.routeLabel": "Route",
   "rules.strategySmart": "Mixed",
-  "rules.createSetSmartHint":
-    "Per-rule outbounds: every rule can pick proxy / direct / block / pinned node / filtered nodes instead of the set default.",
+  "rules.strategyNode": "Specified",
+  "rules.strategyFilter": "Filtered",
+  "rules.createSetNodeHint":
+    "The whole set routes through the node picked above; the set label shows “Specified”.",
+  "rules.createSetFilterHint":
+    "The whole set routes through a keyword-filtered node pool (auto-picked by probes). Leave keywords empty to use every node.",
+  "rules.editorFilterInheritHint": "Uses the whole-set filters: {k}",
+  "rules.filterAllNodes": "all nodes",
   "rules.plainDivergeBanner":
     "This set routes as one group (more efficient). To give a single rule its own outbound, convert it to a Mixed set first.",
   "rules.convertToSmartCta": "Convert to Mixed set",
@@ -1260,8 +1266,14 @@ const zh: Record<MessageKey, string> = {
   "rules.editSetTitle": "编辑规则集",
   "rules.routeLabel": "路由",
   "rules.strategySmart": "混合",
-  "rules.createSetSmartHint":
-    "每条规则可单独覆盖出口（代理/直连/屏蔽/指定节点/过滤节点），适合「过滤节点1/过滤节点2」这类特殊规则集。",
+  "rules.strategyNode": "指定",
+  "rules.strategyFilter": "过滤",
+  "rules.createSetNodeHint":
+    "整组规则都路由到上方选定的节点，规则集类型显示为「指定」。",
+  "rules.createSetFilterHint":
+    "整组规则路由到按关键词过滤出的节点池（自动测速选优）。关键词留空表示全部节点。",
+  "rules.editorFilterInheritHint": "沿用整组过滤设置：{k}",
+  "rules.filterAllNodes": "全部节点",
   "rules.plainDivergeBanner":
     "整组规则集按统一出口生成配置（更高效）。要为单条规则单独设置出口，请先转为混合规则集。",
   "rules.convertToSmartCta": "转为混合规则集",

@@ -432,20 +432,35 @@ export interface RuleSetSummary {
   enabled: boolean;
   ownership: "builtin" | "user" | "system";
   strategy: RuleSetStrategy;
+  /** Set-level route parameters (strategy === "node" | "filter"). */
+  node_id?: string | null;
+  node_name?: string | null;
+  smart_include?: string[];
+  smart_exclude?: string[];
   dns_strategy: RuleSetDnsStrategy;
   /** Restorable by Reset: only the bundled remote rule sets. */
   resettable: boolean;
   remote?: RemoteRuleSetConfig | null;
 }
 
-export type RuleSetStrategy = "proxy" | "direct" | "block" | "smart";
+/** Whole-set route strategies. `node` (pinned node) and `filter`
+ *  (keyword-filtered pool) are whole-set pins whose parameters live on the
+ *  set level; `smart` (Mixed) keeps per-rule decisions. */
+export type RuleSetStrategy =
+  | "proxy"
+  | "direct"
+  | "block"
+  | "node"
+  | "filter"
+  | "smart";
 export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
 
 export interface RemoteRuleSetConfig {
   url: string;
   format: "source" | "binary" | string;
   update_interval: "disabled" | "1h" | "12h" | "24h" | string;
-  target: "proxy" | "direct" | "block";
+  /** Whole-set route; `node`/`smart` use the set-level pin / filters. */
+  target: RuleTarget;
   local_path?: string | null;
   download_status?: "idle" | "downloading" | "ready" | "error" | string;
   download_error?: string | null;
@@ -477,6 +492,14 @@ export interface RuleSet {
   enabled: boolean;
   ownership: "builtin" | "user" | "system";
   strategy: RuleSetStrategy;
+  /** When strategy is `node`: whole-set pinned node id. */
+  node_id?: string | null;
+  /** Snapshot name at pin time (stale UI when id missing). */
+  node_name?: string | null;
+  /** When strategy is `filter`: whitelist keywords (OR). Empty = all nodes. */
+  smart_include?: string[];
+  /** When strategy is `filter`: blacklist keywords (OR). */
+  smart_exclude?: string[];
   dns_strategy: RuleSetDnsStrategy;
   remote?: RemoteRuleSetConfig | null;
   dns_rules: DnsRule[];

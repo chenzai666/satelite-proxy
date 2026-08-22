@@ -115,7 +115,13 @@ export function RulesPage({ embedded = false }: Props) {
   const [newSetName, setNewSetName] = useState(t("rules.setNamePh"));
   const [newSetKind, setNewSetKind] = useState<"local" | "remote">("local");
   const [newSetUrl, setNewSetUrl] = useState("");
-  const [newSetTarget, setNewSetTarget] = useState<RouteFinal | "smart">("proxy");
+  const [newSetTarget, setNewSetTarget] = useState<
+    "proxy" | "direct" | "block" | "node" | "filter"
+  >("proxy");
+  const [newSetNodeId, setNewSetNodeId] = useState("");
+  const [newSetNodeQuery, setNewSetNodeQuery] = useState("");
+  const [newSetSmartInclude, setNewSetSmartInclude] = useState("");
+  const [newSetSmartExclude, setNewSetSmartExclude] = useState("");
   const [newSetUpdateInterval, setNewSetUpdateInterval] = useState<
     "disabled" | "1h" | "12h" | "24h"
   >("disabled");
@@ -366,19 +372,17 @@ export function RulesPage({ embedded = false }: Props) {
     );
   }, [nodes, batchNodeQuery]);
 
-  const batchKeywordOverlap = useMemo(() => {
-    if (batchTarget !== "smart") return [] as string[];
-    const include = parseKeywords(batchSmartInclude);
-    const exclude = parseKeywords(batchSmartExclude);
-    const out: string[] = [];
-    for (const a of include) {
-      const al = a.toLowerCase();
-      if (exclude.some((b) => b.toLowerCase() === al) && !out.some((x) => x.toLowerCase() === al)) {
-        out.push(a);
-      }
-    }
-    return out;
-  }, [batchTarget, batchSmartInclude, batchSmartExclude]);
+  /** Node list for the new-set modal's picker. */
+  const newSetFilteredNodes = useMemo(() => {
+    const q = newSetNodeQuery.trim().toLowerCase();
+    if (!q) return nodes;
+    return nodes.filter(
+      (n) =>
+        n.name.toLowerCase().includes(q) ||
+        n.server.toLowerCase().includes(q) ||
+        n.protocol.toLowerCase().includes(q),
+    );
+  }, [nodes, newSetNodeQuery]);
 
   /** Split by whitespace (spaces / tabs / newlines). */
   function parseKeywords(raw: string): string[] {
@@ -388,10 +392,8 @@ export function RulesPage({ embedded = false }: Props) {
       .filter(Boolean);
   }
 
-  const smartKeywordOverlap = useMemo(() => {
-    if (target !== "smart") return [] as string[];
-    const include = parseKeywords(smartInclude);
-    const exclude = parseKeywords(smartExclude);
+  /** Keywords present in both the whitelist and the blacklist (conflict). */
+  function keywordOverlap(include: string[], exclude: string[]): string[] {
     const out: string[] = [];
     for (const a of include) {
       const al = a.toLowerCase();
@@ -400,18 +402,46 @@ export function RulesPage({ embedded = false }: Props) {
       }
     }
     return out;
-  }, [target, smartInclude, smartExclude]);
+  }
+
+  const batchKeywordOverlap = useMemo(
+    () =>
+      batchTarget === "smart"
+        ? keywordOverlap(parseKeywords(batchSmartInclude), parseKeywords(batchSmartExclude))
+        : [],
+    [batchTarget, batchSmartInclude, batchSmartExclude],
+  );
+
+  const newSetKeywordOverlap = useMemo(
+    () =>
+      newSetTarget === "filter"
+        ? keywordOverlap(parseKeywords(newSetSmartInclude), parseKeywords(newSetSmartExclude))
+        : [],
+    [newSetTarget, newSetSmartInclude, newSetSmartExclude],
+  );
+
+  const smartKeywordOverlap = useMemo(
+    () =>
+      target === "smart"
+        ? keywordOverlap(parseKeywords(smartInclude), parseKeywords(smartExclude))
+        : [],
+    [target, smartInclude, smartExclude],
+  );
 
   const payloadSuggestion = useMemo(
     () => suggestPayloadFromUrl(payload, ruleType),
     [payload, ruleType],
   );
 
-  const smartMatchCount = useMemo(() => {
-    if (target !== "smart") return 0;
-    const include = parseKeywords(smartInclude);
-    const exclude = parseKeywords(smartExclude);
-    return nodes.filter((n) => {
+  /** Node count matching include/exclude keyword filters. Same semantics as
+   *  the backend pool: blacklist OR skips, whitelist OR allows, empty
+   *  whitelist = every node. */
+  function countKeywordMatches(
+    list: ProxyNode[],
+    include: string[],
+    exclude: string[],
+  ): number {
+    return list.filter((n) => {
       const name = n.name.toLowerCase();
       // Blacklist OR: any hit → skip
       if (exclude.some((k) => name.includes(k.toLowerCase()))) return false;
@@ -419,15 +449,56 @@ export function RulesPage({ embedded = false }: Props) {
       if (include.length === 0) return true;
       return include.some((k) => name.includes(k.toLowerCase()));
     }).length;
-  }, [target, smartInclude, smartExclude, nodes]);
+  }
+
+  const smartMatchCount = useMemo(
+    () =>
+      target === "smart"
+        ? countKeywordMatches(nodes, parseKeywords(smartInclude), parseKeywords(smartExclude))
+        : 0,
+    [target, smartInclude, smartExclude, nodes],
+  );
+
+  const batchSmartMatchCount = useMemo(
+    () =>
+      batchTarget === "smart"
+        ? countKeywordMatches(
+            nodes,
+            parseKeywords(batchSmartInclude),
+            parseKeywords(batchSmartExclude),
+          )
+        : 0,
+    [batchTarget, batchSmartInclude, batchSmartExclude, nodes],
+  );
+
+  const newSetSmartMatchCount = useMemo(
+    () =>
+      newSetTarget === "filter"
+        ? countKeywordMatches(
+            nodes,
+            parseKeywords(newSetSmartInclude),
+            parseKeywords(newSetSmartExclude),
+          )
+        : 0,
+    [newSetTarget, newSetSmartInclude, newSetSmartExclude, nodes],
+  );
 
   const viewSet = sets.find((s) => s.id === viewSetId);
+
+  /** The single target a uniform set enforces per rule. Mixed (smart) sets
+   *  keep per-rule decisions (null); Filter sets express it as `smart`. */
+  const setUniformTarget: RuleTarget | null =
+    viewSet?.strategy === "smart"
+      ? null
+      : viewSet?.strategy === "filter"
+        ? "smart"
+        : ((viewSet?.strategy ?? "proxy") as RuleTarget);
 
   /** Plain sets stay uniform: a per-rule target different from the set
    *  strategy must live in a Mixed (smart) set — the editor guides the
    *  conversion instead of saving a silently-diverging rule. */
   const plainDiverged =
-    !!viewSet && viewSet.strategy !== "smart" && target !== viewSet.strategy;
+    !!viewSet && setUniformTarget !== null && target !== setUniformTarget;
 
   useEffect(() => {
     setRemotePageIndex(0);
@@ -525,7 +596,11 @@ export function RulesPage({ embedded = false }: Props) {
         ? t("rules.targetDirect")
         : s === "block"
           ? t("rules.targetBlock")
-          : t("rules.strategySmart");
+          : s === "node"
+            ? t("rules.strategyNode")
+            : s === "filter"
+              ? t("rules.strategyFilter")
+              : t("rules.strategySmart");
   }
 
   function dnsStrategyLabel(s: string): string {
@@ -536,14 +611,30 @@ export function RulesPage({ embedded = false }: Props) {
         : t("dns.finalRemote");
   }
 
-  /** Per-rule target valid under the current set: smart sets allow all
-   *  targets; plain sets are limited to proxy/direct/block. */
+  /** Per-rule target valid under the current set: advanced sets (mixed /
+   *  node / filter) allow the advanced targets — the whole-set pin or
+   *  keywords fill in any per-rule blanks at build time; plain sets are
+   *  limited to proxy/direct/block. */
   function clampTargetForSet(target: RuleTarget): RuleTarget {
-    if (viewSet?.strategy === "smart") return target;
+    if (viewSet?.strategy === "smart" || viewSet?.strategy === "node" || viewSet?.strategy === "filter") {
+      return target;
+    }
     return target === "proxy" || target === "direct" || target === "block"
       ? target
       : ((viewSet?.strategy ?? "proxy") as RuleTarget);
   }
+
+  /** Per-rule editor options under the current set: mixed sets unlock every
+   *  target; node / filter sets add their own follow-the-set target to the
+   *  plain trio; plain sets stay at proxy/direct/block. */
+  const editorTargetOpts: { value: RuleTarget; label: string }[] = useMemo(() => {
+    const base = targetOpts.slice(0, 3);
+    const s = viewSet?.strategy;
+    if (s === "smart") return targetOpts;
+    if (s === "node") return [...base, targetOpts[3]];
+    if (s === "filter") return [...base, targetOpts[4]];
+    return base;
+  }, [viewSet?.strategy, targetOpts]);
 
   function targetLabel(r: Rule): { text: string; stale: boolean; cls: string } {
     if (r.target === "smart") {
@@ -595,12 +686,10 @@ export function RulesPage({ embedded = false }: Props) {
     setEditRule(null);
     setRuleType("domain_suffix");
     setPayload("");
-    setTarget(
-      viewSet?.strategy === "smart"
-        ? "proxy"
-        : (viewSet?.strategy ?? "proxy") as RuleTarget,
-    );
-    setPinNodeId("");
+    // Uniform sets start at their own target (node sets prefill the whole-set
+    // pin; filter-set keywords stay empty and inherit the set filters).
+    setTarget(setUniformTarget ?? "proxy");
+    setPinNodeId(viewSet?.strategy === "node" ? (viewSet.node_id ?? "") : "");
     setNodeQuery("");
     setSmartInclude("");
     setSmartExclude("");
@@ -801,9 +890,14 @@ export function RulesPage({ embedded = false }: Props) {
     setNewSetKind("local");
     setNewSetUrl("");
     setNewSetTarget("proxy");
+    setNewSetNodeId("");
+    setNewSetNodeQuery("");
+    setNewSetSmartInclude("");
+    setNewSetSmartExclude("");
     setNewSetUpdateInterval("disabled");
     setNewSetOpen(true);
     setError(null);
+    void ensureNodesLoaded();
   }
 
   async function onCreateSet(e: FormEvent) {
@@ -811,6 +905,16 @@ export function RulesPage({ embedded = false }: Props) {
     const name = newSetName.trim();
     if (!name) {
       setError(t("rules.needName"));
+      return;
+    }
+    if (newSetTarget === "node" && !newSetNodeId.trim()) {
+      setError(t("rules.needNode"));
+      return;
+    }
+    if (newSetKeywordOverlap.length > 0) {
+      setError(
+        t("rules.smartKeywordConflict", { k: newSetKeywordOverlap.join("、") }),
+      );
       return;
     }
     setNewSetBusy(true);
@@ -823,8 +927,13 @@ export function RulesPage({ embedded = false }: Props) {
       const set = await createRuleSet(
         name,
         newSetKind === "remote" ? newSetUrl.trim() : null,
-        newSetTarget,
+        // "filter" rides on the smart keyword-pool target; the backend maps
+        // it to the whole-set Filter strategy.
+        newSetTarget === "filter" ? "smart" : newSetTarget,
         newSetKind === "remote" ? newSetUpdateInterval : null,
+        newSetTarget === "node" ? newSetNodeId : null,
+        newSetTarget === "filter" ? parseKeywords(newSetSmartInclude) : null,
+        newSetTarget === "filter" ? parseKeywords(newSetSmartExclude) : null,
       );
       const list = await listRuleSets();
       setSets(list);
@@ -1612,7 +1721,7 @@ export function RulesPage({ embedded = false }: Props) {
                 <span>{t("rules.outbound")}</span>
                 <SolidSelect
                   value={batchTarget}
-                  options={viewSet.remote ? targetOpts.slice(0, 3) : targetOpts}
+                  options={targetOpts}
                   onChange={(v) => setBatchTarget(v as RuleTarget)}
                   aria-label={t("rules.outbound")}
                 />
@@ -1677,14 +1786,37 @@ export function RulesPage({ embedded = false }: Props) {
                       placeholder={t("rules.smartExcludePh")}
                     />
                   </label>
+                  {batchKeywordOverlap.length > 0 ? (
+                    <p className="banner error" style={{ margin: 0, fontSize: 12 }}>
+                      {t("rules.smartKeywordConflict", {
+                        k: batchKeywordOverlap.join("、"),
+                      })}
+                    </p>
+                  ) : (
+                    <p
+                      className="muted"
+                      style={{
+                        margin: 0,
+                        fontSize: 12,
+                        color:
+                          batchSmartMatchCount === 0
+                            ? "var(--danger, #e55)"
+                            : undefined,
+                      }}
+                    >
+                      {t("rules.smartMatchCount", { n: batchSmartMatchCount })}
+                    </p>
+                  )}
                 </div>
               )}
               <div className="muted" style={{ fontSize: 12 }}>
                 {t("rules.batchStrategyPreview", {
                   s:
-                    batchTarget === "proxy" || batchTarget === "direct" || batchTarget === "block"
-                      ? strategyLabel(batchTarget)
-                      : t("rules.strategySmart"),
+                    batchTarget === "node"
+                      ? t("rules.strategyNode")
+                      : batchTarget === "smart"
+                        ? t("rules.strategyFilter")
+                        : strategyLabel(batchTarget),
                 })}
               </div>
               <footer className="modal-footer">
@@ -1758,11 +1890,7 @@ export function RulesPage({ embedded = false }: Props) {
                 <span>{t("rules.outbound")}</span>
                 <SolidSelect
                   value={clampTargetForSet(target)}
-                  options={
-                    viewSet?.strategy === "smart"
-                      ? targetOpts
-                      : targetOpts.slice(0, 3)
-                  }
+                  options={editorTargetOpts}
                   onChange={(v) => setTarget(v as RuleTarget)}
                   aria-label={t("rules.outbound")}
                 />
@@ -1882,6 +2010,16 @@ export function RulesPage({ embedded = false }: Props) {
                   )}
                 </div>
               )}
+              {viewSet?.strategy === "filter" && target === "smart" && (
+                <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
+                  {t("rules.editorFilterInheritHint", {
+                    k: [
+                      ...(viewSet.smart_include ?? []),
+                      ...(viewSet.smart_exclude ?? []).map((x) => `-${x}`),
+                    ].join(" ") || t("rules.filterAllNodes"),
+                  })}
+                </p>
+              )}
               <label className="sys-proxy-row" style={{ border: "none", paddingTop: 0, marginTop: 0 }}>
                 <span>{t("rules.enabled")}</span>
                 <GlassSwitchControl
@@ -1935,14 +2073,7 @@ export function RulesPage({ embedded = false }: Props) {
                 <GlassSeg
                   value={newSetKind}
                   ariaLabel={t("rules.addModeLabel")}
-                  onChange={(value) => {
-                    const kind = value as "local" | "remote";
-                    setNewSetKind(kind);
-                    // Mixed is a local-only strategy — remote sets stay p/d/b.
-                    if (kind === "remote" && newSetTarget === "smart") {
-                      setNewSetTarget("proxy");
-                    }
-                  }}
+                  onChange={(value) => setNewSetKind(value as "local" | "remote")}
                   options={[
                     { value: "local", label: t("rules.addModeLocal") },
                     { value: "remote", label: t("rules.addModeRemote") },
@@ -1975,28 +2106,120 @@ export function RulesPage({ embedded = false }: Props) {
                   />
                 </label>
               )}
-              {/* Route choice for BOTH kinds — local sets pick their initial
-                  strategy here, mirroring the remote flow. Mixed (per-rule
-                  outbounds) is local-only. */}
+              {/* Route choice for BOTH kinds — local and remote sets support
+                  the same five whole-set strategies (Mixed stays an emergent
+                  per-rule state, not a creation choice). */}
               <label className="field">
                 <span>{t("rules.routeLabel")}</span>
                 <GlassSeg
                   value={newSetTarget}
                   ariaLabel={t("rules.routeStrategyAria")}
-                  onChange={(value) => setNewSetTarget(value as RouteFinal | "smart")}
+                  onChange={(value) =>
+                    setNewSetTarget(
+                      value as "proxy" | "direct" | "block" | "node" | "filter",
+                    )
+                  }
                   options={[
                     { value: "proxy", label: t("rules.targetProxy") },
                     { value: "direct", label: t("rules.targetDirect") },
                     { value: "block", label: t("rules.targetBlock") },
-                    ...(newSetKind === "local"
-                      ? [{ value: "smart", label: t("rules.strategySmart") }]
-                      : []),
+                    { value: "node", label: t("rules.strategyNode") },
+                    { value: "filter", label: t("rules.strategyFilter") },
                   ]}
                 />
               </label>
-              {newSetKind === "local" && newSetTarget === "smart" && (
+              {newSetTarget === "node" && (
+                <div className="field rule-node-pick">
+                  <span>{t("rules.pickNode")}</span>
+                  {nodes.length === 0 ? (
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                      {t("rules.noNodes")}
+                    </p>
+                  ) : (
+                    <>
+                      <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        className="search"
+                        value={newSetNodeQuery}
+                        onChange={(e) => setNewSetNodeQuery(e.target.value)}
+                        placeholder={t("rules.pickNodePh")}
+                      />
+                      <SolidSelect
+                        list
+                        listSize={Math.min(
+                          8,
+                          Math.max(4, newSetFilteredNodes.length || 4),
+                        )}
+                        value={newSetNodeId}
+                        onChange={setNewSetNodeId}
+                        aria-label={t("rules.pickNode")}
+                        options={[
+                          { value: "", label: t("rules.needNode") },
+                          ...newSetFilteredNodes.map((n) => ({
+                            value: n.id,
+                            label: n.name,
+                          })),
+                        ]}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+              {newSetTarget === "filter" && (
+                <div className="field rule-smart-filters">
+                  <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
+                    {t("rules.createSetFilterHint")}
+                  </p>
+                  <label className="field" style={{ marginBottom: 8 }}>
+                    <span>{t("rules.smartInclude")}</span>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={newSetSmartInclude}
+                      onChange={(e) => setNewSetSmartInclude(e.target.value)}
+                      placeholder={t("rules.smartIncludePh")}
+                    />
+                  </label>
+                  <label className="field" style={{ marginBottom: 8 }}>
+                    <span>{t("rules.smartExclude")}</span>
+                    <input
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      value={newSetSmartExclude}
+                      onChange={(e) => setNewSetSmartExclude(e.target.value)}
+                      placeholder={t("rules.smartExcludePh")}
+                    />
+                  </label>
+                  {newSetKeywordOverlap.length > 0 ? (
+                    <p className="banner error" style={{ margin: 0, fontSize: 12 }}>
+                      {t("rules.smartKeywordConflict", {
+                        k: newSetKeywordOverlap.join("、"),
+                      })}
+                    </p>
+                  ) : (
+                    <p
+                      className="muted"
+                      style={{
+                        margin: 0,
+                        fontSize: 12,
+                        color:
+                          newSetSmartMatchCount === 0
+                            ? "var(--danger, #e55)"
+                            : undefined,
+                      }}
+                    >
+                      {t("rules.smartMatchCount", { n: newSetSmartMatchCount })}
+                    </p>
+                  )}
+                </div>
+              )}
+              {newSetTarget === "node" && (
                 <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-                  {t("rules.createSetSmartHint")}
+                  {t("rules.createSetNodeHint")}
                 </p>
               )}
               {newSetKind === "remote" && (
@@ -2036,7 +2259,10 @@ export function RulesPage({ embedded = false }: Props) {
                   disabled={
                     newSetBusy ||
                     !newSetName.trim() ||
-                    (newSetKind === "remote" && !newSetUrl.trim())
+                    (newSetKind === "remote" && !newSetUrl.trim()) ||
+                    (newSetTarget === "node" &&
+                      (nodes.length === 0 || !newSetNodeId.trim())) ||
+                    newSetKeywordOverlap.length > 0
                   }
                 >
                   {newSetBusy ? t("rules.creating") : t("rules.create")}

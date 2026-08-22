@@ -567,14 +567,20 @@ export function setRuleSetDnsStrategy(id: string, strategy: RuleSetDnsStrategy) 
 export function createRuleSet(
   name: string,
   remoteUrl?: string | null,
-  target?: "proxy" | "direct" | "block" | "smart" | null,
+  target?: RuleTarget | null,
   updateInterval?: "disabled" | "1h" | "12h" | "24h" | null,
+  nodeId?: string | null,
+  smartInclude?: string[] | null,
+  smartExclude?: string[] | null,
 ) {
   return invoke<RuleSet>("create_rule_set", {
     name,
     remoteUrl: remoteUrl ?? null,
     target: target ?? null,
     updateInterval: updateInterval ?? null,
+    nodeId: nodeId ?? null,
+    smartInclude: smartInclude ?? null,
+    smartExclude: smartExclude ?? null,
   });
 }
 
