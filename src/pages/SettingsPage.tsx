@@ -12,11 +12,9 @@ import {
   getCoreInfo,
   getProxyStatus,
   getSettings,
-  getWebviewMemory,
   regenerateApiSecret,
   restartProxy,
   updateSettings,
-  type WebViewMemoryReport,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
@@ -25,7 +23,6 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
-import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS, isCustomHexAccent, resolveAccent } from "../theme/accents";
 import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
@@ -295,25 +292,6 @@ export function SettingsPage() {
       .then((status) => setCoreProxyAvailable(status.running))
       .catch(() => setCoreProxyAvailable(false));
   }, [tab]);
-
-  // WebView tree memory + JS heap — live readout while the version tab is
-  // visible (see docs/webview2-memory-optimization-plan.md).
-  const [webviewMem, setWebviewMem] = useState<WebViewMemoryReport | null>(null);
-  const [webviewHeap, setWebviewHeap] = useState<number | null>(null);
-  useVisibleInterval(() => {
-    void getWebviewMemory()
-      .then(setWebviewMem)
-      .catch(() => setWebviewMem(null));
-    const memory = (performance as unknown as {
-      memory?: { usedJSHeapSize?: number };
-    }).memory;
-    setWebviewHeap(memory?.usedJSHeapSize ?? null);
-  }, tab === "core" ? 5000 : null);
-
-  const fmtMemBytes = (bytes: number) =>
-    bytes >= 1024 * 1024 * 1024
-      ? `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
-      : `${Math.round(bytes / 1024 / 1024)} MB`;
 
   // Close the inbound-row ⋮ menu on outside pointer-down / Escape.
   useEffect(() => {
@@ -1229,29 +1207,6 @@ export function SettingsPage() {
                 </GlassButton>
               </div>
             </div>
-
-            {webviewMem && (
-              <div className="ver-grid">
-                <div>
-                  <span className="stat-label">{t("settings.webviewMemory")}</span>
-                  <div
-                    className="mono ver-stat"
-                    title={`WS ${fmtMemBytes(webviewMem.total_ws_bytes)} · private ${fmtMemBytes(webviewMem.total_private_bytes)} · ${webviewMem.process_count} processes`}
-                  >
-                    {fmtMemBytes(
-                      webviewMem.total_private_bytes || webviewMem.total_ws_bytes,
-                    )}
-                    <span className="pill">{webviewMem.process_count}×</span>
-                  </div>
-                </div>
-                <div>
-                  <span className="stat-label">{t("settings.webviewHeap")}</span>
-                  <div className="mono ver-stat">
-                    {webviewHeap != null ? fmtMemBytes(webviewHeap) : "—"}
-                  </div>
-                </div>
-              </div>
-            )}
 
             {core?.path && (
               <div className="core-path">

@@ -167,7 +167,7 @@ L1 冷启动基线（+30s，概览页 hero 活跃）→ L2 页面遍历（节点
 | P2-1 unloadUiOnTray 默认开 | ✅ 第二批实施 | serde default fn + Default impl 均改 true；已有 store 显式存值不受影响（serde 仅对缺省字段取默认） |
 | P2-2 托盘轮询降频 | ✅ 第二批实施 | WS_INTERVAL_BACKGROUND_MS 400→1000ms |
 | P0-3 收尾 visibilitychange | ✅ 第二批实施 | ParticleSphere 显式停/启 rAF（配合 IntersectionObserver） |
-| P3-1 内置内存仪表 | ✅ 第二批实施 | `get_webview_memory` command（NT 进程表按父链过滤 msedgewebview2，含 WS/private）+ 设置·版本 tab 实时显示 WebView2 内存与 JS 堆 |
+| P3-1 内置内存仪表 | ⚠️ 已实施后按需求移除 | 曾在设置·版本 tab 显示 WebView2 树内存 + JS 堆（实测读数与外部工具一致）；UI 展示与 `get_webview_memory` command 后按产品决策移除，内存观测走 `scripts/memory-profile/` |
 | P3-2 测量脚本固化 | ✅ 第二批实施 | `scripts/memory-profile/`（cdp.mjs + proc_mem.ps1 + README） |
 | P0-1 补充：毛玻璃开关 | ✅ 第三批实施 | `glass_frost` 设置（默认关=实色省内存）；设置·应用→「控件风格」轻量/毛玻璃切换，经 `data-glass-frost` 属性恢复三类控件的 backdrop blur；实测往返切换计算样式 `none ↔ blur(18px)`、store 持久化正常 |
 

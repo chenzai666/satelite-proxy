@@ -369,7 +369,6 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::diagnose_network,
-            commands::get_webview_memory,
             commands::regenerate_api_secret,
             commands::set_current_node,
             commands::rename_node,
