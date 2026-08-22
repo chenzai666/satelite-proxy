@@ -1,6 +1,6 @@
 [package]
 name = "satelite-proxy"
-version = "1.0.9"
+version = "1.0.10"
 description = "Satelite — lightweight sing-box desktop client"
 authors = ["you"]
 edition = "2021"

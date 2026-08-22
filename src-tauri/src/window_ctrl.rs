@@ -11,6 +11,67 @@ use tauri::{
     image::Image, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
+#[cfg(windows)]
+mod windows_taskbar_icon {
+    use std::os::windows::ffi::OsStrExt;
+    use std::sync::OnceLock;
+    use tauri::{Runtime, WebviewWindow};
+
+    const WM_SETICON: u32 = 0x0080;
+    const ICON_BIG: usize = 1;
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ExtractIconExW(
+            file: *const u16,
+            icon_index: i32,
+            large_icon: *mut isize,
+            small_icon: *mut isize,
+            icon_count: u32,
+        ) -> u32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> isize;
+    }
+
+    // Keep the extracted HICON alive for the process lifetime. Windows expects
+    // a WM_SETICON handle to remain valid while the window uses it.
+    static LARGE_ICON: OnceLock<usize> = OnceLock::new();
+
+    fn executable_large_icon() -> Option<isize> {
+        if let Some(icon) = LARGE_ICON.get() {
+            return Some(*icon as isize);
+        }
+
+        let executable = std::env::current_exe().ok()?;
+        let mut path: Vec<u16> = executable.as_os_str().encode_wide().collect();
+        path.push(0);
+        let mut icon = 0isize;
+        let extracted =
+            unsafe { ExtractIconExW(path.as_ptr(), 0, &mut icon, std::ptr::null_mut(), 1) };
+        if extracted == 0 || icon == 0 {
+            return None;
+        }
+        let _ = LARGE_ICON.set(icon as usize);
+        Some(icon)
+    }
+
+    pub fn apply<R: Runtime>(window: &WebviewWindow<R>) {
+        let Ok(hwnd) = window.hwnd() else {
+            return;
+        };
+        let Some(icon) = executable_large_icon() else {
+            eprintln!("[satelite] extract Windows taskbar icon failed");
+            return;
+        };
+        unsafe {
+            SendMessageW(hwnd.0 as isize, WM_SETICON, ICON_BIG, icon);
+        }
+    }
+}
+
 /// Matches frontend `windowLayout.ts` (logical px).
 const PRO_SIZE: (f64, f64) = (960.0, 720.0);
 const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
@@ -30,6 +91,8 @@ fn set_main_window_icon<R: Runtime>(window: &WebviewWindow<R>) {
     if let Err(error) = window.set_icon(icon) {
         eprintln!("[satelite] set main window icon failed: {error}");
     }
+    #[cfg(windows)]
+    windows_taskbar_icon::apply(window);
 }
 
 /// Explicitly set the top-level window icon. On Windows this stabilizes the
