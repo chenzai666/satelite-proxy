@@ -25,6 +25,125 @@ pub fn read_process_rss_bytes(pid: u32) -> Option<u64> {
     read_rss(pid)
 }
 
+/// Aggregate memory of the app's own WebView process tree (Windows: the six
+/// msedgewebview2.exe processes; other platforms: `None`). Surfaced in the
+/// settings core tab so memory regressions are visible without external tools.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct WebViewTreeMemory {
+    pub process_count: u32,
+    pub total_ws_bytes: u64,
+    pub total_private_bytes: u64,
+}
+
+pub fn read_webview_tree_memory() -> Option<WebViewTreeMemory> {
+    read_webview_tree()
+}
+
+#[cfg(target_os = "windows")]
+fn read_webview_tree() -> Option<WebViewTreeMemory> {
+    use windows::Wdk::System::SystemInformation::{
+        NtQuerySystemInformation, SystemProcessInformation,
+    };
+    use windows::Win32::System::WindowsProgramming::SYSTEM_PROCESS_INFORMATION;
+
+    struct ProcEntry {
+        pid: u32,
+        parent: u32,
+        name: String,
+        ws: u64,
+        private: u64,
+    }
+
+    let mut len = 256 * 1024usize;
+    for _ in 0..4 {
+        let mut buf = vec![0u64; len / 8];
+        let mut needed = 0u32;
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SystemProcessInformation,
+                buf.as_mut_ptr().cast(),
+                len as u32,
+                &mut needed,
+            )
+        };
+        if status.0 >= 0 {
+            let base = buf.as_ptr().cast::<u8>();
+            let mut offset = 0usize;
+            let mut entries: Vec<ProcEntry> = Vec::new();
+            loop {
+                let entry =
+                    unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
+                // ImageName buffers live inside this same table allocation,
+                // so the read is valid while `buf` is alive.
+                let name = unsafe {
+                    let s = &entry.ImageName;
+                    if s.Buffer.is_null() || s.Length == 0 {
+                        String::new()
+                    } else {
+                        let chars = (s.Length as usize / 2).min(256);
+                        let slice =
+                            std::slice::from_raw_parts(s.Buffer.as_ptr(), chars);
+                        String::from_utf16_lossy(slice).to_ascii_lowercase()
+                    }
+                };
+                entries.push(ProcEntry {
+                    pid: entry.UniqueProcessId.0 as u32,
+                    // windows-rs folds InheritedFromUniqueProcessId (a
+                    // ULONG_PTR at this exact NT offset) into an opaque
+                    // Reserved2 pointer slot — the ABI position is fixed.
+                    parent: entry.Reserved2 as u32,
+                    name,
+                    ws: entry.WorkingSetSize as u64,
+                    private: entry.PrivatePageCount as u64,
+                });
+                let next = entry.NextEntryOffset as usize;
+                if next == 0 {
+                    break;
+                }
+                offset += next;
+            }
+
+            // Descendants of the current process (walks the parent chain).
+            let self_pid = std::process::id();
+            let mut report = WebViewTreeMemory::default();
+            for entry in &entries {
+                if !entry.name.contains("msedgewebview2") {
+                    continue;
+                }
+                let mut cursor = entry.pid;
+                let mut belongs = false;
+                for _ in 0..16 {
+                    if cursor == self_pid {
+                        belongs = true;
+                        break;
+                    }
+                    match entries.iter().find(|e| e.pid == cursor) {
+                        Some(parent) => cursor = parent.parent,
+                        None => break,
+                    }
+                }
+                if belongs {
+                    report.process_count += 1;
+                    report.total_ws_bytes += entry.ws;
+                    report.total_private_bytes += entry.private;
+                }
+            }
+            return Some(report);
+        }
+        let want = needed as usize;
+        if want <= len {
+            return None;
+        }
+        len = want + 64 * 1024;
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_webview_tree() -> Option<WebViewTreeMemory> {
+    None
+}
+
 #[cfg(target_os = "windows")]
 fn read_rss(pid: u32) -> Option<u64> {
     use windows::Wdk::System::SystemInformation::{

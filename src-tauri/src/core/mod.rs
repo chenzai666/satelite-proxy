@@ -8,7 +8,7 @@ mod macos_auth;
 #[cfg(target_os = "macos")]
 pub mod macos_net;
 pub mod manager;
-mod memory;
+pub mod memory;
 mod paths;
 
 pub use memory::read_process_rss_bytes;

@@ -33,3 +33,10 @@ pub fn diagnose_network() -> NetworkDiagnosticsResult {
 
     NetworkDiagnosticsResult { issues }
 }
+
+/// Aggregate memory of the app's WebView process tree (Windows only).
+/// `None` on platforms without a supported reader — the UI hides the row.
+#[tauri::command]
+pub fn get_webview_memory() -> Option<crate::core::memory::WebViewTreeMemory> {
+    crate::core::memory::read_webview_tree_memory()
+}
