@@ -86,7 +86,7 @@ const en = {
   "dashboard.quickControls": "Quick",
   "dashboard.sysProxyTitle": "System proxy",
   "dashboard.sysProxyDesc":
-    "HTTP/HTTPS/SOCKS → local mixed port (core must be running)",
+    "HTTP/HTTPS/SOCKS and CLI proxy environment → local mixed port. Restart already-running CLI/Codex apps after switching.",
   "dashboard.tunTitle": "TUN",
   "dashboard.tunDesc":
     "System-wide capture via utun. First enable authorizes sing-box (setuid; Touch ID via sudo when pam_tid is on; otherwise password once); later start/stop need no password. Re-auth may be needed after core updates.",
@@ -99,7 +99,8 @@ const en = {
   "dashboard.captureDesc":
     "How traffic enters the proxy: Off, System proxy, or TUN (global).",
   "dashboard.captureSwitching": "Switching capture…",
-  "dashboard.captureSystemHint": "Set system HTTP/SOCKS to local mixed port",
+  "dashboard.captureSystemHint":
+    "Set system proxy and CLI environment to the mixed port; restart existing CLI/Codex apps",
   "dashboard.captureTunHint":
     "Global capture via utun (admin once for service install)",
   "dashboard.smartSwitch": "Smart switch",
@@ -793,7 +794,7 @@ const zh: Record<MessageKey, string> = {
   "dashboard.quickControls": "快捷",
   "dashboard.sysProxyTitle": "系统代理",
   "dashboard.sysProxyDesc":
-    "HTTP/HTTPS/SOCKS 指向本地 mixed 端口（需代理核心在跑）",
+    "系统 HTTP/HTTPS/SOCKS 与命令行代理环境变量同步指向 mixed 端口；切换后需重启已运行的 CLI/Codex 应用。",
   "dashboard.tunTitle": "TUN 模式",
   "dashboard.tunDesc":
     "通过 utun 虚拟网卡全局接管流量。首次开启为 sing-box 设置 setuid（优先 sudo 指纹，系统已开 pam_tid 时）；之后启停不再要权限。更新内核后可能需再授权一次。切换会重启内核。",
@@ -805,7 +806,8 @@ const zh: Record<MessageKey, string> = {
   "dashboard.captureTun": "TUN",
   "dashboard.captureDesc": "流量如何进入代理：关闭、系统代理或 TUN（全局）",
   "dashboard.captureSwitching": "切换中…",
-  "dashboard.captureSystemHint": "将系统 HTTP/SOCKS 指向本地 mixed 端口",
+  "dashboard.captureSystemHint":
+    "同步设置系统代理和命令行代理环境；已运行的 CLI/Codex 需重启",
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
