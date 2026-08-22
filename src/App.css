@@ -3347,6 +3347,15 @@ code {
   padding: 1rem;
 }
 
+/* Day: the dim veil shows the page's green glows through, and that tint reads
+   differently per monitor calibration (gray on one screen, warm yellow on
+   another). Desaturating + soft blur neutralizes the veil so the modal scene
+   stays consistent across screens. Dark theme keeps the plain veil. */
+[data-theme="day"] .modal-backdrop {
+  backdrop-filter: blur(10px) saturate(0.55);
+  -webkit-backdrop-filter: blur(10px) saturate(0.55);
+}
+
 .modal {
   width: min(480px, 100%);
   /* Solid panel — do not use translucent --surface (shows through as frosted glass). */
@@ -5767,7 +5776,7 @@ button.check.on {
 }
 
 /* Day theme tweaks for the glass controls. */
-[data-theme="day"] .glass-btn {
+[data-theme="day"] .glass-btn:not(.primary):not(.danger) {
   background: rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow:
@@ -5780,12 +5789,37 @@ button.check.on {
   );
   color: var(--text);
 }
-[data-theme="day"] .glass-btn:hover:not(:disabled) {
+[data-theme="day"] .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
   background-image: linear-gradient(
     180deg,
     rgba(255, 255, 255, 1) 0%,
     rgba(255, 255, 255, 0.6) 100%
   );
+}
+/* Day accent variants: the plain-button day override used to clobber these
+   (equal specificity, later in file), so primary/danger pills lost their
+   tint in daylight. Give them explicit light-theme treatments instead:
+   accent-tinted fill + accent text, matching the seg/option active style. */
+[data-theme="day"] .glass-btn.primary {
+  background: var(--primary-muted);
+  background-image: none;
+  border-color: var(--primary-border);
+  color: var(--primary);
+  box-shadow: none;
+}
+[data-theme="day"] .glass-btn.primary:hover:not(:disabled) {
+  background: var(--primary-glow);
+  border-color: var(--primary-border-strong);
+}
+[data-theme="day"] .glass-btn.danger {
+  background: var(--danger-bg);
+  background-image: none;
+  border-color: var(--danger-border);
+  color: var(--danger);
+  box-shadow: none;
+}
+[data-theme="day"] .glass-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger-hover);
 }
 [data-theme="day"] .glass-switch-track {
   background: rgba(0, 0, 0, 0.08);
@@ -5809,6 +5843,62 @@ button.check.on {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* —— Glass controls inside modals go opaque ——
+   Frosted glass needs a varied backdrop to read as glass; laid over the flat
+   opaque modal it turns into a milky smear, translucent layers lose subpixel
+   text smoothing (fuzzy unselected seg labels), and the translucent tint is
+   exactly what shifts between differently calibrated monitors. Inside modals:
+   solid fills, no backdrop blur — same crisp treatment as the white inputs.
+   Primary/danger variants keep their accent tint layered on the opaque base. */
+.modal .glass-seg {
+  background: #232a37;
+  border-color: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.modal .glass-switch-track {
+  background: #262d3a;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.modal .glass-btn:not(.primary):not(.danger) {
+  background-color: #232a37;
+  background-image: none;
+  border-color: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.modal .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
+  background-color: #2a3242;
+}
+
+[data-theme="day"] .modal .glass-seg {
+  background: #e9edf3;
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: none;
+}
+
+[data-theme="day"] .modal .glass-switch-track {
+  background: #e9edf3;
+}
+
+[data-theme="day"] .modal .glass-btn:not(.primary):not(.danger) {
+  background-color: #ffffff;
+  background-image: none;
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow: none;
+}
+
+[data-theme="day"] .modal .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
+  background-color: #f3f4f7;
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 [data-theme="day"] .segmented.compact .seg.active {
