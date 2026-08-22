@@ -309,7 +309,7 @@ export function AddConfigModal({
                 <div>
                   <div className="sys-proxy-title">走代理添加</div>
                   <div className="sys-proxy-desc">
-                    经本地 mixed 端口拉取（需先启动代理核心）
+                    开启后强制走当前节点；关闭时直连失败会自动回退（需先启动代理核心）
                   </div>
                 </div>
                 <GlassSwitchControl

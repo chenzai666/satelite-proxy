@@ -9,7 +9,7 @@ use crate::subscription::{
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 
@@ -37,14 +37,116 @@ pub struct ImportOutcome {
     pub nodes: Vec<ProxyNode>,
 }
 
-/// `via_proxy`: fetch through local mixed HTTP proxy (127.0.0.1:mixed_port).
-/// `mixed_port`: required when via_proxy is true.
+#[derive(Debug, Clone)]
+pub struct SubscriptionProxy {
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+}
+
+fn subscription_client(proxy: Option<&SubscriptionProxy>) -> AppResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(6))
+        .timeout(Duration::from_secs(45))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent(subscription_user_agent());
+
+    if let Some(proxy) = proxy {
+        let proxy_url = format!("http://127.0.0.1:{}", proxy.port);
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|error| AppError::Fetch(format!("invalid internal proxy: {error}")))?
+            .basic_auth(&proxy.username, &proxy.password);
+        builder = builder.proxy(proxy);
+    } else {
+        // Subscription direct mode must not inherit stale v2rayN/terminal
+        // environment variables. Automatic fallback is handled explicitly.
+        builder = builder.no_proxy();
+    }
+
+    builder
+        .build()
+        .map_err(|error| AppError::Fetch(error.to_string()))
+}
+
+async fn send_subscription_request(
+    url: &str,
+    proxy: Option<&SubscriptionProxy>,
+) -> AppResult<reqwest::Response> {
+    subscription_client(proxy)?
+        .get(url)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .send()
+        .await
+        .map_err(|error| AppError::Fetch(error.to_string()))
+}
+
+fn subscription_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(ToString::to_string))
+        .unwrap_or_else(|| "subscription host".into())
+}
+
+/// Fetch a subscription with CDN-aware recovery:
+/// - explicit proxy: use the authenticated force-proxy inbound immediately;
+/// - normal mode: retry direct once with a fresh client/DNS resolution;
+/// - if both direct attempts fail and the generated core is running, fall back
+///   to the force-proxy inbound without re-entering normal China/CDN rules.
+async fn fetch_subscription_response(
+    url: &str,
+    via_proxy: bool,
+    proxy: Option<&SubscriptionProxy>,
+) -> AppResult<reqwest::Response> {
+    if via_proxy {
+        let proxy = proxy.ok_or_else(|| {
+            AppError::Fetch("代理核心未启动，或当前为自写配置，无法使用订阅专用代理通道".into())
+        })?;
+        return send_subscription_request(url, Some(proxy))
+            .await
+            .map_err(|error| AppError::Fetch(format!("经代理下载失败：{error}")));
+    }
+
+    let first_error = match send_subscription_request(url, None).await {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let second_error = match send_subscription_request(url, None).await {
+        Ok(response) => return Ok(response),
+        Err(error) => error,
+    };
+
+    let Some(proxy) = proxy else {
+        return Err(AppError::Fetch(format!(
+            "直连下载重试失败：{second_error}（首次错误：{first_error}）"
+        )));
+    };
+
+    crate::app_log::warn(
+        "subscription",
+        format!(
+            "direct fetch failed twice for {}; retrying through force-proxy inbound",
+            subscription_host(url)
+        ),
+    );
+    send_subscription_request(url, Some(proxy))
+        .await
+        .map_err(|proxy_error| {
+            AppError::Fetch(format!(
+                "直连下载重试失败（{second_error}），代理回退也失败：{proxy_error}"
+            ))
+        })
+}
+
+/// `via_proxy`: force the current proxy group instead of trying direct first.
+/// `proxy`: available only while Satelite's generated core is running.
 pub async fn import_from_url_with_id(
     name: Option<String>,
     url: String,
     existing_id: Option<String>,
     via_proxy: bool,
-    mixed_port: Option<u16>,
+    proxy: Option<SubscriptionProxy>,
 ) -> AppResult<ImportOutcome> {
     let url = url.trim().to_string();
     if url.is_empty() {
@@ -56,43 +158,7 @@ pub async fn import_from_url_with_id(
         ));
     }
 
-    // Many panels only attach `subscription-userinfo` when UA looks like Clash.
-    // FlClash default: `{app}/v{ver} clash-verge Platform/{os}` — we mirror that.
-    let ua = subscription_user_agent();
-
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(45))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent(ua);
-
-    if via_proxy {
-        let port = mixed_port.unwrap_or(2080);
-        let proxy_url = format!("http://127.0.0.1:{port}");
-        let proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|e| AppError::Fetch(format!("invalid proxy {proxy_url}: {e}")))?;
-        builder = builder.proxy(proxy);
-    } else {
-        builder = builder.no_proxy();
-    }
-
-    let client = builder
-        .build()
-        .map_err(|e| AppError::Fetch(e.to_string()))?;
-
-    let response = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT, "*/*")
-        .send()
-        .await
-        .map_err(|e| {
-            if via_proxy {
-                AppError::Fetch(format!(
-                    "via proxy failed ({e}). 请确认已启动代理核心，且 mixed 端口正确"
-                ))
-            } else {
-                AppError::Fetch(e.to_string())
-            }
-        })?;
+    let response = fetch_subscription_response(&url, via_proxy, proxy.as_ref()).await?;
 
     if !response.status().is_success() {
         return Err(AppError::Fetch(format!(
@@ -850,8 +916,7 @@ proxies:
     fn same_hysteria2_with_different_fragments_is_one_node() {
         let a = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%89%A9%E4%BD%99%E6%B5%81%E9%87%8F%EF%BC%9A977.82%20GB";
         let b = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%A5%97%E9%A4%90%E5%88%B0%E6%9C%9F%EF%BC%9A%E9%95%BF%E6%9C%9F%E6%9C%89%E6%95%88";
-        let outcome =
-            import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
+        let outcome = import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
         assert_eq!(outcome.nodes.len(), 1);
         assert_eq!(outcome.subscription.node_count, 1);
     }

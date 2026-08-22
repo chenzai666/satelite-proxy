@@ -50,6 +50,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Bundle nsis
 
+      - name: 运行 Rust 单元测试
+        shell: pwsh
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

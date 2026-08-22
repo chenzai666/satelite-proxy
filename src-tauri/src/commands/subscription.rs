@@ -3,7 +3,7 @@ use crate::domain::{
 };
 use crate::services::import::{
     canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
-    import_from_singbox, import_from_text, import_from_url_with_id,
+    import_from_singbox, import_from_text, import_from_url_with_id, SubscriptionProxy,
 };
 use crate::state::AppState;
 use crate::subscription::node_to_draft;
@@ -31,6 +31,36 @@ type SharedRefreshResult = Result<ImportResult, String>;
 type RefreshSender = watch::Sender<Option<SharedRefreshResult>>;
 
 static REFRESH_FLIGHTS: OnceLock<Mutex<HashMap<String, RefreshSender>>> = OnceLock::new();
+
+fn active_subscription_proxy(state: &AppState) -> Result<Option<SubscriptionProxy>, String> {
+    if !state.is_core_running() {
+        return Ok(None);
+    }
+    state
+        .with_store(|store| {
+            if store.settings.runtime_source().is_custom() {
+                return Ok(None);
+            }
+            let Some(password) = store
+                .settings
+                .clash_api_secret
+                .clone()
+                .filter(|secret| !secret.trim().is_empty())
+            else {
+                return Ok(None);
+            };
+            Ok(Some(SubscriptionProxy {
+                port: crate::config::subscription_proxy_port(
+                    store.settings.mixed_port,
+                    store.settings.api_port,
+                    &store.settings.extra_inbounds,
+                ),
+                username: crate::config::SUBSCRIPTION_PROXY_USERNAME.into(),
+                password,
+            }))
+        })
+        .map_err(|error| error.to_string())
+}
 
 enum RefreshFlight {
     Leader(RefreshLeader),
@@ -188,10 +218,8 @@ pub async fn add_subscription_url(
                 }))
         })
         .map_err(|e| e.to_string())?;
-    let mixed_port = state
-        .with_store(|s| Ok(s.settings.mixed_port))
-        .map_err(|e| e.to_string())?;
-    let mut outcome = import_from_url_with_id(name, url, existing_id, via, Some(mixed_port))
+    let subscription_proxy = active_subscription_proxy(&state)?;
+    let mut outcome = import_from_url_with_id(name, url, existing_id, via, subscription_proxy)
         .await
         .map_err(|e| e.to_string())?;
     apply_auto_update_prefs(
@@ -297,9 +325,7 @@ pub async fn update_subscription(
         .unwrap_or_else(|| existing.name.clone());
 
     let via = via_proxy.unwrap_or(existing.via_proxy);
-    let mixed_port = state
-        .with_store(|s| Ok(s.settings.mixed_port))
-        .map_err(|e| e.to_string())?;
+    let subscription_proxy = active_subscription_proxy(&state)?;
 
     let kind = kind.to_ascii_lowercase();
     let (outcome, replaced_id, replaced_enabled) = match kind.as_str() {
@@ -335,7 +361,7 @@ pub async fn update_subscription(
                 url,
                 Some(target_id),
                 via,
-                Some(mixed_port),
+                subscription_proxy,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -451,9 +477,7 @@ async fn refresh_subscription_once(
         .map_err(|e| e.to_string())?;
 
     let via = via_proxy.unwrap_or(existing.via_proxy);
-    let mixed_port = state
-        .with_store(|s| Ok(s.settings.mixed_port))
-        .map_err(|e| e.to_string())?;
+    let subscription_proxy = active_subscription_proxy(state)?;
 
     let mut outcome = match &existing.source {
         crate::domain::SubscriptionSource::Url { url } => import_from_url_with_id(
@@ -461,7 +485,7 @@ async fn refresh_subscription_once(
             url.clone(),
             Some(id.clone()),
             via,
-            Some(mixed_port),
+            subscription_proxy,
         )
         .await
         .map_err(|e| e.to_string())?,
@@ -589,10 +613,7 @@ async fn import_singbox_blocking(
     .map_err(|error| format!("subscription singbox task: {error}"))?
 }
 
-async fn load_inline_body(
-    content: Option<String>,
-    path: Option<String>,
-) -> Result<String, String> {
+async fn load_inline_body(content: Option<String>, path: Option<String>) -> Result<String, String> {
     if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
         return Ok(content);
     }
@@ -651,12 +672,8 @@ fn persist_import_replacing(
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
     if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
-        crate::config::write_custom_config(
-            &state.app_data_dir,
-            &outcome.subscription.id,
-            content,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::config::write_custom_config(&state.app_data_dir, &outcome.subscription.id, content)
+            .map_err(|e| e.to_string())?;
     }
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;

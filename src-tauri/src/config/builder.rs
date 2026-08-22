@@ -13,6 +13,36 @@ use sha2::{Digest, Sha256};
 const CLIPROXY_FALLBACK_TAG: &str = "cliproxy-auto";
 const CLIPROXY_HEALTH_URL: &str = "https://cliproxy.yu8.lat/";
 const CLIPROXY_DOMAINS: [&str; 2] = ["cliproxy.yu8.lat", "cpa.yu8.lat"];
+const SUBSCRIPTION_PROXY_INBOUND_TAG: &str = "subscription-in";
+pub const SUBSCRIPTION_PROXY_USERNAME: &str = "satelite-subscription";
+const PRIVATE_PORT_START: u32 = 49_152;
+const PRIVATE_PORT_COUNT: u32 = 16_384;
+
+/// Deterministic loopback-only port used by the app to fetch subscriptions
+/// through the selected proxy group without re-entering normal route rules.
+///
+/// Keep this out of user-configured listener ports. Choosing from the dynamic
+/// port range makes collisions with common local proxy ports unlikely; runtime
+/// still checks that the selected port is actually available before launch.
+pub fn subscription_proxy_port(
+    mixed_port: u16,
+    api_port: u16,
+    extra_inbounds: &[ExtraInbound],
+) -> u16 {
+    let seed = (u32::from(mixed_port) * 31 + u32::from(api_port)) % PRIVATE_PORT_COUNT;
+    for offset in 0..PRIVATE_PORT_COUNT {
+        let candidate = (PRIVATE_PORT_START + (seed + offset) % PRIVATE_PORT_COUNT) as u16;
+        if candidate != mixed_port
+            && candidate != api_port
+            && extra_inbounds
+                .iter()
+                .all(|inbound| inbound.port != candidate)
+        {
+            return candidate;
+        }
+    }
+    unreachable!("dynamic port range cannot be exhausted by configured listeners")
+}
 
 pub struct BuildOptions {
     pub mixed_port: u16,
@@ -242,6 +272,14 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
     route_rules.push(json!({ "action": "sniff" }));
+    // Subscription downloads use a private authenticated inbound. Route that
+    // inbound before China/CDN/user rules so "via proxy" really means the
+    // current proxy group even when the URL itself is classified as direct.
+    route_rules.push(json!({
+        "inbound": [SUBSCRIPTION_PROXY_INBOUND_TAG],
+        "action": "route",
+        "outbound": "proxy"
+    }));
     if opts.block_quic {
         // QUIC relayed through XUDP-in-TCP carries two independent congestion
         // controllers (inner QUIC, outer TCP); on a mediocre link that fights
@@ -293,12 +331,26 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         }
     }
 
-    let mut inbounds = vec![json!({
-        "type": "mixed",
-        "tag": "mixed-in",
-        "listen": if opts.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
-        "listen_port": opts.mixed_port
-    })];
+    let subscription_port =
+        subscription_proxy_port(opts.mixed_port, opts.api_port, &opts.extra_inbounds);
+    let mut inbounds = vec![
+        json!({
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": if opts.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+            "listen_port": opts.mixed_port
+        }),
+        json!({
+            "type": "mixed",
+            "tag": SUBSCRIPTION_PROXY_INBOUND_TAG,
+            "listen": "127.0.0.1",
+            "listen_port": subscription_port,
+            "users": [{
+                "username": SUBSCRIPTION_PROXY_USERNAME,
+                "password": opts.api_secret.as_str()
+            }]
+        }),
+    ];
 
     for inb in &opts.extra_inbounds {
         inbounds.push(json!({
@@ -391,7 +443,8 @@ fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
     addrs
 }
 
-fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {    if sets.is_empty() {
+fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
+    if sets.is_empty() {
         return fallback.to_vec();
     }
     let mut out = Vec::new();
@@ -780,7 +833,9 @@ fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[Strin
         // Empty-payload rules never reach a route rule-set, so their selector
         // would be a dead outbound — skipping keeps "empty set ⇒ no config
         // output" true for restart-skipping decisions.
-        .filter(|r| r.enabled && !r.payload.trim().is_empty() && matches!(r.target, RuleTarget::Smart))
+        .filter(|r| {
+            r.enabled && !r.payload.trim().is_empty() && matches!(r.target, RuleTarget::Smart)
+        })
     {
         let group = r.smart_outbound_tag();
         if !seen.insert(group.clone()) {
@@ -1508,7 +1563,10 @@ mod tests {
         assert!(types.contains(&"shadowtls"), "types: {types:?}");
         assert!(types.contains(&"shadowsocks"), "types: {types:?}");
         assert!(
-            !built.outbound_tags.iter().any(|t| t.ends_with("-shadowtls")),
+            !built
+                .outbound_tags
+                .iter()
+                .any(|t| t.ends_with("-shadowtls")),
             "outbound_tags: {:?}",
             built.outbound_tags
         );
@@ -1683,12 +1741,7 @@ mod tests {
         let mut set = RuleSet::new_user(
             "空智能集",
             vec![
-                Rule::new(
-                    RuleType::DomainSuffix,
-                    "  ".into(),
-                    RuleTarget::Smart,
-                    10,
-                ),
+                Rule::new(RuleType::DomainSuffix, "  ".into(), RuleTarget::Smart, 10),
                 Rule::new(
                     RuleType::DomainKeyword,
                     "chrome".into(),
@@ -1712,9 +1765,24 @@ mod tests {
         let mut set = RuleSet::new_user(
             "混合路由",
             vec![
-                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 10),
-                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 20),
-                Rule::new(RuleType::DomainSuffix, "c.com".into(), RuleTarget::Block, 30),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "a.com".into(),
+                    RuleTarget::Proxy,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "b.com".into(),
+                    RuleTarget::Direct,
+                    20,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "c.com".into(),
+                    RuleTarget::Block,
+                    30,
+                ),
             ],
         );
         set.strategy = RuleSetStrategy::Proxy;
@@ -1776,12 +1844,7 @@ mod tests {
                     RuleTarget::Smart,
                     10,
                 ),
-                Rule::new(
-                    RuleType::DomainSuffix,
-                    "  ".into(),
-                    RuleTarget::Smart,
-                    20,
-                ),
+                Rule::new(RuleType::DomainSuffix, "  ".into(), RuleTarget::Smart, 20),
             ],
         );
         set.strategy = RuleSetStrategy::Smart;
@@ -1833,7 +1896,9 @@ mod tests {
             "empty set must not reach the kernel config"
         );
         let route_rules = built.value["route"]["rules"].as_array().unwrap();
-        assert!(route_rules.iter().all(|rule| rule.get("rule_set").is_none()));
+        assert!(route_rules
+            .iter()
+            .all(|rule| rule.get("rule_set").is_none()));
     }
 
     #[test]
@@ -1882,13 +1947,8 @@ mod tests {
 
         // The predicate must agree with what the builder actually registers.
         for set in [&empty, &disabled_only, &contributing] {
-            let (definitions, routes, dns) = build_grouped_rule_sets(
-                &[set.clone()],
-                &[],
-                &[],
-            );
-            let registered =
-                !definitions.is_empty() && !routes.is_empty() && !dns.is_empty();
+            let (definitions, routes, dns) = build_grouped_rule_sets(&[set.clone()], &[], &[]);
+            let registered = !definitions.is_empty() && !routes.is_empty() && !dns.is_empty();
             assert_eq!(
                 registered,
                 !rule_set_is_empty_for_config(set),
@@ -1941,18 +2001,19 @@ mod tests {
         )
         .unwrap();
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 4);
+        assert_eq!(inbounds.len(), 5);
         assert_eq!(inbounds[0]["tag"], "mixed-in");
-        assert_eq!(inbounds[1]["type"], "http");
-        assert_eq!(inbounds[1]["tag"], "in-http-2081");
-        assert_eq!(inbounds[1]["listen"], "127.0.0.1");
-        assert_eq!(inbounds[1]["listen_port"], 2081);
-        assert_eq!(inbounds[2]["type"], "mixed");
-        assert_eq!(inbounds[2]["tag"], "in-mixed-2082");
-        assert_eq!(inbounds[2]["listen"], "0.0.0.0");
-        assert_eq!(inbounds[2]["listen_port"], 2082);
+        assert_eq!(inbounds[1]["tag"], SUBSCRIPTION_PROXY_INBOUND_TAG);
+        assert_eq!(inbounds[2]["type"], "http");
+        assert_eq!(inbounds[2]["tag"], "in-http-2081");
+        assert_eq!(inbounds[2]["listen"], "127.0.0.1");
+        assert_eq!(inbounds[2]["listen_port"], 2081);
+        assert_eq!(inbounds[3]["type"], "mixed");
+        assert_eq!(inbounds[3]["tag"], "in-mixed-2082");
+        assert_eq!(inbounds[3]["listen"], "0.0.0.0");
+        assert_eq!(inbounds[3]["listen_port"], 2082);
         // TUN stays last even with extras present.
-        assert_eq!(inbounds[3]["type"], "tun");
+        assert_eq!(inbounds[4]["type"], "tun");
     }
 
     #[test]
@@ -1983,19 +2044,20 @@ mod tests {
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
         assert_eq!(
-            localhost.value["inbounds"][0]["listen"],
-            "127.0.0.1",
+            localhost.value["inbounds"][0]["listen"], "127.0.0.1",
             "main mixed inbound defaults to loopback"
         );
 
-        let lan = build_singbox_config(&nodes, &BuildOptions {
-            allow_lan: true,
-            ..base()
-        })
+        let lan = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                allow_lan: true,
+                ..base()
+            },
+        )
         .unwrap();
         assert_eq!(
-            lan.value["inbounds"][0]["listen"],
-            "0.0.0.0",
+            lan.value["inbounds"][0]["listen"], "0.0.0.0",
             "allow_lan opens the main mixed inbound to the LAN"
         );
     }
@@ -2032,13 +2094,35 @@ mod tests {
         assert_eq!(built.outbound_tags.len(), 1);
         assert_eq!(built.selected_tag, "node-aabbccddeeff0011");
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 1);
+        assert_eq!(inbounds.len(), 2);
         assert_eq!(inbounds[0]["type"], "mixed");
+        assert_eq!(inbounds[1]["tag"], SUBSCRIPTION_PROXY_INBOUND_TAG);
+        assert_eq!(inbounds[1]["type"], "mixed");
+        assert_eq!(inbounds[1]["listen"], "127.0.0.1");
+        assert_eq!(
+            inbounds[1]["listen_port"],
+            subscription_proxy_port(2080, 19090, &[])
+        );
+        assert_eq!(
+            inbounds[1]["users"],
+            json!([{
+                "username": SUBSCRIPTION_PROXY_USERNAME,
+                "password": "test"
+            }])
+        );
+        let route_rules = built.value["route"]["rules"].as_array().unwrap();
+        assert_eq!(route_rules[0]["action"], "sniff");
+        assert_eq!(
+            route_rules[1],
+            json!({
+                "inbound": [SUBSCRIPTION_PROXY_INBOUND_TAG],
+                "action": "route",
+                "outbound": "proxy"
+            })
+        );
         assert!(built.value.get("dns").is_some());
         // Without TUN the system resolver stays the fastest choice.
-        assert_eq!(
-            built.value["route"]["default_domain_resolver"], "dns-local"
-        );
+        assert_eq!(built.value["route"]["default_domain_resolver"], "dns-local");
         assert_eq!(built.value["route"]["final"], "proxy");
         let proxy = built.value["outbounds"]
             .as_array()
@@ -2047,6 +2131,24 @@ mod tests {
             .find(|o| o["tag"] == "proxy")
             .unwrap();
         assert_eq!(proxy["type"], "selector");
+    }
+
+    #[test]
+    fn subscription_proxy_port_avoids_configured_listener_collisions() {
+        let first = subscription_proxy_port(2080, 19090, &[]);
+        let extras = vec![ExtraInbound {
+            id: "collision".into(),
+            kind: "mixed".into(),
+            port: first,
+            allow_lan: false,
+        }];
+        let next = subscription_proxy_port(2080, 19090, &extras);
+
+        assert_ne!(next, first);
+        assert!(
+            (PRIVATE_PORT_START..PRIVATE_PORT_START + PRIVATE_PORT_COUNT)
+                .contains(&u32::from(next))
+        );
     }
 
     #[test]
@@ -2229,27 +2331,25 @@ mod tests {
         )
         .unwrap();
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 2);
-        assert_eq!(inbounds[1]["type"], "tun");
-        assert_eq!(inbounds[1]["auto_route"], true);
-        assert_eq!(inbounds[1]["stack"], "mixed");
+        assert_eq!(inbounds.len(), 3);
+        assert_eq!(inbounds[2]["type"], "tun");
+        assert_eq!(inbounds[2]["auto_route"], true);
+        assert_eq!(inbounds[2]["stack"], "mixed");
         // strict_route must be on on every platform now (problem 5): the
         // Windows-only carve-out is gone, and route_exclude_address below
         // already protects host → 127.0.0.1 (clash_api / mixed) on macOS.
-        assert_eq!(inbounds[1]["strict_route"], true);
+        assert_eq!(inbounds[2]["strict_route"], true);
         // IPv6 off by default (problem 1): a dual-stack tun makes Chrome
         // prefer AAAA/v6 even when the node has no v6 egress.
-        assert_eq!(inbounds[1]["address"], json!(["172.19.0.1/30"]));
-        assert!(inbounds[1]["route_exclude_address"]
+        assert_eq!(inbounds[2]["address"], json!(["172.19.0.1/30"]));
+        assert!(inbounds[2]["route_exclude_address"]
             .as_array()
             .is_some_and(|a| a.iter().any(|v| v == "127.0.0.0/8")));
         assert!(built.value.get("dns").is_some());
         // TUN must not resolve outbound domains via the system resolver:
         // those queries get hijacked into the tunnel (loop), so the direct
         // UDP server is used instead.
-        assert_eq!(
-            built.value["route"]["default_domain_resolver"], "dns-cn"
-        );
+        assert_eq!(built.value["route"]["default_domain_resolver"], "dns-cn");
         let rules = built.value["route"]["rules"].as_array().unwrap();
         assert!(rules
             .iter()
@@ -2293,14 +2393,12 @@ mod tests {
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
-        let addrs = v4_only.value["inbounds"][1]["address"]
-            .as_array()
-            .unwrap();
+        let addrs = v4_only.value["inbounds"][2]["address"].as_array().unwrap();
         assert_eq!(addrs.len(), 1, "default must be IPv4-only: {addrs:?}");
         assert_eq!(addrs[0], "172.19.0.1/30");
 
         let dual_stack = build_singbox_config(&nodes, &base(true)).unwrap();
-        let addrs = dual_stack.value["inbounds"][1]["address"]
+        let addrs = dual_stack.value["inbounds"][2]["address"]
             .as_array()
             .unwrap();
         assert_eq!(addrs.len(), 2, "opt-in must add the v6 address: {addrs:?}");
@@ -2375,7 +2473,9 @@ mod tests {
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
         let rules = off.value["route"]["rules"].as_array().unwrap();
         assert!(
-            !rules.iter().any(|r| r.get("protocol") == Some(&json!("quic"))),
+            !rules
+                .iter()
+                .any(|r| r.get("protocol") == Some(&json!("quic"))),
             "block_quic off must not add a quic rule"
         );
 
@@ -2451,7 +2551,10 @@ mod tests {
             .expect("rule set route present");
         let domain_idx = rules
             .iter()
-            .position(|r| r.get("domain_suffix").is_some_and(|v| v == &json!(["local", "localhost"])))
+            .position(|r| {
+                r.get("domain_suffix")
+                    .is_some_and(|v| v == &json!(["local", "localhost"]))
+            })
             .expect("localhost bypass rule present");
         let private_idx = rules
             .iter()
@@ -2470,7 +2573,9 @@ mod tests {
         global.outbound_mode = OutboundMode::Global;
         let built = build_singbox_config(&nodes, &global).unwrap();
         let rules = built.value["route"]["rules"].as_array().unwrap();
-        assert!(!rules.iter().any(|r| r.get("ip_is_private") == Some(&json!(true))));
+        assert!(!rules
+            .iter()
+            .any(|r| r.get("ip_is_private") == Some(&json!(true))));
     }
 
     #[test]
@@ -2601,7 +2706,7 @@ mod tests {
                     find_process: true,
                     tun_ipv6: false,
                     block_quic: false,
-                bypass_lan: false,
+                    bypass_lan: false,
                 },
             )
             .unwrap();

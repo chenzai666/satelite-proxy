@@ -3,7 +3,8 @@
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
     apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
-    inspect_singbox_config, outbound_tag, write_active_config, write_custom_config, BuildOptions,
+    inspect_singbox_config, outbound_tag, subscription_proxy_port, write_active_config,
+    write_custom_config, BuildOptions,
 };
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
@@ -651,6 +652,12 @@ impl Runtime {
         for inb in &store.settings.extra_inbounds {
             ensure_listen_port_available(inb.port, "Inbound")?;
         }
+        let subscription_port = subscription_proxy_port(
+            store.settings.mixed_port,
+            store.settings.api_port,
+            &store.settings.extra_inbounds,
+        );
+        ensure_listen_port_available(subscription_port, "Subscription proxy")?;
 
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
@@ -700,18 +707,15 @@ impl Runtime {
         let log_dir = app_data_dir.join("logs");
         // TUN creates utun + routes → macOS setuid sing-box / Windows UAC.
         let elevated = store.settings.tun_enabled;
+        let mut auxiliary_ports = vec![subscription_port];
+        auxiliary_ports.extend(store.settings.extra_inbounds.iter().map(|inb| inb.port));
         self.core.start_with_ports(
             &bin,
             &config_path,
             &log_dir,
             store.settings.mixed_port,
             Some(store.settings.api_port),
-            &store
-                .settings
-                .extra_inbounds
-                .iter()
-                .map(|inb| inb.port)
-                .collect::<Vec<_>>(),
+            &auxiliary_ports,
             elevated,
             resource_dir,
         )?;

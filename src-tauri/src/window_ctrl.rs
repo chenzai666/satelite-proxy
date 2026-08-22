@@ -7,7 +7,9 @@
 use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    image::Image, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 /// Matches frontend `windowLayout.ts` (logical px).
 const PRO_SIZE: (f64, f64) = (960.0, 720.0);
@@ -16,6 +18,27 @@ const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
 const SIMPLE_MIN: (f64, f64) = (320.0, 480.0);
 /// …but never grow past the default simple strip.
 const SIMPLE_MAX: (f64, f64) = SIMPLE_SIZE;
+
+fn set_main_window_icon<R: Runtime>(window: &WebviewWindow<R>) {
+    let icon = match Image::from_bytes(include_bytes!("../icons/128x128.png")) {
+        Ok(icon) => icon,
+        Err(error) => {
+            eprintln!("[satelite] decode main window icon failed: {error}");
+            return;
+        }
+    };
+    if let Err(error) = window.set_icon(icon) {
+        eprintln!("[satelite] set main window icon failed: {error}");
+    }
+}
+
+/// Explicitly set the top-level window icon. On Windows this stabilizes the
+/// taskbar icon when the tray icon is refreshed.
+pub fn apply_main_window_icon<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        set_main_window_icon(&window);
+    }
+}
 
 fn ui_mode_file(app_data_dir: &std::path::Path) -> PathBuf {
     app_data_dir.join("data").join("ui_mode")
@@ -75,6 +98,7 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
     set_dock_visible(app, true);
 
     if let Some(w) = app.get_webview_window("main") {
+        set_main_window_icon(&w);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -93,6 +117,15 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             // can recreate a window that never becomes key.
             .visible(true)
             .focused(true);
+        let builder = match Image::from_bytes(include_bytes!("../icons/128x128.png"))
+            .and_then(|icon| builder.icon(icon))
+        {
+            Ok(builder) => builder,
+            Err(error) => {
+                eprintln!("[satelite] configure main window icon failed: {error}");
+                return;
+            }
+        };
         // Simple mode: user-resizable strip, shrink-only (frontend restores size).
         let builder = if mode == "simple" {
             builder
@@ -104,6 +137,7 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         };
         match builder.build() {
             Ok(win) => {
+                set_main_window_icon(&win);
                 let _ = win.show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();

@@ -167,6 +167,7 @@ pub fn run() {
             let _ = autostart::set_launch_at_login(launch);
 
             app.manage(app_state);
+            window_ctrl::apply_main_window_icon(app.handle());
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(status) = state.proxy_status() {
                     app_log::info(

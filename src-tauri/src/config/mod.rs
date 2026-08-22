@@ -8,7 +8,8 @@ mod write;
 
 pub use builder::{
     apply_udp_node_compatibility, build_singbox_config, generate_api_secret, outbound_tag,
-    rule_set_is_empty_for_config, smart_pool_nodes, BuildOptions,
+    rule_set_is_empty_for_config, smart_pool_nodes, subscription_proxy_port, BuildOptions,
+    SUBSCRIPTION_PROXY_USERNAME,
 };
 pub use custom::inspect_singbox_config;
 pub use dns_build::lookup_hosts;

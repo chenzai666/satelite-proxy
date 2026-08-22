@@ -251,7 +251,7 @@ pub struct Subscription {
     /// Nodes skipped on last import.
     #[serde(default)]
     pub skipped_count: u32,
-    /// Fetch subscription URL via local mixed proxy (127.0.0.1:mixed_port).
+    /// Force subscription URL fetch through Satelite's private proxy inbound.
     #[serde(default)]
     pub via_proxy: bool,
     /// Periodically re-fetch / re-read this profile.

@@ -184,6 +184,9 @@ pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
         return;
     };
     let _ = tray.set_icon_with_as_template(Some(icon), as_template);
+    // Keep the main taskbar icon explicit. Windows owns a hidden tray helper
+    // window and may briefly fall back to its generic icon during NIM_MODIFY.
+    window_ctrl::apply_main_window_icon(app);
 }
 
 pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
