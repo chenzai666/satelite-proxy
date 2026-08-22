@@ -251,6 +251,9 @@ const en = {
   "settings.blockQuic": "Block QUIC (reject sniffed UDP/443)",
   "settings.blockQuicDesc":
     "Forces browsers to fall back to TCP. QUIC relayed through the proxy carries two independent congestion controllers, which can stutter video on mediocre links.",
+  "settings.udpTlsCompat": "UDP node compatibility",
+  "settings.udpTlsCompatDesc":
+    "Adds h3 for TUIC and skips certificate verification for Hysteria2/TUIC. Use only for trusted subscriptions; disabling verification increases man-in-the-middle risk.",
   "settings.bypassLan": "Bypass localhost and LAN",
   "settings.bypassLanDesc":
     "Built-in direct rules for localhost and private network segments (loopback, 192.168.x / 10.x / 172.16–31.x, link-local), applied after your rule sets. On by default.",
@@ -946,6 +949,9 @@ const zh: Record<MessageKey, string> = {
   "settings.blockQuic": "拦截 QUIC（拒绝识别到的 UDP/443）",
   "settings.blockQuicDesc":
     "强制浏览器回退到 TCP。经代理中转的 QUIC 会有两层独立的拥塞控制，线路一般时容易导致视频卡顿。",
+  "settings.udpTlsCompat": "UDP 节点兼容模式",
+  "settings.udpTlsCompatDesc":
+    "为 TUIC 补充 h3，并对 Hysteria2/TUIC 跳过证书验证。仅用于可信订阅；关闭验证会增加中间人攻击风险。",
   "settings.bypassLan": "绕过本地和局域网",
   "settings.bypassLanDesc":
     "内置直连规则覆盖 localhost 与局域网段（回环、192.168.x / 10.x / 172.16–31.x、链路本地地址），在规则集之后生效。默认开启。",

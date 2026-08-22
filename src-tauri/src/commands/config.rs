@@ -1,6 +1,6 @@
 use crate::config::{
-    active_config_path, build_singbox_config, generate_api_secret, write_active_config,
-    BuildOptions,
+    active_config_path, apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
+    write_active_config, BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
@@ -75,6 +75,7 @@ pub fn update_settings(
     tun_stack: Option<String>,
     tun_ipv6_enabled: Option<bool>,
     block_quic: Option<bool>,
+    udp_tls_compat: Option<bool>,
     bypass_lan: Option<bool>,
     close_to_tray: Option<bool>,
     launch_at_login: Option<bool>,
@@ -161,6 +162,9 @@ pub fn update_settings(
             }
             if let Some(v) = block_quic {
                 store.settings.block_quic = v;
+            }
+            if let Some(v) = udp_tls_compat {
+                store.settings.udp_tls_compat = v;
             }
             if let Some(v) = bypass_lan {
                 if store.settings.bypass_lan != v {
@@ -587,7 +591,7 @@ pub async fn generate_singbox_config(
 ) -> Result<GenerateConfigResult, String> {
     let app_data_dir = state.app_data_dir.clone();
 
-    let (nodes, settings, rules, remote_rule_sets, dns) = state
+    let (mut nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
@@ -608,6 +612,7 @@ pub async fn generate_singbox_config(
         .unwrap_or_else(generate_api_secret);
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
         let built = build_singbox_config(
             &nodes,
             &BuildOptions {
@@ -678,7 +683,7 @@ pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<Strin
 pub async fn preview_singbox_config(
     state: State<'_, AppState>,
 ) -> Result<GenerateConfigResult, String> {
-    let (nodes, settings, rules, remote_rule_sets, dns) = state
+    let (mut nodes, settings, rules, remote_rule_sets, dns) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
@@ -697,6 +702,7 @@ pub async fn preview_singbox_config(
 
     let path = active_config_path(&state.app_data_dir);
     tauri::async_runtime::spawn_blocking(move || {
+        apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
         let built = build_singbox_config(
             &nodes,
             &BuildOptions {

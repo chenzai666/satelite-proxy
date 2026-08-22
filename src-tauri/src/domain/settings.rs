@@ -218,6 +218,12 @@ pub struct AppSettings {
     /// links. Off by default — most users are fine with QUIC passthrough.
     #[serde(default)]
     pub block_quic: bool,
+    /// Compatibility mode for Hysteria2/TUIC subscriptions whose servers use
+    /// an incomplete or private certificate chain. When enabled, generated
+    /// outbounds skip certificate verification for these two protocols only.
+    /// TUIC ALPN normalization is safe and is applied independently.
+    #[serde(default)]
+    pub udp_tls_compat: bool,
     /// Bypass localhost and LAN segments (loopback, RFC1918 private ranges,
     /// link-local) as built-in direct rules appended after the rule sets.
     /// Not exposed as a rule set — it is a routing setting only.
@@ -373,6 +379,7 @@ impl Default for AppSettings {
             tun_stack: default_tun_stack(),
             tun_ipv6_enabled: false,
             block_quic: false,
+            udp_tls_compat: false,
             bypass_lan: true,
             outbound_mode: OutboundMode::Rule,
             route_final: default_route_final(),

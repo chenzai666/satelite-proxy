@@ -2,8 +2,8 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
-    build_singbox_config, generate_api_secret, inspect_singbox_config, outbound_tag,
-    write_active_config, write_custom_config, BuildOptions,
+    apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
+    inspect_singbox_config, outbound_tag, write_active_config, write_custom_config, BuildOptions,
 };
 use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
@@ -639,7 +639,7 @@ impl Runtime {
         self.custom_has_clash_api = false;
         self.custom_has_tun = false;
 
-        let nodes = store.enabled_nodes();
+        let mut nodes = store.enabled_nodes();
         if nodes.is_empty() {
             return Err(AppError::Core(
                 "no nodes; import a subscription first".into(),
@@ -663,6 +663,7 @@ impl Runtime {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
+        apply_udp_node_compatibility(&mut nodes, store.settings.udp_tls_compat);
         let built = build_singbox_config(
             &nodes,
             &BuildOptions {

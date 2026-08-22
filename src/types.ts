@@ -275,6 +275,8 @@ export interface AppSettings {
   /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. Off by
    * default. */
   block_quic?: boolean;
+  /** Skip TLS certificate verification for Hysteria2/TUIC compatibility. */
+  udp_tls_compat?: boolean;
   /** Bypass localhost and LAN segments with built-in direct rules. On by
    * default; applied in Rule mode only, after the rule sets. */
   bypass_lan?: boolean;

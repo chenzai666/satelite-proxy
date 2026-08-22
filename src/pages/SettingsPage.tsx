@@ -96,6 +96,8 @@ export function SettingsPage() {
   const [tunIpv6, setTunIpv6] = useState(false);
   /** Reject sniffed QUIC (UDP/443) so browsers fall back to TCP. */
   const [blockQuic, setBlockQuic] = useState(false);
+  /** Compatibility for UDP nodes using private/incomplete certificate chains. */
+  const [udpTlsCompat, setUdpTlsCompat] = useState(false);
   /** Bypass localhost and LAN segments with built-in direct rules. */
   const [bypassLan, setBypassLan] = useState(true);
   /** Extra inbound drafts — applied on card save (needs core restart). */
@@ -209,6 +211,7 @@ export function SettingsPage() {
         setTunStack(s.tun_stack || "mixed");
         setTunIpv6(!!s.tun_ipv6_enabled);
         setBlockQuic(!!s.block_quic);
+        setUdpTlsCompat(!!s.udp_tls_compat);
         setBypassLan(s.bypass_lan !== false);
         setExtra(s.extra_inbounds ?? []);
       })
@@ -289,6 +292,7 @@ export function SettingsPage() {
       (settings.tun_stack || "mixed") !== tunStack ||
       !!settings.tun_ipv6_enabled !== tunIpv6 ||
       !!settings.block_quic !== blockQuic ||
+      !!settings.udp_tls_compat !== udpTlsCompat ||
       (settings.bypass_lan !== false) !== bypassLan ||
       !sameInbounds(settings.extra_inbounds ?? [], extra);
     if (!dirty) return;
@@ -325,6 +329,7 @@ export function SettingsPage() {
         tunStack: tunStack.trim() || "mixed",
         tunIpv6Enabled: tunIpv6,
         blockQuic,
+        udpTlsCompat,
         bypassLan,
       });
       setSettings(s);
@@ -341,7 +346,7 @@ export function SettingsPage() {
       // Pick up edits made while we were applying.
       void autoApplyRef.current();
     }
-  }, [allowLan, api, blockQuic, bypassLan, extra, mixed, probe, settings, t, tunIpv6, tunStack]);
+  }, [allowLan, api, blockQuic, bypassLan, extra, mixed, probe, settings, t, tunIpv6, tunStack, udpTlsCompat]);
 
   autoApplyRef.current = autoApplyNetwork;
 
@@ -353,7 +358,7 @@ export function SettingsPage() {
     return () => clearTimeout(timer);
     // Fire on any draft change; autoApplyNetwork itself decides if there is
     // anything valid and dirty to commit.
-  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, bypassLan, extra]);
+  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, udpTlsCompat, bypassLan, extra]);
 
   // —— Extra inbound listeners (draft rows + modal editor) ——
 
@@ -935,6 +940,18 @@ export function SettingsPage() {
                   title={t("settings.blockQuic")}
                   disabled={busy}
                   onChange={setBlockQuic}
+                />
+              </div>
+              <div className="via-proxy-row field-span-2">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.udpTlsCompat")}</div>
+                  <div className="sys-proxy-desc">{t("settings.udpTlsCompatDesc")}</div>
+                </div>
+                <GlassSwitchControl
+                  checked={udpTlsCompat}
+                  title={t("settings.udpTlsCompat")}
+                  disabled={busy || customRuntime}
+                  onChange={setUdpTlsCompat}
                 />
               </div>
               <div className="via-proxy-row field-span-2">

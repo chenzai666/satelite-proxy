@@ -80,6 +80,45 @@ pub struct BuiltConfig {
     pub selected_tag: String,
 }
 
+/// Normalize UDP-only subscription nodes before config generation.
+///
+/// TUIC is QUIC-based and commonly requires the standard HTTP/3 ALPN. Some
+/// subscription formats omit it even though the server requires it, so add
+/// `h3` only when no ALPN was supplied. The optional insecure compatibility
+/// path mirrors clients such as v2rayN, but is intentionally explicit because
+/// it disables certificate verification.
+pub fn apply_udp_node_compatibility(nodes: &mut [ProxyNode], allow_insecure: bool) -> usize {
+    let mut changed = 0;
+    for node in nodes {
+        if !matches!(node.protocol, Protocol::Hysteria2 | Protocol::Tuic) {
+            continue;
+        }
+
+        let tls = node.tls.get_or_insert_with(|| TlsConfig {
+            enabled: true,
+            server_name: Some(node.server.clone()),
+            ..TlsConfig::default()
+        });
+        tls.enabled = true;
+
+        let mut node_changed = false;
+        if matches!(node.protocol, Protocol::Tuic)
+            && tls.alpn.as_ref().is_none_or(|alpn| alpn.is_empty())
+        {
+            tls.alpn = Some(vec!["h3".into()]);
+            node_changed = true;
+        }
+        if allow_insecure && tls.insecure != Some(true) {
+            tls.insecure = Some(true);
+            node_changed = true;
+        }
+        if node_changed {
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// Convert nodes into a complete sing-box config document.
 pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
     if nodes.is_empty() {
@@ -1300,6 +1339,53 @@ mod tests {
             latency_ms: None,
             latency_at: None,
         }
+    }
+
+    fn sample_tuic() -> ProxyNode {
+        ProxyNode {
+            id: "tuic000000000001".into(),
+            name: "TUIC-HK".into(),
+            protocol: Protocol::Tuic,
+            server: "tuic.example.com".into(),
+            port: 443,
+            tls: Some(TlsConfig {
+                enabled: true,
+                server_name: Some("tuic.example.com".into()),
+                insecure: Some(false),
+                alpn: None,
+                ..TlsConfig::default()
+            }),
+            transport: None,
+            udp: Some(true),
+            config: ProtocolConfig::Tuic {
+                uuid: "11111111-1111-1111-1111-111111111111".into(),
+                password: "secret".into(),
+                congestion_control: None,
+                udp_relay_mode: None,
+                zero_rtt_handshake: false,
+            },
+            source: Some("tuic".into()),
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    #[test]
+    fn udp_compat_adds_tuic_h3_without_weakening_tls_by_default() {
+        let mut nodes = vec![sample_tuic()];
+        assert_eq!(apply_udp_node_compatibility(&mut nodes, false), 1);
+        let tls = nodes[0].tls.as_ref().unwrap();
+        assert_eq!(tls.alpn.as_ref().unwrap(), &vec!["h3".to_string()]);
+        assert_eq!(tls.insecure, Some(false));
+        assert_eq!(apply_udp_node_compatibility(&mut nodes, false), 0);
+    }
+
+    #[test]
+    fn udp_compat_can_explicitly_skip_certificate_verification() {
+        let mut nodes = vec![sample_tuic(), sample_ss()];
+        assert_eq!(apply_udp_node_compatibility(&mut nodes, true), 1);
+        assert_eq!(nodes[0].tls.as_ref().unwrap().insecure, Some(true));
+        assert!(nodes[1].tls.is_none(), "non-UDP protocols stay untouched");
     }
 
     #[test]

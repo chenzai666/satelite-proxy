@@ -241,6 +241,7 @@ export interface SettingsUpdatePayload {
   tunStack?: string | null;
   tunIpv6Enabled?: boolean | null;
   blockQuic?: boolean | null;
+  udpTlsCompat?: boolean | null;
   /** Bypass localhost and LAN segments with built-in direct rules. */
   bypassLan?: boolean | null;
   closeToTray?: boolean | null;
@@ -293,6 +294,7 @@ function scheduleSettingsWrite() {
       tunStack: payload.tunStack ?? null,
       tunIpv6Enabled: payload.tunIpv6Enabled ?? null,
       blockQuic: payload.blockQuic ?? null,
+      udpTlsCompat: payload.udpTlsCompat ?? null,
       bypassLan: payload.bypassLan ?? null,
       closeToTray: payload.closeToTray ?? null,
       launchAtLogin: payload.launchAtLogin ?? null,

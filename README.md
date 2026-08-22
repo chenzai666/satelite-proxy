@@ -145,6 +145,12 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 
 开启“允许局域网连接”后，主 mixed 入站会监听 `0.0.0.0:2080`（端口以应用设置为准）。局域网设备应把 HTTP/SOCKS 代理地址设置为 Satelite 所在电脑的局域网 IPv4 和该端口。Windows 用户还需要在防火墙提示中仅允许 `sing-box.exe` 访问专用网络；不要向公用网络或互联网开放该端口。
 
+### UDP 节点兼容模式
+
+TUIC 节点在订阅未提供 ALPN 时会自动补充标准的 `h3`。如果可信订阅中的 Hysteria2/TUIC 节点仍提示“证书不受信任”，可在“设置 → 端口与网络”开启“UDP 节点兼容模式”。该模式仅对这两类协议设置 `insecure=true`，不会改动 VLESS、Shadowsocks 等其他节点。
+
+> 此模式会跳过服务器证书验证，存在中间人攻击风险。应优先要求节点服务商修复证书链，并且不要对来源不明的订阅启用。
+
 ---
 
 用着顺手的话，点一颗 [Star](https://github.com/zn0wii/satelite-proxy)，卫星会飞得更稳一点。
