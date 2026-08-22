@@ -1432,6 +1432,15 @@ tr.row-active {
 
 .settings-app-pref.settings-duo-col .settings-app-text {
   flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* Half-width columns: keep the one-line rhythm, full text via title. */
+.settings-app-pref.settings-duo-col .settings-app-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .settings-tray-icon-row {
