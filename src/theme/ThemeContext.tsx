@@ -85,7 +85,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>(readStoredTheme);
   const [accent, setAccentState] = useState<string>(readStoredAccent);
   const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
-  const [glassFrost, setGlassFrostState] = useState(false);
+  // Mirrors the backend default (default_glass_frost) to avoid a flash of
+  // solid controls before settings land.
+  const [glassFrost, setGlassFrostState] = useState(true);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {

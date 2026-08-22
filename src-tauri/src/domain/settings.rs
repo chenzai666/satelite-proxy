@@ -260,9 +260,11 @@ pub struct AppSettings {
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
     /// Frosted-glass look for the repeated glass controls (seg / buttons /
-    /// switches). Default false — solid fills cost no backdrop-filter GPU
-    /// layers (docs/webview2-memory-optimization-plan.md).
-    #[serde(default)]
+    /// switches). Default true — measured memory cost is ~0 (backdrop blur
+    /// costs frame-compositing time, not resident memory; see
+    /// docs/webview2-memory-optimization-plan.md). "Lite" solid fills remain
+    /// available for low-end GPUs.
+    #[serde(default = "default_glass_frost")]
     pub glass_frost: bool,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.
     #[serde(default)]
@@ -353,6 +355,12 @@ fn default_unload_ui_on_tray() -> bool {
     true
 }
 
+/// Frosted controls by default: measured memory delta is ~0 (blur costs
+/// compositing time, not resident memory) — see the plan doc's P0-1 correction.
+fn default_glass_frost() -> bool {
+    true
+}
+
 fn default_locale() -> String {
     "zh".into()
 }
@@ -397,7 +405,7 @@ impl Default for AppSettings {
             theme: default_theme(),
             accent: default_accent(),
             hero_style: default_hero_style(),
-            glass_frost: false,
+            glass_frost: default_glass_frost(),
             tray_icon: TrayIconStyle::default(),
             unload_ui_on_tray: default_unload_ui_on_tray(),
             auto_select: AutoSelectMode::Off,
