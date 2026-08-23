@@ -225,7 +225,8 @@ export function DashboardPage({
       const detailP = Promise.all([
         listSubscriptions(),
         listAllNodes(),
-        getCoreInfo().catch(() => null),
+        getCoreInfo("singbox").catch(() => null),
+        getCoreInfo("xray").catch(() => null),
         getLanIp().catch(() => null),
       ]);
 
@@ -240,7 +241,7 @@ export function DashboardPage({
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, core, lan] = await detailP;
+      const [subList, nodeList, coreSingbox, coreXray, lan] = await detailP;
       setSubs(subList);
       setNodes(nodeList);
       setLanIp(lan ?? null);
@@ -249,9 +250,13 @@ export function DashboardPage({
         nodeList[0] ??
         null;
       setCurrentNode(cur);
+      // Version card shows the ACTIVE core's name + version (core_type reports
+      // the actually running kind; while stopped it falls back to the setting).
+      const activeKind = status?.core_type ?? settings.core_type ?? "singbox";
+      const core = activeKind === "xray" ? coreXray : coreSingbox;
       if (core?.installed) {
         const ver = (core.version ?? "ok").replace(/^v/, "");
-        setCoreVersion(ver);
+        setCoreVersion(`${core.name} ${ver}`.trim());
       } else {
         setCoreVersion(null);
       }
