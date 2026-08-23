@@ -189,7 +189,9 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
       } else {
         const enableSys = proxy?.system_proxy ?? true;
         setProxy(await startProxy(enableSys));
-        await reload();
+        // Keep the power switch responsive once the backend confirms ready;
+        // node/subscription details are not part of the start transaction.
+        void reload();
         const id = node?.id;
         if (id) void probeCurrent(id);
       }

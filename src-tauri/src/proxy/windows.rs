@@ -565,28 +565,34 @@ fn clear_environment_for_endpoint(server: &str) -> AppResult<()> {
 }
 
 fn notify_environment_changed() {
-    let environment = wide("Environment");
-    let mut result = 0usize;
-    let sent = unsafe {
-        SendMessageTimeoutW(
-            HWND_BROADCAST,
-            WM_SETTINGCHANGE,
-            0,
-            environment.as_ptr() as LPARAM,
-            SMTO_ABORTIFHUNG,
-            ENV_NOTIFY_TIMEOUT_MS,
-            &mut result,
-        )
-    };
-    if sent == 0 {
-        crate::app_log::warn(
-            "system_proxy",
-            format!(
-                "environment change broadcast failed: {}",
-                std::io::Error::last_os_error()
-            ),
-        );
-    }
+    // WinINet is refreshed synchronously by notify_changed(); this separate
+    // broadcast only advertises the updated user environment. A hung desktop
+    // window must not hold the proxy switch for up to two seconds, so keep the
+    // UTF-16 buffer owned by a short-lived worker until SendMessage returns.
+    let _ = std::thread::spawn(|| {
+        let environment = wide("Environment");
+        let mut result = 0usize;
+        let sent = unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                environment.as_ptr() as LPARAM,
+                SMTO_ABORTIFHUNG,
+                ENV_NOTIFY_TIMEOUT_MS,
+                &mut result,
+            )
+        };
+        if sent == 0 {
+            crate::app_log::warn(
+                "system_proxy",
+                format!(
+                    "environment change broadcast failed: {}",
+                    std::io::Error::last_os_error()
+                ),
+            );
+        }
+    });
 }
 
 #[derive(Clone, Copy)]

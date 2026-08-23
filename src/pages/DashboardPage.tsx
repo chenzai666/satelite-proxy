@@ -322,7 +322,10 @@ export function DashboardPage({
     try {
       const s = await startProxy(false);
       setProxy(s);
-      await reload();
+      // The returned status is authoritative and enough to unlock the switch.
+      // Nodes/subscriptions/core metadata can refresh without extending the
+      // visible start transition.
+      void reload();
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {

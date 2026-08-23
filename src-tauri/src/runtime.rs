@@ -618,6 +618,7 @@ impl Runtime {
         store: &mut AppStore,
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
+        let total_started = Instant::now();
         self.core.poll();
         if self.core.is_running() {
             return Ok(self.status(store));
@@ -697,6 +698,7 @@ impl Runtime {
             },
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;
+        let config_ready_ms = total_started.elapsed().as_millis();
         store.settings.clash_api_secret = Some(secret.clone());
         if store.settings.current_node_id.is_none() {
             if let Some(first) = nodes.first() {
@@ -719,6 +721,7 @@ impl Runtime {
             elevated,
             resource_dir,
         )?;
+        let listener_ready_ms = total_started.elapsed().as_millis();
         self.last_config_path = Some(config_path.clone());
         self.last_binary_path = Some(bin.clone());
 
@@ -787,6 +790,7 @@ impl Runtime {
         }
         self.api = Some(api);
         self.core_started_at = Some(now_unix_secs());
+        let api_ready_ms = total_started.elapsed().as_millis();
 
         // System proxy is independent — optional on start; prefer UI switch after running.
         if enable_system_proxy {
@@ -796,6 +800,14 @@ impl Runtime {
                 let _ = e;
             }
         }
+
+        crate::app_log::info(
+            "core",
+            format!(
+                "proxy start timing: config={config_ready_ms}ms listener={listener_ready_ms}ms api={api_ready_ms}ms total={}ms",
+                total_started.elapsed().as_millis()
+            ),
+        );
 
         Ok(self.status(store))
     }

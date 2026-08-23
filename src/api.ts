@@ -466,6 +466,9 @@ export function startProxy(enableSystemProxy = false) {
       invoke<ProxyStatus>("start_proxy", {
         enableSystemProxy,
       }),
+      // A real start already takes long enough to paint the busy state. Do not
+      // add the generic 550 ms minimum after the backend has become ready.
+      0,
     ),
   );
 }
