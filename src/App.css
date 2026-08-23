@@ -5580,6 +5580,11 @@ button.check.on {
 }
 
 .instrument.accent-green .instrument-label {
+  /* Carries the core name suffix ("核心状态 · sing-box") — keep it on one
+     line, ellipsize rather than wrap into the readout below. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--accent-green);
 }
 .instrument.accent-blue .instrument-label {

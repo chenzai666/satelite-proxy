@@ -11,6 +11,7 @@ import {
   peekProxyStatus,
   previewSingboxConfig,
   restartProxy,
+  setCoreType,
   setRuntimeSource,
   setOutboundMode,
   startProxy,
@@ -153,7 +154,6 @@ export function DashboardPage({
   onGoProfiles,
   onGoNodes,
   onGoTraffic,
-  onGoSettings,
 }: Props) {
   const { t } = useI18n();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
@@ -203,6 +203,7 @@ export function DashboardPage({
   const [toast, setToast] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const [coreMenuOpen, setCoreMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
@@ -481,6 +482,25 @@ export function DashboardPage({
     setConfigMenuOpen(false);
     try {
       await setRuntimeSource(source);
+      const s = await getProxyStatus();
+      setProxy(s);
+      await reload();
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Hero ⋯ → 指定内核: switch the active core (restarts a running core). */
+  async function onSwitchCore(kind: "singbox" | "xray") {
+    if (busy || (proxy?.core_type ?? "singbox") === kind) return;
+    setBusy(true);
+    setError(null);
+    setMoreOpen(false);
+    setCoreMenuOpen(false);
+    try {
+      await setCoreType(kind);
       const s = await getProxyStatus();
       setProxy(s);
       await reload();
@@ -971,17 +991,45 @@ export function DashboardPage({
                       </div>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMoreOpen(false);
-                      setConfigMenuOpen(false);
-                      onGoSettings?.();
-                    }}
-                  >
-                    {t("dashboard.advancedSettings")}
-                  </button>
+                  <div className="dash-more-sub">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={coreMenuOpen}
+                      disabled={busy}
+                      onClick={() => setCoreMenuOpen((v) => !v)}
+                    >
+                      <span>{t("dashboard.pickCore")}</span>
+                      <span className="dash-more-caret" aria-hidden>
+                        ›
+                      </span>
+                    </button>
+                    {coreMenuOpen && (
+                      <div className="dash-more-submenu card glass" role="menu">
+                        {(["singbox", "xray"] as const).map((kind) => {
+                          const selected =
+                            (proxy?.core_type ?? "singbox") === kind;
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              className={selected ? "is-selected" : ""}
+                              disabled={busy}
+                              onClick={() => void onSwitchCore(kind)}
+                            >
+                              <span className="dash-more-check" aria-hidden>
+                                {selected ? "●" : "○"}
+                              </span>
+                              {kind === "xray" ? "Xray" : "sing-box"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1136,7 +1184,12 @@ export function DashboardPage({
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">
         <article className="instrument accent-green">
           <header className="instrument-head">
-            <span className="instrument-label">{t("dashboard.cardCore")}</span>
+            {/* Label carries the active core's name (core_type falls back to
+                the setting while stopped, so this is correct either way). */}
+            <span className="instrument-label">
+              {t("dashboard.cardCore")} ·{" "}
+              {proxy?.core_type === "xray" ? "Xray" : "sing-box"}
+            </span>
           </header>
           <div
             className={`instrument-value readout${
