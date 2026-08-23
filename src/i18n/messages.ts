@@ -398,6 +398,11 @@ const en = {
   "traffic.xrayTitle": "Connection monitoring unavailable under Xray",
   "traffic.xrayDesc":
     "The Xray core does not expose per-connection data. Live traffic speed and totals remain on the dashboard (metrics API); switch back to sing-box for the connection list, request history and failures.",
+  "traffic.xrayLogDesc":
+    "Showing the core log instead — Xray has no per-connection API, but its log carries accepted connections and routing decisions.",
+  "traffic.xrayLogTitle": "Core log",
+  "traffic.xrayLogEmpty":
+    "No core output yet — start the Xray core and its log appears here.",
   "traffic.tabLive": "Active",
   "traffic.tabHistory": "Closed",
   "traffic.tabFailures": "Failed",
@@ -1118,6 +1123,10 @@ const zh: Record<MessageKey, string> = {
   "traffic.xrayTitle": "Xray 内核暂不提供连接监控",
   "traffic.xrayDesc":
     "Xray 内核没有逐连接数据接口。实时速率与流量总量仍可在首页查看（metrics 统计）；如需连接列表、请求历史与失败请求，请切换回 sing-box 内核。",
+  "traffic.xrayLogDesc":
+    "下方改为显示内核日志——Xray 虽无逐连接接口，但其日志记录了连接建立与路由决策。",
+  "traffic.xrayLogTitle": "内核日志",
+  "traffic.xrayLogEmpty": "暂无内核输出——启动 Xray 后运行日志会显示在这里。",
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",
   "traffic.tabFailures": "失败",

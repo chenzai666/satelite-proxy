@@ -394,6 +394,17 @@ export function clearAppLogs() {
   return invoke<void>("clear_app_logs");
 }
 
+export interface CoreLogTail {
+  /** Absolute path of the core's hourly log file, when a session exists. */
+  path: string | null;
+  lines: string[];
+}
+
+/** Tail of the active core's log (Xray-mode traffic page stand-in). */
+export function getCoreLogTail(limit?: number | null) {
+  return invoke<CoreLogTail>("get_core_log_tail", { limit: limit ?? null });
+}
+
 export function generateSingboxConfig() {
   return invoke<GenerateConfigResult>("generate_singbox_config");
 }

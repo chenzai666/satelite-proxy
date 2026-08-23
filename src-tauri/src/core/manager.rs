@@ -95,6 +95,13 @@ impl CoreManager {
             .or_else(|| self.log_path.clone())
     }
 
+    /// Tail of the current/last core session's log — surfaced by the
+    /// `get_core_log_tail` command (Xray-mode traffic page).
+    pub fn core_log_tail(&self, limit: usize) -> Option<(PathBuf, Vec<String>)> {
+        let path = self.latest_log_path()?;
+        Some((path.clone(), read_file_tail_lines(&path, limit)))
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.state, CoreState::Running)
     }
@@ -887,6 +894,36 @@ fn kill_listeners_on_port(port: u16) -> String {
         }
         format!("已结束 PID {}", killed.join(","))
     }
+}
+
+/// Last `limit` lines of a log file, read efficiently from the end (a 256 KB
+/// window covers ~2000 typical core log lines). The first line is dropped
+/// when the window sliced mid-line; invalid UTF-8 bytes become U+FFFD.
+fn read_file_tail_lines(path: &Path, limit: usize) -> Vec<String> {
+    let Ok(mut f) = File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
+    const WINDOW: u64 = 256 * 1024;
+    let window = len.min(WINDOW);
+    if std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(len - window)).is_err() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity(window as usize);
+    if std::io::Read::read_to_end(&mut f, &mut bytes).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if window < len && !lines.is_empty() {
+        lines.remove(0); // possibly sliced mid-line
+    }
+    if lines.len() > limit {
+        lines.drain(..lines.len() - limit);
+    }
+    lines
 }
 
 fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
