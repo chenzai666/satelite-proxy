@@ -134,7 +134,12 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         filter_group_tags.insert(set.id.clone(), group_tag);
     }
 
-    // Per-RULE smart pools (target=Smart with keywords): url-test group per rule.
+    // Per-RULE smart pools (target=Smart with keywords): select group per
+    // rule, like sing-box's smart selectors — the app-side smart switch
+    // PUTs its evaluated pick into them (`select_group_live_serialized`),
+    // and a url-test group would 400 every PUT (kernel racing and app-side
+    // evaluation would also fight). Default = the pool's best-latency
+    // member (smart_pool_tags orders by historical latency).
     let mut smart_group_tags: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for rule in effective_rules
@@ -146,7 +151,11 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
             continue;
         }
         let group_tag = rule.smart_outbound_tag();
-        groups.push(url_test_group(&group_tag, pool, &probe_url));
+        groups.push(select_group(
+            &group_tag,
+            pool.clone(),
+            pool.first().map(String::as_str),
+        ));
         smart_group_tags.insert(rule.id.clone(), group_tag);
     }
 
@@ -1457,7 +1466,16 @@ mod tests {
             .into_iter()
             .find(|g| g["name"].as_str() == Some(group_name))
             .expect("smart pool group");
-        assert_eq!(group["proxies"].as_sequence().unwrap().len(), 1);
+        // Select group (app smart switch PUTs into it — url-test 400s),
+        // defaulting to the pool's first (best-latency) member.
+        assert_eq!(group["type"].as_str(), Some("select"));
+        let members = group["proxies"].as_sequence().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(
+            members[0].as_str(),
+            Some(built.outbound_tags[0].as_str()),
+            "default member = best-latency pool member"
+        );
     }
 
     #[test]
