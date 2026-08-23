@@ -137,7 +137,16 @@ impl CoreManager {
                         .as_ref()
                         .and_then(|p| read_log_tail(p, 4000))
                         .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| format!("elevated sing-box (pid {pid}) exited"));
+                        .unwrap_or_else(|| {
+                            format!("elevated {} (pid {pid}) exited", self.kind.display_name())
+                        });
+                    crate::app_log::warn(
+                        "core",
+                        format!(
+                            "{} exited unexpectedly (elevated pid {pid})",
+                            self.kind.display_name()
+                        ),
+                    );
                     self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
                 }
             }
@@ -153,12 +162,21 @@ impl CoreManager {
                         self.state = CoreState::Stopped;
                     } else {
                         self.state = CoreState::Error;
+                        crate::app_log::warn(
+                            "core",
+                            format!(
+                                "{} exited unexpectedly ({status})",
+                                self.kind.display_name()
+                            ),
+                        );
                         let detail = self
                             .latest_log_path()
                             .as_ref()
                             .and_then(|p| read_log_tail(p, 4000))
                             .filter(|s| !s.trim().is_empty())
-                            .unwrap_or_else(|| format!("sing-box exited: {status}"));
+                            .unwrap_or_else(|| {
+                                format!("{} exited: {status}", self.kind.display_name())
+                            });
                         self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
                     }
                 }

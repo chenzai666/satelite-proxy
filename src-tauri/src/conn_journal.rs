@@ -71,6 +71,14 @@ fn journal_loop(app: AppHandle) {
             continue;
         };
 
+        // A spontaneously dead core (crash / external kill) leaves the stale
+        // ClashApi handle behind — retrying WS against its corpse spams
+        // connection-refused logs forever. Park until it is (re)started.
+        if !state.is_core_running() {
+            thread::sleep(Duration::from_millis(IDLE_MS));
+            continue;
+        }
+
         let interval = journal_interval_ms(&state);
 
         match stream_ws_snapshots(
