@@ -477,6 +477,22 @@ export function setCoreType(kind: CoreKind) {
   return invoke<AppSettings>("set_core_type", { kind });
 }
 
+export interface GeodataFileInfo {
+  present: boolean;
+  bytes: number;
+  modified_at: number | null;
+}
+
+export interface GeodataInfo {
+  geosite: GeodataFileInfo;
+  geoip: GeodataFileInfo;
+}
+
+/** Xray geodata state; `force` re-downloads both .dat files first. */
+export function refreshGeodata(force = false) {
+  return invoke<GeodataInfo>("refresh_geodata", { force });
+}
+
 export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
   // Tauri 2 accepts camelCase; include snake_case for compatibility.
   const args: Record<string, unknown> = {

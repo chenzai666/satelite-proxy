@@ -582,6 +582,14 @@ const en = {
   "rules.enableEmptyHint": "No effective rules yet — cannot enable",
   "rules.xraySrsInert":
     "Not effective under the Xray core (.srs is a sing-box-only format); switch back to sing-box to use it",
+  "rules.xrayGeoHint":
+    "Under the Xray core this set matches via {matcher} — the .srs cache is not used.",
+  "rules.xrayGeoSource":
+    "Source: Loyalsoldier/v2ray-rules-dat (geosite.dat / geoip.dat), bundled with the Xray core.",
+  "rules.xrayGeoUpdate": "Update geodata",
+  "rules.xrayGeoUpdating": "Updating…",
+  "rules.xrayGeoMissing":
+    "geodata files missing — starting the Xray core downloads them automatically.",
   "rules.applyingTooltip": "Applying",
   "rules.setMenuAria": "{name} actions",
   "rules.rename": "Rename",
@@ -1303,6 +1311,12 @@ const zh: Record<MessageKey, string> = {
   "rules.enableEmptyHint": "暂无可生效的规则，无法启用",
   "rules.xraySrsInert":
     "Xray 模式下无效（.srs 为 sing-box 专有格式），切回 sing-box 后可用",
+  "rules.xrayGeoHint": "Xray 模式下此集通过 {matcher} 匹配，不读取 .srs 缓存。",
+  "rules.xrayGeoSource":
+    "来源：Loyalsoldier/v2ray-rules-dat（geosite.dat / geoip.dat），随 Xray 内核打包。",
+  "rules.xrayGeoUpdate": "更新 geodata",
+  "rules.xrayGeoUpdating": "更新中…",
+  "rules.xrayGeoMissing": "geodata 文件缺失——启动 Xray 内核时会自动下载。",
   "rules.applyingTooltip": "正在应用",
   "rules.setMenuAria": "{name} 操作",
   "rules.rename": "重命名",

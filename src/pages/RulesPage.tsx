@@ -76,6 +76,34 @@ function suggestPayloadFromUrl(payload: string, ruleType: RuleType): string | nu
 
 const REMOTE_PAGE_SIZE = 100;
 
+/** Builtin remote set id → the geodata matcher the Xray generator emits
+ *  instead of reading the .srs cache (and which .dat file backs it). */
+const XRAY_GEODATA_SETS: Record<
+  string,
+  { matcher: string; dat: "geosite" | "geoip" }
+> = {
+  "system-geosite-cn": { matcher: "geosite:cn", dat: "geosite" },
+  "system-geoip-cn": { matcher: "geoip:cn", dat: "geoip" },
+  "system-geolocation-not-cn": {
+    matcher: "geosite:geolocation-!cn",
+    dat: "geosite",
+  },
+};
+
+function fmtDatSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function fmtDatTime(unix: number | null) {
+  if (!unix) return "—";
+  try {
+    return new Date(unix * 1000).toLocaleString();
+  } catch {
+    return "—";
+  }
+}
+
 interface Props {
   /** Hide page chrome when embedded under Settings. */
   embedded?: boolean;
@@ -101,6 +129,7 @@ export function RulesPage({ embedded = false }: Props) {
   const [xrayCore, setXrayCore] = useState(
     () => peekSettings()?.core_type === "xray",
   );
+  const [geodata, setGeodata] = useState<GeodataInfo | null>(null);
 
   const [editOpen, setEditOpen] = useState(false);
   const [editRule, setEditRule] = useState<Rule | null>(null);
@@ -192,6 +221,20 @@ export function RulesPage({ embedded = false }: Props) {
       /* keep default */
     }
   }, []);
+
+  // Xray mode: geodata card state (dat file presence/size/mtime).
+  useEffect(() => {
+    if (!xrayCore) return;
+    let disposed = false;
+    void refreshGeodata(false)
+      .then((info) => {
+        if (!disposed) setGeodata(info);
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, [xrayCore]);
 
   const onRouteFinalChange = async (next: RouteFinal) => {
     if (next === routeFinal || finalBusy) return;
@@ -985,6 +1028,24 @@ export function RulesPage({ embedded = false }: Props) {
     }
   }
 
+  /** Xray mode: the builtin sets are backed by geodata files — refresh
+   *  re-downloads the .dat files instead of the .srs cache. */
+  async function onRefreshGeodata(setId: string) {
+    setRemoteBusyIds((current) => new Set(current).add(setId));
+    setError(null);
+    try {
+      setGeodata(await refreshGeodata(true));
+    } catch (err) {
+      setError(typeof err === "string" ? err : String(err));
+    } finally {
+      setRemoteBusyIds((current) => {
+        const next = new Set(current);
+        next.delete(setId);
+        return next;
+      });
+    }
+  }
+
   function openEditSet(target: RuleSetSummary) {
     setMenuSetId(null);
     setEditSetTarget(target);
@@ -1290,7 +1351,12 @@ export function RulesPage({ embedded = false }: Props) {
                       onClick={(e) => {
                         e.stopPropagation();
                         setMenuSetId(null);
-                        void onRefreshRemoteSet(s.id);
+                        // Builtin sets under Xray refresh the geodata files.
+                        if (xrayCore && s.builtin && XRAY_GEODATA_SETS[s.id]) {
+                          void onRefreshGeodata(s.id);
+                        } else {
+                          void onRefreshRemoteSet(s.id);
+                        }
                       }}
                     >
                       {t("common.update")}
@@ -1494,6 +1560,46 @@ export function RulesPage({ embedded = false }: Props) {
 
           {loading ? (
             <div className="empty">{t("common.loading")}</div>
+          ) : xrayCore &&
+              viewSet?.remote &&
+              viewSet.builtin &&
+              XRAY_GEODATA_SETS[viewSet.id] ? (
+            (() => {
+              const geo = XRAY_GEODATA_SETS[viewSet.id];
+              const file =
+                geo.dat === "geoip" ? geodata?.geoip : geodata?.geosite;
+              const busy = remoteBusyIds.has(viewSet.id);
+              return (
+                <div className="card remote-rule-status">
+                  <div className="muted">
+                    {t("rules.xrayGeoHint", { matcher: geo.matcher })}
+                  </div>
+                  <div className="muted" style={{ marginTop: "0.3rem" }}>
+                    {t("rules.xrayGeoSource")}
+                  </div>
+                  <div className="remote-cache-row" style={{ marginTop: "0.45rem" }}>
+                    <span className="muted">{t("rules.cacheFile")}</span>
+                    <code className="remote-cache-path">
+                      {geo.dat}.dat
+                      {file?.present
+                        ? ` · ${fmtDatSize(file.bytes)} · ${fmtDatTime(file.modified_at)}`
+                        : ""}
+                    </code>
+                    <GlassButton
+                      onClick={() => void onRefreshGeodata(viewSet.id)}
+                      disabled={busy}
+                    >
+                      {busy ? t("rules.xrayGeoUpdating") : t("rules.xrayGeoUpdate")}
+                    </GlassButton>
+                  </div>
+                  {file && !file.present && (
+                    <div className="muted" style={{ marginTop: "0.35rem" }}>
+                      {t("rules.xrayGeoMissing")}
+                    </div>
+                  )}
+                </div>
+              );
+            })()
           ) : viewSet?.remote ? (
             <>
               <div className="card remote-rule-status">

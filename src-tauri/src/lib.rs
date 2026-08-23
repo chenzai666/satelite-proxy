@@ -382,6 +382,7 @@ pub fn run() {
             commands::get_app_install_path,
             commands::download_core,
             commands::fetch_core_latest,
+            commands::refresh_geodata,
             commands::set_core_type,
             commands::test_nodes_latency,
             commands::test_custom_nodes_latency,

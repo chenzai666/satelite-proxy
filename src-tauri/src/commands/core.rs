@@ -289,6 +289,68 @@ pub async fn set_core_type(
     .map_err(|e| format!("core type switch task: {e}"))?
 }
 
+#[derive(Debug, Serialize)]
+pub struct GeodataFileInfo {
+    pub present: bool,
+    pub bytes: u64,
+    pub modified_at: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GeodataInfo {
+    pub geosite: GeodataFileInfo,
+    pub geoip: GeodataFileInfo,
+}
+
+/// Geodata state for the Xray-mode Rules card; `force` re-downloads both
+/// `.dat` files from Loyalsoldier/v2ray-rules-dat first (routed via the
+/// running proxy when the core is up — same policy as core downloads).
+#[tauri::command]
+pub async fn refresh_geodata(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<GeodataInfo, String> {
+    let force = force.unwrap_or(false);
+    let proxy_url = if force {
+        current_download_proxy(&state)?
+    } else {
+        None
+    };
+    let app_data_dir = state.app_data_dir.clone();
+    if force {
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::core::download_missing_geodata(&app_data_dir, proxy_url.as_deref(), true)
+        })
+        .await
+        .map_err(|e| format!("geodata task: {e}"))?
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(geodata_info(&state.app_data_dir))
+}
+
+fn geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
+    let states = crate::core::geodata_state(app_data_dir);
+    let find = |name: &str| {
+        states
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, s)| GeodataFileInfo {
+                present: s.present,
+                bytes: s.bytes,
+                modified_at: s.modified_at,
+            })
+            .unwrap_or(GeodataFileInfo {
+                present: false,
+                bytes: 0,
+                modified_at: None,
+            })
+    };
+    GeodataInfo {
+        geosite: find("geosite.dat"),
+        geoip: find("geoip.dat"),
+    }
+}
+
 /// Absolute path of the running executable — the app's own install location,
 /// shown on the version tab next to the kernel binary path.
 #[tauri::command]

@@ -63,12 +63,17 @@ pub fn stage_bundled_geodata(app_data_dir: &Path, resource_dir: Option<&Path>) -
 
 /// Download missing dat files (sync; ureq — safe inside blocking workers).
 /// `proxy_url` mirrors the core-download routing (local mixed port when up).
-pub fn download_missing_geodata(app_data_dir: &Path, proxy_url: Option<&str>) -> AppResult<()> {
+/// `force` re-downloads even when the file already exists (manual refresh).
+pub fn download_missing_geodata(
+    app_data_dir: &Path,
+    proxy_url: Option<&str>,
+    force: bool,
+) -> AppResult<()> {
     let bin = crate::core::paths::core_dir(app_data_dir);
     std::fs::create_dir_all(&bin)?;
     for file in GEODATA_FILES {
         let dest = bin.join(file);
-        if dest.is_file() {
+        if dest.is_file() && !force {
             continue;
         }
         let url = format!("{GEODATA_BASE_URL}/{file}");
@@ -127,13 +132,54 @@ pub fn ensure_geodata(
     if stage_bundled_geodata(app_data_dir, resource_dir) {
         return Ok(());
     }
-    download_missing_geodata(app_data_dir, proxy_url)?;
+    download_missing_geodata(app_data_dir, proxy_url, false)?;
     if !geodata_present(app_data_dir) {
         return Err(AppError::Core(
             "geosite.dat / geoip.dat missing — geosite:/geoip: rules cannot load".into(),
         ));
     }
     Ok(())
+}
+
+/// Current state of one staged geodata file, for the Rules UI card.
+#[derive(Debug, Clone, Copy)]
+pub struct GeodataFileState {
+    pub present: bool,
+    pub bytes: u64,
+    /// Unix seconds of the file's last modification.
+    pub modified_at: Option<u64>,
+}
+
+pub fn geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileState); 2] {
+    let bin = crate::core::paths::core_dir(app_data_dir);
+    let mut out = Vec::new();
+    for file in GEODATA_FILES {
+        let path = bin.join(file);
+        let state = match std::fs::metadata(&path) {
+            Ok(meta) => GeodataFileState {
+                present: true,
+                bytes: meta.len(),
+                modified_at: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_secs())
+                    }),
+            },
+            Err(_) => GeodataFileState {
+                present: false,
+                bytes: 0,
+                modified_at: None,
+            },
+        };
+        out.push((file, state));
+    }
+    match out.try_into() {
+        Ok(arr) => arr,
+        Err(_) => unreachable!("GEODATA_FILES has exactly 2 entries"),
+    }
 }
 
 /// Xray's native tun inbound loads wintun.dll on Windows (not shipped in the
