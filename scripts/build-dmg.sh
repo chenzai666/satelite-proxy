@@ -3,10 +3,11 @@
 # Must be run on macOS (native or the requested arch via Rust target).
 #
 # Usage:
-#   scripts/build-dmg.sh                      # auto-detect host arch
+#   scripts/build-dmg.sh                      # auto-detect host arch, sing-box core only
 #   scripts/build-dmg.sh --arch arm64         # Apple Silicon
 #   scripts/build-dmg.sh --arch intel         # Intel (x86_64)
 #   scripts/build-dmg.sh --arch intel 1.13.18 # pin bundled sing-box version
+#   scripts/build-dmg.sh --all-cores          # also bundle the Xray + mihomo cores
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,6 +19,7 @@ usage() {
 
 ARCH="auto"
 CORE_VER=""
+ALL_CORES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +37,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --arch=*)
       ARCH="${1#*=}"
+      shift
+      ;;
+    --all-cores)
+      ALL_CORES=1
       shift
       ;;
     -*)
@@ -87,13 +93,19 @@ if [[ "$ARCH" == "intel" ]]; then
   TRIPLE="x86_64-apple-darwin"
   CORE_DIR="darwin-amd64"
   FETCH_SCRIPT="$ROOT/scripts/fetch-bundled-core-darwin-amd64.sh"
-  CONFIG_FILE="$ROOT/src-tauri/tauri.macos-intel.conf.json"
+  XRAY_FETCH="$ROOT/scripts/fetch-bundled-xray-darwin-amd64.sh"
+  MIHOMO_FETCH="$ROOT/scripts/fetch-bundled-mihomo-darwin-amd64.sh"
 else
   TRIPLE="aarch64-apple-darwin"
   CORE_DIR="darwin-arm64"
   FETCH_SCRIPT="$ROOT/scripts/fetch-bundled-core-darwin-arm64.sh"
-  CONFIG_FILE=""
+  XRAY_FETCH="$ROOT/scripts/fetch-bundled-xray-darwin-arm64.sh"
+  MIHOMO_FETCH="$ROOT/scripts/fetch-bundled-mihomo-darwin-arm64.sh"
 fi
+case "$ARCH" in
+  intel) SINGBOX_ONLY_CONFIG="$ROOT/src-tauri/tauri.singbox-darwin-amd64.conf.json" ;;
+  *)     SINGBOX_ONLY_CONFIG="$ROOT/src-tauri/tauri.singbox-darwin-arm64.conf.json" ;;
+esac
 
 command -v pnpm >/dev/null || { echo "pnpm not found in PATH" >&2; exit 1; }
 command -v cargo >/dev/null || { echo "cargo not found in PATH" >&2; exit 1; }
@@ -124,6 +136,28 @@ RULE_SETS_DIR="$ROOT/src-tauri/resources/rule-sets"
 if [[ ! -f "$RULE_SETS_DIR/system-geosite-cn.srs" ]]; then
   echo "built-in rule sets missing, fetching..."
   "$ROOT/scripts/fetch-bundled-rule-sets.sh"
+fi
+
+# --- extra cores: bundle Xray + mihomo, or switch to the sing-box-only config.
+# The base config lists their resources too — a missing file fails the
+# bundler, so the sing-box-only build swaps in the slim resource overlay.
+CONFIG_FILE=""
+if [[ "$ARCH" == "intel" && "$ALL_CORES" == "1" ]]; then
+  CONFIG_FILE="$ROOT/src-tauri/tauri.macos-intel.conf.json"
+fi
+if [[ "$ALL_CORES" == "1" ]]; then
+  echo "AllCores: bundling Xray + mihomo alongside sing-box..."
+  if [[ ! -x "$ROOT/src-tauri/resources/bin/$CORE_DIR/xray" ]]; then
+    echo "xray core missing ($CORE_DIR), fetching..."
+    "$XRAY_FETCH"
+  fi
+  if [[ ! -x "$ROOT/src-tauri/resources/bin/$CORE_DIR/mihomo" ]]; then
+    echo "mihomo core missing ($CORE_DIR), fetching..."
+    "$MIHOMO_FETCH"
+  fi
+else
+  echo "Bundling sing-box only (pass --all-cores to include Xray + mihomo)."
+  CONFIG_FILE="$SINGBOX_ONLY_CONFIG"
 fi
 
 echo "Installing JS dependencies..."

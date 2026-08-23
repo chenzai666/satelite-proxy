@@ -58,13 +58,19 @@ cd src-tauri && cargo fmt / cargo clippy          # 标准 Rust 工具链
 
 ```bash
 # macOS DMG（产物: src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/）
-./scripts/build-dmg.sh              # 按本机架构
+./scripts/build-dmg.sh                        # 按本机架构，仅 sing-box 内核（默认）
 ./scripts/build-dmg.sh --arch arm64
-./scripts/build-dmg.sh --arch intel # 交叉编译；等价 build-dmg-intel.sh
+./scripts/build-dmg.sh --arch intel           # 交叉编译；等价 build-dmg-intel.sh
+./scripts/build-dmg.sh --all-cores            # 额外打包 Xray + mihomo（缺失自动 fetch）
 
 # Windows（产物: src-tauri/target/release/bundle/nsis/ 或 .../msi/）
-pwsh scripts/build-windows.ps1              # NSIS 安装包（默认）
-pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
+pwsh scripts/build-windows.ps1                        # NSIS 安装包，仅 sing-box（默认）
+pwsh scripts/build-windows.ps1 -Bundle msi            # MSI
+pwsh scripts/build-windows.ps1 -AllCores              # 额外打包 Xray + mihomo（缺失自动 fetch）
+
+打包默认只含 sing-box 内核（经 `tauri.singbox-<平台>.conf.json` overlay 瘦身 resources，
+否则缺失文件会让 bundler 失败）；`--all-cores`/`-AllCores` 才把 Xray+mihomo（含 geodata）
+打进安装包，缺失时自动调 fetch 脚本。三入口切内核 UI 不受影响——未打包的内核可经设置页下载。
 ```
 
 打包脚本会自动拉取对应平台的官方 sing-box 并打进安装包，无需手动准备。
