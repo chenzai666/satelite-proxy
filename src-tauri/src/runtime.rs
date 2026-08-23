@@ -843,16 +843,37 @@ impl Runtime {
                 "no nodes; import a subscription first".into(),
             ));
         }
-        let unsupported: Vec<&str> = nodes
+        // Xray cannot serve every protocol. Mixed subscriptions are fine —
+        // build_xray_config skips incompatible nodes with a warning — but a
+        // subscription with zero compatible nodes cannot run at all.
+        let supported_count = nodes
             .iter()
-            .filter(|n| !CoreKind::Xray.supports(n.protocol))
-            .map(|n| n.protocol.as_str())
-            .collect();
+            .filter(|n| CoreKind::Xray.supports(n.protocol))
+            .count();
+        if supported_count == 0 {
+            return Err(AppError::Config(
+                "当前启用的节点均不被 Xray 内核支持（仅支持 vmess/vless/shadowsocks/trojan/socks5/http/wireguard）。请导入兼容订阅或切回 sing-box 内核".into(),
+            ));
+        }
+        let unsupported: Vec<&str> = {
+            let mut kinds: Vec<&str> = nodes
+                .iter()
+                .filter(|n| !CoreKind::Xray.supports(n.protocol))
+                .map(|n| n.protocol.as_str())
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            kinds
+        };
         if !unsupported.is_empty() {
-            return Err(AppError::Config(format!(
-                "Xray 内核不支持协议 {}（vmess/vless/shadowsocks/trojan/socks5/http/wireguard 之外）。请移除相关节点或切回 sing-box 内核",
-                unsupported.join("/")
-            )));
+            let skipped = nodes.len() - supported_count;
+            crate::app_log::warn(
+                "xray_config",
+                format!(
+                    "Xray 内核跳过 {skipped} 个不支持协议（{}）的节点",
+                    unsupported.join("/")
+                ),
+            );
         }
 
         ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
@@ -876,8 +897,23 @@ impl Runtime {
 
         let built = build_xray_config(&nodes, &build_options(store, String::new()))?;
         let config_path = write_active_config(app_data_dir, &built)?;
-        if store.settings.current_node_id.is_none() {
-            if let Some(first) = nodes.first() {
+        // The generator falls back to the first supported node when the
+        // persisted pick is incompatible (or absent) — mirror that here so
+        // the UI's current node matches what the config actually routes
+        // through, and node switching stays on a usable node.
+        let needs_pick = store
+            .settings
+            .current_node_id
+            .as_deref()
+            .map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .is_some_and(|n| !CoreKind::Xray.supports(n.protocol))
+            })
+            .unwrap_or(true);
+        if needs_pick {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Xray.supports(n.protocol)) {
                 store.settings.current_node_id = Some(first.id.clone());
             }
         }
