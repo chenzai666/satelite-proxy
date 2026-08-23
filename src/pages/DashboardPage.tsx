@@ -889,7 +889,16 @@ export function DashboardPage({
                 className="btn-pill ghost dash-more-btn"
                 aria-expanded={moreOpen}
                 aria-haspopup="menu"
-                onClick={() => setMoreOpen((v) => !v)}
+                onClick={() => {
+                  setMoreOpen((v) => {
+                    // Fresh open: submenus start closed (no stale hover state).
+                    if (!v) {
+                      setConfigMenuOpen(false);
+                      setCoreMenuOpen(false);
+                    }
+                    return !v;
+                  });
+                }}
               >
                 ···
               </button>
@@ -930,14 +939,25 @@ export function DashboardPage({
                   >
                     {t("common.preview")}
                   </button>
-                  <div className="dash-more-sub">
+                  {/* Submenus open on hover (click still works for touch) and
+                      are mutually exclusive — hovering one closes the other. */}
+                  <div
+                    className="dash-more-sub"
+                    onPointerEnter={() => {
+                      setConfigMenuOpen(true);
+                      setCoreMenuOpen(false);
+                    }}
+                  >
                     <button
                       type="button"
                       role="menuitem"
                       aria-haspopup="menu"
                       aria-expanded={configMenuOpen}
                       disabled={busy}
-                      onClick={() => setConfigMenuOpen((v) => !v)}
+                      onClick={() => {
+                        setConfigMenuOpen(true);
+                        setCoreMenuOpen(false);
+                      }}
                     >
                       <span>{t("dashboard.pickConfig")}</span>
                       <span className="dash-more-caret" aria-hidden>
@@ -991,14 +1011,23 @@ export function DashboardPage({
                       </div>
                     )}
                   </div>
-                  <div className="dash-more-sub">
+                  <div
+                    className="dash-more-sub"
+                    onPointerEnter={() => {
+                      setCoreMenuOpen(true);
+                      setConfigMenuOpen(false);
+                    }}
+                  >
                     <button
                       type="button"
                       role="menuitem"
                       aria-haspopup="menu"
                       aria-expanded={coreMenuOpen}
                       disabled={busy}
-                      onClick={() => setCoreMenuOpen((v) => !v)}
+                      onClick={() => {
+                        setCoreMenuOpen(true);
+                        setConfigMenuOpen(false);
+                      }}
                     >
                       <span>{t("dashboard.pickCore")}</span>
                       <span className="dash-more-caret" aria-hidden>
