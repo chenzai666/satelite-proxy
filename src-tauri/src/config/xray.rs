@@ -1,0 +1,1187 @@
+//! Build Xray JSON from normalized [`ProxyNode`]s — the Xray counterpart of
+//! `config/builder.rs` (sing-box). The two generators are fully independent
+//! (same pattern as v2rayN's `CoreConfigSingboxService` vs
+//! `CoreConfigV2rayService`) and only share the input domain model.
+//!
+//! Key semantic differences vs sing-box, by design:
+//! - No `selector` outbound: Xray has no runtime node-switch API. The main
+//!   target is the selected node's own outbound; switching nodes regenerates
+//!   the config and restarts the core.
+//! - `auto_select=kernel` maps to a `routing.balancers` entry with the
+//!   `leastPing` strategy plus a top-level `observatory` (v2rayN scheme).
+//! - Builtin remote rule sets are expressed as `geosite:` / `geoip:`
+//!   matchers (requires geosite.dat / geoip.dat via XRAY_LOCATION_ASSET).
+//!   User-added remote `.srs` sets are sing-box-only and skipped here.
+//! - Per-connection observability does not exist; traffic totals come from
+//!   the `metrics` module (`/debug/vars`) configured below.
+
+use crate::config::builder::{
+    effective_route_rules, outbound_tag, resolve_selected_tag, BuildOptions, BuiltConfig,
+};
+use crate::config::punycode::to_ascii_domain;
+use crate::core::kind::CoreKind;
+use crate::domain::{
+    DnsAction, DomainMatcher, DnsRule, OutboundMode, Protocol, ProtocolConfig, ProxyNode,
+    RuleSet, RuleSetStrategy, RuleTarget, RuleType, Transport,
+};
+use crate::error::{AppError, AppResult};
+use serde_json::{json, Map, Value};
+
+/// Tag of the leastPing balancer used when `auto_select=kernel`.
+const BALANCER_TAG: &str = "proxy-balancer";
+/// `dns.tag` — inboundTag carried by queries of untagged DNS servers.
+const DNS_MODULE_TAG: &str = "dns-module";
+/// Tag of the direct domestic resolver server (matched via inboundTag).
+const DIRECT_DNS_TAG: &str = "direct-dns";
+/// All node outbound tags share this prefix (balancer/observatory selectors
+/// match by prefix).
+const NODE_TAG_PREFIX: &str = "node-";
+
+pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
+    let supported: Vec<ProxyNode> = nodes
+        .iter()
+        .filter(|n| CoreKind::Xray.supports(n.protocol))
+        .cloned()
+        .collect();
+    if supported.is_empty() {
+        return Err(AppError::Config(
+            "no Xray-compatible nodes (supports vmess/vless/shadowsocks/trojan/socks5/http/wireguard)".into(),
+        ));
+    }
+
+    let mut tags = Vec::new();
+    let mut outbounds = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for node in &supported {
+        match node_to_xray_outbound(node) {
+            Ok(outbound) => {
+                tags.push(outbound_tag(node));
+                outbounds.push(outbound);
+            }
+            Err(e) => skipped.push(format!("{}: {e}", node.name)),
+        }
+    }
+    if outbounds.is_empty() {
+        return Err(AppError::Config(format!(
+            "failed to map any node to an Xray outbound: {}",
+            skipped.join("; ")
+        )));
+    }
+    for reason in &skipped {
+        crate::app_log::warn("xray_config", format!("skipped node: {reason}"));
+    }
+
+    let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
+    // kernel auto-select → balancer; otherwise the selected node's outbound.
+    let main_target = if opts.auto_select.is_kernel() {
+        BALANCER_TAG.to_string()
+    } else {
+        selected_tag.clone()
+    };
+
+    let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
+    let (route_rules, dns_egress_rules) =
+        build_routing(opts, &supported, &tags, &effective_rules, &main_target);
+
+    let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
+    let inbounds = build_inbounds(opts);
+
+    outbounds.push(json!({ "tag": "direct", "protocol": "freedom" }));
+    outbounds.push(json!({ "tag": "block", "protocol": "blackhole" }));
+    if opts.tun_enabled {
+        // Hand raw UDP/53 traffic arriving through the tun inbound to the
+        // built-in DNS module (which applies the split above).
+        outbounds.push(json!({ "tag": "dns-out", "protocol": "dns" }));
+    }
+
+    let mut config = Map::new();
+    config.insert("log".into(), json!({ "loglevel": xray_log_level(&opts.log_level) }));
+    config.insert("dns".into(), dns);
+    config.insert("inbounds".into(), Value::Array(inbounds));
+    config.insert("outbounds".into(), Value::Array(outbounds));
+    let mut routing = Map::new();
+    routing.insert("domainStrategy".into(), json!("IPIfNonMatch"));
+    let mut rules = Vec::new();
+    if opts.tun_enabled {
+        rules.extend(tun_safety_rules());
+        rules.push(json!({
+            "type": "field", "inboundTag": ["tun-in"], "network": "udp", "port": "53",
+            "outboundTag": "dns-out"
+        }));
+    }
+    rules.extend(dns_egress_rules);
+    if opts.block_quic {
+        // Xray has no sniff-based QUIC rejection; blocking UDP/443 achieves
+        // the same "make browsers fall back to TCP" effect.
+        rules.push(json!({
+            "type": "field", "network": "udp", "port": "443", "outboundTag": "block"
+        }));
+    }
+    rules.extend(route_rules);
+    if opts.bypass_lan && opts.outbound_mode == OutboundMode::Rule {
+        rules.push(json!({
+            "type": "field",
+            "domain": ["domain:local", "domain:localhost"],
+            "outboundTag": "direct"
+        }));
+        rules.push(json!({
+            "type": "field", "ip": ["geoip:private"], "outboundTag": "direct"
+        }));
+    }
+    // Final rule: Rule mode honors route_final; Global/Direct force the mode.
+    // When kernel auto-select is on and the final target is the balancer, the
+    // rule references `balancerTag` instead of `outboundTag`.
+    let final_outbound = match opts.outbound_mode {
+        OutboundMode::Rule => match opts.normalized_route_final() {
+            "direct" => "direct".to_string(),
+            "block" => "block".to_string(),
+            _ => main_target.clone(),
+        },
+        OutboundMode::Global => main_target.clone(),
+        OutboundMode::Direct => "direct".to_string(),
+    };
+    let final_uses_balancer =
+        opts.auto_select.is_kernel() && final_outbound == main_target;
+    if final_uses_balancer {
+        rules.push(json!({
+            "type": "field", "network": "tcp,udp", "balancerTag": BALANCER_TAG
+        }));
+    } else {
+        rules.push(json!({
+            "type": "field", "network": "tcp,udp", "outboundTag": final_outbound
+        }));
+    }
+    routing.insert("rules".into(), Value::Array(rules));
+    if opts.auto_select.is_kernel() {
+        routing.insert(
+            "balancers".into(),
+            json!([{
+                "tag": BALANCER_TAG,
+                "selector": [NODE_TAG_PREFIX],
+                "strategy": { "type": "leastPing" },
+            }]),
+        );
+    }
+    config.insert("routing".into(), Value::Object(routing));
+    if opts.auto_select.is_kernel() {
+        let probe_url = if opts.probe_url.trim().is_empty() {
+            "https://www.gstatic.com/generate_204"
+        } else {
+            opts.probe_url.trim()
+        };
+        config.insert(
+            "observatory".into(),
+            json!({
+                "subjectSelector": [NODE_TAG_PREFIX],
+                "probeURL": probe_url,
+                "probeInterval": "3m",
+                "enableConcurrency": true,
+            }),
+        );
+    }
+    // Traffic stats: polled from /debug/vars by api::xray_metrics.
+    config.insert("stats".into(), json!({}));
+    config.insert(
+        "policy".into(),
+        json!({
+            "system": {
+                "statsOutboundUplink": true,
+                "statsOutboundDownlink": true,
+            }
+        }),
+    );
+    config.insert(
+        "metrics".into(),
+        json!({ "listen": format!("127.0.0.1:{}", opts.api_port) }),
+    );
+
+    Ok(BuiltConfig {
+        value: Value::Object(config),
+        outbound_tags: tags,
+        selected_tag,
+    })
+}
+
+fn xray_log_level(level: &str) -> &'static str {
+    match level.to_ascii_lowercase().as_str() {
+        "trace" | "debug" => "debug",
+        "info" | "" => "info",
+        "warn" | "warning" => "warning",
+        "error" | "fatal" | "panic" => "error",
+        _ => "warning",
+    }
+}
+
+// —— inbounds ——
+
+fn sniffing(fake_dns: bool) -> Value {
+    let mut dest_override = vec!["http", "tls"];
+    if fake_dns {
+        dest_override.push("fakedns");
+    }
+    json!({
+        "enabled": true,
+        "destOverride": dest_override,
+    })
+}
+
+fn build_inbounds(opts: &BuildOptions) -> Vec<Value> {
+    let fake_dns = opts.tun_enabled && opts.dns.fake_ip.enabled;
+    let mut inbounds = vec![json!({
+        "tag": "mixed-in",
+        "listen": if opts.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+        "port": opts.mixed_port,
+        "protocol": "mixed",
+        "settings": { "auth": "noauth", "udp": true },
+        "sniffing": sniffing(fake_dns),
+    })];
+    for inb in &opts.extra_inbounds {
+        inbounds.push(json!({
+            "tag": format!("in-mixed-{}", inb.port),
+            "listen": if inb.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+            "port": inb.port,
+            "protocol": "mixed",
+            "settings": { "auth": "noauth", "udp": true },
+            "sniffing": sniffing(fake_dns),
+        }));
+    }
+    if opts.tun_enabled {
+        let mut gateway = vec!["172.18.0.1/30"];
+        if opts.tun_ipv6 {
+            gateway.push("fdfe:dcba:9876::1/126");
+        }
+        inbounds.push(json!({
+            "tag": "tun-in",
+            "protocol": "tun",
+            "settings": {
+                "name": "satelite_tun",
+                "MTU": 9000,
+                "gateway": gateway,
+                "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
+                "autoOutboundsInterface": "auto",
+            },
+            "sniffing": sniffing(true),
+        }));
+    }
+    inbounds
+}
+
+/// Block NetBIOS/mDNS-style UDP noise and multicast when TUN grabs all
+/// traffic (v2rayN `SampleTunRules`).
+fn tun_safety_rules() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "field", "network": "udp", "port": "135,137-139,5353",
+            "outboundTag": "block"
+        }),
+        json!({
+            "type": "field",
+            "ip": ["224.0.0.0/3", "ff00::/8"],
+            "outboundTag": "block"
+        }),
+    ]
+}
+
+// —— routing ——
+
+/// Xray domain-list entry for one of our rule matchers. Plain strings are
+/// substring matches (keywords), `domain:` is suffix, `full:` exact.
+fn domain_entry(rule_type: RuleType, payload: &str) -> Option<String> {
+    match rule_type {
+        RuleType::Domain => Some(format!("full:{}", to_ascii_domain(payload))),
+        RuleType::DomainSuffix => Some(format!("domain:{}", to_ascii_domain(payload))),
+        RuleType::DomainKeyword => Some(payload.to_string()),
+        // Inline geoip was sing-box-legacy only; Geoip payloads already fold
+        // into IpCidr-style matching upstream.
+        RuleType::IpCidr | RuleType::Geoip => None,
+        RuleType::Process => None,
+    }
+}
+
+fn ip_entry(payload: &str) -> String {
+    if payload.starts_with("geoip:") {
+        payload.to_string()
+    } else {
+        format!("geoip:{payload}")
+    }
+}
+
+/// Map one rule to an Xray field rule. `main_target` substitutes for the
+/// sing-box `proxy` selector group.
+fn rule_to_xray(
+    rule: &crate::domain::Rule,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    main_target: &str,
+) -> Option<Value> {
+    use crate::domain::Rule;
+    let payload = rule.payload.trim();
+    if payload.is_empty() || matches!(rule.rule_type, RuleType::Geoip) {
+        return None;
+    }
+    let Rule { target, node_id, .. } = rule;
+    // Node pins point straight at the node outbound; Smart pools route to the
+    // main target (the app-level smart switch rewrites it on restart).
+    let outbound = match target {
+        RuleTarget::Direct => "direct".to_string(),
+        RuleTarget::Block => "block".to_string(),
+        RuleTarget::Proxy | RuleTarget::Smart => main_target.to_string(),
+        RuleTarget::Node => {
+            let pinned = node_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .and_then(|id| nodes.iter().find(|n| n.id == id))
+                .map(outbound_tag)
+                .filter(|tag| tags.iter().any(|t| t == tag));
+            pinned.unwrap_or_else(|| main_target.to_string())
+        }
+    };
+    let mut obj = Map::new();
+    obj.insert("type".into(), json!("field"));
+    match rule.rule_type {
+        RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword => {
+            obj.insert(
+                "domain".into(),
+                json!([domain_entry(rule.rule_type, payload)?]),
+            );
+        }
+        RuleType::IpCidr => {
+            obj.insert("ip".into(), json!([payload]));
+        }
+        RuleType::Process => {
+            obj.insert("process".into(), json!([payload]));
+        }
+        RuleType::Geoip => {
+            obj.insert("ip".into(), json!([ip_entry(payload)]));
+        }
+    }
+    obj.insert("outboundTag".into(), json!(outbound));
+    Some(Value::Object(obj))
+}
+
+/// Whole-set rule for a builtin remote set expressed via geodata matchers.
+fn builtin_remote_xray_rule(set: &RuleSet, main_target: &str) -> Option<Value> {
+    let matcher = match set.id.as_str() {
+        "system-geosite-cn" => json!({ "domain": ["geosite:cn"] }),
+        "system-geoip-cn" => json!({ "ip": ["geoip:cn"] }),
+        "system-geolocation-not-cn" => json!({ "domain": ["geosite:geolocation-!cn"] }),
+        _ => return None,
+    };
+    let outbound = match set.strategy {
+        RuleSetStrategy::Direct => "direct",
+        RuleSetStrategy::Block => "block",
+        _ => main_target,
+    };
+    let mut obj = matcher.as_object().cloned()?;
+    obj.insert("type".into(), json!("field"));
+    obj.insert("outboundTag".into(), json!(outbound));
+    Some(Value::Object(obj))
+}
+
+/// Build (route rules, dns egress routing rules) for the Xray config.
+fn build_routing(
+    opts: &BuildOptions,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    effective_rules: &[crate::domain::Rule],
+    main_target: &str,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut route_rules = Vec::new();
+    match opts.outbound_mode {
+        OutboundMode::Rule => {
+            if opts.rule_sets.is_empty() {
+                for rule in effective_rules {
+                    if let Some(value) = rule_to_xray(rule, nodes, tags, main_target) {
+                        route_rules.push(value);
+                    }
+                }
+            } else {
+                for set in opts.rule_sets.iter().filter(|s| s.enabled) {
+                    if set.remote.is_some() {
+                        if let Some(rule) = builtin_remote_xray_rule(set, main_target) {
+                            route_rules.push(rule);
+                        } else {
+                            crate::app_log::warn(
+                                "xray_config",
+                                format!(
+                                    "remote rule set '{}' uses the sing-box .srs format and is skipped under Xray",
+                                    set.name
+                                ),
+                            );
+                        }
+                    } else {
+                        // Local set: route per rule (same clamping the sing-box
+                        // path applies via effective_route_rules).
+                        let mut rules: Vec<_> = set
+                            .rules
+                            .iter()
+                            .filter(|r| r.enabled && !r.payload.trim().is_empty())
+                            .cloned()
+                            .collect();
+                        rules.sort_by_key(|r| r.ord);
+                        for rule in rules {
+                            let mut rule = rule;
+                            if let Some(target) = set.strategy.route_target() {
+                                rule.target = target;
+                            }
+                            if let Some(value) = rule_to_xray(&rule, nodes, tags, main_target) {
+                                route_rules.push(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Global/Direct ignore user rules entirely (final rule decides).
+        OutboundMode::Global | OutboundMode::Direct => {}
+    }
+
+    // DNS egress split: block-listed domains, then the tagged direct
+    // resolver, then module queries via the main target.
+    let mut dns_egress = Vec::new();
+    let blocked_dns: Vec<String> = opts
+        .dns
+        .enabled_dns_rules()
+        .into_iter()
+        .filter(|r| r.enabled && matches!(r.action, DnsAction::Block))
+        .filter_map(|r| dns_domain_entry(r.matcher, r.payload.trim()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !blocked_dns.is_empty() {
+        dns_egress.push(json!({
+            "type": "field",
+            "domain": blocked_dns,
+            "inboundTag": [DNS_MODULE_TAG],
+            "outboundTag": "block",
+        }));
+    }
+    dns_egress.push(json!({
+        "type": "field",
+        "inboundTag": [DIRECT_DNS_TAG],
+        "outboundTag": "direct",
+    }));
+    dns_egress.push(json!({
+        "type": "field",
+        "inboundTag": [DNS_MODULE_TAG],
+        "outboundTag": if opts.outbound_mode == OutboundMode::Direct {
+            "direct"
+        } else {
+            main_target
+        },
+    }));
+    (route_rules, dns_egress)
+}
+
+fn dns_domain_entry(matcher: DomainMatcher, payload: &str) -> Option<String> {
+    if payload.is_empty() {
+        return None;
+    }
+    Some(match matcher {
+        DomainMatcher::Domain => format!("full:{}", to_ascii_domain(payload)),
+        DomainMatcher::DomainSuffix => format!("domain:{}", to_ascii_domain(payload)),
+        DomainMatcher::DomainKeyword => payload.to_string(),
+    })
+}
+
+// —— dns ——
+
+fn build_dns(
+    opts: &BuildOptions,
+    sets: &[RuleSet],
+    effective_rules: &[crate::domain::Rule],
+) -> Value {
+    // Classify domains per resolver: remote (untagged server → via proxy) and
+    // domestic (tagged direct server → direct egress).
+    let mut remote_domains: Vec<String> = Vec::new();
+    let mut domestic_domains: Vec<String> = Vec::new();
+    let mut local_domains: Vec<String> = Vec::new();
+
+    let mut push_dns_rule = |rule: &DnsRule| {
+        let Some(entry) = dns_domain_entry(rule.matcher, rule.payload.trim()) else {
+            return;
+        };
+        match rule.action {
+            DnsAction::Remote => remote_domains.push(entry),
+            DnsAction::Domestic => domestic_domains.push(entry),
+            DnsAction::Local => local_domains.push(entry),
+            DnsAction::Block => {}
+        }
+    };
+    for rule in opts.dns.enabled_dns_rules().into_iter().filter(|r| r.enabled) {
+        push_dns_rule(&rule);
+    }
+
+    // Rule-set level DNS strategy: local sets classify their domain rules;
+    // builtin remote sets map onto the equivalent geosite category.
+    let effective_ids: std::collections::HashSet<&str> = effective_rules
+        .iter()
+        .map(|r| r.id.as_str())
+        .collect();
+    for set in sets.iter().filter(|s| s.enabled) {
+        if set.remote.is_some() {
+            let geosite = match set.id.as_str() {
+                "system-geosite-cn" => Some("geosite:cn"),
+                "system-geoip-cn" => None, // ip-only set: no DNS classification
+                "system-geolocation-not-cn" => Some("geosite:geolocation-!cn"),
+                _ => None,
+            };
+            if let Some(geosite) = geosite {
+                match set.dns_strategy {
+                    crate::domain::RuleSetDnsStrategy::Domestic => domestic_domains.push(geosite.into()),
+                    crate::domain::RuleSetDnsStrategy::Local => local_domains.push(geosite.into()),
+                    crate::domain::RuleSetDnsStrategy::Remote => remote_domains.push(geosite.into()),
+                }
+            }
+            continue;
+        }
+        for rule in set.rules.iter().filter(|r| r.enabled) {
+            // Only rules that actually reach routing carry DNS meaning.
+            if !effective_ids.contains(rule.id.as_str()) {
+                continue;
+            }
+            let entry = match rule.rule_type {
+                RuleType::Domain | RuleType::DomainSuffix | RuleType::DomainKeyword => {
+                    match domain_entry(rule.rule_type, rule.payload.trim()) {
+                        Some(entry) if !rule.payload.trim().is_empty() => entry,
+                        _ => continue,
+                    }
+                }
+                _ => continue,
+            };
+            match set.dns_strategy {
+                crate::domain::RuleSetDnsStrategy::Domestic => domestic_domains.push(entry),
+                crate::domain::RuleSetDnsStrategy::Local => local_domains.push(entry),
+                crate::domain::RuleSetDnsStrategy::Remote => remote_domains.push(entry),
+            }
+        }
+    }
+
+    // Static hosts (highest priority answers), gated by the master switch.
+    let mut hosts = Map::new();
+    let effective_hosts = opts.dns.effective_hosts();
+    if effective_hosts.enabled {
+        for entry in &effective_hosts.entries {
+            if entry.enabled && !entry.domain.trim().is_empty() && !entry.addr.trim().is_empty() {
+                hosts.insert(
+                    to_ascii_domain(entry.domain.trim()).to_string(),
+                    json!(entry.addr.trim()),
+                );
+            }
+        }
+    }
+
+    let use_fakeip = opts.tun_enabled && opts.dns.fake_ip.enabled;
+    let mut servers: Vec<Value> = Vec::new();
+
+    let dns_final = opts.dns.normalize_dns_final();
+
+    // Remote resolver (untagged → queries carry dns.tag and route via proxy).
+    let mut remote = Map::new();
+    remote.insert("address".into(), json!("1.1.1.1"));
+    if !remote_domains.is_empty() {
+        remote.insert("domains".into(), json!(remote_domains));
+    }
+    // Domestic resolver (tagged → queries route direct). skipFallback unless
+    // it is the primary per dns_final.
+    let mut domestic = Map::new();
+    domestic.insert("address".into(), json!("223.5.5.5"));
+    domestic.insert("tag".into(), json!(DIRECT_DNS_TAG));
+    if !domestic_domains.is_empty() {
+        domestic.insert("domains".into(), json!(domestic_domains));
+    }
+    // System resolver for explicitly local-classified domains.
+    let mut local = Map::new();
+    local.insert("address".into(), json!("localhost"));
+    if !local_domains.is_empty() {
+        local.insert("domains".into(), json!(local_domains));
+    }
+
+    match dns_final {
+        "domestic" => {
+            servers.push(Value::Object(domestic));
+            servers.push(Value::Object(remote));
+        }
+        "local" => {
+            servers.push(Value::Object(local));
+            servers.push(Value::Object(remote));
+            servers.push(Value::Object(domestic));
+        }
+        // remote (default): remote first, domestic only for its domains.
+        _ => {
+            domestic.insert("skipFallback".into(), json!(true));
+            servers.push(Value::Object(remote));
+            servers.push(Value::Object(domestic));
+        }
+    }
+    // When leak protection is off, the system resolver is a last-resort
+    // fallback; with it on (default) we never silently fall back to system.
+    if !opts.dns.leak_protect {
+        servers.push(json!("localhost"));
+    }
+    if use_fakeip {
+        servers.push(json!("fakedns"));
+    }
+
+    let mut dns = Map::new();
+    if !hosts.is_empty() {
+        dns.insert("hosts".into(), Value::Object(hosts));
+    }
+    dns.insert("servers".into(), Value::Array(servers));
+    dns.insert("tag".into(), json!(DNS_MODULE_TAG));
+    if use_fakeip {
+        dns.insert(
+            "fakedns".into(),
+            json!([{ "ipPool": opts.dns.fake_ip.inet4_range, "poolSize": 65535 }]),
+        );
+    }
+    Value::Object(dns)
+}
+
+// —— outbounds ——
+
+fn node_to_xray_outbound(node: &ProxyNode) -> AppResult<Value> {
+    let tag = outbound_tag(node);
+    let (protocol, settings) = protocol_settings(node)?;
+    let mut obj = Map::new();
+    obj.insert("tag".into(), json!(tag));
+    obj.insert("protocol".into(), json!(protocol));
+    obj.insert("settings".into(), settings);
+    if let Some(stream) = stream_settings(node) {
+        obj.insert("streamSettings".into(), stream);
+    }
+    Ok(Value::Object(obj))
+}
+
+fn protocol_settings(node: &ProxyNode) -> AppResult<(&'static str, Value)> {
+    Ok(match &node.config {
+        ProtocolConfig::Vmess { uuid, alter_id, security } => (
+            "vmess",
+            json!({
+                "vnext": [{
+                    "address": node.server,
+                    "port": node.port,
+                    "users": [{
+                        "id": uuid,
+                        "alterId": alter_id,
+                        "security": security,
+                        "email": "t@t.tt",
+                    }],
+                }],
+            }),
+        ),
+        ProtocolConfig::Vless { uuid, flow, .. } => {
+            let mut user = Map::new();
+            user.insert("id".into(), json!(uuid));
+            user.insert("encryption".into(), json!("none"));
+            user.insert("email".into(), json!("t@t.tt"));
+            // XTLS flow disables mux (Xray requirement; we never enable mux anyway).
+            if let Some(flow) = flow.as_deref().filter(|f| !f.is_empty()) {
+                user.insert("flow".into(), json!(flow));
+            }
+            (
+                "vless",
+                json!({
+                    "vnext": [{
+                        "address": node.server,
+                        "port": node.port,
+                        "users": [Value::Object(user)],
+                    }],
+                }),
+            )
+        }
+        ProtocolConfig::Shadowsocks { method, password, plugin, .. } => {
+            if plugin.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                crate::app_log::warn(
+                    "xray_config",
+                    format!("node {}: SIP003 plugins are not supported under Xray; ignoring plugin", node.name),
+                );
+            }
+            (
+                "shadowsocks",
+                json!({
+                    "servers": [{
+                        "address": node.server,
+                        "port": node.port,
+                        "method": method,
+                        "password": password,
+                        "ota": false,
+                        "level": 1,
+                    }],
+                }),
+            )
+        }
+        ProtocolConfig::Trojan { password } => (
+            "trojan",
+            json!({
+                "servers": [{
+                    "address": node.server,
+                    "port": node.port,
+                    "password": password,
+                    "level": 1,
+                }],
+            }),
+        ),
+        ProtocolConfig::Socks5 { username, password } => {
+            let mut server = Map::new();
+            server.insert("address".into(), json!(node.server));
+            server.insert("port".into(), json!(node.port));
+            if let (Some(user), Some(pass)) = (username, password) {
+                if !user.is_empty() && !pass.is_empty() {
+                    server.insert("users".into(), json!([{ "user": user, "pass": pass, "level": 1 }]));
+                }
+            }
+            ("socks", json!({ "servers": [Value::Object(server)] }))
+        }
+        ProtocolConfig::Http { username, password, .. } => {
+            let mut settings = Map::new();
+            settings.insert("address".into(), json!(node.server));
+            settings.insert("port".into(), json!(node.port));
+            if let (Some(user), Some(pass)) = (username, password) {
+                if !user.is_empty() && !pass.is_empty() {
+                    settings.insert("user".into(), json!(user));
+                    settings.insert("pass".into(), json!(pass));
+                    settings.insert("level".into(), json!(1));
+                }
+            }
+            ("http", Value::Object(settings))
+        }
+        ProtocolConfig::WireGuard {
+            local_address,
+            private_key,
+            peer_public_key,
+            pre_shared_key,
+            reserved,
+            mtu,
+        } => {
+            let mut peer = Map::new();
+            peer.insert("publicKey".into(), json!(peer_public_key));
+            if let Some(psk) = pre_shared_key.as_deref().filter(|s| !s.is_empty()) {
+                peer.insert("preSharedKey".into(), json!(psk));
+            }
+            peer.insert(
+                "endpoint".into(),
+                json!(format!("{}:{}", node.server, node.port)),
+            );
+            let mut settings = Map::new();
+            settings.insert("secretKey".into(), json!(private_key));
+            settings.insert("address".into(), json!(local_address));
+            settings.insert("peers".into(), json!([Value::Object(peer)]));
+            if !reserved.is_empty() {
+                settings.insert("reserved".into(), json!(reserved));
+            }
+            if let Some(mtu) = mtu {
+                settings.insert("mtu".into(), json!(mtu));
+            }
+            ("wireguard", Value::Object(settings))
+        }
+        other => {
+            return Err(AppError::Config(format!(
+                "protocol {} is not supported by Xray",
+                other_name(other)
+            )))
+        }
+    })
+}
+
+fn other_name(config: &ProtocolConfig) -> &'static str {
+    match config {
+        ProtocolConfig::Hysteria2 { .. } => "hysteria2",
+        ProtocolConfig::Hysteria { .. } => "hysteria",
+        ProtocolConfig::Tuic { .. } => "tuic",
+        ProtocolConfig::ShadowTls { .. } => "shadowtls",
+        ProtocolConfig::Ssh { .. } => "ssh",
+        ProtocolConfig::Naive { .. } => "naive",
+        ProtocolConfig::Tor { .. } => "tor",
+        ProtocolConfig::AnyTls { .. } => "anytls",
+        ProtocolConfig::Snell { .. } => "snell",
+        _ => "unknown",
+    }
+}
+
+/// streamSettings: transport (network) + security (tls / reality). Returns
+/// `None` for a plain TCP node without TLS (nothing meaningful to configure).
+fn stream_settings(node: &ProxyNode) -> Option<Value> {
+    let transport = node.transport.as_ref();
+    let tls = node.tls.as_ref().filter(|t| t.enabled);
+    if matches!(transport, None | Some(Transport::Tcp)) && tls.is_none() {
+        return None;
+    }
+    let network = match transport {
+        None | Some(Transport::Tcp) => "tcp",
+        Some(Transport::Ws { .. }) => "ws",
+        Some(Transport::Grpc { .. }) => "grpc",
+        Some(Transport::Http { .. }) => "http",
+        Some(Transport::HttpUpgrade { .. }) => "httpupgrade",
+    };
+
+    let is_reality = tls.is_some_and(|t| t.reality_public_key.is_some());
+
+    let mut stream = Map::new();
+    stream.insert("network".into(), json!(network));
+
+    match transport {
+        Some(Transport::Ws { path, headers, max_early_data }) => {
+            let mut ws = Map::new();
+            if let Some(host) = headers
+                .as_ref()
+                .and_then(|h| h.get("Host").or_else(|| h.get("host")))
+            {
+                ws.insert("host".into(), json!(host));
+            }
+            if let Some(path) = path.as_deref().filter(|p| !p.is_empty()) {
+                ws.insert("path".into(), json!(path));
+            }
+            if let Some(ed) = max_early_data.filter(|v| *v > 0) {
+                ws.insert("maxEarlyData".into(), json!(ed));
+            }
+            stream.insert("wsSettings".into(), Value::Object(ws));
+        }
+        Some(Transport::Grpc { service_name }) => {
+            let mut grpc = Map::new();
+            if let Some(name) = service_name.as_deref().filter(|s| !s.is_empty()) {
+                grpc.insert("serviceName".into(), json!(name));
+            }
+            stream.insert("grpcSettings".into(), Value::Object(grpc));
+        }
+        Some(Transport::Http { path, host }) => {
+            let mut http = Map::new();
+            if let Some(hosts) = host {
+                if !hosts.is_empty() {
+                    http.insert("host".into(), json!(hosts));
+                }
+            }
+            if let Some(path) = path.as_deref().filter(|p| !p.is_empty()) {
+                http.insert("path".into(), json!(path));
+            }
+            stream.insert("httpSettings".into(), Value::Object(http));
+        }
+        Some(Transport::HttpUpgrade { path, host }) => {
+            let mut hu = Map::new();
+            if let Some(host) = host.as_deref().filter(|s| !s.is_empty()) {
+                hu.insert("host".into(), json!(host));
+            }
+            if let Some(path) = path.as_deref().filter(|p| !p.is_empty()) {
+                hu.insert("path".into(), json!(path));
+            }
+            stream.insert("httpupgradeSettings".into(), Value::Object(hu));
+        }
+        _ => {}
+    }
+
+    if let Some(tls) = tls {
+        let fingerprint = tls.utls_fingerprint.as_deref().filter(|f| !f.is_empty());
+        if is_reality {
+            stream.insert("security".into(), json!("reality"));
+            let mut reality = Map::new();
+            reality.insert("fingerprint".into(), json!(fingerprint.unwrap_or("chrome")));
+            if let Some(sni) = tls.server_name.as_deref().filter(|s| !s.is_empty()) {
+                reality.insert("serverName".into(), json!(sni));
+            }
+            if let Some(pk) = tls.reality_public_key.as_deref() {
+                reality.insert("publicKey".into(), json!(pk));
+            }
+            if let Some(sid) = tls.reality_short_id.as_deref().filter(|s| !s.is_empty()) {
+                reality.insert("shortId".into(), json!(sid));
+            }
+            reality.insert("show".into(), json!(false));
+            stream.insert("realitySettings".into(), Value::Object(reality));
+        } else {
+            stream.insert("security".into(), json!("tls"));
+            let mut tls_settings = Map::new();
+            if let Some(sni) = tls.server_name.as_deref().filter(|s| !s.is_empty()) {
+                tls_settings.insert("serverName".into(), json!(sni));
+            }
+            if let Some(alpn) = tls.alpn.as_ref().filter(|a| !a.is_empty()) {
+                tls_settings.insert("alpn".into(), json!(alpn));
+            }
+            if let Some(fp) = fingerprint {
+                tls_settings.insert("fingerprint".into(), json!(fp));
+            }
+            if tls.insecure == Some(true) {
+                tls_settings.insert("allowInsecure".into(), json!(true));
+            }
+            stream.insert("tlsSettings".into(), Value::Object(tls_settings));
+        }
+    }
+
+    Some(Value::Object(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{
+        DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType, TlsConfig,
+        Transport,
+    };
+
+    fn vless_node(name: &str, flow: Option<&str>) -> ProxyNode {
+        ProxyNode {
+            id: String::new(),
+            name: name.into(),
+            protocol: Protocol::Vless,
+            server: "example.com".into(),
+            port: 443,
+            tls: Some(TlsConfig {
+                enabled: true,
+                server_name: Some("sni.example.com".into()),
+                insecure: None,
+                alpn: Some(vec!["h2".into(), "http/1.1".into()]),
+                utls_fingerprint: Some("chrome".into()),
+                reality_public_key: Some("pbk".into()),
+                reality_short_id: Some("sid01".into()),
+            }),
+            transport: Some(Transport::Ws {
+                path: Some("/ws".into()),
+                headers: None,
+                max_early_data: None,
+            }),
+            udp: None,
+            config: ProtocolConfig::Vless {
+                uuid: "uuid-1".into(),
+                flow: flow.map(str::to_string),
+                packet_encoding: "xudp".into(),
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+        .with_computed_id()
+    }
+
+    fn default_opts() -> BuildOptions {
+        BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: Vec::new(),
+            api_secret: String::new(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: Vec::new(),
+            rule_sets: Vec::new(),
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: String::new(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: true,
+        }
+    }
+
+    #[test]
+    fn builds_minimal_config_with_stats() {
+        let nodes = vec![vless_node("n1", None)];
+        let built = build_xray_config(&nodes, &default_opts()).expect("build");
+        let v = &built.value;
+        assert_eq!(v["log"]["loglevel"], "info");
+        assert_eq!(v["inbounds"][0]["protocol"], "mixed");
+        assert_eq!(v["inbounds"][0]["port"], 2080);
+        assert_eq!(v["metrics"]["listen"], "127.0.0.1:19090");
+        assert_eq!(v["policy"]["system"]["statsOutboundUplink"], true);
+        let outbounds = v["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds.len(), 3); // node + direct + block
+        assert_eq!(outbounds[1]["tag"], "direct");
+        assert_eq!(outbounds[1]["protocol"], "freedom");
+        assert_eq!(outbounds[2]["protocol"], "blackhole");
+        // final rule routes to the selected node (no selector in Xray)
+        let rules = v["routing"]["rules"].as_array().unwrap();
+        let last = rules.last().unwrap();
+        assert_eq!(last["outboundTag"], built.selected_tag);
+    }
+
+    #[test]
+    fn vless_outbound_reality_and_ws() {
+        let nodes = vec![vless_node("vision", Some("xtls-rprx-vision"))];
+        let built = build_xray_config(&nodes, &default_opts()).expect("build");
+        let outbound = &built.value["outbounds"][0];
+        assert_eq!(outbound["protocol"], "vless");
+        assert_eq!(outbound["settings"]["vnext"][0]["address"], "example.com");
+        let user = &outbound["settings"]["vnext"][0]["users"][0];
+        assert_eq!(user["id"], "uuid-1");
+        assert_eq!(user["encryption"], "none");
+        assert_eq!(user["flow"], "xtls-rprx-vision");
+        let stream = &outbound["streamSettings"];
+        assert_eq!(stream["network"], "ws");
+        assert_eq!(stream["wsSettings"]["path"], "/ws");
+        assert_eq!(stream["security"], "reality");
+        assert_eq!(stream["realitySettings"]["publicKey"], "pbk");
+        assert_eq!(stream["realitySettings"]["shortId"], "sid01");
+        assert_eq!(stream["realitySettings"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn vmess_outbound_shape() {
+        let mut node = vless_node("vm", None);
+        node.protocol = Protocol::Vmess;
+        node.config = ProtocolConfig::Vmess {
+            uuid: "u2".into(),
+            alter_id: 0,
+            security: "auto".into(),
+        };
+        node.tls = None;
+        node.transport = None;
+        let built = build_xray_config(&[node], &default_opts()).expect("build");
+        let outbound = &built.value["outbounds"][0];
+        assert_eq!(outbound["protocol"], "vmess");
+        assert_eq!(outbound["settings"]["vnext"][0]["users"][0]["alterId"], 0);
+        assert!(outbound.get("streamSettings").is_none());
+    }
+
+    #[test]
+    fn skips_unsupported_protocols() {
+        let mut bad = vless_node("hy2", None);
+        bad.protocol = Protocol::Hysteria2;
+        bad.config = ProtocolConfig::Hysteria2 { password: "x".into(), up_mbps: None, down_mbps: None, obfs: None, obfs_password: None };
+        let good = vless_node("ok", None);
+        let built = build_xray_config(&[bad, good], &default_opts()).expect("build");
+        assert_eq!(built.value["outbounds"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn fails_when_no_supported_nodes() {
+        let mut bad = vless_node("tuic", None);
+        bad.protocol = Protocol::Tuic;
+        bad.config = ProtocolConfig::Tuic {
+            uuid: "u".into(),
+            password: "p".into(),
+            congestion_control: None,
+            udp_relay_mode: None,
+            zero_rtt_handshake: false,
+        };
+        assert!(build_xray_config(&[bad], &default_opts()).is_err());
+    }
+
+    #[test]
+    fn domain_matcher_prefixes() {
+        use crate::domain::Rule;
+        let nodes = vec![vless_node("n", None)];
+        let mut opts = default_opts();
+        opts.rules = vec![
+            Rule::new(RuleType::Domain, "a.com".into(), RuleTarget::Direct, 10),
+            Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Proxy, 20),
+            Rule::new(RuleType::DomainKeyword, "keyword".into(), RuleTarget::Block, 30),
+            Rule::new(RuleType::Process, "chrome.exe".into(), RuleTarget::Direct, 40),
+        ];
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let find = |needle: &str| {
+            rules
+                .iter()
+                .find(|r| r.to_string().contains(needle))
+                .unwrap_or_else(|| panic!("rule containing {needle} not found in {rules:?}"))
+                .clone()
+        };
+        let exact = find("full:a.com");
+        assert_eq!(exact["outboundTag"], "direct");
+        let suffix = find("domain:b.com");
+        assert_eq!(suffix["outboundTag"], built.selected_tag);
+        let kw = find("\"keyword\"");
+        assert_eq!(kw["outboundTag"], "block");
+        let process = find("chrome.exe");
+        assert_eq!(process["process"], json!(["chrome.exe"]));
+    }
+
+    #[test]
+    fn kernel_autoselect_uses_balancer() {
+        let nodes = vec![vless_node("a", None), vless_node("b", None)];
+        let mut opts = default_opts();
+        opts.auto_select = crate::domain::AutoSelectMode::Kernel;
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let routing = &built.value["routing"];
+        assert_eq!(routing["balancers"][0]["tag"], "proxy-balancer");
+        assert_eq!(routing["balancers"][0]["strategy"]["type"], "leastPing");
+        assert_eq!(routing["balancers"][0]["selector"], json!(["node-"]));
+        let last = routing["rules"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["balancerTag"], "proxy-balancer");
+        assert!(last.get("outboundTag").is_none());
+        assert_eq!(built.value["observatory"]["subjectSelector"], json!(["node-"]));
+    }
+
+    #[test]
+    fn dns_split_and_tags() {
+        let nodes = vec![vless_node("n", None)];
+        let opts = default_opts();
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let dns = &built.value["dns"];
+        assert_eq!(dns["tag"], "dns-module");
+        let servers = dns["servers"].as_array().unwrap();
+        // default dns_final=remote → remote first, domestic tagged skipFallback
+        assert_eq!(servers[0]["address"], "1.1.1.1");
+        assert_eq!(servers[1]["address"], "223.5.5.5");
+        assert_eq!(servers[1]["tag"], "direct-dns");
+        assert_eq!(servers[1]["skipFallback"], true);
+        // routing: direct-dns → direct, dns-module → main target
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let direct_dns = rules
+            .iter()
+            .find(|r| r["inboundTag"] == json!([ "direct-dns" ]))
+            .unwrap();
+        assert_eq!(direct_dns["outboundTag"], "direct");
+    }
+
+    #[test]
+    fn tun_adds_hijack_and_safety_rules() {
+        let nodes = vec![vless_node("n", None)];
+        let mut opts = default_opts();
+        opts.tun_enabled = true;
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let text = built.value.to_string();
+        assert!(text.contains("\"protocol\":\"tun\""));
+        assert!(text.contains("autoSystemRoutingTable"));
+        assert!(text.contains("\"outboundTag\":\"dns-out\""));
+        // dns-out outbound exists
+        assert!(built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["tag"] == "dns-out"));
+        // safety: block udp 135,137-139,5353 + multicast
+        assert!(text.contains("135,137-139,5353"));
+        assert!(text.contains("224.0.0.0/3"));
+    }
+
+    #[test]
+    fn outbound_mode_direct_forces_direct_final() {
+        let nodes = vec![vless_node("n", None)];
+        let mut opts = default_opts();
+        opts.outbound_mode = OutboundMode::Direct;
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let last = built.value["routing"]["rules"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["outboundTag"], "direct");
+    }
+
+    #[test]
+    fn hosts_map_into_dns() {
+        let nodes = vec![vless_node("n", None)];
+        let mut opts = default_opts();
+        opts.dns.hosts.enabled = true;
+        opts.dns.hosts.entries = vec![crate::domain::HostsEntry {
+            id: "h1".into(),
+            enabled: true,
+            domain: "local.test".into(),
+            addr: "10.0.0.8".into(),
+        }];
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        assert_eq!(built.value["dns"]["hosts"]["local.test"], "10.0.0.8");
+    }
+
+    #[test]
+    fn bypass_lan_in_rule_mode_only() {
+        let nodes = vec![vless_node("n", None)];
+        let mut opts = default_opts();
+        opts.bypass_lan = true;
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        assert!(built.value.to_string().contains("geoip:private"));
+        let mut opts_global = opts.clone();
+        opts_global.outbound_mode = OutboundMode::Global;
+        let built_g = build_xray_config(&nodes, &opts_global).expect("build");
+        assert!(!built_g.value.to_string().contains("geoip:private"));
+    }
+}

@@ -10,6 +10,7 @@ use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+#[derive(Clone)]
 pub struct BuildOptions {
     pub mixed_port: u16,
     /// Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
@@ -323,7 +324,7 @@ fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
     addrs
 }
 
-fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {    if sets.is_empty() {
+pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {    if sets.is_empty() {
         return fallback.to_vec();
     }
     let mut out = Vec::new();
@@ -697,7 +698,7 @@ fn build_headless_rules(rules: &[Rule]) -> Option<Vec<Value>> {
     (!headless.is_empty()).then_some(headless)
 }
 
-fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
+pub(crate) fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
     if let Some(id) = current_id {
         if let Some(node) = nodes.iter().find(|n| n.id == id) {
             let tag = outbound_tag(node);

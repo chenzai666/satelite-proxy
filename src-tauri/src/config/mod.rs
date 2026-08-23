@@ -5,11 +5,13 @@ mod dns_files;
 mod punycode;
 mod rule_files;
 mod write;
+mod xray;
 
 pub use builder::{
     build_singbox_config, generate_api_secret, outbound_tag, rule_set_is_empty_for_config,
     smart_pool_nodes, BuildOptions,
 };
+pub use xray::build_xray_config;
 pub use custom::inspect_singbox_config;
 pub use dns_build::lookup_hosts;
 pub use dns_files::dump_dns_rules_file;
