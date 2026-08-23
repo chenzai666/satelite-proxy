@@ -314,7 +314,28 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             to_name: None,
             latency_ms: None,
             probed: 0,
-            message: "custom runtime".into(),
+            message: "custom runtime mode".into(),
+        });
+    }
+
+    // Smart switch leans on the Clash API connection journal for passive
+    // health and for live group selection — neither exists under Xray.
+    if state
+        .with_store(|s| {
+            Ok(crate::core::CoreKind::parse(&s.settings.core_type)
+                == crate::core::CoreKind::Xray)
+        })
+        .unwrap_or(false)
+    {
+        app_log::warn("smart_switch", "bootstrap skipped: Xray core (no connection journal)");
+        return Ok(SmartSwitchNowResult {
+            switched: false,
+            from_id: None,
+            to_id: None,
+            to_name: None,
+            latency_ms: None,
+            probed: 0,
+            message: "smart switch requires the sing-box core".into(),
         });
     }
 

@@ -1,9 +1,9 @@
 //! Orchestrates core + system proxy.
 
-use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
+use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    build_singbox_config, generate_api_secret, inspect_singbox_config, outbound_tag,
-    write_active_config, write_custom_config, BuildOptions,
+    build_singbox_config, build_xray_config, generate_api_secret, inspect_singbox_config,
+    outbound_tag, write_active_config, write_custom_config, BuildOptions,
 };
 use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
@@ -67,6 +67,9 @@ pub struct ProxyStatus {
     /// Resident memory (bytes) of the core process, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_memory_bytes: Option<u64>,
+    /// Which core is active: `singbox` (default) | `xray`.
+    #[serde(default)]
+    pub core_type: String,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -114,6 +117,8 @@ pub struct Runtime {
     pub system_proxy_on: bool,
     pub proxy_snapshot: Option<SystemProxySnapshot>,
     pub api: Option<ClashApi>,
+    /// Xray metrics client (no Clash API exists under Xray).
+    pub xray_metrics: Option<XrayMetrics>,
     pub last_config_path: Option<PathBuf>,
     pub last_binary_path: Option<PathBuf>,
     system_proxy: Box<dyn SystemProxy>,
@@ -155,6 +160,7 @@ impl Runtime {
             system_proxy_on: false,
             proxy_snapshot: None,
             api: None,
+            xray_metrics: None,
             last_config_path: None,
             last_binary_path: None,
             system_proxy: create_system_proxy(),
@@ -181,6 +187,11 @@ impl Runtime {
     /// Clone of current Clash API client (for journal I/O outside the lock).
     pub fn api_clone(&self) -> Option<ClashApi> {
         self.api.clone()
+    }
+
+    /// Clone of the Xray metrics client for the journal poller.
+    pub fn xray_metrics_clone(&self) -> Option<XrayMetrics> {
+        self.xray_metrics.clone()
     }
 
     pub fn status(&mut self, store: &AppStore) -> ProxyStatus {
@@ -254,6 +265,7 @@ impl Runtime {
             custom_has_tun: self.custom_has_tun,
             custom_inbound_port: self.custom_inbound_port,
             core_memory_bytes,
+            core_type: store.settings.core_type.clone(),
         }
     }
 
@@ -637,7 +649,7 @@ impl Runtime {
         self.api_clone()
     }
 
-    /// Generate config, start sing-box, optionally enable system proxy.
+    /// Generate config, start the active core, optionally enable system proxy.
     pub fn start_proxy(
         &mut self,
         app_data_dir: &Path,
@@ -661,6 +673,13 @@ impl Runtime {
                 );
             }
             RuntimeSource::Generated => {}
+        }
+
+        match CoreKind::parse(&store.settings.core_type) {
+            CoreKind::Xray => {
+                return self.start_xray_proxy(app_data_dir, resource_dir, store, enable_system_proxy)
+            }
+            CoreKind::SingBox => {}
         }
 
         self.custom_inbound_port = None;
@@ -691,31 +710,7 @@ impl Runtime {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
-        let built = build_singbox_config(
-            &nodes,
-            &BuildOptions {
-                mixed_port: store.settings.mixed_port,
-                allow_lan: store.settings.allow_lan,
-                api_port: store.settings.api_port,
-                extra_inbounds: store.settings.extra_inbounds.clone(),
-                api_secret: secret.clone(),
-                current_node_id: store.settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules: store.enabled_rules_sorted(),
-                rule_sets: store.enabled_rule_sets(),
-                tun_enabled: store.settings.tun_enabled,
-                tun_stack: store.settings.tun_stack.clone(),
-                dns: store.dns.clone(),
-                outbound_mode: store.settings.outbound_mode,
-                route_final: store.settings.route_final.clone(),
-                auto_select: store.settings.auto_select,
-                probe_url: store.settings.probe_url.clone(),
-                find_process: store.settings.find_process,
-                tun_ipv6: store.settings.tun_ipv6_enabled,
-                block_quic: store.settings.block_quic,
-                bypass_lan: store.settings.bypass_lan,
-            },
-        )?;
+        let built = build_singbox_config(&nodes, &build_options(store, secret.clone()))?;
         let config_path = write_active_config(app_data_dir, &built)?;
         store.settings.clash_api_secret = Some(secret.clone());
         if store.settings.current_node_id.is_none() {
@@ -819,6 +814,121 @@ impl Runtime {
                 // Keep core running: return Ok and leave system_proxy off.
                 let _ = e;
             }
+        }
+
+        Ok(self.status(store))
+    }
+
+    /// Generate an Xray config and start the Xray core. Mirrors the sing-box
+    /// generated path; readiness is process-alive + mixed port (no Clash API
+    /// to health-check), and traffic monitoring switches to `XrayMetrics`.
+    fn start_xray_proxy(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        self.custom_inbound_port = None;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = false;
+
+        let nodes = store.enabled_nodes();
+        if nodes.is_empty() {
+            return Err(AppError::Core(
+                "no nodes; import a subscription first".into(),
+            ));
+        }
+        let unsupported: Vec<&str> = nodes
+            .iter()
+            .filter(|n| !CoreKind::Xray.supports(n.protocol))
+            .map(|n| n.protocol.as_str())
+            .collect();
+        if !unsupported.is_empty() {
+            return Err(AppError::Config(format!(
+                "Xray 内核不支持协议 {}（vmess/vless/shadowsocks/trojan/socks5/http/wireguard 之外）。请移除相关节点或切回 sing-box 内核",
+                unsupported.join("/")
+            )));
+        }
+
+        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available(store.settings.api_port, "Metrics")?;
+        for inb in &store.settings.extra_inbounds {
+            ensure_listen_port_available(inb.port, "Inbound")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Xray);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("Xray binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // geosite:/geoip: matchers (and the tun adapter on Windows) resolve
+        // through asset files next to the binary.
+        crate::core::ensure_geodata(app_data_dir, resource_dir, None)?;
+        #[cfg(target_os = "windows")]
+        if store.settings.tun_enabled {
+            crate::core::ensure_wintun(app_data_dir, resource_dir, None)?;
+        }
+
+        let built = build_xray_config(&nodes, &build_options(store, String::new()))?;
+        let config_path = write_active_config(app_data_dir, &built)?;
+        if store.settings.current_node_id.is_none() {
+            if let Some(first) = nodes.first() {
+                store.settings.current_node_id = Some(first.id.clone());
+            }
+        }
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = store.settings.tun_enabled;
+        self.core.start_with_ports(
+            CoreKind::Xray,
+            &bin,
+            &config_path,
+            &log_dir,
+            store.settings.mixed_port,
+            Some(store.settings.api_port),
+            &store
+                .settings
+                .extra_inbounds
+                .iter()
+                .map(|inb| inb.port)
+                .collect::<Vec<_>>(),
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+        self.api = None;
+        let metrics = XrayMetrics::new("127.0.0.1", store.settings.api_port);
+        // Confirm the metrics module is serving; a miss doesn't fail the
+        // start (proxying works without stats) but gets logged for diagnosis.
+        let wait_started = Instant::now();
+        let mut metrics_ok = false;
+        while wait_started.elapsed() < Duration::from_secs(3) {
+            if metrics.health_ok() {
+                metrics_ok = true;
+                break;
+            }
+            self.core.poll();
+            if !self.core.is_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        if !metrics_ok {
+            crate::app_log::warn(
+                "xray_metrics",
+                format!(
+                    "metrics not responding at 127.0.0.1:{} (traffic stats may be blank)",
+                    store.settings.api_port
+                ),
+            );
+        }
+        self.xray_metrics = Some(metrics);
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            let _ = self.set_system_proxy(store, true);
         }
 
         Ok(self.status(store))
@@ -1007,6 +1117,9 @@ impl Runtime {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
+        if let Some(metrics) = self.xray_metrics.take() {
+            metrics.deactivate();
+        }
         self.core.stop()?;
         // `CoreManager::stop` waits for the process we actually own. Never
         // force-kill arbitrary listeners here: an empty/test runtime has no
@@ -1067,6 +1180,9 @@ impl Runtime {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
+        if let Some(metrics) = self.xray_metrics.take() {
+            metrics.deactivate();
+        }
         self.core.force_shutdown();
         self.clear_live_connections();
         self.traffic_prev = None;
@@ -1088,6 +1204,33 @@ fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
         )));
     }
     Ok(())
+}
+
+/// Shared BuildOptions for both generators (sing-box and Xray). The api
+/// secret is only consumed by the sing-box clash_api; Xray ignores it.
+fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
+    BuildOptions {
+        mixed_port: store.settings.mixed_port,
+        allow_lan: store.settings.allow_lan,
+        api_port: store.settings.api_port,
+        extra_inbounds: store.settings.extra_inbounds.clone(),
+        api_secret,
+        current_node_id: store.settings.current_node_id.clone(),
+        log_level: "info".into(),
+        rules: store.enabled_rules_sorted(),
+        rule_sets: store.enabled_rule_sets(),
+        tun_enabled: store.settings.tun_enabled,
+        tun_stack: store.settings.tun_stack.clone(),
+        dns: store.dns.clone(),
+        outbound_mode: store.settings.outbound_mode,
+        route_final: store.settings.route_final.clone(),
+        auto_select: store.settings.auto_select,
+        probe_url: store.settings.probe_url.clone(),
+        find_process: store.settings.find_process,
+        tun_ipv6: store.settings.tun_ipv6_enabled,
+        block_quic: store.settings.block_quic,
+        bypass_lan: store.settings.bypass_lan,
+    }
 }
 
 fn now_unix_ms() -> i64 {

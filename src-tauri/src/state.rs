@@ -530,6 +530,55 @@ impl AppState {
         }
     }
 
+    /// Xray-mode counterpart of `try_clash_api_clone` for the journal poller.
+    pub fn try_xray_metrics_clone(&self) -> Option<crate::api::XrayMetrics> {
+        if self.is_core_transitioning() {
+            return None;
+        }
+        match self.runtime.try_lock() {
+            Ok(runtime) => runtime.xray_metrics_clone(),
+            Err(TryLockError::WouldBlock) => None,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner().xray_metrics_clone()
+            }
+        }
+    }
+
+    /// Apply an Xray metrics sample from the currently active core session.
+    /// Traffic totals only — no per-connection data exists under Xray.
+    pub fn try_apply_metrics_snapshot(
+        &self,
+        metrics: &crate::api::XrayMetrics,
+        totals: crate::api::TrafficTotals,
+    ) -> bool {
+        if self.is_core_transitioning() || !metrics.is_active() {
+            return false;
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if self.is_core_transitioning()
+            || !metrics.is_active()
+            || !runtime
+                .xray_metrics_clone()
+                .is_some_and(|current| current.same_session(metrics))
+        {
+            return false;
+        }
+        runtime.apply_snapshot(crate::api::ConnectionsSnapshot {
+            upload_total: totals.upload_total,
+            download_total: totals.download_total,
+            connections: Vec::new(),
+        });
+        true
+    }
+
     /// Apply only a snapshot from the currently active core session. If the
     /// runtime is busy, dropping one frame is safer than delaying a restart or
     /// applying stale data after it completes.
@@ -974,6 +1023,10 @@ impl AppState {
     /// Select the main proxy node and persist it under the same operation
     /// guard, so a manual click and a smart-switch apply cannot overwrite one
     /// another mid-flight.
+    ///
+    /// Returns `(settings, restart_needed, switched_live)`. Under Xray there
+    /// is no live selection API — the pick is persisted and the caller must
+    /// restart the core (`restart_needed = true`).
     pub fn select_current_node_serialized(
         &self,
         node_id: &str,
@@ -981,6 +1034,12 @@ impl AppState {
         close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
+        let xray_core = {
+            let kind = crate::core::CoreKind::parse(
+                self.with_store(|store| Ok(store.settings.core_type.clone()))?.as_str(),
+            );
+            kind == crate::core::CoreKind::Xray
+        };
         let (tag, should_close, kernel_auto) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
@@ -993,6 +1052,12 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
+            if xray_core && !crate::core::CoreKind::Xray.supports(node.protocol) {
+                return Err(crate::error::AppError::Core(format!(
+                    "Xray 内核不支持 {} 协议节点，请切回 sing-box 或选择其他节点",
+                    node.protocol.as_str()
+                )));
+            }
             Ok((
                 crate::config::outbound_tag(node),
                 close_if_enabled && store.settings.close_connections_on_switch,
@@ -1005,7 +1070,8 @@ impl AppState {
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
-        let selected_live = if kernel_auto {
+        // Xray has no selection API at all — same restart path.
+        let selected_live = if xray_core || kernel_auto {
             false
         } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
@@ -1022,7 +1088,8 @@ impl AppState {
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             Ok((store.settings.clone(), was_kernel))
         })?;
-        Ok((settings, was_kernel, selected_live))
+        let restart_needed = was_kernel || (xray_core && self.is_core_running());
+        Ok((settings, restart_needed, selected_live))
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.

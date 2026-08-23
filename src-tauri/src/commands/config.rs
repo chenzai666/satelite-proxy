@@ -1,6 +1,6 @@
 use crate::config::{
-    active_config_path, build_singbox_config, generate_api_secret, write_active_config,
-    BuildOptions,
+    active_config_path, build_singbox_config, build_xray_config, generate_api_secret,
+    write_active_config, BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
@@ -634,33 +634,35 @@ pub async fn generate_singbox_config(
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(generate_api_secret);
+    let core_type = settings.core_type.clone();
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let built = build_singbox_config(
-            &nodes,
-            &BuildOptions {
-                mixed_port: settings.mixed_port,
-                allow_lan: settings.allow_lan,
-                api_port: settings.api_port,
-                extra_inbounds: settings.extra_inbounds.clone(),
-                api_secret: worker_secret,
-                current_node_id: settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules,
-                rule_sets: remote_rule_sets,
-                tun_enabled: settings.tun_enabled,
-                tun_stack: settings.tun_stack.clone(),
-                dns,
-                outbound_mode: settings.outbound_mode,
-                route_final: settings.route_final.clone(),
-                auto_select: settings.auto_select,
-                probe_url: settings.probe_url.clone(),
-                find_process: settings.find_process,
-                tun_ipv6: settings.tun_ipv6_enabled,
-                block_quic: settings.block_quic,
-                bypass_lan: settings.bypass_lan,
-            },
-        )
+        let opts = BuildOptions {
+            mixed_port: settings.mixed_port,
+            allow_lan: settings.allow_lan,
+            api_port: settings.api_port,
+            extra_inbounds: settings.extra_inbounds.clone(),
+            api_secret: worker_secret,
+            current_node_id: settings.current_node_id.clone(),
+            log_level: "info".into(),
+            rules,
+            rule_sets: remote_rule_sets,
+            tun_enabled: settings.tun_enabled,
+            tun_stack: settings.tun_stack.clone(),
+            dns,
+            outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
+            tun_ipv6: settings.tun_ipv6_enabled,
+            block_quic: settings.block_quic,
+            bypass_lan: settings.bypass_lan,
+        };
+        let built = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Xray => build_xray_config(&nodes, &opts),
+            _ => build_singbox_config(&nodes, &opts),
+        }
         .map_err(|e| e.to_string())?;
         let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
         let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
@@ -722,34 +724,36 @@ pub async fn preview_singbox_config(
         .clash_api_secret
         .clone()
         .unwrap_or_else(generate_api_secret);
+    let core_type = settings.core_type.clone();
 
     let path = active_config_path(&state.app_data_dir);
     tauri::async_runtime::spawn_blocking(move || {
-        let built = build_singbox_config(
-            &nodes,
-            &BuildOptions {
-                mixed_port: settings.mixed_port,
-                allow_lan: settings.allow_lan,
-                api_port: settings.api_port,
-                extra_inbounds: settings.extra_inbounds.clone(),
-                api_secret: secret,
-                current_node_id: settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules,
-                rule_sets: remote_rule_sets,
-                tun_enabled: settings.tun_enabled,
-                tun_stack: settings.tun_stack.clone(),
-                dns,
-                outbound_mode: settings.outbound_mode,
-                route_final: settings.route_final.clone(),
-                auto_select: settings.auto_select,
-                probe_url: settings.probe_url.clone(),
-                find_process: settings.find_process,
-                tun_ipv6: settings.tun_ipv6_enabled,
-                block_quic: settings.block_quic,
-                bypass_lan: settings.bypass_lan,
-            },
-        )
+        let opts = BuildOptions {
+            mixed_port: settings.mixed_port,
+            allow_lan: settings.allow_lan,
+            api_port: settings.api_port,
+            extra_inbounds: settings.extra_inbounds.clone(),
+            api_secret: secret,
+            current_node_id: settings.current_node_id.clone(),
+            log_level: "info".into(),
+            rules,
+            rule_sets: remote_rule_sets,
+            tun_enabled: settings.tun_enabled,
+            tun_stack: settings.tun_stack.clone(),
+            dns,
+            outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
+            tun_ipv6: settings.tun_ipv6_enabled,
+            block_quic: settings.block_quic,
+            bypass_lan: settings.bypass_lan,
+        };
+        let built = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Xray => build_xray_config(&nodes, &opts),
+            _ => build_singbox_config(&nodes, &opts),
+        }
         .map_err(|e| e.to_string())?;
         let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
         Ok::<_, String>(GenerateConfigResult {

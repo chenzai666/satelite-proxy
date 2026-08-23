@@ -21,8 +21,8 @@ use crate::config::builder::{
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
 use crate::domain::{
-    DnsAction, DomainMatcher, DnsRule, OutboundMode, Protocol, ProtocolConfig, ProxyNode,
-    RuleSet, RuleSetStrategy, RuleTarget, RuleType, Transport,
+    DnsAction, DomainMatcher, DnsRule, OutboundMode, ProtocolConfig, ProxyNode, RuleSet,
+    RuleSetStrategy, RuleTarget, RuleType, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Map, Value};
