@@ -472,7 +472,7 @@ export function fetchCoreLatest(kind?: CoreKind | null) {
   }>("fetch_core_latest", { kind: kind ?? null });
 }
 
-/** Switch the active core (singbox | xray). Restarts a running core. */
+/** Switch the active core (singbox | xray | meow). Restarts a running core. */
 export function setCoreType(kind: CoreKind) {
   return invoke<AppSettings>("set_core_type", { kind });
 }
@@ -488,9 +488,10 @@ export interface GeodataInfo {
   geoip: GeodataFileInfo;
 }
 
-/** Xray geodata state; `force` re-downloads both .dat files first. */
-export function refreshGeodata(force = false) {
-  return invoke<GeodataInfo>("refresh_geodata", { force });
+/** Kernel geodata state; `force` re-downloads first. `kind` selects the
+ * pair: "xray" (Loyalsoldier .dat) or "meow" (MetaCubeX mmdb + mrs). */
+export function refreshGeodata(force = false, kind: CoreKind | null = null) {
+  return invoke<GeodataInfo>("refresh_geodata", { force, kind });
 }
 
 export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {

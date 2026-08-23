@@ -33,6 +33,7 @@ import { HeroVisual } from "../components/HeroVisual";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import type {
   AutoSelectMode,
+  CoreKind,
   GenerateConfigResult,
   OutboundMode,
   ProxyNode,
@@ -241,7 +242,12 @@ export function DashboardPage({
     });
   }, []);
 
-  /** Full reload (actions after start/stop/etc). */
+  /** Display name for a core_type token (menu / version card / preview). */
+function coreDisplayName(kind: string | null | undefined): string {
+  return kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box";
+}
+
+/** Full reload (actions after start/stop/etc). */
   const reload = useCallback(async () => {
     setError(null);
     try {
@@ -255,6 +261,7 @@ export function DashboardPage({
         listAllNodes(),
         getCoreInfo("singbox").catch(() => null),
         getCoreInfo("xray").catch(() => null),
+        getCoreInfo("meow").catch(() => null),
         getLanIp().catch(() => null),
       ]);
 
@@ -270,7 +277,8 @@ export function DashboardPage({
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, coreSingbox, coreXray, lan] = await detailP;
+      const [subList, nodeList, coreSingbox, coreXray, coreMeow, lan] =
+        await detailP;
       setSubs(subList);
       setNodes(nodeList);
       setLanIp(lan ?? null);
@@ -282,7 +290,12 @@ export function DashboardPage({
       // Version card shows the ACTIVE core's name + version (core_type reports
       // the actually running kind; while stopped it falls back to the setting).
       const activeKind = status?.core_type ?? settings.core_type ?? "singbox";
-      const core = activeKind === "xray" ? coreXray : coreSingbox;
+      const core =
+        activeKind === "xray"
+          ? coreXray
+          : activeKind === "meow"
+            ? coreMeow
+            : coreSingbox;
       if (core?.installed) {
         const ver = (core.version ?? "ok").replace(/^v/, "");
         setCoreVersion(`${core.name} ${ver}`.trim());
@@ -518,12 +531,13 @@ export function DashboardPage({
   );
   const selectedCustomId =
     proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
-  // Custom sing-box profiles cannot run under the Xray core (they always use
-  // the sing-box binary); grey them out while Xray is the active core. The
-  // "generated" option stays live — under Xray it generates an Xray config.
-  // While a custom profile IS running, core_type truthfully reports singbox,
-  // so switching between profiles / back to generated keeps working.
-  const xrayCore = proxy?.core_type === "xray";
+  // Custom sing-box profiles cannot run under the Xray/meow cores (they
+  // always use the sing-box binary); grey them out while a foreign core is
+  // active. The "generated" option stays live — it generates for the active
+  // core. While a custom profile IS running, core_type truthfully reports
+  // singbox, so switching between profiles / back to generated keeps working.
+  const foreignCore =
+    proxy?.core_type === "xray" || proxy?.core_type === "meow";
 
   async function onPickRuntime(source: string) {
     if (busy) return;
@@ -544,7 +558,7 @@ export function DashboardPage({
   }
 
   /** Hero ⋯ → 指定内核: switch the active core (restarts a running core). */
-  async function onSwitchCore(kind: "singbox" | "xray") {
+  async function onSwitchCore(kind: CoreKind) {
     if (busy || (proxy?.core_type ?? "singbox") === kind) return;
     setBusy(true);
     setError(null);
@@ -1040,13 +1054,13 @@ export function DashboardPage({
                               type="button"
                               role="menuitemradio"
                               aria-checked={selected}
-                              aria-disabled={xrayCore || undefined}
+                              aria-disabled={foreignCore || undefined}
                               className={`${
                                 selected ? "is-selected" : ""
-                              }${xrayCore ? " is-disabled" : ""}`}
-                              disabled={busy || xrayCore}
+                              }${foreignCore ? " is-disabled" : ""}`}
+                              disabled={busy || foreignCore}
                               title={
-                                xrayCore
+                                foreignCore
                                   ? t("dashboard.customProfileNeedsSingbox")
                                   : profile.name
                               }
@@ -1091,7 +1105,7 @@ export function DashboardPage({
                     </button>
                     {coreMenuOpen && (
                       <div className="dash-more-submenu card glass" role="menu">
-                        {(["singbox", "xray"] as const).map((kind) => {
+                        {(["singbox", "xray", "meow"] as const).map((kind) => {
                           const selected =
                             (proxy?.core_type ?? "singbox") === kind;
                           return (
@@ -1107,7 +1121,7 @@ export function DashboardPage({
                               <span className="dash-more-check" aria-hidden>
                                 {selected ? "●" : "○"}
                               </span>
-                              {kind === "xray" ? "Xray" : "sing-box"}
+                              {coreDisplayName(kind)}
                             </button>
                           );
                         })}
@@ -1271,8 +1285,7 @@ export function DashboardPage({
             {/* Label carries the active core's name (core_type falls back to
                 the setting while stopped, so this is correct either way). */}
             <span className="instrument-label">
-              {t("dashboard.cardCore")} ·{" "}
-              {proxy?.core_type === "xray" ? "Xray" : "sing-box"}
+              {t("dashboard.cardCore")} · {coreDisplayName(proxy?.core_type)}
             </span>
           </header>
           <div
@@ -1581,9 +1594,7 @@ export function DashboardPage({
                   ·{" "}
                   {proxy?.runtime_source === "singbox"
                     ? "sing-box"
-                    : (proxy?.core_type ?? "singbox") === "xray"
-                      ? "Xray"
-                      : "sing-box"}
+                    : coreDisplayName(proxy?.core_type ?? "singbox")}
                 </span>
               </h2>
               <button

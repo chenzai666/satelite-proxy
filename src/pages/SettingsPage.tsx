@@ -143,10 +143,11 @@ export function SettingsPage() {
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
-  /** Per-core status (sing-box + Xray). */
+  /** Per-core status (sing-box + Xray + meow). */
   const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
     singbox: null,
     xray: null,
+    meow: null,
   });
   const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
   const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
@@ -243,11 +244,13 @@ export function SettingsPage() {
       const results = await Promise.all([
         getCoreInfo("singbox"),
         getCoreInfo("xray"),
+        getCoreInfo("meow"),
       ]);
-      const [singbox, xray] = results;
-      setCores({ singbox, xray });
+      const [singbox, xray, meow] = results;
+      setCores({ singbox, xray, meow });
       void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
       void runCoreUpdateCheck("xray", xray.version ?? null, false);
+      void runCoreUpdateCheck("meow", meow.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
@@ -596,8 +599,8 @@ export function SettingsPage() {
     }
   }
 
-  /** One compact version row per core (sing-box / Xray): identity line,
-   *  bundled/latest meta + actions, then a quiet path foot line. */
+  /** One compact version row per core (sing-box / Xray / meow): identity
+   *  line, bundled/latest meta + actions, then a quiet path foot line. */
   function renderCoreRow(kind: CoreKind) {
     const info = cores[kind];
     const busy = coreBusyKind === kind;
@@ -615,16 +618,18 @@ export function SettingsPage() {
         title={
           kind === "xray"
             ? t("settings.coreHintXray")
-            : t("settings.coreHint")
+            : kind === "meow"
+              ? t("settings.coreHintMeow")
+              : t("settings.coreHint")
         }
       >
         <div className="kernel-row-main">
-          {/* Monogram tile: "s" for sing-box, "x" for Xray. */}
+          {/* Monogram tile: "s" sing-box, "x" Xray, "m" meow. */}
           <div className="ver-mark kernel-mark" aria-hidden>
-            {kind === "xray" ? "x" : "s"}
+            {kind === "xray" ? "x" : kind === "meow" ? "m" : "s"}
           </div>
           <span className="kernel-name">
-            {info?.name ?? (kind === "xray" ? "Xray" : "sing-box")}
+            {info?.name ?? (kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box")}
           </span>
           {/* Radio-style enable: clicking switches the active core (a
              running core restarts onto the new binary). */}
@@ -1447,6 +1452,7 @@ export function SettingsPage() {
             <div className="card core-card kernel-list">
               {renderCoreRow("singbox")}
               {renderCoreRow("xray")}
+              {renderCoreRow("meow")}
             </div>
           </div>
 
@@ -1531,7 +1537,7 @@ export function SettingsPage() {
                   {t("settings.appPlatformLabel")}
                 </span>
                 <span className="app-info-value">
-                  {cores.singbox?.platform ?? cores.xray?.platform ?? "—"}
+                  {cores.singbox?.platform ?? cores.xray?.platform ?? cores.meow?.platform ?? "—"}
                 </span>
               </div>
               <div className="app-info-row">

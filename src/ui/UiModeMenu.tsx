@@ -8,18 +8,26 @@ import {
 import type { CoreKind } from "../types";
 import { useUiMode, type UiMode } from "./UiModeContext";
 
+function coreOf(raw: string | null | undefined): CoreKind {
+  return raw === "xray" || raw === "meow" ? raw : "singbox";
+}
+
+function coreLabel(kind: CoreKind): string {
+  return kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box";
+}
+
 /**
- * Top-bar ⋯ quick menu: switch runtime UI mode, switch core (sing-box/Xray),
- * restart core, and copy the proxy env snippet — reachable from any tab.
- * Single ⋯ keeps the navbar tidy (no duplicate capsule switches next to the
- * theme picker).
+ * Top-bar ⋯ quick menu: switch runtime UI mode, switch core
+ * (sing-box/Xray/meow), restart core, and copy the proxy env snippet —
+ * reachable from any tab. Single ⋯ keeps the navbar tidy (no duplicate
+ * capsule switches next to the theme picker).
  */
 export function UiModeMenu() {
   const { mode, setMode } = useUiMode();
   const [open, setOpen] = useState(false);
   const [mixedPort, setMixedPort] = useState<number | null>(null);
   const [coreType, setCoreTypeState] = useState<CoreKind>(
-    () => peekProxyStatus()?.core_type === "xray" ? "xray" : "singbox",
+    () => coreOf(peekProxyStatus()?.core_type),
   );
   const [switchingCore, setSwitchingCore] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -31,8 +39,8 @@ export function UiModeMenu() {
   const refreshPort = useCallback(async () => {
     const s = await getProxyStatus().catch(() => null);
     if (s?.mixed_port) setMixedPort(s.mixed_port);
-    if (s?.core_type === "xray" || s?.core_type === "singbox") {
-      setCoreTypeState(s.core_type);
+    if (s?.core_type) {
+      setCoreTypeState(coreOf(s.core_type));
     }
   }, []);
 
@@ -86,7 +94,7 @@ export function UiModeMenu() {
     try {
       await setCoreType(kind);
       setCoreTypeState(kind);
-      flash(kind === "xray" ? "已切换到 Xray" : "已切换到 sing-box");
+      flash(`已切换到 ${coreLabel(kind)}`);
     } catch (e) {
       flash(typeof e === "string" ? e : "切换失败");
     } finally {
@@ -171,44 +179,28 @@ export function UiModeMenu() {
           <div className="ui-mode-menu-sep" aria-hidden />
 
           <div className="ui-mode-menu-label">切换内核</div>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={coreType === "singbox"}
-            className={`ui-mode-menu-item ${coreType === "singbox" ? "active" : ""}`}
-            disabled={switchingCore}
-            onClick={() => void onPickCore("singbox")}
-          >
-            <span className="ui-mode-radio" aria-hidden>
-              {switchingCore && coreType !== "singbox" ? (
-                <span className="lat-spinner ui-mode-restart-spinner" />
-              ) : coreType === "singbox" ? (
-                "●"
-              ) : (
-                "○"
-              )}
-            </span>
-            sing-box
-          </button>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={coreType === "xray"}
-            className={`ui-mode-menu-item ${coreType === "xray" ? "active" : ""}`}
-            disabled={switchingCore}
-            onClick={() => void onPickCore("xray")}
-          >
-            <span className="ui-mode-radio" aria-hidden>
-              {switchingCore && coreType !== "xray" ? (
-                <span className="lat-spinner ui-mode-restart-spinner" />
-              ) : coreType === "xray" ? (
-                "●"
-              ) : (
-                "○"
-              )}
-            </span>
-            Xray
-          </button>
+          {(["singbox", "xray", "meow"] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              role="menuitemradio"
+              aria-checked={coreType === kind}
+              className={`ui-mode-menu-item ${coreType === kind ? "active" : ""}`}
+              disabled={switchingCore}
+              onClick={() => void onPickCore(kind)}
+            >
+              <span className="ui-mode-radio" aria-hidden>
+                {switchingCore && coreType !== kind ? (
+                  <span className="lat-spinner ui-mode-restart-spinner" />
+                ) : coreType === kind ? (
+                  "●"
+                ) : (
+                  "○"
+                )}
+              </span>
+              {coreLabel(kind)}
+            </button>
+          ))}
 
           <div className="ui-mode-menu-sep" aria-hidden />
 
