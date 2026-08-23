@@ -31,10 +31,13 @@ use serde_yaml::{Mapping, Value as Yaml};
 const MAIN_GROUP: &str = "proxy";
 /// Kernel auto-select group, first member of the main select group.
 const AUTO_GROUP: &str = "auto";
-/// Remote resolver (DoH; its hostname bootstraps through default-nameserver).
-const REMOTE_DNS: &str = "https://1.1.1.1/dns-query";
-/// Domestic resolver.
-const DOMESTIC_DNS: &str = "223.5.5.5";
+/// Built-in remote DoH pool (Clash queries the entries concurrently,
+/// fastest answer wins). Every entry egresses through the main proxy group
+/// — direct DoH is unreachable on censored networks (see build_dns).
+const REMOTE_DNS_POOL: [&str; 2] = ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
+/// Built-in domestic plain-UDP pool (bootstrap, node hostnames, cn
+/// classification). 114DNS backs up AliDNS.
+const DOMESTIC_DNS_POOL: [&str; 2] = ["223.5.5.5", "114.114.114.114"];
 /// meow url-test probe defaults.
 const PROBE_INTERVAL_SECS: u64 = 300;
 const PROBE_TOLERANCE_MS: u32 = 50;
@@ -220,6 +223,11 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
 
 fn str_yaml(s: &str) -> Yaml {
     Yaml::String(s.to_string())
+}
+
+/// DNS list value (mihomo queries the entries concurrently, fastest wins).
+fn dns_seq(entries: &[String]) -> Yaml {
+    Yaml::Sequence(entries.iter().map(|s| Yaml::String(s.clone())).collect())
 }
 
 fn num_yaml(n: u64) -> Yaml {
@@ -597,22 +605,27 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
     // Remote DoH egress goes through the main proxy group (meow's `#adapter`
     // fragment on DNS entries) — mirroring sing-box's remote-resolver detour
     // and Xray's dns-module routing. Direct egress hits the classic
-    // chicken-and-egg: the DoH endpoint is unreachable without a proxy, and
-    // the proxy's node hostnames resolve via proxy-server-nameserver (plain
-    // UDP, always direct), which breaks the loop. Direct outbound mode is
-    // the one exception — everything egresses direct there, DNS included.
-    let remote_dns = if opts.outbound_mode == OutboundMode::Direct {
-        REMOTE_DNS.to_string()
+    // chicken-and-egg: the DoH endpoints are unreachable without a proxy,
+    // and the proxy's node hostnames resolve via proxy-server-nameserver
+    // (plain UDP, always direct), which breaks the loop. Direct outbound
+    // mode is the one exception — everything egresses direct there, DNS
+    // included.
+    let remote_pool: Vec<String> = if opts.outbound_mode == OutboundMode::Direct {
+        REMOTE_DNS_POOL.iter().map(|s| (*s).to_string()).collect()
     } else {
-        format!("{REMOTE_DNS}#{MAIN_GROUP}")
+        REMOTE_DNS_POOL
+            .iter()
+            .map(|s| format!("{s}#{MAIN_GROUP}"))
+            .collect()
     };
+    let domestic_pool: Vec<String> = DOMESTIC_DNS_POOL.iter().map(|s| (*s).to_string()).collect();
     // NOTE: meow has NO `system` resolver (unlike mihomo — unknown schemes
     // like `system` hard-error at load: "nameserver-policy entry has no
     // valid nameservers"). The "use the system resolver" intent is
-    // approximated with the plain-UDP domestic resolver.
-    let (default_ns, fallback_ns): (&str, String) = match dns_final {
-        "domestic" | "local" => (DOMESTIC_DNS, remote_dns.clone()),
-        _ => (remote_dns.as_str(), DOMESTIC_DNS.to_string()),
+    // approximated with the plain-UDP domestic pool.
+    let (default_ns, fallback_ns): (&[String], &[String]) = match dns_final {
+        "domestic" | "local" => (&domestic_pool, &remote_pool),
+        _ => (&remote_pool, &domestic_pool),
     };
 
     let mut dns = Mapping::new();
@@ -621,41 +634,29 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
         dns.insert(str_yaml("hosts"), Yaml::Mapping(hosts));
     }
     // Bootstrap resolver for DoH hostnames (plain UDP, always direct).
-    dns.insert(
-        str_yaml("default-nameserver"),
-        Yaml::Sequence(vec![str_yaml(DOMESTIC_DNS)]),
-    );
+    dns.insert(str_yaml("default-nameserver"), dns_seq(&domestic_pool));
     // Node server hostnames resolve through a dedicated plain-UDP list —
     // never the DoH default or the policy classification. Without this,
-    // `dns_final=remote` makes url-test health checks dial DoH 1.1.1.1
-    // first, which needs a working proxy to reach, which needs its
-    // hostname resolved first (chicken-and-egg → "meow-dns resolver: no
-    // address for <node-host>" WARNs).
-    dns.insert(
-        str_yaml("proxy-server-nameserver"),
-        Yaml::Sequence(vec![str_yaml(DOMESTIC_DNS)]),
-    );
-    dns.insert(
-        str_yaml("nameserver"),
-        Yaml::Sequence(vec![str_yaml(default_ns)]),
-    );
-    dns.insert(
-        str_yaml("fallback"),
-        Yaml::Sequence(vec![str_yaml(&fallback_ns)]),
-    );
+    // `dns_final=remote` makes url-test health checks dial blocked DoH
+    // endpoints first, which need a working proxy to reach, which needs
+    // its hostname resolved first (chicken-and-egg → "meow-dns resolver:
+    // no address for <node-host>" WARNs).
+    dns.insert(str_yaml("proxy-server-nameserver"), dns_seq(&domestic_pool));
+    dns.insert(str_yaml("nameserver"), dns_seq(default_ns));
+    dns.insert(str_yaml("fallback"), dns_seq(fallback_ns));
     if !policy_remote.is_empty() || !policy_domestic.is_empty() || !policy_local.is_empty() {
         let mut policy = Mapping::new();
         for pat in policy_domestic {
-            policy.insert(str_yaml(&pat), str_yaml(DOMESTIC_DNS));
+            policy.insert(str_yaml(&pat), dns_seq(&domestic_pool));
         }
-        // Remote-classified domains resolve via the proxy-egress DoH too.
+        // Remote-classified domains resolve via the proxy-egress DoH pool.
         for pat in policy_remote {
-            policy.insert(str_yaml(&pat), str_yaml(&remote_dns));
+            policy.insert(str_yaml(&pat), dns_seq(&remote_pool));
         }
         // "local" classification also lands on the plain-UDP domestic
-        // resolver — meow rejects `system` (see the match above).
+        // pool — meow rejects `system` (see the match above).
         for pat in policy_local {
-            policy.insert(str_yaml(&pat), str_yaml(DOMESTIC_DNS));
+            policy.insert(str_yaml(&pat), dns_seq(&domestic_pool));
         }
         dns.insert(str_yaml("nameserver-policy"), Yaml::Mapping(policy));
     }
@@ -1610,24 +1611,33 @@ mod tests {
         let built = build_meow_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         let dns = &doc["dns"];
-        // Remote DoH egresses through the main proxy group (`#proxy`
-        // fragment) — direct DoH is unreachable without a proxy.
+        // Built-in pools: remote DoH (each entry egressing through the main
+        // proxy group via the `#proxy` fragment) and domestic plain-UDP.
+        let nameserver = dns["nameserver"].as_sequence().unwrap();
+        assert_eq!(nameserver.len(), 2);
         assert_eq!(
-            dns["nameserver"][0].as_str(),
+            nameserver[0].as_str(),
             Some("https://1.1.1.1/dns-query#proxy")
         );
-        assert_eq!(dns["fallback"][0].as_str(), Some("223.5.5.5"));
+        assert_eq!(
+            nameserver[1].as_str(),
+            Some("https://8.8.8.8/dns-query#proxy")
+        );
+        let fallback = dns["fallback"].as_sequence().unwrap();
+        assert_eq!(fallback[0].as_str(), Some("223.5.5.5"));
+        assert_eq!(fallback[1].as_str(), Some("114.114.114.114"));
         assert_eq!(dns["default-nameserver"][0].as_str(), Some("223.5.5.5"));
-        // Node hostnames must resolve via the dedicated plain-UDP list —
+        // Node hostnames must resolve via the dedicated plain-UDP pool —
         // not the DoH default (chicken-and-egg with unreachable proxies).
         assert_eq!(
             dns["proxy-server-nameserver"][0].as_str(),
             Some("223.5.5.5")
         );
-        assert_eq!(
-            dns["nameserver-policy"]["+.cn-site.com"].as_str(),
-            Some("223.5.5.5")
-        );
+        let policy = dns["nameserver-policy"]["+.cn-site.com"]
+            .as_sequence()
+            .unwrap();
+        assert_eq!(policy[0].as_str(), Some("223.5.5.5"));
+        assert_eq!(policy.len(), 2);
         assert_eq!(dns["hosts"]["example.test"].as_str(), Some("1.2.3.4"));
 
         // Direct outbound mode egresses everything direct — remote DoH
@@ -1635,10 +1645,10 @@ mod tests {
         let mut opts = opts;
         opts.outbound_mode = OutboundMode::Direct;
         let built = build_meow_config(&[vless_node("n2", None)], &opts).expect("build");
-        assert_eq!(
-            parse(&built)["dns"]["nameserver"][0].as_str(),
-            Some("https://1.1.1.1/dns-query")
-        );
+        let direct = parse(&built);
+        let nameserver = direct["dns"]["nameserver"].as_sequence().unwrap();
+        assert_eq!(nameserver[0].as_str(), Some("https://1.1.1.1/dns-query"));
+        assert_eq!(nameserver[1].as_str(), Some("https://8.8.8.8/dns-query"));
     }
 
     /// meow rejects `system` as a nameserver value (no system-resolver
@@ -1682,11 +1692,11 @@ mod tests {
         );
         assert_eq!(dns["nameserver"][0].as_str(), Some("223.5.5.5"));
         assert_eq!(
-            dns["nameserver-policy"]["+.corp.internal"].as_str(),
+            dns["nameserver-policy"]["+.corp.internal"][0].as_str(),
             Some("223.5.5.5")
         );
         assert_eq!(
-            dns["nameserver-policy"]["+.cn-local.com"].as_str(),
+            dns["nameserver-policy"]["+.cn-local.com"][0].as_str(),
             Some("223.5.5.5")
         );
     }
