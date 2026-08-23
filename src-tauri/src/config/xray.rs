@@ -416,7 +416,10 @@ fn build_routing(
                         }
                     } else {
                         // Local set: route per rule (same clamping the sing-box
-                        // path applies via effective_route_rules).
+                        // path applies via effective_route_rules). Whole-set
+                        // Node/Filter pins clamp onto each rule — without
+                        // this, a Node-strategy set would silently route to
+                        // the main target instead of its pinned node.
                         let mut rules: Vec<_> = set
                             .rules
                             .iter()
@@ -428,6 +431,12 @@ fn build_routing(
                             let mut rule = rule;
                             if let Some(target) = set.strategy.route_target() {
                                 rule.target = target;
+                                rule.node_id = None;
+                                rule.node_name = None;
+                                rule.smart_include.clear();
+                                rule.smart_exclude.clear();
+                            } else {
+                                crate::config::builder::clamp_rule_pin_to_set(set, &mut rule);
                             }
                             if let Some(value) = rule_to_xray(&rule, nodes, tags, main_target) {
                                 route_rules.push(value);
@@ -1285,6 +1294,87 @@ mod tests {
             .last()
             .unwrap();
         assert_eq!(last["outboundTag"], "direct");
+    }
+
+    fn node_tag_of(node: &ProxyNode) -> String {
+        crate::config::outbound_tag(node)
+    }
+
+    #[test]
+    fn per_rule_node_pin_routes_to_that_node() {
+        let a = vless_node("nodeA", None);
+        let b = vless_node("nodeB", None);
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "aa.com".into(),
+            RuleTarget::Node,
+            10,
+        );
+        rule.node_id = Some(a.id.clone());
+        let mut set = RuleSet::new_user("custom", vec![rule]);
+        set.strategy = RuleSetStrategy::Smart; // per-rule decisions preserved
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[a.clone(), b], &opts).expect("build");
+        let text = built.value.to_string();
+        let needle = format!(
+            "\"domain\":[\"domain:aa.com\"],\"outboundTag\":\"{}\"",
+            node_tag_of(&a)
+        );
+        assert!(
+            text.contains(&needle),
+            "expected aa.com pinned to nodeA; rules: {text}"
+        );
+    }
+
+    #[test]
+    fn whole_set_node_strategy_pins_all_rules() {
+        let a = vless_node("nodeA", None);
+        let b = vless_node("nodeB", None);
+        // Real-store shape: batch_set_rule_targets rewrites every rule in a
+        // Node-strategy set to target=Node with the set-level pin.
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "aa.com".into(),
+            RuleTarget::Node,
+            10,
+        );
+        rule.node_id = Some(b.id.clone());
+        let mut set = RuleSet::new_user("pinned", vec![rule]);
+        set.strategy = RuleSetStrategy::Node;
+        set.node_id = Some(b.id.clone());
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[a, b.clone()], &opts).expect("build");
+        let text = built.value.to_string();
+        let needle = format!(
+            "\"domain\":[\"domain:aa.com\"],\"outboundTag\":\"{}\"",
+            node_tag_of(&b)
+        );
+        assert!(
+            text.contains(&needle),
+            "expected aa.com pinned to the set's node (B); rules: {text}"
+        );
+    }
+
+    #[test]
+    fn legacy_flat_rule_node_pin_routes_to_that_node() {
+        let a = vless_node("nodeA", None);
+        let b = vless_node("nodeB", None);
+        let mut rule = Rule::new(RuleType::Domain, "aa.com".into(), RuleTarget::Node, 10);
+        rule.node_id = Some(a.id.clone());
+        let mut opts = default_opts();
+        opts.rules = vec![rule]; // no rule_sets → legacy flat path
+        let built = build_xray_config(&[a.clone(), b], &opts).expect("build");
+        let text = built.value.to_string();
+        let needle = format!(
+            "\"domain\":[\"full:aa.com\"],\"outboundTag\":\"{}\"",
+            node_tag_of(&a)
+        );
+        assert!(
+            text.contains(&needle),
+            "expected aa.com pinned to nodeA; rules: {text}"
+        );
     }
 
     #[test]

@@ -364,7 +364,7 @@ pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<
 /// (proxy/direct/block) collapse pins to the strategy target; Node sets pin
 /// to the set-level node; Filter sets rewrite the keywords to the set-level
 /// filters. Smart (Mixed) sets keep per-rule decisions untouched.
-fn clamp_rule_pin_to_set(set: &RuleSet, rule: &mut Rule) {
+pub(crate) fn clamp_rule_pin_to_set(set: &RuleSet, rule: &mut Rule) {
     if set.strategy == RuleSetStrategy::Smart
         || matches!(
             rule.target,
