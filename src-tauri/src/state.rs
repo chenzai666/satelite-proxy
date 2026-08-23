@@ -1172,19 +1172,28 @@ impl AppState {
             return;
         }
 
-        let api = {
+        let (api, metrics) = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
             if !runtime.core.is_running() {
                 return;
             }
-            runtime.api_clone()
+            (runtime.api_clone(), runtime.xray_metrics_clone())
         };
-        let Some(api) = api else { return };
-        let now_tag = match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT)
-        {
-            Ok(tag) => tag,
-            Err(_) => return,
+        // sing-box / mihomo: read the urltest group's `now` directly.
+        // Xray: no selection API exists — infer the balancer's live pick from
+        // the per-outbound stats counters (the picked outbound is the one
+        // whose counters grow between polls; idle polls keep the last pick).
+        // XrayMetrics only exists in Xray mode, so its presence is the check.
+        let now_tag = if let Some(api) = api {
+            match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT) {
+                Ok(tag) => tag,
+                Err(_) => return,
+            }
+        } else if let Some(metrics) = metrics {
+            metrics.dominant_outbound_tag()
+        } else {
+            return;
         };
         let Some(tag) = now_tag else {
             return;
