@@ -344,6 +344,22 @@ function coreDisplayName(kind: string | null | undefined): string {
         setProxy(s);
         pushSpark(s);
         setPendingCore(peekSettings()?.core_type ?? s.core_type ?? null);
+        // Kernel auto-select (any core) and app-side smart picks persist the
+        // current node in the backend; the status carries it — reflect a
+        // change without waiting for a full reload. Only touch the display
+        // node when it's in the loaded list (avoid flashing "disconnected"
+        // mid-subscription-switch) and never clobber optimistic switch UI.
+        const nid = s.current_node_id ?? null;
+        if (
+          !busy &&
+          !customRuntime &&
+          nid !== currentNodeId &&
+          nid !== currentNode?.id
+        ) {
+          setCurrentNodeId(nid);
+          const node = nodes.find((n) => n.id === nid);
+          if (node) setCurrentNode(node);
+        }
       })
       .catch(() => undefined);
   }, 1000);
