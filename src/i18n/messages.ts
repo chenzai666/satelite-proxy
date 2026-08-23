@@ -401,6 +401,7 @@ const en = {
   "traffic.xrayLogDesc":
     "Showing the core log instead — Xray has no per-connection API, but its log carries accepted connections and routing decisions.",
   "traffic.xrayLogTitle": "Core log",
+  "traffic.xrayLogToggle": "Show core log",
   "traffic.xrayLogEmpty":
     "No core output yet — start the Xray core and its log appears here.",
   "traffic.tabLive": "Active",
@@ -1126,6 +1127,7 @@ const zh: Record<MessageKey, string> = {
   "traffic.xrayLogDesc":
     "下方改为显示内核日志——Xray 虽无逐连接接口，但其日志记录了连接建立与路由决策。",
   "traffic.xrayLogTitle": "内核日志",
+  "traffic.xrayLogToggle": "显示内核日志",
   "traffic.xrayLogEmpty": "暂无内核输出——启动 Xray 后运行日志会显示在这里。",
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",

@@ -142,6 +142,20 @@ export function TrafficPage() {
   const [coreType, setCoreType] = useState<string | null>(
     () => peekProxyStatus()?.core_type ?? null,
   );
+  // Core-log view is opt-in (default off) and remembered across remounts —
+  // pages remount on every nav switch (key={nav}).
+  const [showLog, setShowLog] = useState<boolean>(
+    () => localStorage.getItem("traffic.xrayLog") === "1",
+  );
+
+  function toggleLog(next: boolean) {
+    setShowLog(next);
+    try {
+      localStorage.setItem("traffic.xrayLog", next ? "1" : "0");
+    } catch {
+      /* private mode etc. — session-only fallback */
+    }
+  }
 
   useEffect(() => {
     // Seed from the module snapshot for an instant first paint, then refresh.
@@ -158,7 +172,7 @@ export function TrafficPage() {
   }, []);
 
   // Xray has no per-connection API — the tabs are connection data, so the
-  // page swaps in a live core-log view instead.
+  // page swaps in an opt-in core-log view instead.
   const xrayCore = coreType === "xray";
 
   return (
@@ -169,8 +183,17 @@ export function TrafficPage() {
           <p className="page-desc">{t("traffic.desc")}</p>
         </div>
         {/* All three tabs are connection data — meaningless under Xray, so the
-            switcher hides and the log view takes the whole panel. */}
-        {!xrayCore && (
+            switcher is replaced by the opt-in core-log toggle. */}
+        {xrayCore ? (
+          <GlassSwitch
+            checked={showLog}
+            onChange={toggleLog}
+            label={t("traffic.xrayLogToggle")}
+            title={t("traffic.xrayLogToggle")}
+            capsule
+            size="sm"
+          />
+        ) : (
           <GlassSeg
             value={tab}
             ariaLabel={t("traffic.title")}
@@ -207,7 +230,8 @@ export function TrafficPage() {
                 <p className="muted">{t("traffic.xrayLogDesc")}</p>
               </div>
             </div>
-            <CoreLogPanel />
+            {/* Unmounted while off — no polling, no log reads. */}
+            {showLog && <CoreLogPanel />}
           </div>
         ) : tab === "live" ? (
           <ConnectionsPage embedded />
