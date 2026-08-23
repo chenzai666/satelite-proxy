@@ -194,8 +194,6 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         }));
     }
     // Final rule: Rule mode honors route_final; Global/Direct force the mode.
-    // When kernel auto-select is on and the final target is the balancer, the
-    // rule references `balancerTag` instead of `outboundTag`.
     let final_outbound = match opts.outbound_mode {
         OutboundMode::Rule => match opts.normalized_route_final() {
             "direct" => "direct".to_string(),
@@ -205,15 +203,26 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         OutboundMode::Global => main_target.clone(),
         OutboundMode::Direct => "direct".to_string(),
     };
-    let final_uses_balancer = opts.auto_select.is_kernel() && final_outbound == main_target;
-    if final_uses_balancer {
-        rules.push(json!({
-            "type": "field", "network": "tcp,udp", "balancerTag": BALANCER_TAG
-        }));
-    } else {
-        rules.push(json!({
-            "type": "field", "network": "tcp,udp", "outboundTag": final_outbound
-        }));
+    rules.push(json!({
+        "type": "field", "network": "tcp,udp", "outboundTag": final_outbound
+    }));
+
+    // Under kernel auto-select the main target IS the balancer tag — which is
+    // not an outbound. Every rule built above that resolved to the main
+    // target (DNS egress, builtin remote sets, proxy-target user rules, the
+    // final rule) must reference it via `balancerTag` or the dispatcher
+    // rejects the connection ("non existing outTag"). One choke-point pass
+    // fixes them all; `xray run -test` does NOT validate tag references, so
+    // this class of bug is only caught here and by unit tests.
+    if opts.auto_select.is_kernel() {
+        for rule in rules.iter_mut() {
+            if rule.get("outboundTag").and_then(Value::as_str) == Some(BALANCER_TAG) {
+                if let Some(obj) = rule.as_object_mut() {
+                    obj.remove("outboundTag");
+                    obj.insert("balancerTag".into(), json!(BALANCER_TAG));
+                }
+            }
+        }
     }
     routing.insert("rules".into(), Value::Array(rules));
     let mut balancers = Vec::new();
@@ -1342,6 +1351,66 @@ mod tests {
             built.value["observatory"]["subjectSelector"],
             json!(["node-"])
         );
+    }
+
+    /// Regression: under kernel auto-select every path that resolves to the
+    /// main target (DNS egress, builtin remote proxy sets, proxy-target user
+    /// rules, final) used to emit `outboundTag: "proxy-balancer"` — a tag
+    /// that is a BALANCER, not an outbound. The dispatcher then failed every
+    /// such connection ("non existing outTag"). `xray run -test` does not
+    /// validate tag references, so only this guard catches the class.
+    #[test]
+    fn kernel_mode_never_references_balancer_as_outbound() {
+        let nodes = vec![vless_node("a", None), vless_node("b", None)];
+        let mut opts = default_opts();
+        opts.auto_select = crate::domain::AutoSelectMode::Kernel;
+        // User proxy-target rule + builtin remote proxy set + DNS egress —
+        // all three previously leaked the bare balancer tag.
+        let set = RuleSet::new_user(
+            "代理",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "youtube.com".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+        let mut builtin = crate::domain::build_builtin_remote_set(
+            crate::domain::builtin_remote_spec("system-geolocation-not-cn").unwrap(),
+        );
+        builtin.strategy = RuleSetStrategy::Proxy;
+        opts.rule_sets = vec![set, builtin];
+        let built = build_xray_config(&nodes, &opts).expect("build");
+        let routing = &built.value["routing"];
+        assert!(routing["balancers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["tag"] == "proxy-balancer"));
+
+        let rules = routing["rules"].as_array().unwrap();
+        assert!(
+            rules
+                .iter()
+                .all(|r| r.get("outboundTag").and_then(Value::as_str) != Some("proxy-balancer")),
+            "a rule still references the balancer via outboundTag: {rules:?}"
+        );
+        // And the proxy-resolved rules actually reach the balancer.
+        let yt = rules
+            .iter()
+            .find(|r| r.to_string().contains("youtube.com"))
+            .expect("youtube rule");
+        assert_eq!(yt["balancerTag"], "proxy-balancer");
+        let overseas = rules
+            .iter()
+            .find(|r| r.to_string().contains("geolocation-!cn"))
+            .expect("builtin overseas rule");
+        assert_eq!(overseas["balancerTag"], "proxy-balancer");
+        let dns_egress = rules
+            .iter()
+            .find(|r| r["inboundTag"] == json!(["dns-module"]))
+            .expect("dns egress rule");
+        assert_eq!(dns_egress["balancerTag"], "proxy-balancer");
     }
 
     #[test]
