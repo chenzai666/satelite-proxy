@@ -20,7 +20,7 @@ function coreLabel(kind: CoreKind): string {
 
 /**
  * Top-bar ⋯ quick menu: switch runtime UI mode, switch core
- * (sing-box/Xray/meow), restart core, and copy the proxy env snippet —
+ * (sing-box/Xray/mihomo), restart core, and copy the proxy env snippet —
  * reachable from any tab. Single ⋯ keeps the navbar tidy (no duplicate
  * capsule switches next to the theme picker).
  */

@@ -531,7 +531,7 @@ function coreDisplayName(kind: string | null | undefined): string {
   );
   const selectedCustomId =
     proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
-  // Custom sing-box profiles cannot run under the Xray/meow cores (they
+  // Custom sing-box profiles cannot run under the Xray/mihomo cores (they
   // always use the sing-box binary); grey them out while a foreign core is
   // active. The "generated" option stays live — it generates for the active
   // core. While a custom profile IS running, core_type truthfully reports

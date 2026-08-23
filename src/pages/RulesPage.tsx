@@ -79,7 +79,7 @@ function suggestPayloadFromUrl(payload: string, ruleType: RuleType): string | nu
 
 const REMOTE_PAGE_SIZE = 100;
 
-/** Builtin remote set id → the geodata matcher the Xray / meow generators
+/** Builtin remote set id → the geodata matcher the Xray / mihomo generators
  *  emit instead of reading the .srs cache (and which geodata file backs it). */
 const XRAY_GEODATA_SETS: Record<
   string,
@@ -127,7 +127,7 @@ export function RulesPage({ embedded = false }: Props) {
     return saved === "direct" || saved === "block" ? saved : "proxy";
   });
   const [finalBusy, setFinalBusy] = useState(false);
-  // Geodata cores (Xray / meow): user-added remote .srs sets are skipped by
+  // Geodata cores (Xray / mihomo): user-added remote .srs sets are skipped by
   // their generators — the sidebar greys them out (builtin remote sets map
   // onto geosite/geoip matchers backed by geodata files instead).
   const [geoCore, setGeoCore] = useState<"xray" | "mihomo" | null>(() => {

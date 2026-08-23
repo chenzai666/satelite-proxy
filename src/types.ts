@@ -343,7 +343,7 @@ export interface GenerateConfigResult {
 }
 
 export interface CoreInfo {
-  /** `singbox` | `xray` | `meow`. */
+  /** `singbox` | `xray` | `mihomo`. */
   kind: CoreKind;
   /** Display name: sing-box / Xray. */
   name: string;

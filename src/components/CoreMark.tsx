@@ -2,7 +2,7 @@ import type { CoreKind } from "../types";
 
 /**
  * Monochrome core monograms — cube (sing-box), lightning bolt (Xray), cat
- * head (meow). Inline SVG with `currentColor` so they inherit the tile tint
+ * head (mihomo). Inline SVG with `currentColor` so they inherit the tile tint
  * exactly like the old letter glyphs did; text symbols like ⚡/🐱 would fall
  * back to colored emoji in the WebView and break the muted-mark look.
  */
