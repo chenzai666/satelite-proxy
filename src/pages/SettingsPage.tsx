@@ -24,6 +24,7 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { ErrorModal } from "../components/ErrorModal";
 import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
+import { CoreMark } from "../components/CoreMark";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
@@ -624,9 +625,9 @@ export function SettingsPage() {
         }
       >
         <div className="kernel-row-main">
-          {/* Monogram tile: "s" sing-box, "x" Xray, "m" meow. */}
+          {/* Monogram tile: cube = sing-box, bolt = Xray, cat head = meow. */}
           <div className="ver-mark kernel-mark" aria-hidden>
-            {kind === "xray" ? "x" : kind === "meow" ? "m" : "s"}
+            <CoreMark kind={kind} />
           </div>
           <span className="kernel-name">
             {info?.name ?? (kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box")}

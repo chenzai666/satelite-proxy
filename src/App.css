@@ -1548,14 +1548,18 @@ tr.row-active {
   min-width: 0;
 }
 
-/* Letter monogram ("s" / "x") — slightly larger + bolder than the old glyph
-   so it reads as an intentional avatar, not stray text. */
+/* Core monogram tile — CoreMark SVG glyph (cube / bolt / cat head) inherits
+   the muted mark color through currentColor. */
 .ver-mark.kernel-mark {
   width: 1.7rem;
   height: 1.7rem;
-  font-size: 0.95rem;
-  font-weight: 700;
   border-radius: 0.55rem;
+}
+
+.ver-mark.kernel-mark svg {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
 /* Fixed name slot: "sing-box" and "Xray" differ in length — a shared basis
