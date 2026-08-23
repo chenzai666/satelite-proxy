@@ -1010,7 +1010,10 @@ export function DashboardPage({
               }
               titles={{
                 kernel: t("dashboard.autoSelectKernelHint"),
-                smart: t("dashboard.smartSwitchDesc"),
+                smart:
+                  proxy?.core_type === "xray"
+                    ? t("dashboard.smartSwitchNeedsSingbox")
+                    : t("dashboard.smartSwitchDesc"),
                 off: t("dashboard.autoSelectDesc"),
               }}
               onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}

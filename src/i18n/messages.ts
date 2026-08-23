@@ -107,6 +107,8 @@ const en = {
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
     "On enable: probe and pick best node. Then passive watch + on-demand probe.",
+  "dashboard.smartSwitchNeedsSingbox":
+    "Smart switch needs the sing-box core (it reads the connection journal and switches nodes live). Under Xray use 'kernel' auto-select instead — the core probes and picks the best node by itself.",
   "dashboard.smartSwitchProbing": "Probing…",
   "dashboard.smartSwitchProbingHint": "Smart switch is probing. Toggle off to stop.",
   "dashboard.smartSwitchNeedCore": "Start the proxy before smart switch can probe.",
@@ -857,6 +859,8 @@ const zh: Record<MessageKey, string> = {
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
     "开启时立即探测并切到最佳节点；之后被动观测 + 按需探测",
+  "dashboard.smartSwitchNeedsSingbox":
+    "智能切换需要 sing-box 内核（依赖连接日志与热切换）。Xray 下请改用「内核测速」——由内核自行探测并选最优节点。",
   "dashboard.smartSwitchProbing": "智能探测中",
   "dashboard.smartSwitchProbingHint": "正在智能探测节点，可关闭开关结束探测",
   "dashboard.smartSwitchNeedCore": "请先启动代理，智能切换才能探测节点。",
