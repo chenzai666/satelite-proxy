@@ -174,7 +174,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `storage/store.rs` — `AppStore`（serde JSON）：`subscriptions`、`nodes`（StoredNode）、`settings`、`dns`、`rule_sets`、`node_aliases` + 4 组 `retained_*`（**解析不了的新 schema 数据写回而非丢弃**）。含 `store.backup.json` 备份、损坏快照保留、schema 迁移（如 capture_mode/auto_select 迁移）。
 - 磁盘布局（`app_data_dir`）：
   - `store.json` — 主存储；`store.backup.json` — 备份
-  - `config/active.json` — 生成的 sing-box 运行配置（`config/write.rs`，tmp+rename 原子写，带时间戳备份）；custom 运行时另有独立文件，**绝不写 active.json**
+  - `config/active.json` — 当前内核的运行配置（**两内核共用同一文件，有意为之**：每次启动由当前内核的生成器整体重写，tmp+rename 原子写，带时间戳备份；内容从不跨内核混用）；custom 运行时另有独立文件，**绝不写 active.json**
   - `bin/sing-box(.exe)` + `version.txt` — sing-box 内核；`bin/xray(.exe)` + `xray-version.txt` — Xray 内核；`bin/geosite.dat`/`geoip.dat`/`wintun.dll` — Xray 资产（`core/paths.rs` + `core/assets.rs`）
   - `logs/` — 应用日志（`app_log.rs`，`log_retention.rs` 清理）
   - 远程规则集缓存（`.srs`）
