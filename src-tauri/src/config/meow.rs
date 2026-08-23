@@ -29,8 +29,6 @@ use serde_yaml::{Mapping, Value as Yaml};
 /// Main group tag — must match the sing-box contract (`state.rs` selects
 /// this group over the Clash API and the kernel-selection sync reads `now`).
 const MAIN_GROUP: &str = "proxy";
-/// Kernel auto-select group, first member of the main select group.
-const AUTO_GROUP: &str = "auto";
 /// Built-in remote DoH pool (Clash queries the entries concurrently,
 /// fastest answer wins). Every entry egresses through the main proxy group
 /// — direct DoH is unreachable on censored networks (see build_dns).
@@ -104,16 +102,16 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
 
     // —— proxy-groups ——
-    // Kernel auto-select: the main group is a select over a url-test group
-    // (default AUTO). Manual picks under kernel mode take the restart path —
-    // PUT /proxies on a url-test group 400s — exactly like sing-box kernel
-    // mode. Otherwise a select group ordered with the current node first so
-    // meow's initial `now` matches our persisted selection.
+    // Kernel auto-select: the main group IS a url-test group over all nodes
+    // (sing-box's exact shape — `proxy_group_now_with_timeout("proxy")`
+    // reads its `now` to sync the dashboard's current node; PUT /proxies on
+    // a url-test 400s, so manual picks take the restart path like sing-box
+    // kernel mode). Otherwise a select group ordered with the current node
+    // first so meow's initial `now` matches our persisted selection.
     let mut groups: Vec<Mapping> = Vec::new();
     let probe_url = probe_url_or_default(opts);
     if opts.auto_select.is_kernel() {
-        groups.push(select_group(MAIN_GROUP, vec![AUTO_GROUP.to_string()], None));
-        groups.push(url_test_group(AUTO_GROUP, tags.clone(), &probe_url));
+        groups.push(url_test_group(MAIN_GROUP, tags.clone(), &probe_url));
     } else {
         groups.push(select_group(MAIN_GROUP, tags.clone(), Some(&selected_tag)));
     }
@@ -1320,18 +1318,17 @@ mod tests {
         let built = build_meow_config(&[a, b], &opts).expect("build");
         let doc = parse(&built);
         let groups = groups_of(&doc);
-        // Main group is a select whose only member is the url-test group.
+        // Main group IS the url-test over all nodes (sing-box's exact
+        // shape) — its `now` feeds the kernel-selection sync.
         assert_eq!(groups[0]["name"].as_str(), Some("proxy"));
-        assert_eq!(groups[0]["type"].as_str(), Some("select"));
-        assert_eq!(groups[0]["proxies"][0].as_str(), Some("auto"));
-        let auto = groups
-            .iter()
-            .find(|g| g["name"].as_str() == Some("auto"))
-            .expect("auto group");
-        assert_eq!(auto["type"].as_str(), Some("url-test"));
-        assert_eq!(auto["proxies"].as_sequence().map(|p| p.len()), Some(2));
-        assert!(auto["url"].as_str().is_some_and(|u| !u.is_empty()));
-        // Final still points at the main group (select → auto).
+        assert_eq!(groups[0]["type"].as_str(), Some("url-test"));
+        assert_eq!(groups[0]["proxies"].as_sequence().map(|p| p.len()), Some(2));
+        assert!(groups[0]["url"].as_str().is_some_and(|u| !u.is_empty()));
+        assert!(
+            !groups.iter().any(|g| g["name"].as_str() == Some("auto")),
+            "no select/auto wrapper in kernel mode"
+        );
+        // Final still points at the main group.
         let rules = rules_of(&doc);
         assert_eq!(rules.last().unwrap(), "MATCH,proxy");
     }

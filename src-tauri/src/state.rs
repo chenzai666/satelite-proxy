@@ -584,7 +584,7 @@ impl AppState {
     pub fn try_apply_connection_snapshot(
         &self,
         api: &crate::api::ClashApi,
-        snapshot: crate::api::ConnectionsSnapshot,
+        mut snapshot: crate::api::ConnectionsSnapshot,
     ) -> bool {
         if self.is_core_transitioning() || !api.is_active() {
             return false;
@@ -605,8 +605,44 @@ impl AppState {
         {
             return false;
         }
+        // meow reports only the matched target in `chains` (["proxy"], not
+        // ["node-x", "proxy"] like sing-box/mihomo), so every main-group
+        // connection would display as "proxy". Resolve it to the persisted
+        // current node — accurate in manual mode (the select's pick) and in
+        // kernel mode (the url-test `now` synced by
+        // schedule_kernel_selection_sync). Custom sing-box profiles keep
+        // whatever their own config reports.
+        if let Some(name) = self.generated_current_node_name() {
+            for conn in &mut snapshot.connections {
+                if conn.node == "proxy" {
+                    conn.node = name.clone();
+                }
+            }
+        }
         runtime.apply_snapshot(snapshot);
         true
+    }
+
+    /// Display name (alias applied) of the persisted current node for a
+    /// generated runtime; `None` for custom sing-box profiles.
+    fn generated_current_node_name(&self) -> Option<String> {
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "store lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if store.settings.runtime_source().is_custom() {
+            return None;
+        }
+        store
+            .settings
+            .current_node_id
+            .as_deref()
+            .and_then(|id| store.find_node(id))
+            .map(|n| n.name.clone())
     }
 
     fn begin_core_transition(&self) -> AppResult<CoreTransitionGuard<'_>> {
