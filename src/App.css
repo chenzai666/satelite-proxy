@@ -81,8 +81,10 @@
   --nav-item-active-bg: rgba(255, 255, 255, 0.92);
   --nav-item-active-fg: #12151c;
   /* Background halo tint (top-bar atmosphere + hero glow); overridden at
-     runtime with the glow color setting (see theme/accents.ts). */
+     runtime with the glow color setting (see theme/accents.ts). --glow-deep
+     is the luminance-normalized variant driving the big app-shell wash. */
   --glow-rgb: 85, 200, 154;
+  --glow-deep-rgb: 24, 92, 72;
   --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.12), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(101, 151, 219, 0.08), transparent 55%);
   /* Opaque panels for modals / menus / native selects (not frosted --surface) */
@@ -156,6 +158,7 @@
   --nav-item-active-bg: #1a1d24;
   --nav-item-active-fg: #f5f6f8;
   --glow-rgb: 31, 154, 114;
+  --glow-deep-rgb: 48, 155, 119;
   --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.1), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(61, 111, 176, 0.08), transparent 55%);
   --panel-solid: #ffffff;
@@ -287,9 +290,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(var(--glow-rgb), 0.24) 0%,
-      rgba(var(--glow-rgb), 0.13) 34%,
-      rgba(var(--glow-rgb), 0.05) 58%,
+      rgba(var(--glow-deep-rgb), 0.32) 0%,
+      rgba(var(--glow-deep-rgb), 0.2) 34%,
+      rgba(var(--glow-deep-rgb), 0.08) 58%,
       transparent 76%
     ),
     var(--page-glow),
@@ -308,9 +311,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(var(--glow-rgb), 0.24) 0%,
-      rgba(var(--glow-rgb), 0.15) 36%,
-      rgba(var(--glow-rgb), 0.06) 60%,
+      rgba(var(--glow-deep-rgb), 0.26) 0%,
+      rgba(var(--glow-deep-rgb), 0.16) 36%,
+      rgba(var(--glow-deep-rgb), 0.07) 60%,
       transparent 77%
     ),
     var(--page-glow),

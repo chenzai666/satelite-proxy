@@ -213,12 +213,38 @@ export function normalizeGlowId(id: string | null | undefined): string {
 }
 
 /**
+ * Scale an rgb tuple toward black until its perceived luminance drops to
+ * `target` (mixing toward black scales luminance linearly). Never lightens:
+ * already-dark colors pass through untouched.
+ */
+function deepenToLuminance(
+  r: number,
+  g: number,
+  b: number,
+  target: number,
+): { r: number; g: number; b: number } {
+  const lum = luminanceOf(r, g, b);
+  const t = lum > target && lum > 0 ? target / lum : 1;
+  return {
+    r: Math.round(r * t),
+    g: Math.round(g * t),
+    b: Math.round(b * t),
+  };
+}
+
+/**
  * Publish `--glow-rgb` for the background halo layers (app-shell atmosphere +
  * hero glow in App.css). Independent from the accent: `glowId` may be
  * `"accent"` to track it, any preset id, or a custom `#rrggbb` (presets pick
  * their per-theme shade; custom hexes are used verbatim — a wash behind
  * content needs no text-contrast clamp). Re-apply on theme change, and on
  * accent change while following.
+ *
+ * Also emits `--glow-deep-rgb`: the same hue luminance-normalized to the
+ * pre-setting atmosphere colors (0.30 dark / 0.50 light theme) so the big
+ * app-shell wash keeps its original, calm brightness whatever glow color is
+ * picked — a raw pastel there made dark mode read noticeably brighter.
+ * `--hero-glow` keeps the raw variant (it always used the bright accent).
  */
 export function applyGlowToDom(
   glowId: string | null | undefined,
@@ -230,8 +256,13 @@ export function applyGlowToDom(
   );
   const base = hexToRgb(preset[theme]);
   if (!base) return;
-  document.documentElement.style.setProperty(
-    "--glow-rgb",
-    `${base.r}, ${base.g}, ${base.b}`,
+  const deep = deepenToLuminance(
+    base.r,
+    base.g,
+    base.b,
+    theme === "day" ? 0.5 : 0.3,
   );
+  const root = document.documentElement.style;
+  root.setProperty("--glow-rgb", `${base.r}, ${base.g}, ${base.b}`);
+  root.setProperty("--glow-deep-rgb", `${deep.r}, ${deep.g}, ${deep.b}`);
 }
