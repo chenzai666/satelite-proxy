@@ -594,9 +594,12 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
 
     let use_fakeip = opts.tun_enabled || opts.dns.fake_ip.enabled;
     let dns_final = opts.dns.normalize_dns_final();
+    // NOTE: meow has NO `system` resolver (unlike mihomo — unknown schemes
+    // like `system` hard-error at load: "nameserver-policy entry has no
+    // valid nameservers"). The "use the system resolver" intent is
+    // approximated with the plain-UDP domestic resolver.
     let (default_ns, fallback_ns): (&str, &str) = match dns_final {
-        "domestic" => (DOMESTIC_DNS, REMOTE_DNS),
-        "local" => ("system", REMOTE_DNS),
+        "domestic" | "local" => (DOMESTIC_DNS, REMOTE_DNS),
         _ => (REMOTE_DNS, DOMESTIC_DNS),
     };
 
@@ -626,8 +629,10 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
         for pat in policy_remote {
             policy.insert(str_yaml(&pat), str_yaml(REMOTE_DNS));
         }
+        // "local" classification also lands on the plain-UDP domestic
+        // resolver — meow rejects `system` (see the match above).
         for pat in policy_local {
-            policy.insert(str_yaml(&pat), str_yaml("system"));
+            policy.insert(str_yaml(&pat), str_yaml(DOMESTIC_DNS));
         }
         dns.insert(str_yaml("nameserver-policy"), Yaml::Mapping(policy));
     }
@@ -1595,6 +1600,56 @@ mod tests {
         assert_eq!(dns["hosts"]["example.test"].as_str(), Some("1.2.3.4"));
     }
 
+    /// meow rejects `system` as a nameserver value (no system-resolver
+    /// scheme — "nameserver-policy entry has no valid nameservers" made the
+    /// whole config load fail). Local classification and the `local`
+    /// dns_final must land on the plain-UDP domestic resolver instead.
+    #[test]
+    fn dns_never_emits_system_resolver() {
+        let node = vless_node("n1", None);
+        let mut opts = default_opts();
+        // Local-classified DNS rule + a set with dns_strategy Local.
+        opts.dns.rules_enabled = true;
+        opts.dns.rules.push(crate::domain::DnsRule {
+            id: "dl1".into(),
+            enabled: true,
+            matcher: crate::domain::DomainMatcher::DomainSuffix,
+            payload: "corp.internal".into(),
+            action: crate::domain::DnsAction::Local,
+        });
+        let mut set = RuleSet::new_user(
+            "cnlocal",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "cn-local.com".into(),
+                RuleTarget::Direct,
+                10,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Smart;
+        set.dns_strategy = RuleSetDnsStrategy::Local;
+        opts.rule_sets = vec![set];
+        // Also cover dns_final=local for the default nameserver.
+        opts.dns.dns_final = "local".into();
+
+        let built = build_meow_config(&[node], &opts).expect("build");
+        let dns = &parse(&built)["dns"];
+        let text = serde_yaml::to_string(dns).unwrap();
+        assert!(
+            !text.contains("system"),
+            "meow rejects the system resolver; dns block was: {text}"
+        );
+        assert_eq!(dns["nameserver"][0].as_str(), Some("223.5.5.5"));
+        assert_eq!(
+            dns["nameserver-policy"]["+.corp.internal"].as_str(),
+            Some("223.5.5.5")
+        );
+        assert_eq!(
+            dns["nameserver-policy"]["+.cn-local.com"].as_str(),
+            Some("223.5.5.5")
+        );
+    }
+
     #[test]
     fn extra_inbounds_become_listeners() {
         let node = vless_node("n1", None);
@@ -1696,7 +1751,23 @@ mod tests {
             ],
         );
         set.strategy = RuleSetStrategy::Smart;
-        opts.rule_sets = vec![set];
+        // Reproduce the field-reported failure shape: a builtin remote set
+        // with Local DNS strategy puts a `geosite:cn` key into
+        // nameserver-policy — the emitted value must be a resolver meow
+        // actually accepts (it has no `system` scheme).
+        let mut geo_set = crate::domain::build_builtin_remote_set(
+            crate::domain::builtin_remote_spec("system-geosite-cn").expect("spec"),
+        );
+        geo_set.dns_strategy = RuleSetDnsStrategy::Local;
+        opts.dns.rules_enabled = true;
+        opts.dns.rules.push(crate::domain::DnsRule {
+            id: "dl-live".into(),
+            enabled: true,
+            matcher: crate::domain::DomainMatcher::DomainSuffix,
+            payload: "corp.internal".into(),
+            action: crate::domain::DnsAction::Local,
+        });
+        opts.rule_sets = vec![set, geo_set];
 
         let built = build_meow_config(&[node, ws], &opts).expect("build");
 
@@ -1711,6 +1782,20 @@ mod tests {
         std::fs::create_dir_all(&config_dir).unwrap();
         let config = config_dir.join("active.yaml");
         std::fs::write(&config, &built.yaml).unwrap();
+
+        // The geo_set's GEOSITE rule needs the geodata pair in the meow
+        // home; stage the bundled dev copy (meow's own auto-download dials
+        // through the not-yet-started test proxies and would fail).
+        let home = tmp.join("meow");
+        let _ = std::fs::create_dir_all(&home);
+        if let Some(parent) = bin.parent() {
+            for file in ["Country.mmdb", "geosite.dat"] {
+                let src = parent.join("meow-geodata").join(file);
+                if src.is_file() {
+                    let _ = std::fs::copy(&src, home.join(file));
+                }
+            }
+        }
 
         crate::core::manager::CoreManager::check_config(CoreKind::Meow, &bin, &config)
             .expect("meow -t accepts the generated config");
