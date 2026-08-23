@@ -16,7 +16,8 @@
 //!   the `metrics` module (`/debug/vars`) configured below.
 
 use crate::config::builder::{
-    effective_route_rules, outbound_tag, resolve_selected_tag, BuildOptions, BuiltConfig,
+    effective_route_rules, filter_pool_tags, outbound_tag, resolve_selected_tag,
+    rule_set_is_empty_for_config, BuildOptions, BuiltConfig,
 };
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
@@ -79,9 +80,44 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         selected_tag.clone()
     };
 
+    // Filter-strategy sets route through a keyword-filtered node pool. Xray
+    // has no selector outbound, so each pool becomes a balancer over the
+    // exact tags of its member nodes (leastPing; the shared observatory
+    // probes the node- prefix so members have latency data). Empty pools
+    // fall back to the main target.
+    let mut filter_balancers = Vec::new();
+    let mut filter_balancer_tags: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for set in opts
+        .rule_sets
+        .iter()
+        .filter(|s| s.enabled && s.remote.is_none() && s.strategy == RuleSetStrategy::Filter)
+    {
+        if rule_set_is_empty_for_config(set) {
+            continue;
+        }
+        let pool = filter_pool_tags(&set.smart_include, &set.smart_exclude, &supported, &tags);
+        if pool.is_empty() {
+            continue;
+        }
+        let balancer_tag = format!("filter-{}", &set.id[..set.id.len().min(12)]);
+        filter_balancers.push(json!({
+            "tag": balancer_tag,
+            "selector": pool,
+            "strategy": { "type": "leastPing" },
+        }));
+        filter_balancer_tags.insert(set.id.clone(), balancer_tag);
+    }
+
     let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
-    let (route_rules, dns_egress_rules) =
-        build_routing(opts, &supported, &tags, &effective_rules, &main_target);
+    let (route_rules, dns_egress_rules) = build_routing(
+        opts,
+        &supported,
+        &tags,
+        &effective_rules,
+        &main_target,
+        &filter_balancer_tags,
+    );
 
     let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
     let inbounds = build_inbounds(opts);
@@ -154,18 +190,22 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         }));
     }
     routing.insert("rules".into(), Value::Array(rules));
+    let mut balancers = Vec::new();
     if opts.auto_select.is_kernel() {
-        routing.insert(
-            "balancers".into(),
-            json!([{
-                "tag": BALANCER_TAG,
-                "selector": [NODE_TAG_PREFIX],
-                "strategy": { "type": "leastPing" },
-            }]),
-        );
+        balancers.push(json!({
+            "tag": BALANCER_TAG,
+            "selector": [NODE_TAG_PREFIX],
+            "strategy": { "type": "leastPing" },
+        }));
+    }
+    balancers.extend(filter_balancers);
+    if !balancers.is_empty() {
+        routing.insert("balancers".into(), Value::Array(balancers));
     }
     config.insert("routing".into(), Value::Object(routing));
-    if opts.auto_select.is_kernel() {
+    // leastPing needs probe data: keep the observatory up for kernel
+    // auto-select and for any Filter-pool balancer.
+    if opts.auto_select.is_kernel() || !filter_balancer_tags.is_empty() {
         let probe_url = if opts.probe_url.trim().is_empty() {
             "https://www.gstatic.com/generate_204"
         } else {
@@ -384,12 +424,16 @@ fn builtin_remote_xray_rule(set: &RuleSet, main_target: &str) -> Option<Value> {
 }
 
 /// Build (route rules, dns egress routing rules) for the Xray config.
+/// `filter_balancer_tags` maps a Filter set id to its pool balancer tag —
+/// rules of that set route via `balancerTag` instead of `outboundTag`.
+#[allow(clippy::too_many_arguments)]
 fn build_routing(
     opts: &BuildOptions,
     nodes: &[ProxyNode],
     tags: &[String],
     effective_rules: &[crate::domain::Rule],
     main_target: &str,
+    filter_balancer_tags: &std::collections::HashMap<String, String>,
 ) -> (Vec<Value>, Vec<Value>) {
     let mut route_rules = Vec::new();
     match opts.outbound_mode {
@@ -427,6 +471,13 @@ fn build_routing(
                             .cloned()
                             .collect();
                         rules.sort_by_key(|r| r.ord);
+                        // Filter sets with a keyword pool route the whole set
+                        // through its balancer.
+                        let set_balancer = if set.strategy == RuleSetStrategy::Filter {
+                            filter_balancer_tags.get(&set.id)
+                        } else {
+                            None
+                        };
                         for rule in rules {
                             let mut rule = rule;
                             if let Some(target) = set.strategy.route_target() {
@@ -438,7 +489,13 @@ fn build_routing(
                             } else {
                                 crate::config::builder::clamp_rule_pin_to_set(set, &mut rule);
                             }
-                            if let Some(value) = rule_to_xray(&rule, nodes, tags, main_target) {
+                            if let Some(mut value) = rule_to_xray(&rule, nodes, tags, main_target) {
+                                if let Some(balancer) = set_balancer {
+                                    if let Some(obj) = value.as_object_mut() {
+                                        obj.remove("outboundTag");
+                                        obj.insert("balancerTag".into(), json!(balancer));
+                                    }
+                                }
                                 route_rules.push(value);
                             }
                         }
@@ -557,7 +614,10 @@ fn build_dns(
         }
         for rule in set.rules.iter().filter(|r| r.enabled) {
             // Only rules that actually reach routing carry DNS meaning.
-            if !effective_ids.contains(rule.id.as_str()) {
+            // Filter sets are excluded from effective_rules upstream (they
+            // route via their pool balancer here) but still classify DNS.
+            if set.strategy != RuleSetStrategy::Filter && !effective_ids.contains(rule.id.as_str())
+            {
                 continue;
             }
             let entry = match rule.rule_type {
@@ -1378,6 +1438,74 @@ mod tests {
     }
 
     #[test]
+    fn filter_set_routes_through_keyword_pool_balancer() {
+        let a = vless_node("香港-01", None);
+        let b = vless_node("美国-01", None);
+        let rule = Rule::new(
+            RuleType::DomainSuffix,
+            "stream.tv".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        let mut set = RuleSet::new_user("filter", vec![rule]);
+        set.strategy = RuleSetStrategy::Filter;
+        set.smart_include = vec!["香港".into()];
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[a, b], &opts).expect("build");
+
+        // The rule references the pool balancer, not an outbound tag.
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let stream_rule = rules
+            .iter()
+            .find(|r| r.to_string().contains("stream.tv"))
+            .expect("stream.tv rule");
+        assert!(stream_rule.get("outboundTag").is_none());
+        let balancer_tag = stream_rule["balancerTag"].as_str().unwrap().to_string();
+
+        // The balancer's selector holds exactly the keyword-matched node(s).
+        let balancers = built.value["routing"]["balancers"].as_array().unwrap();
+        let balancer = balancers
+            .iter()
+            .find(|b| b["tag"] == json!(balancer_tag))
+            .expect("pool balancer");
+        assert_eq!(balancer["selector"].as_array().unwrap().len(), 1);
+        assert_eq!(balancer["selector"][0], json!(built.outbound_tags[0]));
+        assert_eq!(balancer["strategy"]["type"], "leastPing");
+
+        // leastPing needs probes: observatory present even with auto_select off.
+        assert!(built.value["observatory"].is_object());
+    }
+
+    #[test]
+    fn filter_set_with_empty_pool_falls_back_to_main_target() {
+        let a = vless_node("nodeA", None);
+        let rule = Rule::new(
+            RuleType::DomainSuffix,
+            "stream.tv".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        let mut set = RuleSet::new_user("filter", vec![rule]);
+        set.strategy = RuleSetStrategy::Filter;
+        set.smart_include = vec!["不存在的关键词".into()];
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[a], &opts).expect("build");
+        let text = built.value.to_string();
+        assert!(text.contains("stream.tv"));
+        // No pool balancer: the rule keeps a plain outboundTag (main target).
+        assert!(!text.contains("filter-"));
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let stream_rule = rules
+            .iter()
+            .find(|r| r.to_string().contains("stream.tv"))
+            .unwrap();
+        assert_eq!(stream_rule["outboundTag"], built.selected_tag);
+        assert!(built.value.get("observatory").is_none());
+    }
+
+    #[test]
     fn hosts_map_into_dns() {
         let nodes = vec![vless_node("n", None)];
         let mut opts = default_opts();
@@ -1452,7 +1580,19 @@ mod tests {
             max_early_data: None,
         });
         let nodes = vec![node, tls_node];
-        let opts = default_opts();
+        let mut opts = default_opts();
+        // Include a Filter (keyword-pool) set: the real binary must accept
+        // the exact-tag selector balancer + balancerTag rule + observatory.
+        let filter_rule = Rule::new(
+            RuleType::DomainSuffix,
+            "stream.tv".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        let mut filter_set = RuleSet::new_user("pool", vec![filter_rule]);
+        filter_set.strategy = RuleSetStrategy::Filter;
+        filter_set.smart_include = vec!["live".into()];
+        opts.rule_sets = vec![filter_set];
         let built = build_xray_config(&nodes, &opts).expect("build");
 
         let tmp = std::env::temp_dir().join(format!(
