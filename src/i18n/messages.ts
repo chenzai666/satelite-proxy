@@ -65,7 +65,7 @@ const en = {
   "dashboard.customMode": "Custom mode:{name}",
   "dashboard.pickConfig": "Choose config",
   "dashboard.pickConfigDefault": "System default",
-  "dashboard.pickCore": "Core",
+  "dashboard.pickCore": "Switch core",
   "dashboard.customProfileNeedsSingbox":
     "Custom configs are sing-box only — switch the core back to sing-box to use them",
   "dashboard.errorTitle": "Connection error",
@@ -825,7 +825,7 @@ const zh: Record<MessageKey, string> = {
   "dashboard.customMode": "自配置模式:{name}",
   "dashboard.pickConfig": "指定配置",
   "dashboard.pickConfigDefault": "系统默认",
-  "dashboard.pickCore": "指定内核",
+  "dashboard.pickCore": "切换内核",
   "dashboard.customProfileNeedsSingbox":
     "自写配置仅支持 sing-box 内核，请先在设置中切回 sing-box",
   "dashboard.errorTitle": "连接异常",
