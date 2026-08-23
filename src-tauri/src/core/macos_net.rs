@@ -45,7 +45,10 @@ pub fn same_subnet_24(a: Ipv4Addr, b: Ipv4Addr) -> bool {
 /// cannot pull system DNS queries into the tunnel. Returns `None` when no
 /// configured DNS server matches (including when either input is missing —
 /// nothing to diagnose without both).
-pub fn dns_bypasses_tun(gateway: Option<Ipv4Addr>, dns_servers: &[Ipv4Addr]) -> Option<NetDiagnostic> {
+pub fn dns_bypasses_tun(
+    gateway: Option<Ipv4Addr>,
+    dns_servers: &[Ipv4Addr],
+) -> Option<NetDiagnostic> {
     let gateway = gateway?;
     let hit = dns_servers
         .iter()
@@ -66,7 +69,10 @@ pub fn dns_bypasses_tun(gateway: Option<Ipv4Addr>, dns_servers: &[Ipv4Addr]) -> 
 /// since this only ever backs an optional UI hint.
 #[cfg(target_os = "macos")]
 pub fn read_default_gateway() -> Option<Ipv4Addr> {
-    let out = Command::new("route").args(["-n", "get", "default"]).output().ok()?;
+    let out = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

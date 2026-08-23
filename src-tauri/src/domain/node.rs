@@ -360,7 +360,9 @@ impl ProxyNode {
 
 fn config_identity(config: &ProtocolConfig) -> String {
     match config {
-        ProtocolConfig::Shadowsocks { password, method, .. } => {
+        ProtocolConfig::Shadowsocks {
+            password, method, ..
+        } => {
             format!("{method}|{password}")
         }
         ProtocolConfig::Vmess { uuid, .. } | ProtocolConfig::Vless { uuid, .. } => uuid.clone(),
@@ -371,9 +373,7 @@ fn config_identity(config: &ProtocolConfig) -> String {
         ProtocolConfig::Tuic { uuid, password, .. } => format!("{uuid}|{password}"),
         ProtocolConfig::Socks5 { username, password }
         | ProtocolConfig::Http {
-            username,
-            password,
-            ..
+            username, password, ..
         } => format!(
             "{}|{}",
             username.clone().unwrap_or_default(),
@@ -392,11 +392,11 @@ fn config_identity(config: &ProtocolConfig) -> String {
             private_key.clone().unwrap_or_default()
         ),
         ProtocolConfig::Naive {
-            username,
-            password,
-            ..
+            username, password, ..
         } => format!("{username}|{password}"),
-        ProtocolConfig::Tor { executable_path, .. } => executable_path.clone(),
+        ProtocolConfig::Tor {
+            executable_path, ..
+        } => executable_path.clone(),
         ProtocolConfig::WireGuard {
             private_key,
             peer_public_key,

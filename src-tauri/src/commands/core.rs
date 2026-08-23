@@ -179,9 +179,7 @@ pub async fn check_app_update(
         Ok(tag) => Ok(tag),
         Err(redirect_err) => fetch_latest_app_tag(proxy_url.as_deref())
             .await
-            .map_err(|api_err| {
-                AppError::Core(format!("{redirect_err}; api fallback: {api_err}"))
-            }),
+            .map_err(|api_err| AppError::Core(format!("{redirect_err}; api fallback: {api_err}"))),
     };
 
     match fetched {
@@ -243,15 +241,9 @@ pub async fn download_core(
     let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
     let progress_app = app.clone();
-    download_latest_core_with_progress(
-        kind,
-        &state.app_data_dir,
-        tag,
-        proxy_url,
-        move |progress| {
-            let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
-        },
-    )
+    download_latest_core_with_progress(kind, &state.app_data_dir, tag, proxy_url, move |progress| {
+        let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
+    })
     .await
     .map_err(|e| e.to_string())
 }

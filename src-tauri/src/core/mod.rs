@@ -2,9 +2,9 @@ mod assets;
 mod download;
 #[cfg(target_os = "windows")]
 mod elevate;
-pub mod kind;
 #[cfg(target_os = "windows")]
 mod job;
+pub mod kind;
 #[cfg(target_os = "macos")]
 mod macos_auth;
 #[cfg(target_os = "macos")]

@@ -76,10 +76,7 @@ impl XrayMetrics {
         let mut upload_total = 0u64;
         let mut download_total = 0u64;
         for (_tag, counters) in outbounds {
-            let up = counters
-                .get("uplink")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let up = counters.get("uplink").and_then(Value::as_u64).unwrap_or(0);
             let down = counters
                 .get("downlink")
                 .and_then(Value::as_u64)

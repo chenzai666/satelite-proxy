@@ -162,7 +162,15 @@ fn spawn_probe_task(
         };
         let result = probe_coalesced(key, move || async move {
             if use_clash {
-                probe_clash(clash.expect("checked by use_clash"), id, name, tag, probe_url, timeout_ms).await
+                probe_clash(
+                    clash.expect("checked by use_clash"),
+                    id,
+                    name,
+                    tag,
+                    probe_url,
+                    timeout_ms,
+                )
+                .await
             } else {
                 probe_tcp(id, name, &server, port, timeout_ms).await
             }
@@ -423,9 +431,15 @@ mod tests {
 
         for protocol in [Protocol::Hysteria2, Protocol::Hysteria, Protocol::Tuic] {
             let nodes = vec![node(protocol)];
-            let results = probe_nodes(&nodes, Some(200), Some(1), Some(clash.clone()), String::new())
-                .await
-                .unwrap();
+            let results = probe_nodes(
+                &nodes,
+                Some(200),
+                Some(1),
+                Some(clash.clone()),
+                String::new(),
+            )
+            .await
+            .unwrap();
             assert_eq!(
                 results[0].method, "clash_api",
                 "{protocol:?} must probe via clash_api, not raw TCP"

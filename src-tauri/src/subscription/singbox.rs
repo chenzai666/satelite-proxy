@@ -29,18 +29,23 @@ pub fn validate_complete_singbox_config(content: &str) -> AppResult<String> {
     if trimmed.is_empty() {
         return Err(AppError::EmptySubscription);
     }
-    let value: Value = serde_json::from_str(trimmed).map_err(|e| {
-        AppError::SubscriptionParse(format!("sing-box 配置必须是合法 JSON：{e}"))
-    })?;
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| AppError::SubscriptionParse(format!("sing-box 配置必须是合法 JSON：{e}")))?;
     let obj = value.as_object().ok_or_else(|| {
         AppError::SubscriptionParse("sing-box 配置必须是 JSON 对象，不能是数组或片段".into())
     })?;
-    let inbounds = obj.get("inbounds").and_then(Value::as_array).ok_or_else(|| {
-        AppError::SubscriptionParse("完整 sing-box 配置必须包含 inbounds 数组".into())
-    })?;
-    let outbounds = obj.get("outbounds").and_then(Value::as_array).ok_or_else(|| {
-        AppError::SubscriptionParse("完整 sing-box 配置必须包含 outbounds 数组".into())
-    })?;
+    let inbounds = obj
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::SubscriptionParse("完整 sing-box 配置必须包含 inbounds 数组".into())
+        })?;
+    let outbounds = obj
+        .get("outbounds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::SubscriptionParse("完整 sing-box 配置必须包含 outbounds 数组".into())
+        })?;
     if inbounds.is_empty() {
         return Err(AppError::SubscriptionParse(
             "完整 sing-box 配置的 inbounds 不能为空".into(),

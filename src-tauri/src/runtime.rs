@@ -5,11 +5,11 @@ use crate::config::{
     build_singbox_config, build_xray_config, generate_api_secret, inspect_singbox_config,
     outbound_tag, write_active_config, write_custom_config, BuildOptions,
 };
-use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
 use crate::core::CoreKind;
+use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
@@ -511,17 +511,16 @@ impl Runtime {
         // Order payload is O(N); skip it when the client's order revision is
         // current — pure traffic-counter deltas then merge in place on the
         // client without rebuilding the whole array.
-        let order_ids =
-            if full || last_order_revision != Some(self.live_order_revision) {
-                Some(
-                    self.live_connections
-                        .iter()
-                        .map(connection_history_key)
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                None
-            };
+        let order_ids = if full || last_order_revision != Some(self.live_order_revision) {
+            Some(
+                self.live_connections
+                    .iter()
+                    .map(connection_history_key)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
         LiveConnectionBatch {
             rows: self
                 .live_connections
@@ -677,7 +676,12 @@ impl Runtime {
 
         match CoreKind::parse(&store.settings.core_type) {
             CoreKind::Xray => {
-                return self.start_xray_proxy(app_data_dir, resource_dir, store, enable_system_proxy)
+                return self.start_xray_proxy(
+                    app_data_dir,
+                    resource_dir,
+                    store,
+                    enable_system_proxy,
+                )
             }
             CoreKind::SingBox => {}
         }
@@ -987,10 +991,7 @@ impl Runtime {
         self.custom_has_tun = insight.has_tun;
 
         if insight.has_clash_api() {
-            let host = insight
-                .clash_api_host
-                .as_deref()
-                .unwrap_or("127.0.0.1");
+            let host = insight.clash_api_host.as_deref().unwrap_or("127.0.0.1");
             let port = insight.clash_api_port.unwrap_or(9090);
             let secret = insight.clash_api_secret.clone().unwrap_or_default();
             let api = ClashApi::new(host, port, &secret);
@@ -1612,7 +1613,6 @@ mod tests {
         assert!(restart_allowed, "stop must allow an immediate restart");
         assert!(!api.is_active(), "stop must cancel Clash API clients");
     }
-
 }
 
 /// Cross-platform protocol tests (the `tests` module above is macOS-only
@@ -1652,21 +1652,30 @@ mod live_batch_tests {
 
         // Pure counter update — membership unchanged: order_ids omitted.
         runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
-        let delta = runtime.live_connection_batch(&store, Some(first.revision), Some(first.order_revision));
+        let delta =
+            runtime.live_connection_batch(&store, Some(first.revision), Some(first.order_revision));
         assert!(!delta.unchanged && !delta.full);
-        assert!(delta.order_ids.is_none(), "no membership change → skip order_ids");
+        assert!(
+            delta.order_ids.is_none(),
+            "no membership change → skip order_ids"
+        );
         assert_eq!(delta.rows.len(), 2);
 
         // New id → membership changed → order_ids return and revision bumps.
         runtime.ingest_connections(vec![conn("a", 5), conn("b", 5), conn("c", 1)]);
-        let delta2 = runtime.live_connection_batch(&store, Some(delta.revision), Some(delta.order_revision));
+        let delta2 =
+            runtime.live_connection_batch(&store, Some(delta.revision), Some(delta.order_revision));
         assert!(delta2.order_ids.is_some());
         assert_eq!(delta2.order_ids.as_ref().map(Vec::len), Some(3));
         assert!(delta2.order_revision > delta.order_revision);
 
         // Removal also counts as a membership change.
         runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
-        let delta3 = runtime.live_connection_batch(&store, Some(delta2.revision), Some(delta2.order_revision));
+        let delta3 = runtime.live_connection_batch(
+            &store,
+            Some(delta2.revision),
+            Some(delta2.order_revision),
+        );
         assert!(delta3.order_ids.is_some());
         assert_eq!(delta3.order_ids.as_ref().map(Vec::len), Some(2));
         assert!(!delta3.removed_ids.is_empty());

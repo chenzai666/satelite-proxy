@@ -589,10 +589,7 @@ async fn import_singbox_blocking(
     .map_err(|error| format!("subscription singbox task: {error}"))?
 }
 
-async fn load_inline_body(
-    content: Option<String>,
-    path: Option<String>,
-) -> Result<String, String> {
+async fn load_inline_body(content: Option<String>, path: Option<String>) -> Result<String, String> {
     if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
         return Ok(content);
     }
@@ -651,12 +648,8 @@ fn persist_import_replacing(
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
     if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
-        crate::config::write_custom_config(
-            &state.app_data_dir,
-            &outcome.subscription.id,
-            content,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::config::write_custom_config(&state.app_data_dir, &outcome.subscription.id, content)
+            .map_err(|e| e.to_string())?;
     }
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;

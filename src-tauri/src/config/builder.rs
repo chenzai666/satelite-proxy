@@ -324,7 +324,8 @@ fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
     addrs
 }
 
-pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {    if sets.is_empty() {
+pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
+    if sets.is_empty() {
         return fallback.to_vec();
     }
     let mut out = Vec::new();
@@ -698,7 +699,11 @@ fn build_headless_rules(rules: &[Rule]) -> Option<Vec<Value>> {
     (!headless.is_empty()).then_some(headless)
 }
 
-pub(crate) fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
+pub(crate) fn resolve_selected_tag(
+    nodes: &[ProxyNode],
+    tags: &[String],
+    current_id: Option<&str>,
+) -> String {
     if let Some(id) = current_id {
         if let Some(node) = nodes.iter().find(|n| n.id == id) {
             let tag = outbound_tag(node);
@@ -823,7 +828,9 @@ fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[Strin
         // Empty-payload rules never reach a route rule-set, so their selector
         // would be a dead outbound — skipping keeps "empty set ⇒ no config
         // output" true for restart-skipping decisions.
-        .filter(|r| r.enabled && !r.payload.trim().is_empty() && matches!(r.target, RuleTarget::Smart))
+        .filter(|r| {
+            r.enabled && !r.payload.trim().is_empty() && matches!(r.target, RuleTarget::Smart)
+        })
     {
         let group = r.smart_outbound_tag();
         if !seen.insert(group.clone()) {
@@ -1504,7 +1511,10 @@ mod tests {
         assert!(types.contains(&"shadowtls"), "types: {types:?}");
         assert!(types.contains(&"shadowsocks"), "types: {types:?}");
         assert!(
-            !built.outbound_tags.iter().any(|t| t.ends_with("-shadowtls")),
+            !built
+                .outbound_tags
+                .iter()
+                .any(|t| t.ends_with("-shadowtls")),
             "outbound_tags: {:?}",
             built.outbound_tags
         );
@@ -1679,12 +1689,7 @@ mod tests {
         let mut set = RuleSet::new_user(
             "空智能集",
             vec![
-                Rule::new(
-                    RuleType::DomainSuffix,
-                    "  ".into(),
-                    RuleTarget::Smart,
-                    10,
-                ),
+                Rule::new(RuleType::DomainSuffix, "  ".into(), RuleTarget::Smart, 10),
                 Rule::new(
                     RuleType::DomainKeyword,
                     "chrome".into(),
@@ -1708,9 +1713,24 @@ mod tests {
         let mut set = RuleSet::new_user(
             "混合路由",
             vec![
-                Rule::new(RuleType::DomainSuffix, "a.com".into(), RuleTarget::Proxy, 10),
-                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Direct, 20),
-                Rule::new(RuleType::DomainSuffix, "c.com".into(), RuleTarget::Block, 30),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "a.com".into(),
+                    RuleTarget::Proxy,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "b.com".into(),
+                    RuleTarget::Direct,
+                    20,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "c.com".into(),
+                    RuleTarget::Block,
+                    30,
+                ),
             ],
         );
         set.strategy = RuleSetStrategy::Proxy;
@@ -1922,12 +1942,7 @@ mod tests {
                     RuleTarget::Smart,
                     10,
                 ),
-                Rule::new(
-                    RuleType::DomainSuffix,
-                    "  ".into(),
-                    RuleTarget::Smart,
-                    20,
-                ),
+                Rule::new(RuleType::DomainSuffix, "  ".into(), RuleTarget::Smart, 20),
             ],
         );
         set.strategy = RuleSetStrategy::Smart;
@@ -1979,7 +1994,9 @@ mod tests {
             "empty set must not reach the kernel config"
         );
         let route_rules = built.value["route"]["rules"].as_array().unwrap();
-        assert!(route_rules.iter().all(|rule| rule.get("rule_set").is_none()));
+        assert!(route_rules
+            .iter()
+            .all(|rule| rule.get("rule_set").is_none()));
     }
 
     #[test]
@@ -2028,13 +2045,8 @@ mod tests {
 
         // The predicate must agree with what the builder actually registers.
         for set in [&empty, &disabled_only, &contributing] {
-            let (definitions, routes, dns) = build_grouped_rule_sets(
-                &[set.clone()],
-                &[],
-                &[],
-            );
-            let registered =
-                !definitions.is_empty() && !routes.is_empty() && !dns.is_empty();
+            let (definitions, routes, dns) = build_grouped_rule_sets(&[set.clone()], &[], &[]);
+            let registered = !definitions.is_empty() && !routes.is_empty() && !dns.is_empty();
             assert_eq!(
                 registered,
                 !rule_set_is_empty_for_config(set),
@@ -2129,19 +2141,20 @@ mod tests {
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
         assert_eq!(
-            localhost.value["inbounds"][0]["listen"],
-            "127.0.0.1",
+            localhost.value["inbounds"][0]["listen"], "127.0.0.1",
             "main mixed inbound defaults to loopback"
         );
 
-        let lan = build_singbox_config(&nodes, &BuildOptions {
-            allow_lan: true,
-            ..base()
-        })
+        let lan = build_singbox_config(
+            &nodes,
+            &BuildOptions {
+                allow_lan: true,
+                ..base()
+            },
+        )
         .unwrap();
         assert_eq!(
-            lan.value["inbounds"][0]["listen"],
-            "0.0.0.0",
+            lan.value["inbounds"][0]["listen"], "0.0.0.0",
             "allow_lan opens the main mixed inbound to the LAN"
         );
     }
@@ -2182,9 +2195,7 @@ mod tests {
         assert_eq!(inbounds[0]["type"], "mixed");
         assert!(built.value.get("dns").is_some());
         // Without TUN the system resolver stays the fastest choice.
-        assert_eq!(
-            built.value["route"]["default_domain_resolver"], "dns-local"
-        );
+        assert_eq!(built.value["route"]["default_domain_resolver"], "dns-local");
         assert_eq!(built.value["route"]["final"], "proxy");
         let proxy = built.value["outbounds"]
             .as_array()
@@ -2341,9 +2352,7 @@ mod tests {
         // TUN must not resolve outbound domains via the system resolver:
         // those queries get hijacked into the tunnel (loop), so the direct
         // UDP server is used instead.
-        assert_eq!(
-            built.value["route"]["default_domain_resolver"], "dns-cn"
-        );
+        assert_eq!(built.value["route"]["default_domain_resolver"], "dns-cn");
         let rules = built.value["route"]["rules"].as_array().unwrap();
         assert!(rules
             .iter()
@@ -2387,9 +2396,7 @@ mod tests {
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
-        let addrs = v4_only.value["inbounds"][1]["address"]
-            .as_array()
-            .unwrap();
+        let addrs = v4_only.value["inbounds"][1]["address"].as_array().unwrap();
         assert_eq!(addrs.len(), 1, "default must be IPv4-only: {addrs:?}");
         assert_eq!(addrs[0], "172.19.0.1/30");
 
@@ -2469,7 +2476,9 @@ mod tests {
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
         let rules = off.value["route"]["rules"].as_array().unwrap();
         assert!(
-            !rules.iter().any(|r| r.get("protocol") == Some(&json!("quic"))),
+            !rules
+                .iter()
+                .any(|r| r.get("protocol") == Some(&json!("quic"))),
             "block_quic off must not add a quic rule"
         );
 
@@ -2545,7 +2554,10 @@ mod tests {
             .expect("rule set route present");
         let domain_idx = rules
             .iter()
-            .position(|r| r.get("domain_suffix").is_some_and(|v| v == &json!(["local", "localhost"])))
+            .position(|r| {
+                r.get("domain_suffix")
+                    .is_some_and(|v| v == &json!(["local", "localhost"]))
+            })
             .expect("localhost bypass rule present");
         let private_idx = rules
             .iter()
@@ -2564,7 +2576,9 @@ mod tests {
         global.outbound_mode = OutboundMode::Global;
         let built = build_singbox_config(&nodes, &global).unwrap();
         let rules = built.value["route"]["rules"].as_array().unwrap();
-        assert!(!rules.iter().any(|r| r.get("ip_is_private") == Some(&json!(true))));
+        assert!(!rules
+            .iter()
+            .any(|r| r.get("ip_is_private") == Some(&json!(true))));
     }
 
     #[test]
@@ -2695,7 +2709,7 @@ mod tests {
                     find_process: true,
                     tun_ipv6: false,
                     block_quic: false,
-                bypass_lan: false,
+                    bypass_lan: false,
                 },
             )
             .unwrap();

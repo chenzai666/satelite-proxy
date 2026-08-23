@@ -73,11 +73,14 @@ pub fn version_file_path(app_data_dir: &Path, kind: CoreKind) -> PathBuf {
 }
 
 /// Absolute path candidates for the built-in binary (dev + packaging).
+/// The local layout uses one platform directory per OS/arch (the sing-box
+/// asset naming, e.g. `windows-amd64`) shared by both cores — the per-kind
+/// `asset_suffix_for` naming only applies to GitHub release assets.
 pub fn bundled_core_candidates(resource_dir: Option<&Path>, kind: CoreKind) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let bin = kind.binary_name();
     let plat = detect_platform()
-        .map(|p| p.asset_suffix_for(kind))
+        .map(|p| p.asset_suffix)
         .unwrap_or("darwin-arm64");
 
     // Dev source tree first: running from target/debug/resources can be SIGKILL'd on macOS.
@@ -150,7 +153,11 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path, kind: CoreKind) -> Ap
     let dir = core_dir(app_data_dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::copy(bundled, &dest).map_err(|e| {
-        AppError::Core(format!("copy {} to {}: {e}", kind.display_name(), dest.display()))
+        AppError::Core(format!(
+            "copy {} to {}: {e}",
+            kind.display_name(),
+            dest.display()
+        ))
     })?;
     #[cfg(unix)]
     {
@@ -358,9 +365,7 @@ mod tests {
         let resources = root.join("resources-root");
         let platform = detect_platform().expect("supported test platform");
         for kind in [CoreKind::SingBox, CoreKind::Xray] {
-            let bundled_dir = resources
-                .join("bin")
-                .join(platform.asset_suffix_for(kind));
+            let bundled_dir = resources.join("bin").join(platform.asset_suffix_for(kind));
             std::fs::create_dir_all(&bundled_dir).expect("create fake resource directory");
             std::fs::write(bundled_dir.join(kind.binary_name()), b"fake-core")
                 .expect("write fake bundled core");
@@ -381,9 +386,14 @@ mod tests {
     #[test]
     fn xray_platform_suffixes_differ_from_singbox() {
         let p = detect_platform().expect("platform");
-        assert_ne!(p.asset_suffix_for(CoreKind::SingBox), p.asset_suffix_for(CoreKind::Xray));
-        assert!(p.asset_suffix_for(CoreKind::Xray).starts_with("windows")
-            || p.asset_suffix_for(CoreKind::Xray).starts_with("macos")
-            || p.asset_suffix_for(CoreKind::Xray).starts_with("linux"));
+        assert_ne!(
+            p.asset_suffix_for(CoreKind::SingBox),
+            p.asset_suffix_for(CoreKind::Xray)
+        );
+        assert!(
+            p.asset_suffix_for(CoreKind::Xray).starts_with("windows")
+                || p.asset_suffix_for(CoreKind::Xray).starts_with("macos")
+                || p.asset_suffix_for(CoreKind::Xray).starts_with("linux")
+        );
     }
 }

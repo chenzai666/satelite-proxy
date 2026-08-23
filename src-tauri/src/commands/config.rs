@@ -592,10 +592,7 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
 /// names only exist in the node store — recover them by matching the id
 /// prefix embedded in the tag. Ids are left untouched so latency results
 /// stay stable across calls.
-fn restore_generated_tag_names(
-    nodes: &mut [ListedNode],
-    prefix_names: &HashMap<String, String>,
-) {
+fn restore_generated_tag_names(nodes: &mut [ListedNode], prefix_names: &HashMap<String, String>) {
     for listed in nodes.iter_mut() {
         let Some(suffix) = listed.node.name.strip_prefix("node-") else {
             continue;
@@ -804,7 +801,9 @@ mod tests {
                 {"type": "direct", "tag": "direct"}
             ]
         }"#;
-        assert!(extract_custom_nodes(content, "sub1", "x").unwrap().is_empty());
+        assert!(extract_custom_nodes(content, "sub1", "x")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

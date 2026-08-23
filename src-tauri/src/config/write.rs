@@ -105,7 +105,8 @@ mod tests {
             selected_tag: "direct".into(),
         };
         write_active_config(&dir, &built).unwrap();
-        let user = r#"{"inbounds":[{"type":"mixed","listen_port":1080}],"outbounds":[{"type":"direct"}]}"#;
+        let user =
+            r#"{"inbounds":[{"type":"mixed","listen_port":1080}],"outbounds":[{"type":"direct"}]}"#;
         let custom = write_custom_config(&dir, "abc123", user).unwrap();
         assert!(custom.ends_with(std::path::Path::new("custom").join("abc123.json")));
         assert_eq!(fs::read_to_string(&custom).unwrap(), user);

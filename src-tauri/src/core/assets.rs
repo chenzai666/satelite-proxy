@@ -22,24 +22,20 @@ const MAX_DAT_BYTES: u64 = 128 * 1024 * 1024;
 
 pub fn geodata_present(app_data_dir: &Path) -> bool {
     let bin = crate::core::paths::core_dir(app_data_dir);
-    GEODATA_FILES
-        .iter()
-        .all(|f| bin.join(f).is_file())
+    GEODATA_FILES.iter().all(|f| bin.join(f).is_file())
 }
 
 /// Stage missing dat files from the bundled resources. Returns true when all
 /// files are present afterwards.
-pub fn stage_bundled_geodata(
-    app_data_dir: &Path,
-    resource_dir: Option<&Path>,
-) -> bool {
+pub fn stage_bundled_geodata(app_data_dir: &Path, resource_dir: Option<&Path>) -> bool {
     let bin = crate::core::paths::core_dir(app_data_dir);
     let Some(resource_dir) = resource_dir else {
         return geodata_present(app_data_dir);
     };
+    // Local layout uses the shared platform directory (sing-box naming).
     let platform = crate::core::paths::detect_platform()
-        .map(|p| p.asset_suffix_for(crate::core::kind::CoreKind::Xray))
-        .unwrap_or("macos-arm64-v8a");
+        .map(|p| p.asset_suffix)
+        .unwrap_or("windows-amd64");
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let bundled_dirs = [
         manifest.join("resources/bin").join(platform),
@@ -76,8 +72,7 @@ pub fn download_missing_geodata(app_data_dir: &Path, proxy_url: Option<&str>) ->
             continue;
         }
         let url = format!("{GEODATA_BASE_URL}/{file}");
-        let mut builder = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(120));
+        let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(120));
         if let Some(proxy) = proxy_url {
             let proxy = ureq::Proxy::new(proxy)
                 .map_err(|e| AppError::Core(format!("geodata proxy: {e}")))?;
@@ -160,9 +155,10 @@ pub fn ensure_wintun(
     // 1. staged alongside a staged xray.exe (paths::stage_bundled_core) —
     //    nothing to do; 2. bundled resources dir; 3. network download.
     if let Some(resource_dir) = resource_dir {
+        // Local layout uses the shared platform directory (sing-box naming).
         let suffix = crate::core::paths::detect_platform()
-            .map(|p| p.asset_suffix_for(crate::core::kind::CoreKind::Xray))
-            .unwrap_or("windows-64");
+            .map(|p| p.asset_suffix)
+            .unwrap_or("windows-amd64");
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
         for dir in [
             manifest.join("resources/bin").join(suffix),
@@ -179,8 +175,8 @@ pub fn ensure_wintun(
 
     let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(120));
     if let Some(proxy) = proxy_url {
-        let proxy = ureq::Proxy::new(proxy)
-            .map_err(|e| AppError::Core(format!("wintun proxy: {e}")))?;
+        let proxy =
+            ureq::Proxy::new(proxy).map_err(|e| AppError::Core(format!("wintun proxy: {e}")))?;
         builder = builder.proxy(proxy);
     }
     let resp = builder
@@ -257,13 +253,10 @@ mod tests {
         ));
         let app_data = root.join("app-data");
         std::fs::create_dir_all(&app_data).unwrap();
-        // Fake a bundled platform dir layout: resources/bin/<suffix>
+        // Fake a bundled platform dir layout: resources/bin/<suffix> (shared
+        // sing-box-style platform naming for both cores).
         let resource_root = root.join("res");
-        // detect_platform().suffix on the test host is unknown here — write
-        // into every candidate layout by using the actual suffix.
-        let suffix = crate::core::paths::detect_platform()
-            .unwrap()
-            .asset_suffix_for(crate::core::kind::CoreKind::Xray);
+        let suffix = crate::core::paths::detect_platform().unwrap().asset_suffix;
         let bundled = resource_root.join("bin").join(suffix);
         std::fs::create_dir_all(&bundled).unwrap();
         std::fs::write(bundled.join("geosite.dat"), b"fake-geosite").unwrap();

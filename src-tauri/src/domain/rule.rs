@@ -549,7 +549,8 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
         id: "system-geolocation-not-cn",
         name: "海外网站",
         file: "system-geolocation-not-cn.srs",
-        url: "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
+        url:
+            "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
         target: RuleTarget::Proxy,
     },
     BuiltinRemoteRuleSpec {
@@ -569,9 +570,7 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
 ];
 
 pub fn is_builtin_remote_id(id: &str) -> bool {
-    BUILTIN_REMOTE_RULE_SETS
-        .iter()
-        .any(|spec| spec.id == id)
+    BUILTIN_REMOTE_RULE_SETS.iter().any(|spec| spec.id == id)
 }
 
 pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {
@@ -874,7 +873,10 @@ mod tests {
             assert!(is_factory_set_id(spec.id));
         }
         // System ids map 1:1 from their first-iteration ids.
-        assert_eq!(LEGACY_BUILTIN_REMOTE_IDS.len(), BUILTIN_REMOTE_RULE_SETS.len());
+        assert_eq!(
+            LEGACY_BUILTIN_REMOTE_IDS.len(),
+            BUILTIN_REMOTE_RULE_SETS.len()
+        );
         for (old, new) in LEGACY_BUILTIN_REMOTE_IDS {
             assert_eq!(builtin_remote_spec(new).expect("mapped id exists").id, new);
             assert_ne!(old, new);
@@ -904,7 +906,9 @@ mod tests {
         // DNS pairing follows the route target.
         assert_eq!(
             set.dns_strategy,
-            RuleSetStrategy::from_target(spec.target).recommended_dns_strategy().unwrap()
+            RuleSetStrategy::from_target(spec.target)
+                .recommended_dns_strategy()
+                .unwrap()
         );
     }
 }

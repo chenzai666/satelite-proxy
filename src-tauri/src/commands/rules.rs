@@ -844,19 +844,15 @@ pub fn reset_builtin_rule_set(
 ) -> Result<RuleSet, String> {
     let (restored, stale_cache) = state
         .with_store_mut(|store| {
-            let (sets, stale, export_ids) = store.reset_all_builtin_rule_sets(
-                &state.app_data_dir,
-                state.resource_dir.as_deref(),
-            );
+            let (sets, stale, export_ids) = store
+                .reset_all_builtin_rule_sets(&state.app_data_dir, state.resource_dir.as_deref());
             for id in &export_ids {
                 remove_rule_set_files(&state.app_data_dir, id);
             }
             sets.into_iter()
                 .next()
                 .map(|set| (set, stale))
-                .ok_or_else(|| {
-                    crate::error::AppError::NotFound("builtin remote rule sets".into())
-                })
+                .ok_or_else(|| crate::error::AppError::NotFound("builtin remote rule sets".into()))
         })
         .map_err(|e| e.to_string())?;
     crate::rule_apply::request_restart(app, stale_cache);

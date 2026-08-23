@@ -75,19 +75,22 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 scripts/fetch-bundled-core-darwin-arm64.sh        # macOS arm64 sing-box（默认 v1.13.18）
 scripts/fetch-bundled-core-darwin-amd64.sh        # macOS Intel
 pwsh scripts/fetch-bundled-core-windows-amd64.ps1 # Windows sing-box v1.13.15 + libcronet.dll，支持 -Proxy
+scripts/fetch-bundled-xray-darwin-arm64.sh        # macOS arm64 Xray（默认 v26.3.27）+ geosite/geoip.dat
+scripts/fetch-bundled-xray-darwin-amd64.sh        # macOS Intel Xray
+pwsh scripts/fetch-bundled-xray-windows-amd64.ps1 # Windows Xray + geodata + wintun.dll（TUN 用），支持 -Proxy
 scripts/fetch-bundled-rule-sets.sh                # 3 条内置 .srs 规则集（校验 SRS 魔数，--force 重下）
 scripts/memory-profile/                           # WebView2 内存剖析（CDP 堆采样 + 进程树 RSS，见其 README 与 docs/webview2-memory-optimization-plan.md）
 ```
 
-- 这些二进制**不入 git**（`.gitignore` 排除 `resources/bin/**/sing-box*`、`libcronet.*`、`resources/rule-sets/*.srs`），本地缺失属正常
+- 这些二进制**不入 git**（`.gitignore` 排除 `resources/bin/**/sing-box*`、`xray*`、`*.dat`、`wintun.dll`、`libcronet.*`、`resources/rule-sets/*.srs`），本地缺失属正常
 - 图标再生成：`python scripts/generate-icons.py`（依赖 Pillow，产出应用图标 + 8 种托盘图标）
 
 ## 2. 项目是什么
 
-**Satelite**（`com.satelite.proxy`）— 轻量级 [sing-box](https://github.com/SagerNet/sing-box) 桌面代理客户端，Tauri 2 桌面应用。
+**Satelite**（`com.satelite.proxy`）— 轻量级桌面代理客户端，Tauri 2 桌面应用，支持**双内核**。
 
-- **内核**：sing-box（作为 bundled resource 随应用分发，**不是** Tauri sidecar；由应用代码解压/下载/拉起）
-- **后端**：Rust（`src-tauri/`），负责订阅解析、配置生成、内核生命周期、系统代理、托盘、规则/DNS/连接数据
+- **内核**：sing-box（默认）与 Xray（`settings.core_type` 全局切换），均作为 bundled resource 随应用分发（**不是** Tauri sidecar；由应用代码解压/下载/拉起；Xray 另需 geosite.dat/geoip.dat，Windows TUN 需 wintun.dll）
+- **后端**：Rust（`src-tauri/`），负责订阅解析、双内核配置生成、内核生命周期、系统代理、托盘、规则/DNS/连接数据
 - **前端**：React 19 + TS + Vite（`src/`），玻璃拟态 UI，无路由库、无状态管理库、无 CSS 框架
 - **平台**：macOS (arm64/amd64) + Windows x64；Linux 计划中
 - **包管理**：pnpm；前端端口 1420（strictPort）
@@ -108,21 +111,22 @@ satelite-proxy/
 │   ├── i18n/                # zh/en 扁平文案表（TS 强制双语言键一致）
 │   ├── theme/               # aerospace 深色 / day 浅色 + 6 主题色
 │   └── App.css              # ★ 全部样式单文件（~7.6k 行，按 /* —— 段落 —— */ 分节）
-├── src-tauri/               # Rust 后端（~33k 行）
+├── src-tauri/               # Rust 后端（~36k 行）
 │   ├── src/lib.rs           # ★ 入口：setup 流程 + 全部 command 注册
 │   ├── src/commands/        # Tauri command 分层（按域拆文件）
 │   ├── src/domain/          # ★ 核心数据模型（node/rule/dns/settings/subscription）
 │   ├── src/state.rs         # AppState：全局状态中枢（1321 行）
 │   ├── src/storage/store.rs # AppStore 持久化（JSON，含备份/迁移，2666 行）
-│   ├── src/config/          # sing-box 配置生成（builder 2676 行）
-│   ├── src/core/            # sing-box 进程管理/下载/提权/Job Object
-│   ├── src/runtime.rs       # 编排：config→core→system proxy（1437 行）
+│   ├── src/config/          # 配置生成：builder.rs（sing-box）+ xray.rs（Xray）+ dns_build/write/…
+│   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 双内核描述）、manager/download/assets/paths/提权/Job Object
+│   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray 分支）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
+│   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
 │   ├── src/subscription/    # 订阅解析（clash/singbox/uri/manual）
 │   ├── src/proxy/           # 系统代理（windows.rs / macos.rs / stub.rs）
 │   ├── src/tray.rs          # 托盘
 │   └── tauri.conf.json      # 主配置 + windows/macos-intel 覆盖
-├── scripts/                 # 构建脚本（拉内核/规则集、DMG、NSIS/MSI、图标生成）
+├── scripts/                 # 构建脚本（拉双内核/规则集、DMG、NSIS/MSI、图标生成）
 └── src-tauri/tests/         # 集成测试（订阅解析 fixtures + live 下载测试）
 ```
 
@@ -131,18 +135,21 @@ satelite-proxy/
 ```
 React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage(磁盘 JSON store)
                           │              │
-                          │              ├─▶ config/* 生成 sing-box JSON ─▶ <data>/config/active.json
-                          │              ├─▶ core/* 拉起 sing-box 进程 (run -c active.json)
+                          │              ├─▶ config/builder.rs (sing-box) 或 config/xray.rs (Xray)
+                          │              │      按 settings.core_type 生成 ─▶ <data>/config/active.json
+                          │              ├─▶ core/* 拉起内核进程 (两内核均为 run -c active.json)
                           │              └─▶ proxy/* 设置系统代理 (Win registry / macOS networksetup)
                           ▼
-              api/clash_api.rs ◀──(HTTP/WS, ureq)── sing-box clash_api
-                          │  连接快照/流量/延迟/日志
+       sing-box 模式: api/clash_api.rs ◀──(HTTP/WS, ureq)── clash_api（连接快照/流量/延迟/选节点）
+       Xray 模式:    api/xray_metrics.rs ◀──(HTTP, ureq)── metrics /debug/vars（仅流量总量；无逐连接/选节点 API，切节点=重启）
+                          │
                           ▼
               conn_journal / state 缓存 ──invoke 轮询──▶ React UI
 ```
 
 关键事实：
 
+- **双内核**：`settings.core_type`（`singbox` 默认 | `xray`）决定配置生成器与二进制；两套生成器共享 domain 模型、互不依赖（v2rayN 同款模式）。Xray 模式下切节点/切规则 = 重写配置重启进程；连接三页面无数据（前端显示占位提示）。
 - **前端不直连 Clash API**。`src/` 里零 fetch/WebSocket，全部经 Rust command 中转；实时数据靠 `useVisibleInterval` 轮询 invoke + 5 个 Tauri 事件。
 - **单窗口应用**。专业/简洁模式复用同一窗口，尺寸切换（960×720 ↔ 420×720）见 `src/ui/windowLayout.ts` 与 `src-tauri/src/window_ctrl.rs`。
 - **无路由**。导航是 `App.tsx` 里 `useState<NavKey>` + `TopNav`；次级页面 `React.lazy`（WebView 低内存重建）。
@@ -168,7 +175,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - 磁盘布局（`app_data_dir`）：
   - `store.json` — 主存储；`store.backup.json` — 备份
   - `config/active.json` — 生成的 sing-box 运行配置（`config/write.rs`，tmp+rename 原子写，带时间戳备份）；custom 运行时另有独立文件，**绝不写 active.json**
-  - `bin/sing-box(.exe)` — 应用自管内核（`core/paths.rs`）
+  - `bin/sing-box(.exe)` + `version.txt` — sing-box 内核；`bin/xray(.exe)` + `xray-version.txt` — Xray 内核；`bin/geosite.dat`/`geoip.dat`/`wintun.dll` — Xray 资产（`core/paths.rs` + `core/assets.rs`）
   - `logs/` — 应用日志（`app_log.rs`，`log_retention.rs` 清理）
   - 远程规则集缓存（`.srs`）
 
@@ -182,33 +189,38 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 | `domain/dns.rs` | `DnsSettings`、`DnsRule`、`DnsAction`、FakeIP、Hosts 配置 |
 | `domain/subscription.rs` | `Subscription`、`SubscriptionSource`（url/file/text/node/singbox）、`SubscriptionView` |
 
-### 5.4 配置生成（config/）
+### 5.4 配置生成（config/）★ 两套独立生成器共享 domain 模型
 
-- `builder.rs` — ★ 核心：`ProxyNode[] + AppSettings + RuleSets + DnsSettings → sing-box JSON`（`BuildOptions`）。inbounds（mixed/Clash API/多监听/TUN）、outbounds（含 urltest/手动选择）、route 规则编译都在这里。
+- `builder.rs` — ★ sing-box 生成器：`ProxyNode[] + AppSettings + RuleSets + DnsSettings → sing-box JSON`（`BuildOptions`）。inbounds（mixed/Clash API/多监听/TUN）、outbounds（含 urltest/手动选择 selector）、route 规则编译都在这里。
+- `xray.rs` — ★ Xray 生成器（参照 v2rayN `CoreConfig/V2ray/*`）：mixed/tun inbounds + sniffing、vmess/vless(flow)/ss/trojan/socks/http/wireguard outbounds + streamSettings（tls/reality + ws/grpc/http/httpupgrade）、routing（`full:`/`domain:`/关键词/geosite:/geoip:/process 映射、balancer+observatory=kernel 自动选路）、DNS 出口分流（dns-module/direct-dns inboundTag 规则）、stats/metrics（`/debug/vars`）。无 selector 出站——主目标=选中节点 tag 或 balancer，**切节点即重启**。REALITY 仅支持 tcp/grpc 传输（ws 组合在生成期报错跳过）。用户自建远程 `.srs` 集**跳过**（Xray 不识别），内置 3 条映射为 geosite/geoip。
 - `dns_build.rs` — sing-box 1.12+ `dns` 对象：解析器池、统一规则集选解析器、Hosts predefined server、FakeIP。
-- `write.rs` — 原子写 `active.json`；custom 配置原样持久化。
+- `write.rs` — 原子写 `active.json`（两内核共用同一文件）；custom 配置原样持久化。
 - `rule_files.rs` / `dns_files.rs` — 规则/DNS 落盘为 sing-box 引用的文件。
 - `custom.rs` — 自定义 sing-box 配置的检查（`inspect_singbox_config`）。
 - `punycode.rs` — 域名 punycode。
 
-### 5.5 内核管理（core/）
+### 5.5 内核管理（core/）— 双内核（sing-box / Xray）
 
-- `manager.rs` — sing-box 进程生命周期：`check -c` 校验 → `run -c` 启动（`core/manager.rs:371`）；Windows 加 `CREATE_NO_WINDOW` 防黑窗；CoreState 状态机；优雅停止。
-- `download.rs` — 从 GitHub Releases（SagerNet/sing-box）下载/更新内核。
+- `kind.rs` — ★ `CoreKind` 描述符：binary 名、GitHub repo、release 资产命名（**两内核命名规则不同**：sing-box `sing-box-1.13.15-darwin-arm64.tar.gz` vs Xray `Xray-macos-arm64-v8a.zip`）、CLI 参数（version/-version、check/run -c）、版本输出解析、spawn env（Xray 设 `XRAY_LOCATION_ASSET`/`XRAY_LOCATION_CERT`）、日志前缀、协议支持集。
+- `manager.rs` — 进程生命周期（`CoreKind` 参数化）：sing-box `check -c` / Xray `run -test -c` 校验 → `run -c` 启动；Windows `CREATE_NO_WINDOW`；CoreState 状态机；优雅停止；TUN 提权链路内核无关（helper 按二进制名推断 kind）。
+- `download.rs` — GitHub Releases 下载/更新（按 kind 选 repo/资产/提取目标；Xray zip 额外提取 geodata）。
+- `assets.rs` — Xray 资产三连：`ensure_geodata`（staged→bundled→Loyalsoldier v2ray-rules-dat 下载）、`ensure_wintun`（Windows TUN，Xray zip 不带 wintun.dll）。
 - `job.rs` — Windows Job Object 绑定子进程，父进程异常退出时内核随之死亡（防端口占用残留）。
 - `elevate.rs` / `macos_auth.rs` / `macos_net.rs` — TUN 提权（Windows UAC / macOS 授权）。
 - `memory.rs` — 内存占用探测（Windows 用 NT 进程表 RSS）。
-- `paths.rs` — 内核二进制/版本文件路径解析（resource 目录 → data 目录）。
+- `paths.rs` — 内核二进制/版本文件路径解析（resource 目录 → data 目录 staging，含 geodata/wintun 随 Xray staging）。sing-box 保持 `bin/sing-box`+`version.txt` 存量布局；Xray 用 `bin/xray`+`xray-version.txt`。
 
 ### 5.6 运行时编排与外部 API
 
-- `runtime.rs` — `Runtime`/`ProxyStatus`：config 生成 → 写盘 → core 启停 → 系统代理联动；连接视图缓存与 delta（`LiveConnectionBatch` revision 机制）。
-- `api/clash_api.rs` — Clash 兼容 API 客户端。**HTTP 用 ureq（非 reqwest::blocking，避免嵌套 Tokio runtime panic，见文件头注释）；WS 用 tungstenite 仅握手**。
-- `services/latency.rs` — 测速：TCP 协议直连 server:port；UDP 系协议（hysteria2/tuic）走 Clash delay API。
+- `runtime.rs` — `Runtime`/`ProxyStatus`（含 `core_type`）：按 `settings.core_type` 分支 config 生成 → 写盘 → core 启停 → 系统代理联动；连接视图缓存与 delta（`LiveConnectionBatch` revision 机制）。Xray 分支 `start_xray_proxy`：ensure geodata/wintun → `build_xray_config` → 就绪=进程存活+mixed port，`xray_metrics` 替代 clash_api；`build_options()` 为两生成器共享的 BuildOptions 构造器。
+- `api/clash_api.rs` — Clash 兼容 API 客户端（sing-box 模式）。**HTTP 用 ureq（非 reqwest::blocking，避免嵌套 Tokio runtime panic，见文件头注释）；WS 用 tungstenite 仅握手**。
+- `api/xray_metrics.rs` — Xray 模式 metrics 客户端：轮询 `/debug/vars` 汇总 `stats.outbound[*].uplink/downlink` → TrafficTotals（connections 恒 0；无逐连接 API）。
+- `state.rs` `select_current_node_serialized` — sing-box 走 clash select_proxy 热切换；Xray 无 API → 持久化后返回 restart_needed，由 `rule_apply::request_restart` 重启生效；不支持的协议节点直接报错。
+- `services/latency.rs` — 测速：TCP 协议直连 server:port（内核无关）；UDP 系协议（hysteria2/tuic）走 Clash delay API（Xray 模式下此类节点本就不被支持）。
 - `services/import.rs` — 订阅 URL 去重键、导入文件读取。
-- `srs.rs` — `.srs` 二进制规则集结构解析（LOUDS trie），供列表/计数/校验（`list_remote_rule_items` 的后端）。
-- `smart_switch.rs` / `rule_apply.rs` / `remote_rule_auto.rs` / `builtin_remote_rules.rs` — 见 5.1。
-- `conn_journal.rs` — 连接日志（活跃快照 + 已关闭请求历史 + 失败请求），`list_connections/list_connection_changes/list_requests/list_request_failures` 的数据源。
+- `srs.rs` — `.srs` 二进制规则集结构解析（LOUDS trie），供列表/计数/校验（`list_remote_rule_items` 的后端；固定用 sing-box 二进制 decompile）。
+- `smart_switch.rs` / `rule_apply.rs` / `remote_rule_auto.rs` / `builtin_remote_rules.rs` — 见 5.1。smart_switch 在 Xray 模式禁用（依赖连接日志）。
+- `conn_journal.rs` — 连接日志（活跃快照 + 已关闭请求历史 + 失败请求），`list_connections/list_connection_changes/list_requests/list_request_failures` 的数据源；Xray 模式降级为 metrics 轮询（仅流量）。
 
 ### 5.7 系统集成
 
@@ -222,7 +234,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.8 commands/ 分层（前端 invoke 的直接实现）
 
-`config.rs`（订阅 CRUD/激活/mix）、`core.rs`（启停/重启/capture_mode/内核下载更新）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
+`config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发生成器）、`core.rs`（启停/重启/capture_mode/双内核下载更新/`set_core_type` 切内核）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 
 ## 6. 前端模块详解（src/）
 
@@ -283,17 +295,19 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 | 需求 | 位置 |
 |---|---|
-| 新增设置项 | `domain/settings.rs`（`AppSettings`）→ `storage/store.rs`（迁移如需）→ `config/builder.rs`（生成如需）→ `src/types.ts`（`AppSettings`）→ 页面 UI + `i18n/messages.ts` 双语 |
+| 新增设置项 | `domain/settings.rs`（`AppSettings`）→ `storage/store.rs`（迁移如需）→ `config/builder.rs` **和/或 `config/xray.rs`**（生成如需，双内核都要考虑）→ `src/types.ts`（`AppSettings`）→ 页面 UI + `i18n/messages.ts` 双语 |
 | 新增 command | `src-tauri/src/commands/<域>.rs` → `commands/mod.rs` re-export → `lib.rs` `generate_handler![]` 注册 → `src/api.ts` 加封装 |
-| 新增订阅格式/协议解析 | `src-tauri/src/subscription/`（clash/singbox/uri/manual）+ `domain/node.rs` |
+| 新增订阅格式/协议解析 | `src-tauri/src/subscription/`（clash/singbox/uri/manual）+ `domain/node.rs`（新协议记得看 `CoreKind::supports` 是否要放行 Xray） |
 | 改 sing-box 配置生成 | `config/builder.rs`（路由/inbound/outbound）、`config/dns_build.rs`（DNS） |
-| 改规则集逻辑 | `domain/rule.rs`（模型）+ `config/builder.rs`（编译）+ `commands/rules.rs` + `src/pages/RulesPage.tsx` |
-| 改内核启动参数/生命周期 | `core/manager.rs` |
+| 改 Xray 配置生成 | `config/xray.rs`（改动后用 `xray run -test -c` 手工验证，失败退出码 23） |
+| 改规则集逻辑 | `domain/rule.rs`（模型）+ `config/builder.rs`（sing-box 编译）+ `config/xray.rs`（Xray 映射）+ `commands/rules.rs` + `src/pages/RulesPage.tsx` |
+| 改内核启动参数/生命周期 | `core/manager.rs` + `core/kind.rs`（kind 相关差异集中在 kind.rs） |
 | 加文案 | `src/i18n/messages.ts` 的 `en` 和 `zh` **都要加** |
 | 加页面 | `src/pages/` + `App.tsx` lazy 导入 + `NavKey`（types.ts）+ `TopNav` + i18n `nav.*` |
 | 改样式 | `src/App.css` 对应段落；新主题色变体在 `theme/accents.ts` |
 | 加托盘功能 | `src-tauri/src/tray.rs` |
 | 改测速 | `services/latency.rs` + `src/api.ts` testNodesLatency |
+| 改内核下载/资产 | `core/download.rs` + `core/assets.rs` + `scripts/fetch-bundled-*-<平台>` 脚本 + `tauri.*.conf.json` resources 四处联动 |
 | 重大架构 / 模块 / 流程变动 | **同步更新本文档对应章节**（规则见 §0） |
 
 ## 8. 构建细节与产物
@@ -302,13 +316,13 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`）。
 - **Rust 测试布局**：集成测试 `src-tauri/tests/parse_subscription.rs`（fixtures 在 `tests/fixtures/`：clash yaml ×2、singbox json ×1）；`download_core_live.rs` 为 `#[ignore]` 真网测试；单测散落各文件 `#[cfg(test)]`。
 - **换行符**：`.gitattributes` 规定源码 eol=lf、`.ps1/.bat/.cmd` 为 CRLF。
-- **内核版本**：macOS 预取脚本默认 sing-box v1.13.18，Windows v1.13.15，两者独立演进，升级时分别改脚本。
+- **内核版本**：macOS 预取脚本默认 sing-box v1.13.18，Windows v1.13.15，两者独立演进，升级时分别改脚本；Xray 各平台统一 v26.3.27（`scripts/fetch-bundled-xray-*` + `core/kind.rs::fallback_version` 两处同步）。
 
 ## 9. 约定与坑（agent 必读）
 
 1. **Clash API 客户端禁用 `reqwest::blocking`** — 嵌套 Tokio runtime 会在 Tauri async worker panic；用 `ureq`（`api/clash_api.rs` 文件头有说明）。reqwest 仅用于异步下载内核。
-2. **`resources/bin/**/sing-box*`、`libcronet.dll`、`resources/rule-sets/*.srs` 不入库** — 本地没有属正常，dev 首次运行自动下载。
-3. **`BUILTIN_REMOTE_RULE_SETS`（`domain/rule.rs`）与 `scripts/fetch-bundled-rule-sets.sh` 必须同步**。
+2. **`resources/bin/**/sing-box*`、`xray*`、`*.dat`、`wintun.dll`、`libcronet.dll`、`resources/rule-sets/*.srs` 不入库** — 本地没有属正常，dev 首次运行自动下载。
+3. **`BUILTIN_REMOTE_RULE_SETS`（`domain/rule.rs`）与 `scripts/fetch-bundled-rule-sets.sh` 必须同步**；内置 3 条的 Xray geosite 映射在 `config/xray.rs`（`builtin_remote_xray_rule` + DNS 分类处），改 id 时三处联动。
 4. **i18n 双语强约束** — `messages.ts` 中 `zh` 的类型是 `Record<MessageKey, string>`，漏键编译失败。
 5. **前端↔后端类型手工同步** — `src/types.ts` 与 `domain/*` 无代码生成；改 Rust 序列化结构记得同步 TS（部分 invoke 同时发 camelCase+snake_case 参数以兼容，见 `api.ts`）。
 6. **单窗口** — 无多窗口 API 用法；窗口尺寸/可调性由模式决定（pro 960×720 固定 / simple 420×720 可调 320–420 宽）。
@@ -318,3 +332,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 10. **规则变更应用是防抖+串行**（`rule_apply.rs` 500ms 合并）— UI 事件 `rule-set-apply-status` 回报结果，不要假设保存即重启完成。
 11. **store.json 解析失败会拒启**（防覆盖用户新 schema 数据）；未知字段保留在 `retained_*` 写回。改存储结构时保持向后兼容 + `schema_version` 迁移。
 12. **窗口关闭默认进托盘**；真正退出需 `exit_allowed`（`state.is_exit_allowed()`），退出时 `shutdown_runtime()` 停内核清代理。
+13. **双内核配置生成相互独立** — `config/builder.rs`（sing-box）与 `config/xray.rs` 不共享生成代码，只共享 domain 模型与 `BuildOptions`；改路由/协议/DNS 语义时**两边都要改**并各跑单测。
+14. **Xray 无 Clash API** — 无逐连接数据/热切节点/delay API：切节点与规则变更=重启进程（`select_current_node_serialized` 返回 restart_needed）；连接三页面在 Xray 下为空态；smart_switch 禁用。流量统计靠 metrics `/debug/vars`（`api/xray_metrics.rs`）。
+15. **Xray 资产依赖** — `geosite:`/`geoip:`（含 `geoip:private`）需要 geosite.dat/geoip.dat（bundled 或运行时下载，`core/assets.rs::ensure_geodata`）；Windows TUN 需要 wintun.dll（Xray zip 不带）。缺资产时 Xray 启动会失败，报错要可读。
+16. **`.srs` 规则集是 sing-box 专有** — Xray 生成器跳过用户自建远程 `.srs` 集（内置 3 条走 geosite 映射）；`srs.rs` decompile 固定用 sing-box 二进制。

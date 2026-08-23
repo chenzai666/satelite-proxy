@@ -322,12 +322,14 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     // health and for live group selection — neither exists under Xray.
     if state
         .with_store(|s| {
-            Ok(crate::core::CoreKind::parse(&s.settings.core_type)
-                == crate::core::CoreKind::Xray)
+            Ok(crate::core::CoreKind::parse(&s.settings.core_type) == crate::core::CoreKind::Xray)
         })
         .unwrap_or(false)
     {
-        app_log::warn("smart_switch", "bootstrap skipped: Xray core (no connection journal)");
+        app_log::warn(
+            "smart_switch",
+            "bootstrap skipped: Xray core (no connection journal)",
+        );
         return Ok(SmartSwitchNowResult {
             switched: false,
             from_id: None,

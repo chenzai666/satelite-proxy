@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tar::Archive;
 
-const APP_GITHUB_LATEST: &str = "https://api.github.com/repos/zn0wii/satelite-proxy/releases/latest";
+const APP_GITHUB_LATEST: &str =
+    "https://api.github.com/repos/zn0wii/satelite-proxy/releases/latest";
 const APP_RELEASES_PAGE: &str = "https://github.com/zn0wii/satelite-proxy/releases/latest";
 const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -164,13 +165,8 @@ pub async fn fetch_latest_app_tag(proxy_url: Option<&str>) -> AppResult<String> 
 /// to `…/releases/tag/<tag>`. Preferred over the REST API because it draws
 /// on the website's budget instead of api.github.com's 60 req/h per IP for
 /// unauthenticated callers — an easy 403 behind shared NAT/proxy exits.
-pub async fn fetch_latest_app_tag_via_redirect(
-    proxy_url: Option<&str>,
-) -> AppResult<String> {
-    let client = http_client_with_redirect(
-        proxy_url,
-        reqwest::redirect::Policy::none(),
-    )?;
+pub async fn fetch_latest_app_tag_via_redirect(proxy_url: Option<&str>) -> AppResult<String> {
+    let client = http_client_with_redirect(proxy_url, reqwest::redirect::Policy::none())?;
     let resp = client
         .get(APP_RELEASES_PAGE)
         .send()
@@ -186,9 +182,7 @@ pub async fn fetch_latest_app_tag_via_redirect(
         .headers()
         .get(reqwest::header::LOCATION)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            AppError::Core("github releases redirect missing location".into())
-        })?;
+        .ok_or_else(|| AppError::Core("github releases redirect missing location".into()))?;
     extract_tag_from_release_url(location)
 }
 
@@ -540,7 +534,12 @@ fn versions_match(actual: &str, expected: &str) -> bool {
     normalize_version(actual) == normalize_version(expected)
 }
 
-fn replace_installed_core(kind: CoreKind, staged: &Path, dest: &Path, previous: &Path) -> AppResult<bool> {
+fn replace_installed_core(
+    kind: CoreKind,
+    staged: &Path,
+    dest: &Path,
+    previous: &Path,
+) -> AppResult<bool> {
     let _ = fs::remove_file(previous);
     #[cfg(target_os = "macos")]
     if dest.exists() {
@@ -631,7 +630,8 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
             .unwrap_or_default();
         if file_name == want || tar_binary_matches(kind, file_name) {
             target_index = Some(i);
-        } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat") {
+        } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat")
+        {
             dat_indexes.push((i, file_name.to_string()));
         }
     }

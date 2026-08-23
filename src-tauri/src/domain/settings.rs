@@ -506,7 +506,10 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
         assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
         assert_eq!(TrayIconStyle::parse("warning"), Some(TrayIconStyle::Danger));
-        assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
+        assert_eq!(
+            TrayIconStyle::parse("danger2"),
+            Some(TrayIconStyle::Danger2)
+        );
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
         assert_eq!(TrayIconStyle::parse("nope"), None);

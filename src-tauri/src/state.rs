@@ -159,8 +159,7 @@ mod kernel_selection_poll_tests {
             .expect("seed kernel mode");
 
         // Nothing listens here: any live PUT would fail, proving it is skipped.
-        state.lock_runtime().api =
-            Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
+        state.lock_runtime().api = Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
 
         let (settings, was_kernel, selected_live) = state
             .select_current_node_serialized("node-a", true, true)
@@ -846,9 +845,7 @@ impl AppState {
                 LiveConnectionBatch {
                     rows: cache.live.clone(),
                     removed_ids: Vec::new(),
-                    order_ids: Some(
-                        cache.live.iter().map(|row| row.id.clone()).collect(),
-                    ),
+                    order_ids: Some(cache.live.iter().map(|row| row.id.clone()).collect()),
                     order_revision: cache.live_order_revision,
                     revision: cache.live_revision,
                     unchanged: false,
@@ -879,13 +876,12 @@ impl AppState {
                     batch.removed_ids.iter().map(String::as_str).collect();
                 match &batch.order_ids {
                     Some(order) => {
-                        let mut by_id: std::collections::HashMap<String, ConnectionView> =
-                            cache
-                                .live
-                                .drain(..)
-                                .filter(|row| !removed.contains(row.id.as_str()))
-                                .map(|row| (row.id.clone(), row))
-                                .collect();
+                        let mut by_id: std::collections::HashMap<String, ConnectionView> = cache
+                            .live
+                            .drain(..)
+                            .filter(|row| !removed.contains(row.id.as_str()))
+                            .map(|row| (row.id.clone(), row))
+                            .collect();
                         for row in &batch.rows {
                             by_id.insert(row.id.clone(), row.clone());
                         }
@@ -1036,7 +1032,8 @@ impl AppState {
         let _operation = self.begin_core_transition()?;
         let xray_core = {
             let kind = crate::core::CoreKind::parse(
-                self.with_store(|store| Ok(store.settings.core_type.clone()))?.as_str(),
+                self.with_store(|store| Ok(store.settings.core_type.clone()))?
+                    .as_str(),
             );
             kind == crate::core::CoreKind::Xray
         };

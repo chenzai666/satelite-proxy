@@ -850,8 +850,7 @@ proxies:
     fn same_hysteria2_with_different_fragments_is_one_node() {
         let a = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%89%A9%E4%BD%99%E6%B5%81%E9%87%8F%EF%BC%9A977.82%20GB";
         let b = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%A5%97%E9%A4%90%E5%88%B0%E6%9C%9F%EF%BC%9A%E9%95%BF%E6%9C%9F%E6%9C%89%E6%95%88";
-        let outcome =
-            import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
+        let outcome = import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
         assert_eq!(outcome.nodes.len(), 1);
         assert_eq!(outcome.subscription.node_count, 1);
     }

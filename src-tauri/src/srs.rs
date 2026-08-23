@@ -153,8 +153,7 @@ fn parse_inner(bytes: &[u8], collect_rules: bool) -> Result<ParsedSrs, String> {
     } else {
         display_rows
     };
-    let display_count =
-        u32::try_from(rows).map_err(|_| "SRS 条目数量过多".to_string())?;
+    let display_count = u32::try_from(rows).map_err(|_| "SRS 条目数量过多".to_string())?;
     Ok(ParsedSrs {
         version,
         has_adguard: walker.has_adguard,
@@ -488,17 +487,11 @@ impl<'a> Walker<'a> {
                 (count, false)
             }
             ITEM_NETWORK_IS_EXPENSIVE => {
-                rule.insert(
-                    "network_is_expensive".into(),
-                    serde_json::json!([true]),
-                );
+                rule.insert("network_is_expensive".into(), serde_json::json!([true]));
                 (1, false)
             }
             ITEM_NETWORK_IS_CONSTRAINED => {
-                rule.insert(
-                    "network_is_constrained".into(),
-                    serde_json::json!([true]),
-                );
+                rule.insert("network_is_constrained".into(), serde_json::json!([true]));
                 (1, false)
             }
             ITEM_NETWORK_INTERFACE_ADDRESS => {
@@ -523,11 +516,16 @@ impl<'a> Walker<'a> {
                     }
                     total += prefix_count.max(1);
                     if let Some(entries) = entries.as_mut() {
-                        entries.push(serde_json::json!({ format!("{key}"): prefixes.unwrap_or_default() }));
+                        entries.push(
+                            serde_json::json!({ format!("{key}"): prefixes.unwrap_or_default() }),
+                        );
                     }
                 }
                 if let Some(entries) = entries {
-                    rule.insert("network_interface_address".into(), serde_json::json!(entries));
+                    rule.insert(
+                        "network_interface_address".into(),
+                        serde_json::json!(entries),
+                    );
                 }
                 (total, true)
             }
@@ -921,7 +919,12 @@ mod tests {
 
     #[test]
     fn parses_adguard_ruleset_and_round_trips_lines() {
-        let lines = ["||example.com^", "ads.example.org", "|exact.net^", "||wild.card.me"];
+        let lines = [
+            "||example.com^",
+            "ads.example.org",
+            "|exact.net^",
+            "||wild.card.me",
+        ];
         let parsed = parse_with_rules(&adguard_srs(&lines)).expect("valid adguard srs");
         assert!(parsed.has_adguard);
         assert_eq!(parsed.display_count, lines.len() as u32);
