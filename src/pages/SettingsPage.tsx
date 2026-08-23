@@ -24,7 +24,7 @@ import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
-import { ACCENTS, isCustomHexAccent, resolveAccent } from "../theme/accents";
+import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
 import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
 import { useTheme } from "../theme";
 import type {
@@ -73,7 +73,7 @@ function fmtCoreBytes(value: number) {
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
+  const { theme, setTheme, accent, setAccent, glow, setGlow, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -82,6 +82,7 @@ export function SettingsPage() {
   const [sponsorSession, setSponsorSession] = useState("0000");
   /** Custom accent color picker (the extra swatch after the presets). */
   const [accentPickerOpen, setAccentPickerOpen] = useState(false);
+  const [glowPickerOpen, setGlowPickerOpen] = useState(false);
   /** Anchor + viewport position for the sponsor popup (portaled to <body>,
    * fixed above the trigger button so opening it never reflows the card). */
   const sponsorBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -672,7 +673,8 @@ export function SettingsPage() {
       {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">
-            <div className="settings-app-prefs">
+            <div className="settings-app-cols">
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.language")}</div>
@@ -691,6 +693,57 @@ export function SettingsPage() {
                   ]}
                 />
               </div>
+              <AppToggle
+                title={t("settings.launchAtLogin")}
+                desc={t("settings.launchAtLoginDesc")}
+                checked={!!settings?.launch_at_login}
+                disabled={busy}
+                onChange={(v) => void patchApp({ launchAtLogin: v })}
+              />
+              <AppToggle
+                title={t("settings.silentStart")}
+                desc={t("settings.silentStartDesc")}
+                checked={!!settings?.silent_start}
+                disabled={busy}
+                onChange={(v) => void patchApp({ silentStart: v })}
+              />
+              <AppToggle
+                title={t("settings.autoStartProxy")}
+                desc={t("settings.autoStartProxyDesc")}
+                checked={!!settings?.auto_start_proxy}
+                disabled={busy}
+                onChange={(v) => void patchApp({ autoStartProxy: v })}
+              />
+              <AppToggle
+                title={t("settings.closeToTray")}
+                desc={t("settings.closeToTrayDesc")}
+                checked={settings?.close_to_tray !== false}
+                disabled={busy}
+                onChange={(v) => void patchApp({ closeToTray: v })}
+              />
+              <AppToggle
+                title={t("settings.unloadUi")}
+                desc={t("settings.unloadUiDesc")}
+                checked={!!settings?.unload_ui_on_tray}
+                disabled={busy}
+                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
+              />
+              <AppToggle
+                title={t("settings.closeOnSwitch")}
+                desc={t("settings.closeOnSwitchDesc")}
+                checked={settings?.close_connections_on_switch !== false}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
+              />
+              <AppToggle
+                title={t("settings.findProcess")}
+                desc={t("settings.findProcessDesc")}
+                checked={settings?.find_process !== false}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ findProcess: v })}
+              />
+              </div>
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.theme")}</div>
@@ -706,6 +759,24 @@ export function SettingsPage() {
                   options={[
                     { value: "aerospace", label: t("settings.themeAerospace") },
                     { value: "day", label: t("settings.themeDay") },
+                  ]}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row settings-duo-col">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glassFrost")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glassFrostDesc")}
+                  </div>
+                </div>
+                <GlassSeg
+                  value={glassFrost ? "frost" : "lite"}
+                  ariaLabel={t("settings.glassFrost")}
+                  disabled={busy}
+                  onChange={(v) => void setGlassFrost(v === "frost")}
+                  options={[
+                    { value: "lite", label: t("settings.glassFrostLite") },
+                    { value: "frost", label: t("settings.glassFrostFull") },
                   ]}
                 />
               </div>
@@ -762,6 +833,79 @@ export function SettingsPage() {
                   </button>
                 </div>
               </div>
+              <div className="settings-app-row settings-app-pref settings-accent-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glow")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glowDesc")}
+                  </div>
+                </div>
+                <div
+                  className="settings-accent-swatches"
+                  role="group"
+                  aria-label={t("settings.glow")}
+                >
+                  {/* "Follow accent" mirrors the accent's effective shade. */}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${glow === "accent" ? "active" : ""}`}
+                    style={{
+                      background: resolveAccent(accent)[theme],
+                      color: resolveAccent(accent)[theme],
+                    }}
+                    title={t("settings.glowFollow")}
+                    aria-label={t("settings.glowFollow")}
+                    aria-pressed={glow === "accent"}
+                    disabled={busy}
+                    onClick={() => void setGlow("accent")}
+                  >
+                    {glow === "accent" ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`settings-accent-dot ${glow === a.id ? "active" : ""}`}
+                      style={{ background: a[theme], color: a[theme] }}
+                      title={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-label={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-pressed={glow === a.id}
+                      disabled={busy}
+                      onClick={() => void setGlow(a.id)}
+                    >
+                      {glow === a.id ? (
+                        <span className="settings-accent-check">✓</span>
+                      ) : (
+                        ""
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(glow) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(glow)
+                        ? { background: glow, color: glow }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(glow)}
+                    disabled={busy}
+                    onClick={() => setGlowPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(glow) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                </div>
+              </div>
               <div className="settings-app-row settings-app-pref settings-hero-row">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.heroStyle")}</div>
@@ -795,75 +939,7 @@ export function SettingsPage() {
                   onChange={(v) => void patchApp({ trayIcon: v })}
                 />
               </div>
-              <div className="settings-app-row settings-app-pref settings-hero-row settings-duo-col">
-                <div className="settings-app-text">
-                  <div className="settings-app-title">{t("settings.glassFrost")}</div>
-                  <div className="settings-app-desc muted">
-                    {t("settings.glassFrostDesc")}
-                  </div>
-                </div>
-                <GlassSeg
-                  value={glassFrost ? "frost" : "lite"}
-                  ariaLabel={t("settings.glassFrost")}
-                  disabled={busy}
-                  onChange={(v) => void setGlassFrost(v === "frost")}
-                  options={[
-                    { value: "lite", label: t("settings.glassFrostLite") },
-                    { value: "frost", label: t("settings.glassFrostFull") },
-                  ]}
-                />
-              </div>
             </div>
-            <div className="settings-app-toggles">
-              <AppToggle
-                title={t("settings.closeToTray")}
-                desc={t("settings.closeToTrayDesc")}
-                checked={settings?.close_to_tray !== false}
-                disabled={busy}
-                onChange={(v) => void patchApp({ closeToTray: v })}
-              />
-              <AppToggle
-                title={t("settings.unloadUi")}
-                desc={t("settings.unloadUiDesc")}
-                checked={!!settings?.unload_ui_on_tray}
-                disabled={busy}
-                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
-              />
-              <AppToggle
-                title={t("settings.launchAtLogin")}
-                desc={t("settings.launchAtLoginDesc")}
-                checked={!!settings?.launch_at_login}
-                disabled={busy}
-                onChange={(v) => void patchApp({ launchAtLogin: v })}
-              />
-              <AppToggle
-                title={t("settings.silentStart")}
-                desc={t("settings.silentStartDesc")}
-                checked={!!settings?.silent_start}
-                disabled={busy}
-                onChange={(v) => void patchApp({ silentStart: v })}
-              />
-              <AppToggle
-                title={t("settings.autoStartProxy")}
-                desc={t("settings.autoStartProxyDesc")}
-                checked={!!settings?.auto_start_proxy}
-                disabled={busy}
-                onChange={(v) => void patchApp({ autoStartProxy: v })}
-              />
-              <AppToggle
-                title={t("settings.closeOnSwitch")}
-                desc={t("settings.closeOnSwitchDesc")}
-                checked={settings?.close_connections_on_switch !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
-              />
-              <AppToggle
-                title={t("settings.findProcess")}
-                desc={t("settings.findProcessDesc")}
-                checked={settings?.find_process !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ findProcess: v })}
-              />
             </div>
           </div>
           <p className="settings-panel-note muted">{t("settings.toggleSaveNote")}</p>
@@ -1536,6 +1612,26 @@ export function SettingsPage() {
             void setAccent(hex);
           }}
           onClose={() => setAccentPickerOpen(false)}
+        />
+      )}
+
+      {glowPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(glow)
+              ? glow
+              : resolveAccent(glow === "accent" ? accent : glow)[theme]
+          }
+          title={t("settings.glowCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onPreview={(hex) => applyGlowToDom(hex, accent, theme)}
+          onRestore={() => applyGlowToDom(glow, accent, theme)}
+          onApply={(hex) => {
+            setGlowPickerOpen(false);
+            void setGlow(hex);
+          }}
+          onClose={() => setGlowPickerOpen(false)}
         />
       )}
       </div>

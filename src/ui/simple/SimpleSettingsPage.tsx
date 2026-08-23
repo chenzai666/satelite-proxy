@@ -50,7 +50,8 @@ export function SimpleSettingsPage() {
 
       <section className="settings-panel" aria-label={t("settings.tabApp")}>
         <div className="card settings-app-card">
-          <div className="settings-app-prefs">
+          <div className="settings-app-cols">
+            <div className="settings-app-col">
             <div className="settings-app-row settings-app-pref">
               <div className="settings-app-text">
                 <div className="settings-app-title">{t("settings.language")}</div>
@@ -68,45 +69,6 @@ export function SimpleSettingsPage() {
                 ]}
               />
             </div>
-            <div className="settings-app-row settings-app-pref">
-              <div className="settings-app-text">
-                <div className="settings-app-title">{t("settings.theme")}</div>
-                <div className="settings-app-desc muted">
-                  {t("settings.themeDesc")}
-                </div>
-              </div>
-              <GlassSeg
-                value={theme}
-                ariaLabel={t("settings.theme")}
-                onChange={(v) => void setTheme(v as ThemeId)}
-                options={[
-                  { value: "aerospace", label: t("settings.themeAerospace") },
-                  { value: "day", label: t("settings.themeDay") },
-                ]}
-              />
-            </div>
-            <div className="settings-app-row settings-app-pref">
-              <div className="settings-app-text">
-                <div className="settings-app-title">
-                  {t("settings.heroStyle")}
-                </div>
-                <div className="settings-app-desc muted">
-                  {t("settings.heroStyleDesc")}
-                </div>
-              </div>
-              <GlassSeg
-                value={heroStyle}
-                ariaLabel={t("settings.heroStyle")}
-                onChange={(v) => void setHeroStyle(v as HeroStyle)}
-                options={[
-                  { value: "particle", label: t("settings.heroStyleParticle") },
-                  { value: "classic", label: t("settings.heroStyleClassic") },
-                  { value: "smiley", label: t("settings.heroStyleSmiley") },
-                ]}
-              />
-            </div>
-          </div>
-          <div className="settings-app-toggles">
             <div className="settings-app-row">
               <div className="settings-app-text">
                 <div className="settings-app-title">
@@ -162,6 +124,46 @@ export function SimpleSettingsPage() {
                 onChange={(next) => void patchSettings({ closeToTray: next })}
               />
             </div>
+            </div>
+            <div className="settings-app-col">
+            <div className="settings-app-row settings-app-pref">
+              <div className="settings-app-text">
+                <div className="settings-app-title">{t("settings.theme")}</div>
+                <div className="settings-app-desc muted">
+                  {t("settings.themeDesc")}
+                </div>
+              </div>
+              <GlassSeg
+                value={theme}
+                ariaLabel={t("settings.theme")}
+                onChange={(v) => void setTheme(v as ThemeId)}
+                options={[
+                  { value: "aerospace", label: t("settings.themeAerospace") },
+                  { value: "day", label: t("settings.themeDay") },
+                ]}
+              />
+            </div>
+            <div className="settings-app-row settings-app-pref">
+              <div className="settings-app-text">
+                <div className="settings-app-title">
+                  {t("settings.heroStyle")}
+                </div>
+                <div className="settings-app-desc muted">
+                  {t("settings.heroStyleDesc")}
+                </div>
+              </div>
+              <GlassSeg
+                value={heroStyle}
+                ariaLabel={t("settings.heroStyle")}
+                onChange={(v) => void setHeroStyle(v as HeroStyle)}
+                options={[
+                  { value: "particle", label: t("settings.heroStyleParticle") },
+                  { value: "classic", label: t("settings.heroStyleClassic") },
+                  { value: "smiley", label: t("settings.heroStyleSmiley") },
+                ]}
+              />
+            </div>
+          </div>
           </div>
           <button
             type="button"

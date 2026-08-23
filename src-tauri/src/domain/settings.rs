@@ -256,6 +256,10 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
+    /// Background halo (glow) color: `accent` (follow the UI accent) |
+    /// accent preset id | custom `#rrggbb`.
+    #[serde(default = "default_glow_color")]
+    pub glow_color: String,
     /// Overview hero visual: `particle` | `classic` | `smiley`.
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
@@ -373,6 +377,10 @@ fn default_accent() -> String {
     "green".into()
 }
 
+fn default_glow_color() -> String {
+    "accent".into()
+}
+
 fn default_hero_style() -> String {
     "particle".into()
 }
@@ -404,6 +412,7 @@ impl Default for AppSettings {
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
+            glow_color: default_glow_color(),
             hero_style: default_hero_style(),
             glass_frost: default_glass_frost(),
             tray_icon: TrayIconStyle::default(),

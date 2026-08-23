@@ -51,6 +51,7 @@
   --on-primary: #0c1210;
   --success: #55c89a;
   --success-muted: rgba(85, 200, 154, 0.14);
+  --success-border: rgba(85, 200, 154, 0.35);
   --warning: #c6a25f;
   --warning-muted: rgba(198, 162, 95, 0.16);
   --danger: #d68b58;
@@ -79,7 +80,10 @@
   --nav-bg: rgba(20, 24, 32, 0.72);
   --nav-item-active-bg: rgba(255, 255, 255, 0.92);
   --nav-item-active-fg: #12151c;
-  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(85, 200, 154, 0.12), transparent 70%);
+  /* Background halo tint (top-bar atmosphere + hero glow); overridden at
+     runtime with the glow color setting (see theme/accents.ts). */
+  --glow-rgb: 85, 200, 154;
+  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.12), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(101, 151, 219, 0.08), transparent 55%);
   /* Opaque panels for modals / menus / native selects (not frosted --surface) */
   --panel-solid: #161a22;
@@ -122,6 +126,7 @@
   --on-primary: #ffffff;
   --success: #1f9a72;
   --success-muted: rgba(31, 154, 114, 0.12);
+  --success-border: rgba(31, 154, 114, 0.35);
   --warning: #a67c2a;
   --warning-muted: rgba(166, 124, 42, 0.12);
   --danger: #c45a32;
@@ -150,7 +155,8 @@
   --nav-bg: rgba(255, 255, 255, 0.78);
   --nav-item-active-bg: #1a1d24;
   --nav-item-active-fg: #f5f6f8;
-  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(31, 154, 114, 0.1), transparent 70%);
+  --glow-rgb: 31, 154, 114;
+  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.1), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(61, 111, 176, 0.08), transparent 55%);
   --panel-solid: #ffffff;
   --panel-elevated: #f3f4f7;
@@ -281,9 +287,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(24, 92, 72, 0.32) 0%,
-      rgba(18, 62, 52, 0.2) 34%,
-      rgba(13, 30, 28, 0.08) 58%,
+      rgba(var(--glow-rgb), 0.24) 0%,
+      rgba(var(--glow-rgb), 0.13) 34%,
+      rgba(var(--glow-rgb), 0.05) 58%,
       transparent 76%
     ),
     var(--page-glow),
@@ -302,9 +308,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(48, 155, 119, 0.26) 0%,
-      rgba(77, 158, 132, 0.16) 36%,
-      rgba(112, 164, 148, 0.07) 60%,
+      rgba(var(--glow-rgb), 0.24) 0%,
+      rgba(var(--glow-rgb), 0.15) 36%,
+      rgba(var(--glow-rgb), 0.06) 60%,
       transparent 77%
     ),
     var(--page-glow),
@@ -804,8 +810,8 @@ button {
 
 .banner.ok {
   background: var(--success-muted);
-  color: var(--primary);
-  border: 1px solid var(--primary-border);
+  color: var(--success);
+  border: 1px solid var(--success-border);
   border-radius: var(--radius);
   padding: 0.5rem 0.7rem;
   margin-bottom: 0.65rem;
@@ -830,7 +836,7 @@ button {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--success-muted);
+  background: var(--primary-muted);
   color: var(--primary);
   border: 1px solid var(--primary-border);
   border-radius: var(--radius);
@@ -1211,44 +1217,45 @@ tr.row-active {
   margin: 0;
 }
 
-.settings-app-prefs {
+/* App tab: one two-column table — general/behavior rows in the left column,
+   appearance rows (theme / accent / glow / hero / controls / tray) in the
+   right. Columns split by meaning, not by row-major source order. */
+.settings-app-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
-.settings-app-prefs .settings-app-pref {
-  border-bottom: none;
+.settings-app-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
-.settings-app-prefs .settings-app-pref + .settings-app-pref {
+.settings-app-col + .settings-app-col {
   border-left: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
-.settings-app-pref.settings-hero-row,
-.settings-app-pref.settings-accent-row {
-  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+/* Compact table rows: tighter vertical padding + one-line clamped
+   descriptions keep the app tab inside the fixed 720px window without a
+   scrollbar (8 rows on the left column drive the card height). */
+.settings-app-cols .settings-app-row {
+  padding: 0.42rem 1rem;
 }
 
-.settings-app-toggles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
+.settings-app-cols .settings-app-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.settings-app-toggles .settings-app-row {
+/* Rows share the column height so both sides end flush like a table. */
+.settings-app-col .settings-app-row {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  flex: 1 0 auto;
 }
 
-.settings-app-toggles .settings-app-row:nth-last-child(-n + 2) {
+.settings-app-col .settings-app-row:last-child {
   border-bottom: none;
-}
-
-/* Odd last item alone on final row: keep bottom edge clean */
-.settings-app-toggles .settings-app-row:last-child:nth-child(odd) {
-  border-bottom: none;
-  grid-column: 1 / -1;
 }
 
 .settings-app-row {
@@ -1266,23 +1273,18 @@ tr.row-active {
 }
 
 @media (max-width: 640px) {
-  .settings-app-prefs,
-  .settings-app-toggles {
+  .settings-app-cols {
     grid-template-columns: 1fr;
   }
 
-  .settings-app-prefs .settings-app-pref + .settings-app-pref {
+  .settings-app-col + .settings-app-col {
     border-left: none;
     border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
   }
 
-  .settings-app-toggles .settings-app-row:nth-last-child(-n + 2) {
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  }
-
-  .settings-app-toggles .settings-app-row:last-child {
-    border-bottom: none;
-    grid-column: auto;
+  /* Stacked single column: rows go back to natural height. */
+  .settings-app-col .settings-app-row {
+    flex: 0 0 auto;
   }
 }
 
@@ -1433,11 +1435,6 @@ tr.row-active {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.settings-tray-icon-row {
-  border-left: none !important;
-  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
 .settings-tray-icon-row .settings-app-text {
@@ -1731,7 +1728,7 @@ tr.row-active {
 
 .core-download-percent {
   margin-left: auto;
-  color: var(--primary);
+  color: var(--muted);
 }
 
 .core-progress-track {
@@ -4598,12 +4595,18 @@ button.check.on {
   min-width: 4.2rem;
 }
 
+/* Probing state: tinted chip (bg + text + border from one hue), not floating
+   accent text on glass — keeps the accent reading as surface, not ink. */
 .dash-inline-label.dash-smart-probing {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
   color: var(--primary);
+  background: var(--primary-muted);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-pill);
+  padding: 0.12rem 0.5rem;
 }
 
 .dash-smart-spinner {
@@ -6730,14 +6733,17 @@ button.active-soft {
   font-size: 0.72rem;
 }
 
-.simple-shell .settings-app-prefs,
-.simple-shell .settings-app-toggles {
+.simple-shell .settings-app-cols {
   grid-template-columns: 1fr;
 }
 
-.simple-shell .settings-app-prefs .settings-app-pref + .settings-app-pref {
+.simple-shell .settings-app-col + .settings-app-col {
   border-left: none;
   border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.simple-shell .settings-app-col .settings-app-row {
+  flex: 0 0 auto;
 }
 
 /* Connect page fills the strip; keep it one screen, no scrollbar. */
@@ -7404,7 +7410,7 @@ button.active-soft {
 }
 
 .simple-status-label.on {
-  color: var(--primary);
+  color: var(--success);
 }
 
 button.simple-node-item,
@@ -7651,6 +7657,10 @@ button.simple-node-item:hover:not(:disabled) {
   align-items: center;
   gap: 0.35rem;
   color: var(--primary);
+  background: var(--primary-muted);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-pill);
+  padding: 0.12rem 0.5rem;
 }
 
 .simple-setting-desc {

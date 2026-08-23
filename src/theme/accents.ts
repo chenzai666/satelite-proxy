@@ -118,20 +118,58 @@ export function hsvToRgb(
   };
 }
 
+/** Perceived luminance (Rec. 709 weights), 0–1. */
+function luminanceOf(r: number, g: number, b: number): number {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
 /**
  * Lightness-based pick for on-accent text color (black/white) so labels on a
  * filled primary button stay legible across all presets.
  */
 function onColorFor(r: number, g: number, b: number): string {
-  // Perceived luminance (Rec. 709 weights).
-  const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-  return lum > 0.6 ? "#0c1210" : "#ffffff";
+  return luminanceOf(r, g, b) > 0.6 ? "#0c1210" : "#ffffff";
 }
 
 /**
- * Override the primary/success CSS variables on :root so the whole UI re-skins
+ * Custom picker hexes have no per-theme shade (presets ship a lighter dark-
+ * theme and a deeper light-theme variant), so one raw pick could land as dark
+ * accent text on dark glass. Nudge the *applied* color into the theme's
+ * readable lightness band — the stored id stays verbatim, and preset colors
+ * are designer-tuned and bypass this entirely.
+ */
+function clampForTheme(
+  r: number,
+  g: number,
+  b: number,
+  theme: ThemeId,
+): { r: number; g: number; b: number } {
+  const step = 0.08;
+  if (theme === "day") {
+    // Light theme: accent text sits on light surfaces — darken until ≤ 0.6.
+    for (let i = 0; i < 24 && luminanceOf(r, g, b) > 0.6; i++) {
+      r *= 1 - step;
+      g *= 1 - step;
+      b *= 1 - step;
+    }
+  } else {
+    // Dark theme: lift toward white until luminance ≥ 0.5.
+    for (let i = 0; i < 24 && luminanceOf(r, g, b) < 0.5; i++) {
+      r += (255 - r) * step;
+      g += (255 - g) * step;
+      b += (255 - b) * step;
+    }
+  }
+  return { r: Math.round(r), g: Math.round(g), b: Math.round(b) };
+}
+
+/**
+ * Override the primary CSS variables on :root so the whole UI re-skins
  * to the chosen accent. Derives the translucent variants (muted/glow/border)
  * from the single base hex via rgba(). Call whenever theme OR accent changes.
+ * `--success` is intentionally NOT touched: it is a fixed semantic green
+ * (defined per theme in App.css tokens) so ok/direct/latency states keep
+ * their meaning no matter which accent is active.
  */
 export function applyAccentToDom(
   accentId: string | null | undefined,
@@ -140,7 +178,10 @@ export function applyAccentToDom(
   const preset = resolveAccent(accentId);
   const base = hexToRgb(preset[theme]);
   if (!base) return;
-  const { r, g, b } = base;
+  let { r, g, b } = base;
+  if (isCustomHexAccent(accentId)) {
+    ({ r, g, b } = clampForTheme(r, g, b, theme));
+  }
   const rgb = (a: number) => `rgba(${r}, ${g}, ${b}, ${a})`;
 
   // Hover: lighten ~8% toward white. Cheap approximation good enough for swatches.
@@ -152,13 +193,45 @@ export function applyAccentToDom(
   const hv = mix(0.12);
 
   const root = document.documentElement.style;
-  root.setProperty("--primary", preset[theme]);
+  root.setProperty("--primary", rgbToHex(r, g, b));
   root.setProperty("--primary-hover", `rgb(${hv.r}, ${hv.g}, ${hv.b})`);
   root.setProperty("--primary-muted", rgb(0.14));
   root.setProperty("--primary-glow", rgb(theme === "day" ? 0.2 : 0.28));
   root.setProperty("--primary-border", rgb(0.35));
   root.setProperty("--primary-border-strong", rgb(theme === "day" ? 0.5 : 0.55));
   root.setProperty("--on-primary", onColorFor(r, g, b));
-  root.setProperty("--success", preset[theme]);
-  root.setProperty("--success-muted", rgb(0.14));
+}
+
+/** Valid glow setting values: `"accent"` (follow the UI accent) or any accent id. */
+export function isValidGlow(id: string | null | undefined): id is string {
+  return id === "accent" || isValidAccent(id);
+}
+
+/** Resolve a stored glow id, falling back to `"accent"` (follow). */
+export function normalizeGlowId(id: string | null | undefined): string {
+  return isValidGlow(id) ? (id as string) : "accent";
+}
+
+/**
+ * Publish `--glow-rgb` for the background halo layers (app-shell atmosphere +
+ * hero glow in App.css). Independent from the accent: `glowId` may be
+ * `"accent"` to track it, any preset id, or a custom `#rrggbb` (presets pick
+ * their per-theme shade; custom hexes are used verbatim — a wash behind
+ * content needs no text-contrast clamp). Re-apply on theme change, and on
+ * accent change while following.
+ */
+export function applyGlowToDom(
+  glowId: string | null | undefined,
+  accentId: string | null | undefined,
+  theme: ThemeId,
+): void {
+  const preset = resolveAccent(
+    glowId && glowId !== "accent" ? glowId : accentId,
+  );
+  const base = hexToRgb(preset[theme]);
+  if (!base) return;
+  document.documentElement.style.setProperty(
+    "--glow-rgb",
+    `${base.r}, ${base.g}, ${base.b}`,
+  );
 }

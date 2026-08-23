@@ -251,6 +251,8 @@ export interface SettingsUpdatePayload {
   locale?: string | null;
   theme?: string | null;
   accent?: string | null;
+  /** Background glow: "accent" | preset id | #rrggbb */
+  glowColor?: string | null;
   heroStyle?: string | null;
   glassFrost?: boolean | null;
   trayIcon?: string | null;
@@ -302,6 +304,7 @@ function scheduleSettingsWrite() {
       locale: payload.locale ?? null,
       theme: payload.theme ?? null,
       accent: payload.accent ?? null,
+      glowColor: payload.glowColor ?? null,
       heroStyle: payload.heroStyle ?? null,
       glassFrost: payload.glassFrost ?? null,
       trayIcon: payload.trayIcon ?? null,

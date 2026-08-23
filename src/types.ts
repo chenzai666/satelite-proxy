@@ -298,6 +298,8 @@ export interface AppSettings {
   theme?: string;
   /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
   accent?: string;
+  /** Background glow color: "accent" (follow) | preset id | #rrggbb */
+  glow_color?: string;
   /** Overview hero visual: particle | classic | smiley */
   hero_style?: HeroStyle;
   /** Frosted-glass look for repeated glass controls (costs backdrop-filter

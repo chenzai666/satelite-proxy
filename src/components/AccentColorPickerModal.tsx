@@ -25,12 +25,18 @@ interface Props {
   title: string;
   applyLabel: string;
   cancelLabel: string;
+  /** Override the live-preview target (default: re-skin the UI accent). */
+  onPreview?: (hex: string) => void;
+  /** Override the cancel-restore target (default: the pre-picker accent). */
+  onRestore?: () => void;
 }
 
 /**
  * Free-form accent picker: saturation/value square + hue strip + hex field.
  * Dragging live-previews the accent on the whole UI (applyAccentToDom);
  * closing without applying restores the accent that was active on mount.
+ * `onPreview`/`onRestore` retarget the picker at other color settings
+ * (e.g. the background glow) without duplicating the modal.
  */
 export function AccentColorPickerModal({
   current,
@@ -39,12 +45,20 @@ export function AccentColorPickerModal({
   title,
   applyLabel,
   cancelLabel,
+  onPreview,
+  onRestore,
 }: Props) {
   const { theme, accent } = useTheme();
   /** The persisted accent to restore when the user cancels. */
   const originalAccentRef = useRef(accent);
   /** Set once onApply runs, so the unmount restore skips after a save. */
   const appliedRef = useRef(false);
+  /** Latest optional overrides — kept in refs so the effects below don't
+   *  re-run on every parent render (inline arrow identity changes). */
+  const previewRef = useRef(onPreview);
+  previewRef.current = onPreview;
+  const restoreRef = useRef(onRestore);
+  restoreRef.current = onRestore;
 
   const start = hexToRgb(current) ?? { r: 31, g: 154, b: 114 };
   const [hsv, setHsv] = useState(() => rgbToHsv(start.r, start.g, start.b));
@@ -63,17 +77,19 @@ export function AccentColorPickerModal({
     setHexText(hex);
   }, [hex]);
 
-  // Live preview: the whole UI re-skins while dragging.
+  // Live preview: the whole UI re-skins while dragging. Defaults to the UI
+  // accent; callers may retarget it (e.g. the background glow).
   useEffect(() => {
-    applyAccentToDom(hex, theme);
+    if (previewRef.current) previewRef.current(hex);
+    else applyAccentToDom(hex, theme);
   }, [hex, theme]);
 
   // Restore the pre-picker accent on close-without-save.
   useEffect(
     () => () => {
-      if (!appliedRef.current) {
-        applyAccentToDom(originalAccentRef.current, theme);
-      }
+      if (appliedRef.current) return;
+      if (restoreRef.current) restoreRef.current();
+      else applyAccentToDom(originalAccentRef.current, theme);
     },
     [theme],
   );
