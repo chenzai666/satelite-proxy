@@ -347,7 +347,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         c.set_phase(Phase::Probing);
     }
 
-    let (current_id, mut nodes, probe_url) = {
+    let (current_id, nodes, probe_url) = {
         let store = state.lock_store();
         (
             store.settings.current_node_id.clone(),
@@ -355,10 +355,17 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             store.settings.probe_url.clone(),
         )
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    // Main-node candidates must be servable by the running core (meow drops
+    // REALITY nodes — they pass TCP probes and would win the race, then the
+    // pick is rejected by the switch guard).
+    let mut nodes: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     if nodes.is_empty() {
         ctrl().set_phase(Phase::Ok);
@@ -618,10 +625,15 @@ async fn tick(state: &AppState) -> Result<(), String> {
             store.settings.probe_url.clone(),
         )
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    // See the bootstrap path: only core-servable nodes are candidates.
+    let nodes: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     let Some(current_id) = current_id else {
         return Ok(());
@@ -985,17 +997,25 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
 
-    let (nodes, probe_url) = {
+    let (all_nodes, probe_url) = {
         let store = state.lock_store();
         (store.enabled_nodes(), store.settings.probe_url.clone())
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
     let Some(api) = clash else {
         return Ok(());
     };
+    // Only nodes the running core can actually serve are pool members in
+    // the generated config (e.g. meow drops REALITY nodes — which pass TCP
+    // probes beautifully and would otherwise win the score race, then the
+    // switch PUT of their tag 400s as a non-member).
+    let nodes: Vec<ProxyNode> = all_nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     for rule in rules {
         if let Err(e) = maintain_smart_rule(state, &rule, &nodes, &probe_url, api.clone()).await {
@@ -1236,14 +1256,19 @@ pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(),
     if !state.is_core_running() {
         return Ok(());
     }
-    let (nodes, probe_url) = {
+    let (all_nodes, probe_url) = {
         let store = state.lock_store();
         (store.enabled_nodes(), store.settings.probe_url.clone())
     };
-    let api = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    let api = clash;
+    let nodes: Vec<_> = all_nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
     let Some(api) = api else {
         return Ok(());
     };

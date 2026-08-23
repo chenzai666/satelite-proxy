@@ -129,8 +129,16 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         if pool.is_empty() {
             continue;
         }
-        let group_tag = filter_set_tag(set);
-        groups.push(url_test_group(&group_tag, pool, &probe_url));
+        // Same shape as sing-box's filter-set selectors (`smart-<set id>`
+        // via RuleSet::smart_set_outbound_tag): the app-side smart switch
+        // maintains these pools by PUT (a stand-in rule per Filter set),
+        // so they must be select groups under that exact tag.
+        let group_tag = set.smart_set_outbound_tag();
+        groups.push(select_group(
+            &group_tag,
+            pool.clone(),
+            pool.first().map(String::as_str),
+        ));
         filter_group_tags.insert(set.id.clone(), group_tag);
     }
 
@@ -273,10 +281,6 @@ fn url_test_group(name: &str, members: Vec<String>, probe_url: &str) -> Mapping 
         Yaml::Sequence(members.into_iter().map(Yaml::String).collect()),
     );
     g
-}
-
-fn filter_set_tag(set: &RuleSet) -> String {
-    format!("filter-{}", &set.id[..set.id.len().min(12)])
 }
 
 /// meow tun block. meow requires fake-ip DNS for tun (auto-route has nothing
@@ -1419,20 +1423,21 @@ mod tests {
         let built = build_meow_config(&[a, b], &opts).expect("build");
         let doc = parse(&built);
 
-        // The rule targets the filter pool group, which holds exactly the
-        // keyword-matched node(s) and is a url-test group.
+        // The rule targets the filter pool group — `smart-<set id>` select
+        // (sing-box parity: the app-side smart switch maintains these pools
+        // by PUT through a stand-in rule per Filter set).
         let rules = rules_of(&doc);
         let stream_rule = rules
             .iter()
             .find(|r| r.contains("stream.tv"))
             .expect("stream.tv rule");
         let group_name = stream_rule.rsplit(',').next().unwrap().to_string();
-        assert!(group_name.starts_with("filter-"), "rule was {stream_rule}");
+        assert!(group_name.starts_with("smart-"), "rule was {stream_rule}");
         let group = groups_of(&doc)
             .into_iter()
             .find(|g| g["name"].as_str() == Some(group_name.as_str()))
             .expect("filter pool group");
-        assert_eq!(group["type"].as_str(), Some("url-test"));
+        assert_eq!(group["type"].as_str(), Some("select"));
         let members = group["proxies"].as_sequence().unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].as_str(), Some(built.outbound_tags[0].as_str()));
