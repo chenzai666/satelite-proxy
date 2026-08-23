@@ -137,7 +137,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "tag": "proxy",
             "outbounds": tags.clone(),
             "url": url,
-            "interval": "5m",
+            "interval": "1m",
             "tolerance": 50,
             "idle_timeout": "30m",
             "interrupt_exist_connections": false,

@@ -37,7 +37,7 @@ const REMOTE_DNS_POOL: [&str; 2] = ["https://1.1.1.1/dns-query", "https://8.8.8.
 /// classification). 114DNS backs up AliDNS.
 const DOMESTIC_DNS_POOL: [&str; 2] = ["223.5.5.5", "114.114.114.114"];
 /// meow url-test probe defaults.
-const PROBE_INTERVAL_SECS: u64 = 300;
+const PROBE_INTERVAL_SECS: u64 = 60;
 const PROBE_TOLERANCE_MS: u32 = 50;
 
 #[derive(Debug)]
