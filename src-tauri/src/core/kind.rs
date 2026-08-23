@@ -1,14 +1,17 @@
-//! Core kind descriptor — everything that differs between sing-box and Xray
-//! at the process-management level (binary name, release asset naming, CLI
-//! arguments, version output, spawn environment). Config generation lives
-//! separately: `config/builder.rs` (sing-box) and `config/xray.rs` (Xray).
+//! Core kind descriptor — everything that differs between sing-box, Xray and
+//! meow at the process-management level (binary name, release asset naming,
+//! CLI arguments, version output, spawn environment). Config generation lives
+//! separately: `config/builder.rs` (sing-box), `config/xray.rs` (Xray) and
+//! `config/meow.rs` (meow, Clash YAML).
 
 use crate::domain::Protocol;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreKind {
     SingBox,
     Xray,
+    Meow,
 }
 
 impl CoreKind {
@@ -28,6 +31,13 @@ impl CoreKind {
                     "xray"
                 }
             }
+            Self::Meow => {
+                if cfg!(windows) {
+                    "meow.exe"
+                } else {
+                    "meow"
+                }
+            }
         }
     }
 
@@ -35,6 +45,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "sing-box",
             Self::Xray => "Xray",
+            Self::Meow => "meow",
         }
     }
 
@@ -43,12 +54,14 @@ impl CoreKind {
         match self {
             Self::SingBox => "singbox",
             Self::Xray => "xray",
+            Self::Meow => "meow",
         }
     }
 
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "xray" => Self::Xray,
+            "meow" => Self::Meow,
             _ => Self::SingBox,
         }
     }
@@ -58,6 +71,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "SagerNet/sing-box",
             Self::Xray => "XTLS/Xray-core",
+            Self::Meow => "madeye/meow-rs",
         }
     }
 
@@ -66,12 +80,14 @@ impl CoreKind {
         match self {
             Self::SingBox => "v1.13.15",
             Self::Xray => "v26.3.27",
+            Self::Meow => "v0.21.0",
         }
     }
 
-    /// Release asset name for a platform. Note the naming schemes differ:
+    /// Release asset name for a platform. The naming schemes all differ:
     /// sing-box `sing-box-{ver}-darwin-arm64.tar.gz`, Xray
-    /// `Xray-macos-arm64-v8a.zip` (no version in the name, `64` not `amd64`).
+    /// `Xray-macos-arm64-v8a.zip` (no version, `64` not `amd64`), meow
+    /// `meow-v{ver}-aarch64-apple-darwin.tar.gz` (Rust target triples).
     pub fn asset_name(self, version: &str, platform_suffix: &str, is_windows: bool) -> String {
         let ver_num = version.trim_start_matches('v');
         match self {
@@ -80,6 +96,10 @@ impl CoreKind {
                 format!("sing-box-{ver_num}-{platform_suffix}.{ext}")
             }
             Self::Xray => format!("Xray-{platform_suffix}.zip"),
+            Self::Meow => {
+                let ext = if is_windows { "zip" } else { "tar.gz" };
+                format!("meow-v{ver_num}-{platform_suffix}.{ext}")
+            }
         }
     }
 
@@ -88,12 +108,14 @@ impl CoreKind {
         match self {
             Self::SingBox => &["version"],
             Self::Xray => &["-version"],
+            Self::Meow => &["-v"],
         }
     }
 
     /// Extract the version from `version_args` output. sing-box prints
     /// `sing-box version 1.13.15 (...)`; Xray prints
-    /// `Xray 26.3.27 (Custom) ... (go1.24 ...)`.
+    /// `Xray 26.3.27 (Custom) ... (go1.24 ...)`; meow prints
+    /// `Meow Meta 0.21.0` (mihomo `-v` compatibility).
     pub fn parse_version_output(self, out: &str) -> Option<String> {
         for line in out.lines() {
             let line = line.trim();
@@ -111,6 +133,11 @@ impl CoreKind {
                         return Some(rest.split_whitespace().next()?.to_string());
                     }
                 }
+                Self::Meow => {
+                    if let Some(rest) = line.strip_prefix("Meow Meta ") {
+                        return Some(rest.split_whitespace().next()?.to_string());
+                    }
+                }
             }
             // Fallback: first token that starts with a digit.
             if let Some(token) = line
@@ -124,19 +151,41 @@ impl CoreKind {
         None
     }
 
-    /// CLI arguments that validate a config file without starting the server.
-    /// sing-box: `check -c <file>`; Xray: `run -test -c <file>`.
-    pub fn check_args(self) -> &'static [&'static str] {
+    /// Full CLI argument vector that validates `config` without starting the
+    /// server. sing-box: `check -c <file>`; Xray: `run -test -c <file>`;
+    /// meow: `-t -f <file> -d <home>` (the home dir hosts its geodata, and
+    /// relative config paths resolve against it, so both are absolute here).
+    pub fn check_command_args(self, config: &Path) -> Vec<String> {
+        let config = config.display().to_string();
         match self {
-            Self::SingBox => &["check", "-c"],
-            Self::Xray => &["run", "-test", "-c"],
+            Self::SingBox => vec!["check".into(), "-c".into(), config],
+            Self::Xray => vec![
+                "run".into(),
+                "-test".into(),
+                "-c".into(),
+                config,
+            ],
+            Self::Meow => {
+                let mut args = vec!["-t".into(), "-f".into(), config.clone()];
+                args.extend(meow_home_args(&config));
+                args
+            }
         }
     }
 
-    /// CLI arguments that run the core with a config file.
-    pub fn run_args(self) -> &'static [&'static str] {
-        // Both cores happen to use `run -c <file>`.
-        &["run", "-c"]
+    /// Full CLI argument vector that runs the core with `config`. sing-box
+    /// and Xray: `run -c <file>`; meow: `-f <file> -d <home>` — meow has no
+    /// `run` subcommand, the config alone starts the server.
+    pub fn run_command_args(self, config: &Path) -> Vec<String> {
+        let config = config.display().to_string();
+        match self {
+            Self::SingBox | Self::Xray => vec!["run".into(), "-c".into(), config],
+            Self::Meow => {
+                let mut args = vec!["-f".into(), config.clone()];
+                args.extend(meow_home_args(&config));
+                args
+            }
+        }
     }
 
     /// Infer the kind from a binary path's file stem (e.g. the Windows
@@ -149,12 +198,16 @@ impl CoreKind {
             .as_deref()
         {
             Some("xray") => Self::Xray,
+            Some("meow") => Self::Meow,
             _ => Self::SingBox,
         }
     }
 
     /// Environment variables the child process needs. Xray resolves
-    /// geosite.dat / geoip.dat (and TLS certs) relative to `bin_dir`.
+    /// geosite.dat / geoip.dat (and TLS certs) relative to `bin_dir`; meow
+    /// loads its bundled wintun.dll (Windows tun) from `bin/meow-wintun.dll`
+    /// — kept beside the binary under a meow-specific name so it never
+    /// collides with Xray's own `bin/wintun.dll`.
     pub fn spawn_env(self, bin_dir: &std::path::Path) -> Vec<(String, String)> {
         match self {
             Self::SingBox => Vec::new(),
@@ -165,6 +218,17 @@ impl CoreKind {
                     ("XRAY_LOCATION_CERT".into(), dir),
                 ]
             }
+            Self::Meow => {
+                let dll = bin_dir.join("meow-wintun.dll");
+                if cfg!(windows) && dll.is_file() {
+                    vec![(
+                        "MEOW_WINTUN_DLL".into(),
+                        dll.display().to_string(),
+                    )]
+                } else {
+                    Vec::new()
+                }
+            }
         }
     }
 
@@ -173,28 +237,46 @@ impl CoreKind {
         match self {
             Self::SingBox => "sing-box",
             Self::Xray => "xray",
+            Self::Meow => "meow",
         }
     }
 
     /// Version file name inside the app-data `bin/` directory. sing-box keeps
-    /// the historical `version.txt`; Xray uses a prefixed name so the two
-    /// cores can coexist without clobbering each other's metadata.
+    /// the historical `version.txt`; the other cores use prefixed names so
+    /// all three can coexist without clobbering each other's metadata.
     pub fn version_file_name(self) -> &'static str {
         match self {
             Self::SingBox => "version.txt",
             Self::Xray => "xray-version.txt",
+            Self::Meow => "meow-version.txt",
         }
     }
 
-    /// Whether this core can serve the given outbound protocol. Xray lacks
-    /// hysteria(2)/tuic/anytls/snell/shadowtls/ssh/naive/tor (delegates to
-    /// `Protocol::xray_supported` — the single source of truth).
+    /// Whether this core can serve the given outbound protocol. Xray and meow
+    /// each delegate to their `Protocol::*_supported` counterpart — the
+    /// single source of truth lives on the protocol enum.
     pub fn supports(self, protocol: Protocol) -> bool {
         match self {
             Self::SingBox => true,
             Self::Xray => protocol.xray_supported(),
+            Self::Meow => protocol.meow_supported(),
         }
     }
+}
+
+/// `-d <home>` argument pair for meow. The home dir is derived from the
+/// config location: active.yaml lives in `<app_data>/config/`, so the meow
+/// home (holding `Country.mmdb` + `geosite.dat`, see `core::assets`) is the
+/// sibling directory `<app_data>/meow/`. Keeping it separate from `bin/` is
+/// deliberate — meow's `geosite.dat` is MetaCubeX .mrs format and would
+/// collide with Xray's v2ray-format `bin/geosite.dat` of the same name.
+fn meow_home_args(config: &str) -> Vec<String> {
+    let home = Path::new(config)
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("meow"))
+        .unwrap_or_else(|| Path::new("meow").to_path_buf());
+    vec!["-d".into(), home.display().to_string()]
 }
 
 #[cfg(test)]
@@ -214,6 +296,12 @@ mod tests {
                 .parse_version_output("Xray 26.3.27 (Custom) 1234560 (go1.24)\n")
                 .as_deref(),
             Some("26.3.27")
+        );
+        assert_eq!(
+            CoreKind::Meow
+                .parse_version_output("Meow Meta 0.21.0\n")
+                .as_deref(),
+            Some("0.21.0")
         );
         // Fallback: first digit-leading token.
         assert_eq!(
@@ -243,6 +331,64 @@ mod tests {
             CoreKind::Xray.asset_name("26.3.27", "macos-arm64-v8a", false),
             "Xray-macos-arm64-v8a.zip"
         );
+        assert_eq!(
+            CoreKind::Meow.asset_name("0.21.0", "x86_64-pc-windows-msvc", true),
+            "meow-v0.21.0-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            CoreKind::Meow.asset_name("0.21.0", "aarch64-apple-darwin", false),
+            "meow-v0.21.0-aarch64-apple-darwin.tar.gz"
+        );
+    }
+
+    #[test]
+    fn meow_command_args_include_home_dir() {
+        let config = Path::new("/data/config/active.yaml");
+        let expect_args = |mut head: Vec<String>, config: &str| {
+            head.push("-f".into());
+            head.push(config.to_string());
+            head.push("-d".into());
+            head.push(
+                Path::new(config)
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map(|root| root.join("meow"))
+                    .unwrap_or_else(|| Path::new("meow").to_path_buf())
+                    .display()
+                    .to_string(),
+            );
+            head
+        };
+        let cfg = "/data/config/active.yaml";
+        assert_eq!(
+            CoreKind::Meow.check_command_args(config),
+            expect_args(vec!["-t".into()], cfg)
+        );
+        assert_eq!(
+            CoreKind::Meow.run_command_args(config),
+            expect_args(vec![], cfg)
+        );
+        // JSON cores keep the historical shape.
+        assert_eq!(
+            CoreKind::SingBox.check_command_args(config),
+            ["check", "-c", "/data/config/active.yaml"]
+                .map(String::from)
+        );
+        assert_eq!(
+            CoreKind::Xray.check_command_args(config),
+            ["run", "-test", "-c", "/data/config/active.yaml"]
+                .map(String::from)
+        );
+        assert_eq!(
+            CoreKind::SingBox.run_command_args(config),
+            ["run", "-c", "/data/config/active.yaml"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn meow_home_falls_back_for_relative_config() {
+        let args = meow_home_args("active.yaml");
+        assert_eq!(args, vec!["-d".to_string(), "meow".to_string()]);
     }
 
     #[test]
@@ -253,13 +399,22 @@ mod tests {
         assert!(!CoreKind::Xray.supports(Protocol::Hysteria2));
         assert!(!CoreKind::Xray.supports(Protocol::Tuic));
         assert!(CoreKind::SingBox.supports(Protocol::Hysteria2));
+        // meow: Clash-family protocols only.
+        assert!(CoreKind::Meow.supports(Protocol::Hysteria2));
+        assert!(CoreKind::Meow.supports(Protocol::AnyTls));
+        assert!(CoreKind::Meow.supports(Protocol::Snell));
+        assert!(!CoreKind::Meow.supports(Protocol::Tuic));
+        assert!(!CoreKind::Meow.supports(Protocol::WireGuard));
+        assert!(!CoreKind::Meow.supports(Protocol::Hysteria));
     }
 
     #[test]
     fn settings_roundtrip() {
         assert_eq!(CoreKind::parse("xray"), CoreKind::Xray);
+        assert_eq!(CoreKind::parse("meow"), CoreKind::Meow);
         assert_eq!(CoreKind::parse("singbox"), CoreKind::SingBox);
         assert_eq!(CoreKind::parse("garbage"), CoreKind::SingBox);
         assert_eq!(CoreKind::Xray.as_str(), "xray");
+        assert_eq!(CoreKind::Meow.as_str(), "meow");
     }
 }

@@ -229,10 +229,12 @@ fn pick_asset(
     let expected = kind.asset_name(&version, suffix, platform.is_windows);
     let ext = if platform.is_windows { "zip" } else { "tar.gz" };
     // sing-box assets embed the version (`sing-box-1.13.15-darwin-arm64.tar.gz`);
-    // Xray assets don't (`Xray-macos-arm64-v8a.zip`).
+    // Xray assets don't (`Xray-macos-arm64-v8a.zip`); meow embeds it too
+    // (`meow-v0.21.0-aarch64-apple-darwin.tar.gz`).
     let prefix = match kind {
         CoreKind::SingBox => format!("sing-box-{}", version.trim_start_matches('v')),
         CoreKind::Xray => "Xray-".to_string(),
+        CoreKind::Meow => format!("meow-v{}", version.trim_start_matches('v')),
     };
 
     let asset = release
@@ -619,6 +621,7 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
     let want = kind.binary_name();
     let mut target_index = None;
     let mut dat_indexes = Vec::new();
+    let mut wintun_index = None;
     for i in 0..zip.len() {
         let entry = zip
             .by_index(i)
@@ -633,6 +636,12 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
         } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat")
         {
             dat_indexes.push((i, file_name.to_string()));
+        } else if kind == CoreKind::Meow && file_name == "wintun.dll" {
+            // meow zips ship wintun.dll beside the binary (Windows tun). It is
+            // staged under a meow-specific name so it never clobbers Xray's
+            // own `bin/wintun.dll`; `CoreKind::spawn_env` points meow at it
+            // via MEOW_WINTUN_DLL.
+            wintun_index = Some(i);
         }
     }
     let idx = target_index.ok_or_else(|| {
@@ -668,6 +677,22 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
                 .map_err(|e| AppError::Core(format!("extract {file_name}: {e}")))?;
         }
     }
+
+    if let Some(i) = wintun_index {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
+        let target = bin_dir.join("meow-wintun.dll");
+        let needs_copy = std::fs::metadata(&target)
+            .map(|m| m.len() != entry.size())
+            .unwrap_or(true);
+        if needs_copy {
+            let mut out = File::create(&target)
+                .map_err(|e| AppError::Core(format!("create meow-wintun.dll: {e}")))?;
+            io::copy(&mut entry, &mut out)
+                .map_err(|e| AppError::Core(format!("extract meow-wintun.dll: {e}")))?;
+        }
+    }
     Ok(())
 }
 
@@ -691,6 +716,7 @@ mod tests {
         let p = detect_platform().expect("platform");
         assert!(!p.asset_suffix.is_empty());
         assert!(!p.xray_asset_suffix.is_empty());
+        assert!(!p.meow_asset_suffix.is_empty());
     }
 
     #[test]

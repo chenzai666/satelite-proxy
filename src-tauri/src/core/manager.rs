@@ -175,7 +175,7 @@ impl CoreManager {
 
     pub fn check_config(kind: CoreKind, binary: &Path, config: &Path) -> AppResult<()> {
         let mut cmd = Command::new(binary);
-        cmd.args(kind.check_args()).arg(config);
+        cmd.args(kind.check_command_args(config));
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let out = cmd
@@ -399,7 +399,7 @@ impl CoreManager {
         }
 
         let mut cmd = Command::new(binary);
-        cmd.args(kind.run_args()).arg(config);
+        cmd.args(kind.run_command_args(config));
         // sing-box writes cache.db (fakeip/rule-set cache) relative to its cwd.
         // GUI apps launched from Finder/Dock inherit cwd "/" (read-only), which
         // makes cache_file init FATAL as soon as it's enabled. Anchor cwd to the
@@ -662,8 +662,7 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     }
     let mut command = Command::new(&binary);
     command
-        .args(kind.run_args())
-        .arg(&config)
+        .args(kind.run_command_args(&config))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);

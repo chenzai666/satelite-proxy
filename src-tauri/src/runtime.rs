@@ -689,6 +689,14 @@ impl Runtime {
                     enable_system_proxy,
                 )
             }
+            CoreKind::Meow => {
+                return self.start_meow_proxy(
+                    app_data_dir,
+                    resource_dir,
+                    store,
+                    enable_system_proxy,
+                )
+            }
             CoreKind::SingBox => {}
         }
 
@@ -978,6 +986,23 @@ impl Runtime {
         }
 
         Ok(self.status(store))
+    }
+
+    /// Generate a Clash YAML config and start the meow core. Full
+    /// implementation lands with `config::meow`; placeholder keeps the
+    /// `CoreKind::Meow` arm of `start_proxy` exhaustive.
+    fn start_meow_proxy(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        let _ = (app_data_dir, resource_dir, enable_system_proxy);
+        let _ = store;
+        Err(AppError::Core(
+            "meow core is not wired up yet (config generator pending)".into(),
+        ))
     }
 
     fn start_custom_proxy(

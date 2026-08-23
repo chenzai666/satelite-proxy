@@ -95,6 +95,28 @@ impl Protocol {
                 | Self::WireGuard
         )
     }
+
+    /// Whether the meow core (mihomo/Clash Meta in Rust) can serve this
+    /// protocol as an outbound. meow covers the Clash family: SS / VMess /
+    /// VLESS (incl. Vision + REALITY) / Trojan / Hysteria2 / AnyTLS / Snell /
+    /// SOCKS5 / HTTP — but not TUIC, Hysteria v1, ShadowTLS, SSH, Naive, Tor
+    /// or WireGuard. (VMess additionally only accepts tcp/ws transports;
+    /// that is a per-node generation-time check in `config/meow.rs`, not a
+    /// protocol-level exclusion.)
+    pub fn meow_supported(self) -> bool {
+        matches!(
+            self,
+            Self::Shadowsocks
+                | Self::Vmess
+                | Self::Vless
+                | Self::Trojan
+                | Self::Hysteria2
+                | Self::Socks5
+                | Self::Http
+                | Self::AnyTls
+                | Self::Snell
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -15,6 +15,8 @@ pub struct CorePlatform {
     pub asset_suffix: &'static str,
     /// Xray release asset suffix, e.g. macos-arm64-v8a, windows-64
     pub xray_asset_suffix: &'static str,
+    /// meow release asset suffix (Rust target triples), e.g. aarch64-apple-darwin
+    pub meow_asset_suffix: &'static str,
     pub is_windows: bool,
 }
 
@@ -24,6 +26,7 @@ impl CorePlatform {
         match kind {
             CoreKind::SingBox => self.asset_suffix,
             CoreKind::Xray => self.xray_asset_suffix,
+            CoreKind::Meow => self.meow_asset_suffix,
         }
     }
 }
@@ -41,13 +44,27 @@ pub enum CoreSource {
 pub fn detect_platform() -> AppResult<CorePlatform> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let (suffix, xray_suffix, is_windows) = match (os, arch) {
-        ("macos", "aarch64") => ("darwin-arm64", "macos-arm64-v8a", false),
-        ("macos", "x86_64") => ("darwin-amd64", "macos-64", false),
-        ("linux", "aarch64") => ("linux-arm64", "linux-arm64-v8a", false),
-        ("linux", "x86_64") => ("linux-amd64", "linux-64", false),
-        ("windows", "x86_64") => ("windows-amd64", "windows-64", true),
-        ("windows", "aarch64") => ("windows-arm64", "windows-arm64-v8a", true),
+    let (suffix, xray_suffix, meow_suffix, is_windows) = match (os, arch) {
+        ("macos", "aarch64") => ("darwin-arm64", "macos-arm64-v8a", "aarch64-apple-darwin", false),
+        ("macos", "x86_64") => ("darwin-amd64", "macos-64", "x86_64-apple-darwin", false),
+        ("linux", "aarch64") => {
+            ("linux-arm64", "linux-arm64-v8a", "aarch64-unknown-linux-gnu", false)
+        }
+        ("linux", "x86_64") => {
+            ("linux-amd64", "linux-64", "x86_64-unknown-linux-gnu", false)
+        }
+        ("windows", "x86_64") => (
+            "windows-amd64",
+            "windows-64",
+            "x86_64-pc-windows-msvc",
+            true,
+        ),
+        ("windows", "aarch64") => (
+            "windows-arm64",
+            "windows-arm64-v8a",
+            "aarch64-pc-windows-msvc",
+            true,
+        ),
         _ => {
             return Err(AppError::Core(format!("unsupported platform: {os}/{arch}")));
         }
@@ -55,12 +72,21 @@ pub fn detect_platform() -> AppResult<CorePlatform> {
     Ok(CorePlatform {
         asset_suffix: suffix,
         xray_asset_suffix: xray_suffix,
+        meow_asset_suffix: meow_suffix,
         is_windows,
     })
 }
 
 pub fn core_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("bin")
+}
+
+/// meow home directory (`-d`): hosts its `Country.mmdb` + `geosite.dat`
+/// geodata. Kept separate from `bin/` because meow's `geosite.dat` is
+/// MetaCubeX .mrs format and would collide with Xray's v2ray-format
+/// `bin/geosite.dat` of the same name.
+pub fn meow_home_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("meow")
 }
 
 /// User-managed binary path (download / update target).
@@ -198,6 +224,27 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path, kind: CoreKind) -> Ap
                     }
                 }
             }
+        }
+    }
+    // meow: stage its sidecar wintun.dll under a meow-specific name (Xray
+    // owns `bin/wintun.dll`) and stage the bundled geodata pair
+    // (`meow-geodata/Country.mmdb` + `geosite.dat`) into the meow home dir.
+    if kind == CoreKind::Meow {
+        if let Some(parent) = bundled.parent() {
+            #[cfg(target_os = "windows")]
+            {
+                let src = parent.join("meow-wintun.dll");
+                if src.is_file() {
+                    let target = core_dir(app_data_dir).join("meow-wintun.dll");
+                    if !target.is_file() {
+                        let _ = std::fs::copy(&src, &target);
+                    }
+                }
+            }
+            let _ = super::assets::stage_bundled_meow_geodata_from(
+                app_data_dir,
+                &parent.join("meow-geodata"),
+            );
         }
     }
     Ok(dest)
@@ -364,8 +411,11 @@ mod tests {
         let app_data = root.join("app-data");
         let resources = root.join("resources-root");
         let platform = detect_platform().expect("supported test platform");
-        for kind in [CoreKind::SingBox, CoreKind::Xray] {
-            let bundled_dir = resources.join("bin").join(platform.asset_suffix_for(kind));
+        for kind in [CoreKind::SingBox, CoreKind::Xray, CoreKind::Meow] {
+            // Bundled layout uses the shared sing-box-style platform directory
+            // for every core kind (`bundled_core_candidates`); the per-kind
+            // `asset_suffix_for` naming only applies to GitHub release assets.
+            let bundled_dir = resources.join("bin").join(platform.asset_suffix);
             std::fs::create_dir_all(&bundled_dir).expect("create fake resource directory");
             std::fs::write(bundled_dir.join(kind.binary_name()), b"fake-core")
                 .expect("write fake bundled core");
