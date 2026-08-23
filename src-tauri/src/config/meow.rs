@@ -55,35 +55,31 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     let mut skipped: Vec<String> = Vec::new();
     let mut supported: Vec<ProxyNode> = Vec::new();
     for node in nodes {
-        if !CoreKind::Meow.supports(node.protocol) {
-            skipped.push(format!(
-                "{}: meow 不支持 {} 协议",
-                node.name,
-                node.protocol.as_str()
-            ));
-            continue;
-        }
-        // meow's VMess only accepts tcp/ws transports (everything else fails
-        // proxy parsing at load time) — skip such nodes here with a clear
-        // reason instead, mirroring the Xray reality+ws skip.
-        if node.protocol == Protocol::Vmess
-            && !matches!(
-                node.transport,
-                None | Some(Transport::Tcp) | Some(Transport::Ws { .. })
-            )
-        {
-            skipped.push(format!("{}: meow 的 vmess 仅支持 tcp/ws 传输", node.name));
-            continue;
-        }
-        // SS + shadow-tls detour is a sing-box-specific outbound shape.
-        if matches!(
-            &node.config,
-            ProtocolConfig::Shadowsocks {
-                shadow_tls: Some(_),
-                ..
-            }
-        ) {
-            skipped.push(format!("{}: meow 不支持 shadow-tls 插件", node.name));
+        // All meow node-level exclusions live in CoreKind::supports_node:
+        // unsupported protocols, REALITY (strict servers black-hole meow's
+        // fingerprint-less ClientHello), vmess on non-tcp/ws transports,
+        // ss + shadow-tls. Keep the human-readable reason per class here.
+        if !CoreKind::Meow.supports_node(node) {
+            let reason = if !CoreKind::Meow.supports(node.protocol) {
+                format!("meow 不支持 {} 协议", node.protocol.as_str())
+            } else if node
+                .tls
+                .as_ref()
+                .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some())
+            {
+                "meow 的 REALITY 握手不兼容（忽略 client-fingerprint，严格服务端会黑洞）"
+                    .to_string()
+            } else if node.protocol == Protocol::Vmess
+                && !matches!(
+                    node.transport,
+                    None | Some(Transport::Tcp) | Some(Transport::Ws { .. })
+                )
+            {
+                "meow 的 vmess 仅支持 tcp/ws 传输".to_string()
+            } else {
+                "meow 不支持 shadow-tls 插件".to_string()
+            };
+            skipped.push(format!("{}: {reason}", node.name));
             continue;
         }
         supported.push(node.clone());
@@ -93,7 +89,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     }
     if supported.is_empty() {
         return Err(AppError::Config(
-            "no meow-compatible nodes (supports ss/vmess/vless/trojan/hysteria2/anytls/snell/socks5/http)"
+            "no meow-compatible nodes (supports ss/vmess/vless(non-reality)/trojan/hysteria2/anytls/snell/socks5/http)"
                 .into(),
         ));
     }
@@ -1015,6 +1011,18 @@ mod tests {
         .with_computed_id()
     }
 
+    /** Non-REALITY vless node — the shape meow accepts (vless_node carries
+     * REALITY, which meow filters out since the handshake incompatibility). */
+    fn plain_node(name: &str) -> ProxyNode {
+        let mut n = vless_node(name, None);
+        n.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("sni.example.com".into()),
+            ..Default::default()
+        });
+        n
+    }
+
     fn ss_node(name: &str) -> ProxyNode {
         ProxyNode {
             id: String::new(),
@@ -1113,18 +1121,22 @@ mod tests {
 
     #[test]
     fn vless_reality_flow_shape() {
-        let nodes = vec![vless_node("vision", Some("xtls-rprx-vision"))];
-        let built = build_meow_config(&nodes, &default_opts()).expect("build");
+        // REALITY is filtered out of meow configs (strict servers black-hole
+        // meow's fingerprint-less ClientHello) — the node is skipped, and a
+        // plain vless node still maps with its tls/sni fields.
+        let reality = vless_node("vision", Some("xtls-rprx-vision"));
+        let fallback = plain_node("plain");
+        let built = build_meow_config(&[reality, fallback], &default_opts()).expect("build");
+        assert_eq!(built.outbound_tags.len(), 1, "reality node must be skipped");
         let doc = parse(&built);
+        assert_eq!(doc["proxies"].as_sequence().map(|p| p.len()), Some(1));
         let proxy = &doc["proxies"][0];
         assert_eq!(proxy["type"].as_str(), Some("vless"));
         assert_eq!(proxy["uuid"].as_str(), Some("uuid-1"));
-        assert_eq!(proxy["flow"].as_str(), Some("xtls-rprx-vision"));
         assert_eq!(proxy["tls"].as_bool(), Some(true));
         assert_eq!(proxy["servername"].as_str(), Some("sni.example.com"));
-        assert_eq!(proxy["client-fingerprint"].as_str(), Some("chrome"));
-        assert_eq!(proxy["reality-opts"]["public-key"].as_str(), Some("pbk"));
-        assert_eq!(proxy["reality-opts"]["short-id"].as_str(), Some("abcd0123"));
+        // Only-reality nodes hard-error (same class as unsupported protocols).
+        assert!(build_meow_config(&[vless_node("only-reality", None)], &default_opts()).is_err());
     }
 
     #[test]
@@ -1311,8 +1323,8 @@ mod tests {
 
     #[test]
     fn kernel_autoselect_uses_urltest_group() {
-        let a = vless_node("a", None);
-        let b = vless_node("b", None);
+        let a = plain_node("a");
+        let b = plain_node("b");
         let mut opts = default_opts();
         opts.auto_select = AutoSelectMode::Kernel;
         let built = build_meow_config(&[a, b], &opts).expect("build");
@@ -1335,8 +1347,8 @@ mod tests {
 
     #[test]
     fn per_rule_node_pin_routes_to_that_node() {
-        let a = vless_node("nodeA", None);
-        let b = vless_node("nodeB", None);
+        let a = plain_node("nodeA");
+        let b = plain_node("nodeB");
         let mut rule = Rule::new(
             RuleType::DomainSuffix,
             "aa.com".into(),
@@ -1358,8 +1370,8 @@ mod tests {
 
     #[test]
     fn whole_set_node_strategy_pins_all_rules() {
-        let a = vless_node("nodeA", None);
-        let b = vless_node("nodeB", None);
+        let a = plain_node("nodeA");
+        let b = plain_node("nodeB");
         let mut rule = Rule::new(
             RuleType::DomainSuffix,
             "aa.com".into(),
@@ -1382,8 +1394,8 @@ mod tests {
 
     #[test]
     fn filter_set_routes_through_keyword_pool_group() {
-        let a = vless_node("香港-01", None);
-        let b = vless_node("美国-01", None);
+        let a = plain_node("香港-01");
+        let b = plain_node("美国-01");
         let rule = Rule::new(
             RuleType::DomainSuffix,
             "stream.tv".into(),
@@ -1419,8 +1431,8 @@ mod tests {
 
     #[test]
     fn per_rule_smart_pool_routes_through_own_group() {
-        let a = vless_node("香港-01", None);
-        let b = vless_node("美国-01", None);
+        let a = plain_node("香港-01");
+        let b = plain_node("美国-01");
         let mut rule = Rule::new(
             RuleType::DomainKeyword,
             "github".into(),
@@ -1450,7 +1462,7 @@ mod tests {
 
     #[test]
     fn rule_type_matchers_and_targets() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut set = RuleSet::new_user(
             "multi",
             vec![
@@ -1483,7 +1495,7 @@ mod tests {
 
     #[test]
     fn builtin_remote_sets_map_to_geodata() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut sets = Vec::new();
         for id in [
             "system-geosite-cn",
@@ -1510,7 +1522,7 @@ mod tests {
 
     #[test]
     fn bypass_lan_and_block_quic_rules() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut opts = default_opts();
         opts.bypass_lan = true;
         opts.block_quic = true;
@@ -1529,7 +1541,7 @@ mod tests {
 
     #[test]
     fn outbound_modes_decide_final() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut set = RuleSet::new_user(
             "s",
             vec![Rule::new(
@@ -1567,7 +1579,7 @@ mod tests {
 
     #[test]
     fn tun_block_forces_fakeip() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut opts = default_opts();
         opts.tun_enabled = true;
         opts.dns.fake_ip.enabled = false; // tun must force it anyway
@@ -1582,7 +1594,7 @@ mod tests {
 
     #[test]
     fn dns_split_policy_and_hosts() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut opts = default_opts();
         opts.dns.dns_final = "remote".into();
         opts.dns.hosts.enabled = true;
@@ -1641,7 +1653,7 @@ mod tests {
         // drops the proxy-egress tag there.
         let mut opts = opts;
         opts.outbound_mode = OutboundMode::Direct;
-        let built = build_meow_config(&[vless_node("n2", None)], &opts).expect("build");
+        let built = build_meow_config(&[plain_node("n2")], &opts).expect("build");
         let direct = parse(&built);
         let nameserver = direct["dns"]["nameserver"].as_sequence().unwrap();
         assert_eq!(nameserver[0].as_str(), Some("https://1.1.1.1/dns-query"));
@@ -1654,7 +1666,7 @@ mod tests {
     /// dns_final must land on the plain-UDP domestic resolver instead.
     #[test]
     fn dns_never_emits_system_resolver() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut opts = default_opts();
         // Local-classified DNS rule + a set with dns_strategy Local.
         opts.dns.rules_enabled = true;
@@ -1700,7 +1712,7 @@ mod tests {
 
     #[test]
     fn extra_inbounds_become_listeners() {
-        let node = vless_node("n1", None);
+        let node = plain_node("n1");
         let mut opts = default_opts();
         opts.extra_inbounds = vec![crate::domain::ExtraInbound {
             id: "x1".into(),
@@ -1725,7 +1737,7 @@ mod tests {
     fn live_config_validates() {
         let bin = crate::core::find_bundled_core(None, CoreKind::Meow)
             .expect("bundled meow binary — run the fetch-bundled-meow script");
-        let mut node = vless_node("live", Some("xtls-rprx-vision"));
+        let mut node = plain_node("live");
         node.server = "127.0.0.1".into();
         node.tls = Some(TlsConfig {
             enabled: true,

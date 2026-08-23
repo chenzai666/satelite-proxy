@@ -254,6 +254,51 @@ impl CoreKind {
             Self::Meow => protocol.meow_supported(),
         }
     }
+
+    /// Whether this core can serve the NODE as a whole — protocol plus the
+    /// per-node shapes a core cannot represent. sing-box serves everything;
+    /// meow additionally rejects:
+    /// - REALITY (any protocol): meow's REALITY client hand-rolls a minimal
+    ///   ClientHello and ignores `client-fingerprint` (boring-tls/uTLS only
+    ///   covers its plain-TLS path), so strict REALITY servers black-hole
+    ///   the handshake ("Reality TLS: handshake did not complete within
+    ///   10s" — verified against a node that returns 204 through sing-box
+    ///   with the same parameters);
+    /// - vmess on non-tcp/ws transports (meow parser rejects them);
+    /// - ss + shadow-tls (a sing-box-only outbound detour shape).
+    pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
+        if !self.supports(node.protocol) {
+            return false;
+        }
+        if self == Self::Meow {
+            let reality = node
+                .tls
+                .as_ref()
+                .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some());
+            if reality {
+                return false;
+            }
+            if node.protocol == Protocol::Vmess
+                && !matches!(
+                    node.transport,
+                    None | Some(crate::domain::Transport::Tcp)
+                        | Some(crate::domain::Transport::Ws { .. })
+                )
+            {
+                return false;
+            }
+            if matches!(
+                &node.config,
+                crate::domain::ProtocolConfig::Shadowsocks {
+                    shadow_tls: Some(_),
+                    ..
+                }
+            ) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// `-d <home>` argument pair for meow. The home dir is derived from the
@@ -396,6 +441,100 @@ mod tests {
         assert!(!CoreKind::Meow.supports(Protocol::Tuic));
         assert!(!CoreKind::Meow.supports(Protocol::WireGuard));
         assert!(!CoreKind::Meow.supports(Protocol::Hysteria));
+    }
+
+    #[test]
+    fn meow_node_level_support_matrix() {
+        use crate::domain::{ProtocolConfig, ProxyNode, TlsConfig, Transport};
+
+        fn node(
+            protocol: Protocol,
+            tls: Option<TlsConfig>,
+            transport: Option<Transport>,
+        ) -> ProxyNode {
+            ProxyNode {
+                id: String::new(),
+                name: "n".into(),
+                protocol,
+                server: "example.com".into(),
+                port: 443,
+                tls,
+                transport,
+                udp: None,
+                config: match protocol {
+                    Protocol::Vmess => ProtocolConfig::Vmess {
+                        uuid: "u".into(),
+                        alter_id: 0,
+                        security: "auto".into(),
+                    },
+                    _ => ProtocolConfig::Shadowsocks {
+                        method: "aes-256-gcm".into(),
+                        password: "pw".into(),
+                        plugin: None,
+                        plugin_opts: None,
+                        shadow_tls: None,
+                    },
+                },
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            }
+            .with_computed_id()
+        }
+
+        let reality = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("www.microsoft.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: None,
+            reality_public_key: Some("pk".into()),
+            reality_short_id: Some("abcd".into()),
+        });
+        let plain_tls = Some(TlsConfig {
+            enabled: true,
+            ..Default::default()
+        });
+
+        // meow rejects REALITY regardless of protocol.
+        assert!(!CoreKind::Meow.supports_node(&node(Protocol::Vless, reality.clone(), None)));
+        // Plain-TLS vless is fine.
+        assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, plain_tls.clone(), None)));
+        // vmess: tcp/ws ok, grpc rejected.
+        assert!(CoreKind::Meow.supports_node(&node(
+            Protocol::Vmess,
+            plain_tls.clone(),
+            Some(Transport::Ws {
+                path: None,
+                headers: None,
+                max_early_data: None
+            })
+        )));
+        assert!(!CoreKind::Meow.supports_node(&node(
+            Protocol::Vmess,
+            plain_tls.clone(),
+            Some(Transport::Grpc { service_name: None })
+        )));
+        // ss + shadow-tls detour rejected; plain ss fine.
+        let mut ss_stls = node(Protocol::Shadowsocks, None, None);
+        ss_stls.config = ProtocolConfig::Shadowsocks {
+            method: "aes-256-gcm".into(),
+            password: "pw".into(),
+            plugin: None,
+            plugin_opts: None,
+            shadow_tls: Some(crate::domain::ShadowTlsOpts {
+                host: "h".into(),
+                password: "p".into(),
+                version: 3,
+                fingerprint: None,
+            }),
+        };
+        assert!(!CoreKind::Meow.supports_node(&ss_stls));
+        assert!(CoreKind::Meow.supports_node(&node(Protocol::Shadowsocks, None, None)));
+        // Protocol-level exclusions still apply; sing-box accepts everything.
+        assert!(!CoreKind::Meow.supports_node(&node(Protocol::Tuic, None, None)));
+        assert!(CoreKind::SingBox.supports_node(&node(Protocol::Vless, reality, None)));
+        assert!(CoreKind::SingBox.supports_node(&ss_stls));
     }
 
     #[test]

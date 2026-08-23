@@ -1085,26 +1085,15 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
-            if !core_kind.supports(node.protocol) {
+            // Node-level compatibility (protocol / meow REALITY & vmess
+            // transport limits) lives in CoreKind::supports_node — the same
+            // predicate that filters listings and generation, so a pick can
+            // never desync from what the config actually contains.
+            if !core_kind.supports_node(node) {
                 return Err(crate::error::AppError::Core(format!(
-                    "{} 内核不支持 {} 协议节点，请切换内核或选择其他节点",
-                    core_kind.display_name(),
-                    node.protocol.as_str()
+                    "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
+                    core_kind.display_name()
                 )));
-            }
-            // meow's VMess only accepts tcp/ws transports — the config
-            // generator drops such nodes, so switching to one would desync.
-            if core_kind == crate::core::CoreKind::Meow
-                && node.protocol == crate::domain::Protocol::Vmess
-                && !matches!(
-                    node.transport,
-                    None | Some(crate::domain::Transport::Tcp)
-                        | Some(crate::domain::Transport::Ws { .. })
-                )
-            {
-                return Err(crate::error::AppError::Core(
-                    "meow 内核的 vmess 仅支持 tcp/ws 传输，请选择其他节点".into(),
-                ));
             }
             Ok((
                 crate::config::outbound_tag(node),

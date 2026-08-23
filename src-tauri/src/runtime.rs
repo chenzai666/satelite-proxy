@@ -1015,17 +1015,17 @@ impl Runtime {
         // transports) with a warning — but zero compatible nodes cannot run.
         let supported_count = nodes
             .iter()
-            .filter(|n| CoreKind::Meow.supports(n.protocol))
+            .filter(|n| CoreKind::Meow.supports_node(n))
             .count();
         if supported_count == 0 {
             return Err(AppError::Config(
-                "当前启用的节点均不被 meow 内核支持（支持 ss/vmess/vless/trojan/hysteria2/anytls/snell/socks5/http）。请导入兼容订阅或切换内核".into(),
+                "当前启用的节点均不被 meow 内核支持（支持 ss/vmess/非REALITY的vless/trojan/hysteria2/anytls/snell/socks5/http）。请导入兼容订阅或切换内核".into(),
             ));
         }
         let unsupported: Vec<&str> = {
             let mut kinds: Vec<&str> = nodes
                 .iter()
-                .filter(|n| !CoreKind::Meow.supports(n.protocol))
+                .filter(|n| !CoreKind::Meow.supports_node(n))
                 .map(|n| n.protocol.as_str())
                 .collect();
             kinds.sort_unstable();
@@ -1080,11 +1080,11 @@ impl Runtime {
                 nodes
                     .iter()
                     .find(|n| n.id == id)
-                    .is_some_and(|n| !CoreKind::Meow.supports(n.protocol))
+                    .is_some_and(|n| !CoreKind::Meow.supports_node(n))
             })
             .unwrap_or(true);
         if needs_pick {
-            if let Some(first) = nodes.iter().find(|n| CoreKind::Meow.supports(n.protocol)) {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Meow.supports_node(n)) {
                 store.settings.current_node_id = Some(first.id.clone());
             }
         }

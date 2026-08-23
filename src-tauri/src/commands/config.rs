@@ -386,7 +386,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports(n.node.protocol))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .map(|n| ListedNode {
                     node: n.node.clone(),
                     subscription_id: n.subscription_id.clone(),
@@ -429,7 +429,7 @@ pub fn list_nodes_page(
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports(n.node.protocol))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -501,7 +501,7 @@ pub fn list_node_ids(
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports(n.node.protocol))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
