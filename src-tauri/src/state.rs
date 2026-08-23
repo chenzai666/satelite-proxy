@@ -26,6 +26,10 @@ fn log_proxy_status(action: &str, status: &ProxyStatus) {
     );
 }
 
+fn should_enable_system_proxy(mode: crate::domain::CaptureMode, core_running: bool) -> bool {
+    mode == crate::domain::CaptureMode::System && core_running
+}
+
 #[derive(Default)]
 struct KernelSelectionPoll {
     in_flight: bool,
@@ -121,6 +125,26 @@ mod kernel_selection_poll_tests {
     }
 
     #[test]
+    fn system_capture_waits_until_core_is_running() {
+        assert!(!should_enable_system_proxy(
+            crate::domain::CaptureMode::System,
+            false,
+        ));
+        assert!(should_enable_system_proxy(
+            crate::domain::CaptureMode::System,
+            true,
+        ));
+        assert!(!should_enable_system_proxy(
+            crate::domain::CaptureMode::Off,
+            true,
+        ));
+        assert!(!should_enable_system_proxy(
+            crate::domain::CaptureMode::Tun,
+            true,
+        ));
+    }
+
+    #[test]
     fn kernel_auto_manual_select_skips_live_put_and_flips_mode() {
         let test_dir = std::env::temp_dir().join(format!(
             "satelite-kernel-manual-{}-{}",
@@ -173,8 +197,7 @@ mod kernel_selection_poll_tests {
             .expect("seed kernel mode");
 
         // Nothing listens here: any live PUT would fail, proving it is skipped.
-        state.lock_runtime().api =
-            Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
+        state.lock_runtime().api = Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
 
         let (settings, was_kernel, selected_live) = state
             .select_current_node_serialized("node-a", true, true)
@@ -317,7 +340,10 @@ mod kernel_selection_poll_tests {
             let mut chunk = [0u8; 1024];
             loop {
                 let read = socket.read(&mut chunk).expect("read selector request");
-                assert!(read > 0, "selector request closed before its body completed");
+                assert!(
+                    read > 0,
+                    "selector request closed before its body completed"
+                );
                 request.extend_from_slice(&chunk[..read]);
 
                 let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
@@ -1245,7 +1271,7 @@ impl AppState {
             ));
         }
         let want_tun = mode == crate::domain::CaptureMode::Tun;
-        let want_sys = mode == crate::domain::CaptureMode::System;
+        let want_sys = should_enable_system_proxy(mode, runtime.core.is_running());
         let tun_now = store.settings.tun_enabled;
         let sys_now = runtime.system_proxy_on;
         let previous_mode = store.settings.capture_mode;
@@ -1283,7 +1309,9 @@ impl AppState {
             }
         }
 
-        // 2) System proxy: always align with mode (TUN implies proxy off).
+        // 2) System proxy follows the selected mode only while the managed
+        // core is actually running. Persisting "system" while stopped must
+        // never replace another working proxy with our dead loopback port.
         if runtime.system_proxy_on != want_sys {
             runtime.set_system_proxy(&store, want_sys)?;
         }
