@@ -36,6 +36,10 @@
     "resources": [
       "resources/bin/darwin-arm64/sing-box",
       "resources/bin/darwin-arm64/version.txt",
+      "resources/bin/darwin-arm64/xray",
+      "resources/bin/darwin-arm64/xray-version.txt",
+      "resources/bin/darwin-arm64/geosite.dat",
+      "resources/bin/darwin-arm64/geoip.dat",
       "resources/rule-sets",
       "resources/dns"
     ]

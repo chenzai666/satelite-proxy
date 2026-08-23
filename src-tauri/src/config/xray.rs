@@ -642,6 +642,23 @@ fn build_dns(
 
 fn node_to_xray_outbound(node: &ProxyNode) -> AppResult<Value> {
     let tag = outbound_tag(node);
+    // REALITY supports raw (tcp) / grpc / xhttp transports only — fail the
+    // node here with a clear reason instead of letting `xray run -test`
+    // reject the whole config at startup.
+    let reality = node
+        .tls
+        .as_ref()
+        .is_some_and(|t| t.enabled && t.reality_public_key.is_some());
+    if reality
+        && !matches!(
+            node.transport.as_ref(),
+            None | Some(Transport::Tcp) | Some(Transport::Grpc { .. })
+        )
+    {
+        return Err(AppError::Config(
+            "REALITY only supports tcp/grpc transports under Xray".into(),
+        ));
+    }
     let (protocol, settings) = protocol_settings(node)?;
     let mut obj = Map::new();
     obj.insert("tag".into(), json!(tag));
@@ -927,16 +944,13 @@ mod tests {
                 enabled: true,
                 server_name: Some("sni.example.com".into()),
                 insecure: None,
-                alpn: Some(vec!["h2".into(), "http/1.1".into()]),
+                alpn: None,
                 utls_fingerprint: Some("chrome".into()),
                 reality_public_key: Some("pbk".into()),
-                reality_short_id: Some("sid01".into()),
+                reality_short_id: Some("abcd0123".into()),
             }),
-            transport: Some(Transport::Ws {
-                path: Some("/ws".into()),
-                headers: None,
-                max_early_data: None,
-            }),
+            // REALITY supports tcp/grpc only; the default node uses plain TCP.
+            transport: Some(Transport::Tcp),
             udp: None,
             config: ProtocolConfig::Vless {
                 uuid: "uuid-1".into(),
@@ -997,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn vless_outbound_reality_and_ws() {
+    fn vless_outbound_reality_and_flow() {
         let nodes = vec![vless_node("vision", Some("xtls-rprx-vision"))];
         let built = build_xray_config(&nodes, &default_opts()).expect("build");
         let outbound = &built.value["outbounds"][0];
@@ -1008,12 +1022,59 @@ mod tests {
         assert_eq!(user["encryption"], "none");
         assert_eq!(user["flow"], "xtls-rprx-vision");
         let stream = &outbound["streamSettings"];
-        assert_eq!(stream["network"], "ws");
-        assert_eq!(stream["wsSettings"]["path"], "/ws");
+        assert_eq!(stream["network"], "tcp");
         assert_eq!(stream["security"], "reality");
         assert_eq!(stream["realitySettings"]["publicKey"], "pbk");
-        assert_eq!(stream["realitySettings"]["shortId"], "sid01");
+        assert_eq!(stream["realitySettings"]["shortId"], "abcd0123");
         assert_eq!(stream["realitySettings"]["fingerprint"], "chrome");
+    }
+
+    #[test]
+    fn ws_tls_stream_shape() {
+        let mut node = vless_node("ws", None);
+        node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("sni.example.com".into()),
+            insecure: Some(true),
+            alpn: Some(vec!["h2".into(), "http/1.1".into()]),
+            utls_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        node.transport = Some(Transport::Ws {
+            path: Some("/ws".into()),
+            headers: Some(
+                [("Host".to_string(), "cdn.example.com".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            max_early_data: Some(2048),
+        });
+        let built = build_xray_config(&[node], &default_opts()).expect("build");
+        let stream = &built.value["outbounds"][0]["streamSettings"];
+        assert_eq!(stream["network"], "ws");
+        assert_eq!(stream["wsSettings"]["path"], "/ws");
+        assert_eq!(stream["wsSettings"]["host"], "cdn.example.com");
+        assert_eq!(stream["wsSettings"]["maxEarlyData"], 2048);
+        assert_eq!(stream["security"], "tls");
+        assert_eq!(stream["tlsSettings"]["serverName"], "sni.example.com");
+        assert_eq!(stream["tlsSettings"]["allowInsecure"], true);
+        assert_eq!(
+            stream["tlsSettings"]["alpn"],
+            json!(["h2", "http/1.1"])
+        );
+    }
+
+    #[test]
+    fn reality_with_ws_transport_is_rejected() {
+        let mut node = vless_node("bad", None);
+        node.transport = Some(Transport::Ws {
+            path: Some("/ws".into()),
+            headers: None,
+            max_early_data: None,
+        });
+        // The invalid node is skipped; with no other nodes the build fails.
+        assert!(build_xray_config(&[node], &default_opts()).is_err());
     }
 
     #[test]

@@ -5,6 +5,11 @@
       "resources/bin/windows-amd64/sing-box.exe",
       "resources/bin/windows-amd64/libcronet.dll",
       "resources/bin/windows-amd64/version.txt",
+      "resources/bin/windows-amd64/xray.exe",
+      "resources/bin/windows-amd64/xray-version.txt",
+      "resources/bin/windows-amd64/geosite.dat",
+      "resources/bin/windows-amd64/geoip.dat",
+      "resources/bin/windows-amd64/wintun.dll",
       "resources/rule-sets",
       "resources/dns"
     ]

@@ -174,13 +174,18 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path, kind: CoreKind) -> Ap
         }
     }
     // Xray: stage geosite/geoip data files shipped alongside the binary so
-    // geosite:/geoip: routing works from the app-data asset location.
+    // geosite:/geoip: routing works from the app-data asset location, plus
+    // wintun.dll (Windows tun adapter driver, not in the Xray release zip).
     if kind == CoreKind::Xray {
+        #[cfg(target_os = "windows")]
+        let extra_files: [&str; 3] = ["geosite.dat", "geoip.dat", "wintun.dll"];
+        #[cfg(not(target_os = "windows"))]
+        let extra_files: [&str; 2] = ["geosite.dat", "geoip.dat"];
         if let Some(parent) = bundled.parent() {
-            for dat in ["geosite.dat", "geoip.dat"] {
-                let src = parent.join(dat);
+            for file in extra_files {
+                let src = parent.join(file);
                 if src.is_file() {
-                    let target = core_dir(app_data_dir).join(dat);
+                    let target = core_dir(app_data_dir).join(file);
                     if !target.is_file() {
                         let _ = std::fs::copy(&src, &target);
                     }

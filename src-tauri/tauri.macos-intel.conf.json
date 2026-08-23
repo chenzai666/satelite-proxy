@@ -4,6 +4,10 @@
     "resources": [
       "resources/bin/darwin-amd64/sing-box",
       "resources/bin/darwin-amd64/version.txt",
+      "resources/bin/darwin-amd64/xray",
+      "resources/bin/darwin-amd64/xray-version.txt",
+      "resources/bin/darwin-amd64/geosite.dat",
+      "resources/bin/darwin-amd64/geoip.dat",
       "resources/rule-sets",
       "resources/dns"
     ]
