@@ -240,11 +240,12 @@ function deepenToLuminance(
  * content needs no text-contrast clamp). Re-apply on theme change, and on
  * accent change while following.
  *
- * Also emits `--glow-deep-rgb`: the same hue luminance-normalized to the
- * pre-setting atmosphere colors (0.30 dark / 0.50 light theme) so the big
- * app-shell wash keeps its original, calm brightness whatever glow color is
- * picked — a raw pastel there made dark mode read noticeably brighter.
- * `--hero-glow` keeps the raw variant (it always used the bright accent).
+ * Also emits `--glow-deep-rgb`: the same hue luminance-normalized for the
+ * app-shell wash (0.22 dark / 0.50 light theme — the dark target sits below
+ * the original 0.30 baseline for a calmer atmosphere) so the big wash keeps
+ * a consistent, subdued brightness whatever glow color is picked — a raw
+ * pastel there made dark mode read noticeably brighter. `--hero-glow` keeps
+ * the raw variant (it always used the bright accent).
  */
 export function applyGlowToDom(
   glowId: string | null | undefined,
@@ -260,7 +261,7 @@ export function applyGlowToDom(
     base.r,
     base.g,
     base.b,
-    theme === "day" ? 0.5 : 0.3,
+    theme === "day" ? 0.5 : 0.22,
   );
   const root = document.documentElement.style;
   root.setProperty("--glow-rgb", `${base.r}, ${base.g}, ${base.b}`);

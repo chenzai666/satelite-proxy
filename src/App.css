@@ -84,7 +84,7 @@
      runtime with the glow color setting (see theme/accents.ts). --glow-deep
      is the luminance-normalized variant driving the big app-shell wash. */
   --glow-rgb: 85, 200, 154;
-  --glow-deep-rgb: 24, 92, 72;
+  --glow-deep-rgb: 28, 65, 50;
   --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.12), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(101, 151, 219, 0.08), transparent 55%);
   /* Opaque panels for modals / menus / native selects (not frosted --surface) */
