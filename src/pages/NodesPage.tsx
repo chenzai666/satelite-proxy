@@ -11,6 +11,7 @@ import {
   testNodesLatency,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
+import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
@@ -67,17 +68,6 @@ function latencyClass(ms?: number | null) {
   return "lat-slow";
 }
 
-/** Outbound protocols the Xray core can serve. */
-const XRAY_PROTOCOLS = new Set([
-  "vmess",
-  "vless",
-  "shadowsocks",
-  "trojan",
-  "socks5",
-  "http",
-  "wireguard",
-]);
-
 export function NodesPage() {
   const { t } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -91,10 +81,6 @@ export function NodesPage() {
   const [autoSelect, setAutoSelect] = useState<AutoSelectMode>("off");
   // Manual click in kernel-auto mode: urltest → selector rebuild restarts the core.
   const [switching, setSwitching] = useState(false);
-
-  /** Under the Xray core, protocols outside its support set get a badge. */
-  const xrayUnsupported = (protocol: string) =>
-    coreType === "xray" && !XRAY_PROTOCOLS.has(protocol);
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     return (localStorage.getItem("nodes.viewMode") as ViewMode) || "list";
   });
@@ -103,8 +89,6 @@ export function NodesPage() {
   });
 
   const [customRuntime, setCustomRuntime] = useState(false);
-  /** Active core (singbox | xray) — flags protocols Xray cannot serve. */
-  const [coreType, setCoreType] = useState<string>("singbox");
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
@@ -127,7 +111,6 @@ export function NodesPage() {
       const settings = await getSettings();
       const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
       setCustomRuntime(custom);
-      setCoreType(settings.core_type ?? "singbox");
       setCurrentId(settings.current_node_id ?? null);
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       const offset = append ? nodes.length : 0;
@@ -338,7 +321,9 @@ export function NodesPage() {
         </div>
       </header>
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {switching && (
         <div className="banner busy" role="status">
@@ -397,11 +382,6 @@ export function NodesPage() {
                     </td>
                     <td>
                       <code>{n.protocol}</code>
-                      {xrayUnsupported(n.protocol) ? (
-                        <span className="pill warn" title={t("nodes.xrayUnsupported")}>
-                          ✕Xray
-                        </span>
-                      ) : null}
                     </td>
                     <td>{n.server}</td>
                     <td>{n.port}</td>
@@ -448,11 +428,6 @@ export function NodesPage() {
                     <span className="node-dot">{active ? "●" : "○"}</span>
                     <div className="node-card-meta">
                       <code>{n.protocol}</code>
-                      {xrayUnsupported(n.protocol) ? (
-                        <span className="pill warn" title={t("nodes.xrayUnsupported")}>
-                          ✕Xray
-                        </span>
-                      ) : null}
                     </div>
                   </div>
                   <div className="node-card-name" title={n.name}>

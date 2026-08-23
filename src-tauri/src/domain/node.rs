@@ -79,6 +79,22 @@ impl Protocol {
     pub fn is_udp_only(self) -> bool {
         matches!(self, Self::Hysteria2 | Self::Hysteria | Self::Tuic)
     }
+
+    /// Whether the Xray core can serve this protocol as an outbound. Used to
+    /// hide unusable nodes from listings while Xray is the active core
+    /// (single source of truth — `CoreKind::supports` delegates here).
+    pub fn xray_supported(self) -> bool {
+        matches!(
+            self,
+            Self::Shadowsocks
+                | Self::Vmess
+                | Self::Vless
+                | Self::Trojan
+                | Self::Socks5
+                | Self::Http
+                | Self::WireGuard
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

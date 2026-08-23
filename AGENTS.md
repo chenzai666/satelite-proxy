@@ -333,6 +333,6 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 11. **store.json 解析失败会拒启**（防覆盖用户新 schema 数据）；未知字段保留在 `retained_*` 写回。改存储结构时保持向后兼容 + `schema_version` 迁移。
 12. **窗口关闭默认进托盘**；真正退出需 `exit_allowed`（`state.is_exit_allowed()`），退出时 `shutdown_runtime()` 停内核清代理。
 13. **双内核配置生成相互独立** — `config/builder.rs`（sing-box）与 `config/xray.rs` 不共享生成代码，只共享 domain 模型与 `BuildOptions`；改路由/协议/DNS 语义时**两边都要改**并各跑单测。
-14. **Xray 无 Clash API** — 无逐连接数据/热切节点/delay API：切节点与规则变更=重启进程（`select_current_node_serialized` 返回 restart_needed）；连接三页面在 Xray 下为空态；smart_switch 禁用。流量统计靠 metrics `/debug/vars`（`api/xray_metrics.rs`）。
+14. **Xray 无 Clash API** — 无逐连接数据/热切节点/delay API：切节点与规则变更=重启进程（`select_current_node_serialized` 返回 restart_needed）；连接三页面在 Xray 下为空态；smart_switch 禁用。流量统计靠 metrics `/debug/vars`（`api/xray_metrics.rs`）。Xray 模式下节点列表**后端过滤**不支持协议的节点（`list_all_nodes`/`list_nodes_page`/`list_node_ids`，判定在 `Protocol::xray_supported`），切回 sing-box 即恢复显示；首页"指定配置"的自写 sing-box 配置项置灰。
 15. **Xray 资产依赖** — `geosite:`/`geoip:`（含 `geoip:private`）需要 geosite.dat/geoip.dat（bundled 或运行时下载，`core/assets.rs::ensure_geodata`）；Windows TUN 需要 wintun.dll（Xray zip 不带）。缺资产时 Xray 启动会失败，报错要可读。
 16. **`.srs` 规则集是 sing-box 专有** — Xray 生成器跳过用户自建远程 `.srs` 集（内置 3 条走 geosite 映射）；`srs.rs` decompile 固定用 sing-box 二进制。

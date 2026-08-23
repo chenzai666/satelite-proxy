@@ -187,20 +187,12 @@ impl CoreKind {
     }
 
     /// Whether this core can serve the given outbound protocol. Xray lacks
-    /// hysteria(2)/tuic/anytls/snell/shadowtls/ssh/naive/tor.
+    /// hysteria(2)/tuic/anytls/snell/shadowtls/ssh/naive/tor (delegates to
+    /// `Protocol::xray_supported` — the single source of truth).
     pub fn supports(self, protocol: Protocol) -> bool {
         match self {
             Self::SingBox => true,
-            Self::Xray => matches!(
-                protocol,
-                Protocol::Shadowsocks
-                    | Protocol::Vmess
-                    | Protocol::Vless
-                    | Protocol::Trojan
-                    | Protocol::Socks5
-                    | Protocol::Http
-                    | Protocol::WireGuard
-            ),
+            Self::Xray => protocol.xray_supported(),
         }
     }
 }

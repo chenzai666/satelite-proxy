@@ -378,10 +378,15 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .filter(|s| s.enabled)
                 .map(|s| s.id.as_str())
                 .collect();
+            // Under the Xray core, protocols it cannot serve are hidden from
+            // listings entirely (they reappear after switching back).
+            let xray_mode =
+                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
                 .map(|n| ListedNode {
                     node: n.node.clone(),
                     subscription_id: n.subscription_id.clone(),
@@ -418,10 +423,14 @@ pub fn list_nodes_page(
                 .map(|s| s.id.as_str())
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
+            // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
+            let xray_mode =
+                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
             let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -487,10 +496,14 @@ pub fn list_node_ids(
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
+            // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
+            let xray_mode =
+                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
