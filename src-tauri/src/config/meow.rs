@@ -57,8 +57,10 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     for node in nodes {
         // All meow node-level exclusions live in CoreKind::supports_node:
         // unsupported protocols, REALITY (strict servers black-hole meow's
-        // fingerprint-less ClientHello), vmess on non-tcp/ws transports,
-        // ss + shadow-tls. Keep the human-readable reason per class here.
+        // fingerprint-less ClientHello), vless Vision flows (raw passthrough
+        // only works over meow's REALITY stream), vmess on non-tcp/ws
+        // transports, ss + shadow-tls. Keep the human-readable reason per
+        // class here.
         if !CoreKind::Meow.supports_node(node) {
             let reason = if !CoreKind::Meow.supports(node.protocol) {
                 format!("meow 不支持 {} 协议", node.protocol.as_str())
@@ -69,6 +71,15 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
             {
                 "meow 的 REALITY 握手不兼容（忽略 client-fingerprint，严格服务端会黑洞）"
                     .to_string()
+            } else if node.protocol == Protocol::Vless
+                && matches!(
+                    &node.config,
+                    ProtocolConfig::Vless {
+                        flow: Some(f), ..
+                    } if !f.trim().is_empty()
+                )
+            {
+                "meow 的 Vision 直通仅在 REALITY 上实现，普通 TLS 的 Vision 节点会断链".to_string()
             } else if node.protocol == Protocol::Vmess
                 && !matches!(
                     node.transport,

@@ -264,6 +264,14 @@ impl CoreKind {
     ///   the handshake ("Reality TLS: handshake did not complete within
     ///   10s" — verified against a node that returns 204 through sing-box
     ///   with the same parameters);
+    /// - vless with a flow (XTLS Vision): meow's raw passthrough only
+    ///   works over its REALITY stream (transport::enable_raw_* only
+    ///   downcasts RealityTlsStream), so plain-TLS Vision nodes die at
+    ///   "vision: DIRECT requested but transport cannot switch to raw
+    ///   passthrough" — and Vision+REALITY is already excluded above.
+    ///   These nodes pass TCP latency probes (they look alive!), so
+    ///   selecting one silently kills the proxy-egress remote DNS and
+    ///   takes the whole network down;
     /// - vmess on non-tcp/ws transports (meow parser rejects them);
     /// - ss + shadow-tls (a sing-box-only outbound detour shape).
     pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
@@ -276,6 +284,16 @@ impl CoreKind {
                 .as_ref()
                 .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some());
             if reality {
+                return false;
+            }
+            if node.protocol == Protocol::Vless
+                && matches!(
+                    &node.config,
+                    crate::domain::ProtocolConfig::Vless {
+                        flow: Some(f), ..
+                    } if !f.trim().is_empty()
+                )
+            {
                 return false;
             }
             if node.protocol == Protocol::Vmess
@@ -498,6 +516,18 @@ mod tests {
 
         // meow rejects REALITY regardless of protocol.
         assert!(!CoreKind::Meow.supports_node(&node(Protocol::Vless, reality.clone(), None)));
+        // meow rejects vless Vision flows: raw passthrough only exists for
+        // its REALITY stream, plain-TLS Vision nodes die mid-handshake
+        // while passing TCP probes.
+        let mut vision = node(Protocol::Vless, plain_tls.clone(), None);
+        vision.config = crate::domain::ProtocolConfig::Vless {
+            uuid: "u".into(),
+            flow: Some("xtls-rprx-vision".into()),
+            packet_encoding: "xudp".into(),
+        };
+        assert!(!CoreKind::Meow.supports_node(&vision));
+        // sing-box serves vision nodes happily.
+        assert!(CoreKind::SingBox.supports_node(&vision));
         // Plain-TLS vless is fine.
         assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, plain_tls.clone(), None)));
         // vmess: tcp/ws ok, grpc rejected.
