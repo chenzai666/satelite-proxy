@@ -81,9 +81,9 @@ pub fn write_active_config(app_data_dir: &Path, built: &BuiltConfig) -> AppResul
     Ok(active)
 }
 
-/// Active config path for the meow core (Clash YAML). The JSON cores share
-/// `active.json`; meow keeps its own file — every start rewrites it whole,
-/// so the two dialects never mix (same policy as `active.json`).
+/// Active config path for the mihomo core (Clash YAML). The JSON cores
+/// share `active.json`; mihomo keeps its own file — every start rewrites it
+/// whole, so the two dialects never mix (same policy as `active.json`).
 pub fn active_yaml_config_path(app_data_dir: &Path) -> PathBuf {
     config_dir(app_data_dir).join("active.yaml")
 }

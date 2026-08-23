@@ -605,7 +605,7 @@ impl AppState {
         {
             return false;
         }
-        // meow reports only the matched target in `chains` (["proxy"], not
+        // Some Clash derivatives report only the matched target in `chains` (["proxy"], not
         // ["node-x", "proxy"] like sing-box/mihomo), so every main-group
         // connection would display as "proxy". Resolve it to the persisted
         // current node — accurate in manual mode (the select's pick) and in
@@ -1085,7 +1085,7 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
-            // Node-level compatibility (protocol / meow REALITY & vmess
+            // Node-level compatibility (protocol / per-core node-shape
             // transport limits) lives in CoreKind::supports_node — the same
             // predicate that filters listings and generation, so a pick can
             // never desync from what the config actually contains.
@@ -1107,7 +1107,7 @@ impl AppState {
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
-        // Xray has no selection API at all — same restart path. meow (like
+        // Xray has no selection API at all — same restart path. mihomo (like
         // sing-box) selects live through its Clash-compatible API.
         let selected_live = if core_kind == crate::core::CoreKind::Xray || kernel_auto {
             false
@@ -1461,7 +1461,7 @@ impl AppState {
 
 /// A core that flips running → error without a user-initiated stop is
 /// auto-restarted through the regular debounced apply-and-restart path.
-/// Motivated by field incidents where meow v0.21.0 exits silently (code 1,
+/// Motivated by a field incident of a core exiting silently (code 1,
 /// no log line) minutes after start; generic across cores. An attempt
 /// budget inside a rolling window keeps a config-error death-loop from
 /// spinning forever — after the budget is spent the core stays down and

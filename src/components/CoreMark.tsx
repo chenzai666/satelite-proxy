@@ -17,7 +17,7 @@ export function CoreMark({ kind }: { kind: CoreKind }) {
       </svg>
     );
   }
-  if (kind === "meow") {
+  if (kind === "mihomo") {
     // Cute chibi cat head: one continuous silhouette (short round ears
     // flowing into a chubby, wider-than-tall face) with two round eye dots
     // knocked out via fill-rule="evenodd".

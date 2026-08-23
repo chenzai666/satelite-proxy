@@ -40,10 +40,10 @@
       "resources/bin/darwin-arm64/xray-version.txt",
       "resources/bin/darwin-arm64/geosite.dat",
       "resources/bin/darwin-arm64/geoip.dat",
-      "resources/bin/darwin-arm64/meow",
-      "resources/bin/darwin-arm64/meow-version.txt",
-      "resources/bin/darwin-arm64/meow-geodata/Country.mmdb",
-      "resources/bin/darwin-arm64/meow-geodata/geosite.dat",
+      "resources/bin/darwin-arm64/mihomo",
+      "resources/bin/darwin-arm64/mihomo-version.txt",
+      "resources/bin/darwin-arm64/mihomo-geodata/Country.mmdb",
+      "resources/bin/darwin-arm64/mihomo-geodata/geosite.dat",
       "resources/rule-sets",
       "resources/dns"
     ]

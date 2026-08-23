@@ -148,7 +148,7 @@ export function SettingsPage() {
   const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
     singbox: null,
     xray: null,
-    meow: null,
+    mihomo: null,
   });
   const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
   const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
@@ -245,13 +245,13 @@ export function SettingsPage() {
       const results = await Promise.all([
         getCoreInfo("singbox"),
         getCoreInfo("xray"),
-        getCoreInfo("meow"),
+        getCoreInfo("mihomo"),
       ]);
-      const [singbox, xray, meow] = results;
-      setCores({ singbox, xray, meow });
+      const [singbox, xray, mihomo] = results;
+      setCores({ singbox, xray, mihomo });
       void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
       void runCoreUpdateCheck("xray", xray.version ?? null, false);
-      void runCoreUpdateCheck("meow", meow.version ?? null, false);
+      void runCoreUpdateCheck("mihomo", mihomo.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
@@ -619,8 +619,8 @@ export function SettingsPage() {
         title={
           kind === "xray"
             ? t("settings.coreHintXray")
-            : kind === "meow"
-              ? t("settings.coreHintMeow")
+            : kind === "mihomo"
+              ? t("settings.coreHintMihomo")
               : t("settings.coreHint")
         }
       >
@@ -630,7 +630,7 @@ export function SettingsPage() {
             <CoreMark kind={kind} />
           </div>
           <span className="kernel-name">
-            {info?.name ?? (kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box")}
+            {info?.name ?? (kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box")}
           </span>
           {/* Radio-style enable: clicking switches the active core (a
              running core restarts onto the new binary). */}
@@ -1453,7 +1453,7 @@ export function SettingsPage() {
             <div className="card core-card kernel-list">
               {renderCoreRow("singbox")}
               {renderCoreRow("xray")}
-              {renderCoreRow("meow")}
+              {renderCoreRow("mihomo")}
             </div>
           </div>
 
@@ -1538,7 +1538,7 @@ export function SettingsPage() {
                   {t("settings.appPlatformLabel")}
                 </span>
                 <span className="app-info-value">
-                  {cores.singbox?.platform ?? cores.xray?.platform ?? cores.meow?.platform ?? "—"}
+                  {cores.singbox?.platform ?? cores.xray?.platform ?? cores.mihomo?.platform ?? "—"}
                 </span>
               </div>
               <div className="app-info-row">

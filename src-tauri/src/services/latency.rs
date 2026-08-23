@@ -2,7 +2,7 @@
 //!
 //! - **UI 测速** (`test_nodes_latency`): through-kernel clash delay API for
 //!   every protocol when the core is running — a TCP-connect probe measures
-//!   raw reachability, which lies about proxy health (meow REALITY/Vision
+//!   raw reachability, which lies about proxy health (e.g. mihomo/other-core
 //!   nodes pass TCP handshakes with flying colors and die mid-proxy). Direct
 //!   TCP is the fallback when the core is stopped or the caller has no
 //!   mapping into the running config (custom sing-box profiles). UDP-only
@@ -137,7 +137,7 @@ fn spawn_probe_task(
         let tag = outbound_tag(&node);
         // Through-kernel delay is the only meaningful health signal for TCP
         // protocols too: a plain TCP connect succeeds for nodes whose proxy
-        // path is broken (meow REALITY/Vision nodes ace TCP handshakes and
+        // path is broken (e.g. mihomo/other-core nodes ace TCP handshakes and
         // then die mid-proxy). Whenever the core is up, ask the kernel to
         // dial the probe URL through the node; direct TCP remains the
         // fallback for a stopped core and for callers without a mapping
@@ -455,7 +455,7 @@ mod tests {
 
         // A TCP-based protocol also probes through the kernel when the
         // clash API is available — raw TCP reachability lies about proxy
-        // health (meow REALITY/Vision nodes ace TCP and die mid-proxy).
+        // health (e.g. mihomo/other-core nodes ace TCP and die mid-proxy).
         // The delay call itself fails here (nothing on port 1), but the
         // point under test is *which* probe path ran.
         let nodes = vec![node(Protocol::Shadowsocks)];

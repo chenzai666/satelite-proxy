@@ -9,11 +9,13 @@ import type { CoreKind } from "../types";
 import { useUiMode, type UiMode } from "./UiModeContext";
 
 function coreOf(raw: string | null | undefined): CoreKind {
-  return raw === "xray" || raw === "meow" ? raw : "singbox";
+  if (raw === "xray") return "xray";
+  if (raw === "mihomo" || raw === "meow") return "mihomo";
+  return "singbox";
 }
 
 function coreLabel(kind: CoreKind): string {
-  return kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box";
+  return kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box";
 }
 
 /**
@@ -179,7 +181,7 @@ export function UiModeMenu() {
           <div className="ui-mode-menu-sep" aria-hidden />
 
           <div className="ui-mode-menu-label">切换内核</div>
-          {(["singbox", "xray", "meow"] as const).map((kind) => (
+          {(["singbox", "xray", "mihomo"] as const).map((kind) => (
             <button
               key={kind}
               type="button"

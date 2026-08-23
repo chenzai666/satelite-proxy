@@ -305,8 +305,8 @@ const en = {
     "macOS ships a bundled sing-box; a downloaded core takes priority. Switching the active core restarts it.",
   "settings.coreHintXray":
     "Xray serves vmess/vless/ss/trojan/socks/http/wireguard with XTLS-Reality. Switching the active core restarts it.",
-  "settings.coreHintMeow":
-    "meow is the Clash-family kernel (mihomo in Rust): Clash rules + REST API with hot node switching. Switching the active core restarts it.",
+  "settings.coreHintMihomo":
+    "mihomo is the canonical Clash Meta kernel: full protocol coverage (incl. REALITY/Vision/TUIC/WireGuard) with hot node switching. Switching the active core restarts it.",
   "settings.coreUse": "Use this core",
   "settings.coreSwitchHint": "switch",
   "settings.coreVersionTitle": "Kernel",
@@ -592,8 +592,8 @@ const en = {
     "Under this core the set matches via {matcher} — the .srs cache is not used.",
   "rules.xrayGeoSource":
     "Source: Loyalsoldier/v2ray-rules-dat (geosite.dat / geoip.dat), bundled with the Xray core.",
-  "rules.meowGeoSource":
-    "Source: MetaCubeX/meta-rules-dat (Country.mmdb + geosite.dat), bundled with the meow core.",
+  "rules.mihomoGeoSource":
+    "Source: MetaCubeX/meta-rules-dat (Country.mmdb + GeoSite.dat), bundled with the mihomo core.",
   "rules.xrayGeoUpdate": "Update geodata",
   "rules.xrayGeoUpdating": "Updating…",
   "rules.xrayGeoMissing":
@@ -1054,8 +1054,8 @@ const zh: Record<MessageKey, string> = {
   "settings.coreHint": "macOS 已内置 sing-box，下载的内核优先使用。切换内核会重启。",
   "settings.coreHintXray":
     "Xray 支持 vmess/vless/ss/trojan/socks/http/wireguard 协议与 XTLS-Reality。切换内核会重启。",
-  "settings.coreHintMeow":
-    "meow 为 Clash 系内核（mihomo 的 Rust 实现）：Clash 规则 + REST API，支持节点热切换。切换内核会重启。",
+  "settings.coreHintMihomo":
+    "mihomo 为标准 Clash Meta 内核：协议全覆盖（含 REALITY/Vision/TUIC/WireGuard），支持节点热切换。切换内核会重启。",
   "settings.coreUse": "启用该内核",
   "settings.coreSwitchHint": "点击切换",
   "settings.coreVersionTitle": "内核",
@@ -1330,8 +1330,8 @@ const zh: Record<MessageKey, string> = {
   "rules.xrayGeoHint": "此内核下该集通过 {matcher} 匹配，不读取 .srs 缓存。",
   "rules.xrayGeoSource":
     "来源：Loyalsoldier/v2ray-rules-dat（geosite.dat / geoip.dat），随 Xray 内核打包。",
-  "rules.meowGeoSource":
-    "来源：MetaCubeX/meta-rules-dat（Country.mmdb + geosite.dat），随 meow 内核打包。",
+  "rules.mihomoGeoSource":
+    "来源：MetaCubeX/meta-rules-dat（Country.mmdb + GeoSite.dat），随 mihomo 内核打包。",
   "rules.xrayGeoUpdate": "更新 geodata",
   "rules.xrayGeoUpdating": "更新中…",
   "rules.xrayGeoMissing": "geodata 文件缺失——启动该内核时会自动下载。",

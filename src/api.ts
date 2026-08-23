@@ -472,7 +472,7 @@ export function fetchCoreLatest(kind?: CoreKind | null) {
   }>("fetch_core_latest", { kind: kind ?? null });
 }
 
-/** Switch the active core (singbox | xray | meow). Restarts a running core. */
+/** Switch the active core (singbox | xray | mihomo). Restarts a running core. */
 export function setCoreType(kind: CoreKind) {
   return invoke<AppSettings>("set_core_type", { kind });
 }
@@ -489,7 +489,7 @@ export interface GeodataInfo {
 }
 
 /** Kernel geodata state; `force` re-downloads first. `kind` selects the
- * pair: "xray" (Loyalsoldier .dat) or "meow" (MetaCubeX mmdb + mrs). */
+ * pair: "xray" (Loyalsoldier .dat) or "mihomo" (MetaCubeX mmdb + mrs). */
 export function refreshGeodata(force = false, kind: CoreKind | null = null) {
   return invoke<GeodataInfo>("refresh_geodata", { force, kind });
 }

@@ -244,7 +244,7 @@ export function DashboardPage({
 
   /** Display name for a core_type token (menu / version card / preview). */
 function coreDisplayName(kind: string | null | undefined): string {
-  return kind === "xray" ? "Xray" : kind === "meow" ? "meow" : "sing-box";
+  return kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box";
 }
 
 /** Full reload (actions after start/stop/etc). */
@@ -261,7 +261,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         listAllNodes(),
         getCoreInfo("singbox").catch(() => null),
         getCoreInfo("xray").catch(() => null),
-        getCoreInfo("meow").catch(() => null),
+        getCoreInfo("mihomo").catch(() => null),
         getLanIp().catch(() => null),
       ]);
 
@@ -277,7 +277,7 @@ function coreDisplayName(kind: string | null | undefined): string {
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, coreSingbox, coreXray, coreMeow, lan] =
+      const [subList, nodeList, coreSingbox, coreXray, coreMihomo, lan] =
         await detailP;
       setSubs(subList);
       setNodes(nodeList);
@@ -293,8 +293,8 @@ function coreDisplayName(kind: string | null | undefined): string {
       const core =
         activeKind === "xray"
           ? coreXray
-          : activeKind === "meow"
-            ? coreMeow
+          : activeKind === "mihomo"
+            ? coreMihomo
             : coreSingbox;
       if (core?.installed) {
         const ver = (core.version ?? "ok").replace(/^v/, "");
@@ -537,7 +537,7 @@ function coreDisplayName(kind: string | null | undefined): string {
   // core. While a custom profile IS running, core_type truthfully reports
   // singbox, so switching between profiles / back to generated keeps working.
   const foreignCore =
-    proxy?.core_type === "xray" || proxy?.core_type === "meow";
+    proxy?.core_type === "xray" || proxy?.core_type === "mihomo";
 
   async function onPickRuntime(source: string) {
     if (busy) return;
@@ -1105,7 +1105,7 @@ function coreDisplayName(kind: string | null | undefined): string {
                     </button>
                     {coreMenuOpen && (
                       <div className="dash-more-submenu card glass" role="menu">
-                        {(["singbox", "xray", "meow"] as const).map((kind) => {
+                        {(["singbox", "xray", "mihomo"] as const).map((kind) => {
                           const selected =
                             (proxy?.core_type ?? "singbox") === kind;
                           return (

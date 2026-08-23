@@ -359,7 +359,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         let rt = state.lock_runtime();
         (rt.clash_api_clone(), rt.core.kind())
     };
-    // Main-node candidates must be servable by the running core (meow drops
+    // Main-node candidates must be servable by the running core (a core may drop
     // REALITY nodes — they pass TCP probes and would win the race, then the
     // pick is rejected by the switch guard).
     let mut nodes: Vec<_> = nodes
@@ -1009,7 +1009,7 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     };
     // Only nodes the running core can actually serve are pool members in
-    // the generated config (e.g. meow drops REALITY nodes — which pass TCP
+    // the generated config (e.g. unsupported node shapes — which can pass TCP
     // probes beautifully and would otherwise win the score race, then the
     // switch PUT of their tag 400s as a non-member).
     let nodes: Vec<ProxyNode> = all_nodes

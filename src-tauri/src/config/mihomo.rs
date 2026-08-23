@@ -1,6 +1,6 @@
-//! Clash YAML config generation for the meow core (mihomo/Clash Meta in Rust).
+//! Clash YAML config generation for the mihomo core (canonical Clash Meta).
 //!
-//! meow speaks the Clash dialect natively: proxies / proxy-groups / rules are
+//! mihomo speaks the Clash dialect natively: proxies / proxy-groups / rules are
 //! plain Clash YAML, and its REST API is Clash-compatible — so the generated
 //! main group keeps the sing-box contract (`proxy`, hot-switched via
 //! `PUT /proxies/proxy`; a url-test group in kernel auto-select mode reports
@@ -11,7 +11,7 @@
 //! Filter sets route through a keyword-filtered pool group, per-rule Smart
 //! pools get their own url-test group, and the three builtin remote sets map
 //! onto GEOSITE/GEOIP matchers (MetaCubeX `.mrs`/mmdb geodata lives in the
-//! meow home dir — see `core::assets`).
+//! mihomo home dir — see `core::assets`).
 
 use crate::config::builder::{
     clamp_rule_pin_to_set, effective_route_rules, filter_pool_tags, outbound_tag,
@@ -36,12 +36,12 @@ const REMOTE_DNS_POOL: [&str; 2] = ["https://1.1.1.1/dns-query", "https://8.8.8.
 /// Built-in domestic plain-UDP pool (bootstrap, node hostnames, cn
 /// classification). 114DNS backs up AliDNS.
 const DOMESTIC_DNS_POOL: [&str; 2] = ["223.5.5.5", "114.114.114.114"];
-/// meow url-test probe defaults.
+/// mihomo url-test probe defaults.
 const PROBE_INTERVAL_SECS: u64 = 60;
 const PROBE_TOLERANCE_MS: u32 = 50;
 
 #[derive(Debug)]
-pub struct BuiltMeowConfig {
+pub struct BuiltMihomoConfig {
     /// Serialized Clash YAML document.
     pub yaml: String,
     /// Node proxy names included in the config (`node-<id>` tags).
@@ -50,42 +50,22 @@ pub struct BuiltMeowConfig {
     pub selected_tag: String,
 }
 
-/// Convert nodes into a complete Clash YAML config document for meow.
-pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltMeowConfig> {
+/// Convert nodes into a complete Clash YAML config document for mihomo.
+pub fn build_mihomo_config(
+    nodes: &[ProxyNode],
+    opts: &BuildOptions,
+) -> AppResult<BuiltMihomoConfig> {
     let mut skipped: Vec<String> = Vec::new();
     let mut supported: Vec<ProxyNode> = Vec::new();
     for node in nodes {
-        // All meow node-level exclusions live in CoreKind::supports_node:
-        // unsupported protocols, vless Vision over non-REALITY TLS (raw
-        // passthrough only works over meow's REALITY stream; Vision+REALITY
-        // is kept — 11/17 field-audited working, dead ones surface as
-        // through-kernel probe timeouts), vmess on non-tcp/ws transports,
-        // ss + shadow-tls. Keep the human-readable reason per class here.
-        if !CoreKind::Meow.supports_node(node) {
-            let reason = if !CoreKind::Meow.supports(node.protocol) {
-                format!("meow 不支持 {} 协议", node.protocol.as_str())
-            } else if node.protocol == Protocol::Vless
-                && matches!(
-                    &node.config,
-                    ProtocolConfig::Vless {
-                        flow: Some(f), ..
-                    } if !f.trim().is_empty()
-                )
-                && !node
-                    .tls
-                    .as_ref()
-                    .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some())
-            {
-                "meow 的 Vision 直通仅在 REALITY 上实现，普通 TLS 的 Vision 节点会断链".to_string()
-            } else if node.protocol == Protocol::Vmess
-                && !matches!(
-                    node.transport,
-                    None | Some(Transport::Tcp) | Some(Transport::Ws { .. })
-                )
-            {
-                "meow 的 vmess 仅支持 tcp/ws 传输".to_string()
+        // mihomo (canonical Clash Meta, uTLS) serves every protocol shape we
+        // model except Naive/Tor/standalone-ShadowTls (protocol level) and
+        // our ss+shadow-tls detour field shape — see supports_node.
+        if !CoreKind::Mihomo.supports_node(node) {
+            let reason = if !CoreKind::Mihomo.supports(node.protocol) {
+                format!("mihomo 不支持 {} 协议", node.protocol.as_str())
             } else {
-                "meow 不支持 shadow-tls 插件".to_string()
+                "mihomo 暂不支持 ss+shadow-tls 组合的自动映射".to_string()
             };
             skipped.push(format!("{}: {reason}", node.name));
             continue;
@@ -93,11 +73,11 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         supported.push(node.clone());
     }
     for reason in &skipped {
-        crate::app_log::warn("meow_config", format!("跳过节点 — {reason}"));
+        crate::app_log::warn("mihomo_config", format!("跳过节点 — {reason}"));
     }
     if supported.is_empty() {
         return Err(AppError::Config(
-            "no meow-compatible nodes (supports ss/vmess/vless(non-reality)/trojan/hysteria2/anytls/snell/socks5/http)"
+            "no mihomo-compatible nodes (supports ss/vmess/vless(non-reality)/trojan/hysteria2/anytls/snell/socks5/http)"
                 .into(),
         ));
     }
@@ -111,7 +91,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     // reads its `now` to sync the dashboard's current node; PUT /proxies on
     // a url-test 400s, so manual picks take the restart path like sing-box
     // kernel mode). Otherwise a select group ordered with the current node
-    // first so meow's initial `now` matches our persisted selection.
+    // first so mihomo's initial `now` matches our persisted selection.
     let mut groups: Vec<Mapping> = Vec::new();
     let probe_url = probe_url_or_default(opts);
     if opts.auto_select.is_kernel() {
@@ -198,6 +178,12 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     // the MATCH final expresses directly.
     root.insert(str_yaml("mode"), str_yaml("rule"));
     root.insert(str_yaml("log-level"), str_yaml("info"));
+    // mihomo honors this switch (unlike some derivatives): `strict` resolves
+    // the process only when a rule needs it, `off` disables PROCESS rules.
+    root.insert(
+        str_yaml("find-process-mode"),
+        str_yaml(if opts.find_process { "strict" } else { "off" }),
+    );
     root.insert(
         str_yaml("external-controller"),
         str_yaml(&format!("127.0.0.1:{}", opts.api_port)),
@@ -218,7 +204,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         Yaml::Sequence(
             supported
                 .iter()
-                .map(|n| Yaml::Mapping(node_to_meow_proxy(n)))
+                .map(|n| Yaml::Mapping(node_to_mihomo_proxy(n)))
                 .collect(),
         ),
     );
@@ -233,7 +219,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
 
     let yaml = serde_yaml::to_string(&root)
         .map_err(|e| AppError::Config(format!("serialize meow config: {e}")))?;
-    Ok(BuiltMeowConfig {
+    Ok(BuiltMihomoConfig {
         yaml,
         outbound_tags: tags,
         selected_tag,
@@ -291,10 +277,9 @@ fn url_test_group(name: &str, members: Vec<String>, probe_url: &str) -> Mapping 
     g
 }
 
-/// meow tun block. meow requires fake-ip DNS for tun (auto-route has nothing
-/// safe to route otherwise) — `build_dns` forces fake-ip whenever tun is on.
-/// mihomo fields like `stack`/`strict-route` are accepted-but-ignored by meow
-/// and intentionally not emitted.
+/// mihomo tun block. mihomo works best with fake-ip DNS for tun —
+/// `build_dns` forces fake-ip whenever tun is on. `stack` defaults to
+/// system in mihomo; `strict-route` etc. stay at defaults intentionally.
 fn tun_block() -> Mapping {
     let mut t = Mapping::new();
     t.insert(str_yaml("enable"), Yaml::Bool(true));
@@ -351,19 +336,19 @@ fn build_rules(
     if opts.outbound_mode == OutboundMode::Rule {
         if opts.rule_sets.is_empty() {
             for rule in effective_rules {
-                if let Some(s) = rule_to_meow(rule, nodes, tags, MAIN_GROUP, smart_group_tags) {
+                if let Some(s) = rule_to_mihomo(rule, nodes, tags, MAIN_GROUP, smart_group_tags) {
                     rules.push(s);
                 }
             }
         } else {
             for set in opts.rule_sets.iter().filter(|s| s.enabled) {
                 if set.remote.is_some() {
-                    match builtin_remote_meow_rule(set, MAIN_GROUP) {
+                    match builtin_remote_mihomo_rule(set, MAIN_GROUP) {
                         Some(s) => rules.push(s),
                         None => crate::app_log::warn(
                             "meow_config",
                             format!(
-                                "remote rule set '{}' uses the sing-box .srs format and is skipped under meow",
+                                "remote rule set '{}' uses the sing-box .srs format and is skipped under mihomo",
                                 set.name
                             ),
                         ),
@@ -394,7 +379,8 @@ fn build_rules(
                     } else {
                         clamp_rule_pin_to_set(set, &mut rule);
                     }
-                    if let Some(s) = rule_to_meow(&rule, nodes, tags, MAIN_GROUP, smart_group_tags)
+                    if let Some(s) =
+                        rule_to_mihomo(&rule, nodes, tags, MAIN_GROUP, smart_group_tags)
                     {
                         rules.push(match filter_group {
                             Some(group) => retarget_rule(&s, group),
@@ -440,7 +426,7 @@ fn retarget_rule(rule: &str, target: &str) -> String {
 
 /// Map one rule to a Clash rule string. `main_target` substitutes for the
 /// sing-box `proxy` selector group.
-fn rule_to_meow(
+fn rule_to_mihomo(
     rule: &Rule,
     nodes: &[ProxyNode],
     tags: &[String],
@@ -486,7 +472,7 @@ fn rule_to_meow(
 }
 
 /// Whole-set rule for a builtin remote set expressed via geodata matchers.
-fn builtin_remote_meow_rule(set: &RuleSet, main_target: &str) -> Option<String> {
+fn builtin_remote_mihomo_rule(set: &RuleSet, main_target: &str) -> Option<String> {
     let matcher = match set.id.as_str() {
         "system-geosite-cn" => "GEOSITE,cn",
         "system-geoip-cn" => "GEOIP,cn",
@@ -634,12 +620,12 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
             .collect()
     };
     let domestic_pool: Vec<String> = DOMESTIC_DNS_POOL.iter().map(|s| (*s).to_string()).collect();
-    // NOTE: meow has NO `system` resolver (unlike mihomo — unknown schemes
-    // like `system` hard-error at load: "nameserver-policy entry has no
-    // valid nameservers"). The "use the system resolver" intent is
-    // approximated with the plain-UDP domestic pool.
+    // mihomo supports the `system` resolver natively — local-classified
+    // domains and dns_final=local use it; domestic stays plain-UDP.
+    let system_pool: Vec<String> = vec!["system".into()];
     let (default_ns, fallback_ns): (&[String], &[String]) = match dns_final {
-        "domestic" | "local" => (&domestic_pool, &remote_pool),
+        "domestic" => (&domestic_pool, &remote_pool),
+        "local" => (&system_pool, &remote_pool),
         _ => (&remote_pool, &domestic_pool),
     };
 
@@ -668,10 +654,8 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
         for pat in policy_remote {
             policy.insert(str_yaml(&pat), dns_seq(&remote_pool));
         }
-        // "local" classification also lands on the plain-UDP domestic
-        // pool — meow rejects `system` (see the match above).
         for pat in policy_local {
-            policy.insert(str_yaml(&pat), dns_seq(&domestic_pool));
+            policy.insert(str_yaml(&pat), dns_seq(&system_pool));
         }
         dns.insert(str_yaml("nameserver-policy"), Yaml::Mapping(policy));
     }
@@ -715,7 +699,7 @@ fn dns_pattern(matcher: DomainMatcher, payload: &str) -> Option<String> {
 
 /// Map one node to a Clash proxy mapping (field names mirror what our own
 /// `subscription::clash` parser reads — the authoritative inverse).
-fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
+fn node_to_mihomo_proxy(node: &ProxyNode) -> Mapping {
     let mut m = Mapping::new();
     m.insert(str_yaml("name"), str_yaml(&outbound_tag(node)));
     m.insert(
@@ -730,7 +714,11 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
             Protocol::Http => "http",
             Protocol::AnyTls => "anytls",
             Protocol::Snell => "snell",
-            _ => unreachable!("filtered by CoreKind::Meow::supports upstream"),
+            Protocol::Tuic => "tuic",
+            Protocol::WireGuard => "wireguard",
+            Protocol::Hysteria => "hysteria",
+            Protocol::Ssh => "ssh",
+            _ => unreachable!("filtered by CoreKind::Mihomo::supports upstream"),
         }),
     );
     m.insert(str_yaml("server"), str_yaml(&node.server));
@@ -824,6 +812,90 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
                     opts.insert(str_yaml("host"), str_yaml(host));
                 }
                 m.insert(str_yaml("obfs-opts"), Yaml::Mapping(opts));
+            }
+        }
+        ProtocolConfig::Tuic {
+            uuid,
+            password,
+            congestion_control,
+            udp_relay_mode,
+            zero_rtt_handshake,
+        } => {
+            m.insert(str_yaml("uuid"), str_yaml(uuid));
+            m.insert(str_yaml("password"), str_yaml(password));
+            if let Some(cc) = congestion_control.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("congestion-controller"), str_yaml(cc));
+            }
+            if let Some(mode) = udp_relay_mode.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("udp-relay-mode"), str_yaml(mode));
+            }
+            if *zero_rtt_handshake {
+                m.insert(str_yaml("reduce-rtt"), Yaml::Bool(true));
+            }
+        }
+        ProtocolConfig::WireGuard {
+            local_address,
+            private_key,
+            peer_public_key,
+            pre_shared_key,
+            reserved,
+            mtu,
+        } => {
+            m.insert(str_yaml("private-key"), str_yaml(private_key));
+            m.insert(str_yaml("public-key"), str_yaml(peer_public_key));
+            if let Some(psk) = pre_shared_key.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("pre-shared-key"), str_yaml(psk));
+            }
+            if let Some(ip) = local_address.first() {
+                m.insert(str_yaml("ip"), str_yaml(ip));
+            }
+            if let Some(ip6) = local_address.get(1) {
+                m.insert(str_yaml("ipv6"), str_yaml(ip6));
+            }
+            if !reserved.is_empty() {
+                m.insert(
+                    str_yaml("reserved"),
+                    Yaml::Sequence(reserved.iter().map(|b| num_yaml((*b).into())).collect()),
+                );
+            }
+            if let Some(mtu) = mtu {
+                m.insert(str_yaml("mtu"), num_yaml((*mtu).into()));
+            }
+        }
+        ProtocolConfig::Hysteria {
+            auth,
+            auth_base64: _,
+            up_mbps,
+            down_mbps,
+            obfs,
+        } => {
+            m.insert(str_yaml("auth-str"), str_yaml(auth));
+            if let Some(up) = up_mbps {
+                m.insert(str_yaml("up"), str_yaml(&up.to_string()));
+            }
+            if let Some(down) = down_mbps {
+                m.insert(str_yaml("down"), str_yaml(&down.to_string()));
+            }
+            if let Some(obfs) = obfs.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("obfs"), str_yaml(obfs));
+            }
+        }
+        ProtocolConfig::Ssh {
+            user,
+            password,
+            private_key,
+            private_key_passphrase,
+            ..
+        } => {
+            m.insert(str_yaml("username"), str_yaml(user));
+            if let Some(p) = password.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("password"), str_yaml(p));
+            }
+            if let Some(pk) = private_key.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("private-key"), str_yaml(pk));
+            }
+            if let Some(pp) = private_key_passphrase.as_deref().filter(|s| !s.is_empty()) {
+                m.insert(str_yaml("private-key-passphrase"), str_yaml(pp));
             }
         }
         // Unsupported protocols were filtered before mapping; nothing to add.
@@ -1093,7 +1165,7 @@ mod tests {
         }
     }
 
-    fn parse(built: &BuiltMeowConfig) -> serde_yaml::Value {
+    fn parse(built: &BuiltMihomoConfig) -> serde_yaml::Value {
         serde_yaml::from_str(&built.yaml).expect("generated yaml parses")
     }
 
@@ -1117,7 +1189,7 @@ mod tests {
     #[test]
     fn builds_minimal_config() {
         let nodes = vec![ss_node("n1")];
-        let built = build_meow_config(&nodes, &default_opts()).expect("build");
+        let built = build_mihomo_config(&nodes, &default_opts()).expect("build");
         let doc = parse(&built);
         assert_eq!(doc["mixed-port"].as_u64(), Some(2080));
         assert_eq!(doc["mode"].as_str(), Some("rule"));
@@ -1145,7 +1217,7 @@ mod tests {
         // Vision+REALITY is KEPT under meow (field-audited working; dead
         // REALITY servers surface as through-kernel probe timeouts) — the
         // node maps with its flow, reality-opts and fingerprint.
-        let built = build_meow_config(
+        let built = build_mihomo_config(
             &[vless_node("vision", Some("xtls-rprx-vision"))],
             &default_opts(),
         )
@@ -1189,7 +1261,7 @@ mod tests {
             ),
             max_early_data: Some(2048),
         });
-        let built = build_meow_config(&[node], &default_opts()).expect("build");
+        let built = build_mihomo_config(&[node], &default_opts()).expect("build");
         let doc = parse(&built);
         let proxy = &doc["proxies"][0];
         assert_eq!(proxy["type"].as_str(), Some("vmess"));
@@ -1208,6 +1280,17 @@ mod tests {
 
     #[test]
     fn skips_unsupported_protocols() {
+        // mihomo (Clash Meta) serves Tuic; Naive has no mihomo outbound.
+        let mut naive = vless_node("naive-node", None);
+        naive.protocol = Protocol::Naive;
+        naive.config = ProtocolConfig::Naive {
+            username: "u".into(),
+            password: "p".into(),
+            quic: false,
+        };
+        // Only-unsupported → hard error.
+        assert!(build_mihomo_config(&[naive.clone()], &default_opts()).is_err());
+        // Mixed subscription → unsupported dropped, tuic + ss kept.
         let mut tuic = vless_node("tuic-node", None);
         tuic.protocol = Protocol::Tuic;
         tuic.config = ProtocolConfig::Tuic {
@@ -1217,17 +1300,16 @@ mod tests {
             udp_relay_mode: None,
             zero_rtt_handshake: false,
         };
-        // Only-unsupported → hard error.
-        assert!(build_meow_config(&[tuic.clone()], &default_opts()).is_err());
-        // Mixed subscription → unsupported dropped, supported kept.
         let ss = ss_node("ss-ok");
-        let built = build_meow_config(&[tuic, ss.clone()], &default_opts()).expect("build");
-        assert_eq!(built.outbound_tags.len(), 1);
-        assert_eq!(built.outbound_tags[0], node_tag_of(&ss));
+        let built =
+            build_mihomo_config(&[naive, tuic, ss.clone()], &default_opts()).expect("build");
+        assert_eq!(built.outbound_tags.len(), 2);
+        assert_eq!(built.outbound_tags[1], node_tag_of(&ss));
     }
 
     #[test]
-    fn vmess_non_ws_transport_is_skipped() {
+    fn vmess_non_ws_transport_is_kept() {
+        // mihomo serves vmess over every transport (meow was tcp/ws only).
         let mut node = vless_node("vmess-grpc", None);
         node.protocol = Protocol::Vmess;
         node.config = ProtocolConfig::Vmess {
@@ -1239,8 +1321,20 @@ mod tests {
             service_name: Some("svc".into()),
         });
         let fallback = ss_node("fallback");
-        let built = build_meow_config(&[node, fallback.clone()], &default_opts()).expect("build");
-        assert_eq!(built.outbound_tags, vec![node_tag_of(&fallback)]);
+        let built = build_mihomo_config(&[node, fallback], &default_opts()).expect("build");
+        assert_eq!(built.outbound_tags.len(), 2);
+        let doc = parse(&built);
+        let proxy = doc["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|p| p["network"].as_str() == Some("grpc"))
+            .expect("vmess grpc proxy present");
+        assert_eq!(proxy["type"].as_str(), Some("vmess"));
+        assert_eq!(
+            proxy["grpc-opts"]["grpc-service-name"].as_str(),
+            Some("svc")
+        );
     }
 
     #[test]
@@ -1258,7 +1352,7 @@ mod tests {
                 fingerprint: None,
             }),
         };
-        assert!(build_meow_config(&[node], &default_opts()).is_err());
+        assert!(build_mihomo_config(&[node], &default_opts()).is_err());
     }
 
     #[test]
@@ -1271,7 +1365,7 @@ mod tests {
             plugin_opts: Some("obfs=http;obfs-host=bing.com".into()),
             shadow_tls: None,
         };
-        let built = build_meow_config(&[node], &default_opts()).expect("build");
+        let built = build_mihomo_config(&[node], &default_opts()).expect("build");
         let doc = parse(&built);
         let proxy = &doc["proxies"][0];
         assert_eq!(proxy["plugin"].as_str(), Some("obfs"));
@@ -1309,7 +1403,7 @@ mod tests {
         anytls.config = ProtocolConfig::AnyTls {
             password: "pw".into(),
         };
-        let built = build_meow_config(&[hy2, anytls], &default_opts()).expect("build");
+        let built = build_mihomo_config(&[hy2, anytls], &default_opts()).expect("build");
         let doc = parse(&built);
         let hy2 = &doc["proxies"][0];
         assert_eq!(hy2["type"].as_str(), Some("hysteria2"));
@@ -1335,7 +1429,7 @@ mod tests {
             obfs_host: Some("bing.com".into()),
             mode: None,
         };
-        let built = build_meow_config(&[node], &default_opts()).expect("build");
+        let built = build_mihomo_config(&[node], &default_opts()).expect("build");
         let doc = parse(&built);
         let proxy = &doc["proxies"][0];
         assert_eq!(proxy["type"].as_str(), Some("snell"));
@@ -1350,7 +1444,7 @@ mod tests {
         let b = plain_node("b");
         let mut opts = default_opts();
         opts.auto_select = AutoSelectMode::Kernel;
-        let built = build_meow_config(&[a, b], &opts).expect("build");
+        let built = build_mihomo_config(&[a, b], &opts).expect("build");
         let doc = parse(&built);
         let groups = groups_of(&doc);
         // Main group IS the url-test over all nodes (sing-box's exact
@@ -1383,7 +1477,7 @@ mod tests {
         set.strategy = RuleSetStrategy::Smart; // per-rule decisions preserved
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
-        let built = build_meow_config(&[a.clone(), b], &opts).expect("build");
+        let built = build_mihomo_config(&[a.clone(), b], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert!(
             rules.contains(&format!("DOMAIN-SUFFIX,aa.com,{}", node_tag_of(&a))),
@@ -1407,7 +1501,7 @@ mod tests {
         set.node_id = Some(b.id.clone());
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
-        let built = build_meow_config(&[a, b.clone()], &opts).expect("build");
+        let built = build_mihomo_config(&[a, b.clone()], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert!(
             rules.contains(&format!("DOMAIN-SUFFIX,aa.com,{}", node_tag_of(&b))),
@@ -1430,7 +1524,7 @@ mod tests {
         set.smart_include = vec!["香港".into()];
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
-        let built = build_meow_config(&[a, b], &opts).expect("build");
+        let built = build_mihomo_config(&[a, b], &opts).expect("build");
         let doc = parse(&built);
 
         // The rule targets the filter pool group — `smart-<set id>` select
@@ -1468,7 +1562,7 @@ mod tests {
         set.strategy = RuleSetStrategy::Smart;
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
-        let built = build_meow_config(&[a, b], &opts).expect("build");
+        let built = build_mihomo_config(&[a, b], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         let rule_line = rules
             .iter()
@@ -1518,7 +1612,7 @@ mod tests {
         set.strategy = RuleSetStrategy::Smart;
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert!(rules.contains(&"DOMAIN,exact.com,DIRECT".to_string()));
         assert!(rules.contains(&"DOMAIN-SUFFIX,suffix.com,REJECT".to_string()));
@@ -1546,7 +1640,7 @@ mod tests {
         }
         let mut opts = default_opts();
         opts.rule_sets = sets;
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert!(rules.contains(&"GEOSITE,cn,DIRECT".to_string()));
         assert!(rules.contains(&"GEOIP,cn,proxy".to_string()));
@@ -1559,7 +1653,7 @@ mod tests {
         let mut opts = default_opts();
         opts.bypass_lan = true;
         opts.block_quic = true;
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert!(rules.contains(&"DOMAIN,localhost,DIRECT".to_string()));
         assert!(rules.contains(&"IP-CIDR,192.168.0.0/16,DIRECT,no-resolve".to_string()));
@@ -1589,7 +1683,7 @@ mod tests {
         let mut opts = default_opts();
         opts.rule_sets = vec![set.clone()];
         opts.outbound_mode = OutboundMode::Global;
-        let built = build_meow_config(&[node.clone()], &opts).expect("build");
+        let built = build_mihomo_config(&[node.clone()], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert_eq!(rules.last().unwrap(), "MATCH,proxy");
         assert!(
@@ -1600,13 +1694,13 @@ mod tests {
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
         opts.outbound_mode = OutboundMode::Direct;
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert_eq!(rules.last().unwrap(), "MATCH,DIRECT");
 
         let mut opts = default_opts();
         opts.route_final = "block".into();
-        let built = build_meow_config(&[ss_node("x")], &opts).expect("build");
+        let built = build_mihomo_config(&[ss_node("x")], &opts).expect("build");
         assert_eq!(rules_of(&parse(&built)).last().unwrap(), "MATCH,REJECT");
     }
 
@@ -1616,7 +1710,7 @@ mod tests {
         let mut opts = default_opts();
         opts.tun_enabled = true;
         opts.dns.fake_ip.enabled = false; // tun must force it anyway
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         assert_eq!(doc["tun"]["enable"].as_bool(), Some(true));
         assert_eq!(doc["tun"]["auto-route"].as_bool(), Some(true));
@@ -1650,7 +1744,7 @@ mod tests {
         set.dns_strategy = RuleSetDnsStrategy::Domestic;
         opts.rule_sets = vec![set];
 
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         let dns = &doc["dns"];
         // Built-in pools: remote DoH (each entry egressing through the main
@@ -1686,22 +1780,19 @@ mod tests {
         // drops the proxy-egress tag there.
         let mut opts = opts;
         opts.outbound_mode = OutboundMode::Direct;
-        let built = build_meow_config(&[plain_node("n2")], &opts).expect("build");
+        let built = build_mihomo_config(&[plain_node("n2")], &opts).expect("build");
         let direct = parse(&built);
         let nameserver = direct["dns"]["nameserver"].as_sequence().unwrap();
         assert_eq!(nameserver[0].as_str(), Some("https://1.1.1.1/dns-query"));
         assert_eq!(nameserver[1].as_str(), Some("https://8.8.8.8/dns-query"));
     }
 
-    /// meow rejects `system` as a nameserver value (no system-resolver
-    /// scheme — "nameserver-policy entry has no valid nameservers" made the
-    /// whole config load fail). Local classification and the `local`
-    /// dns_final must land on the plain-UDP domestic resolver instead.
+    /// mihomo supports the `system` resolver natively (meow did not) —
+    /// local classification and dns_final=local emit it directly.
     #[test]
-    fn dns_never_emits_system_resolver() {
-        let node = plain_node("n1");
+    fn dns_local_classification_uses_system_resolver() {
+        let node = vless_node("n1", None);
         let mut opts = default_opts();
-        // Local-classified DNS rule + a set with dns_strategy Local.
         opts.dns.rules_enabled = true;
         opts.dns.rules.push(crate::domain::DnsRule {
             id: "dl1".into(),
@@ -1710,36 +1801,14 @@ mod tests {
             payload: "corp.internal".into(),
             action: crate::domain::DnsAction::Local,
         });
-        let mut set = RuleSet::new_user(
-            "cnlocal",
-            vec![Rule::new(
-                RuleType::DomainSuffix,
-                "cn-local.com".into(),
-                RuleTarget::Direct,
-                10,
-            )],
-        );
-        set.strategy = RuleSetStrategy::Smart;
-        set.dns_strategy = RuleSetDnsStrategy::Local;
-        opts.rule_sets = vec![set];
-        // Also cover dns_final=local for the default nameserver.
         opts.dns.dns_final = "local".into();
 
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let dns = &parse(&built)["dns"];
-        let text = serde_yaml::to_string(dns).unwrap();
-        assert!(
-            !text.contains("system"),
-            "meow rejects the system resolver; dns block was: {text}"
-        );
-        assert_eq!(dns["nameserver"][0].as_str(), Some("223.5.5.5"));
+        assert_eq!(dns["nameserver"][0].as_str(), Some("system"));
         assert_eq!(
             dns["nameserver-policy"]["+.corp.internal"][0].as_str(),
-            Some("223.5.5.5")
-        );
-        assert_eq!(
-            dns["nameserver-policy"]["+.cn-local.com"][0].as_str(),
-            Some("223.5.5.5")
+            Some("system")
         );
     }
 
@@ -1753,7 +1822,7 @@ mod tests {
             port: 2081,
             allow_lan: false,
         }];
-        let built = build_meow_config(&[node], &opts).expect("build");
+        let built = build_mihomo_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         let listeners = doc["listeners"].as_sequence().expect("listeners");
         assert_eq!(listeners[0]["type"].as_str(), Some("mixed"));
@@ -1768,7 +1837,7 @@ mod tests {
     #[test]
     #[ignore = "needs the bundled dev meow binary"]
     fn live_config_validates() {
-        let bin = crate::core::find_bundled_core(None, CoreKind::Meow)
+        let bin = crate::core::find_bundled_core(None, CoreKind::Mihomo)
             .expect("bundled meow binary — run the fetch-bundled-meow script");
         let mut node = plain_node("live");
         node.server = "127.0.0.1".into();
@@ -1862,7 +1931,7 @@ mod tests {
         });
         opts.rule_sets = vec![set, geo_set];
 
-        let built = build_meow_config(&[node, ws], &opts).expect("build");
+        let built = build_mihomo_config(&[node, ws], &opts).expect("build");
 
         let tmp = std::env::temp_dir().join(format!(
             "satelite-meow-live-{}",
@@ -1879,18 +1948,18 @@ mod tests {
         // The geo_set's GEOSITE rule needs the geodata pair in the meow
         // home; stage the bundled dev copy (meow's own auto-download dials
         // through the not-yet-started test proxies and would fail).
-        let home = tmp.join("meow");
+        let home = tmp.join("mihomo");
         let _ = std::fs::create_dir_all(&home);
         if let Some(parent) = bin.parent() {
-            for file in ["Country.mmdb", "geosite.dat"] {
-                let src = parent.join("meow-geodata").join(file);
+            for file in ["Country.mmdb", "GeoSite.dat"] {
+                let src = parent.join("mihomo-geodata").join(file);
                 if src.is_file() {
                     let _ = std::fs::copy(&src, home.join(file));
                 }
             }
         }
 
-        crate::core::manager::CoreManager::check_config(CoreKind::Meow, &bin, &config)
+        crate::core::manager::CoreManager::check_config(CoreKind::Mihomo, &bin, &config)
             .expect("meow -t accepts the generated config");
         let _ = std::fs::remove_dir_all(tmp);
     }

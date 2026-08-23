@@ -317,12 +317,12 @@ export interface AppSettings {
   smart_switch?: boolean;
   /** `generated` or `singbox:<profile_id>`. */
   runtime_source?: string;
-  /** Which core runs: `singbox` (default) | `xray` | `meow`. */
+  /** Which core runs: `singbox` (default) | `xray` | `mihomo`. */
   core_type?: CoreKind;
 }
 
 /** Kernel binary kind. */
-export type CoreKind = "singbox" | "xray" | "meow";
+export type CoreKind = "singbox" | "xray" | "mihomo";
 
 /** Manual / app smart switch / sing-box urltest. */
 export type AutoSelectMode = "off" | "smart" | "kernel";
@@ -429,7 +429,7 @@ export interface ProxyStatus {
   custom_inbound_port?: number | null;
   /** Resident memory (bytes) of the core process, when known. */
   core_memory_bytes?: number | null;
-  /** Which core is active: `singbox` (default) | `xray` | `meow`. */
+  /** Which core is active: `singbox` (default) | `xray` | `mihomo`. */
   core_type?: CoreKind | string;
 }
 

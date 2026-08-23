@@ -10,10 +10,11 @@
 //! 2. Bundled with the app (`resources/bin/<plat>/*.dat`).
 //! 3. Network download from Loyalsoldier/v2ray-rules-dat (v2rayN's source).
 //!
-//! The meow core has its own geodata pair (`Country.mmdb` + `geosite.dat` in
-//! MetaCubeX .mrs format) living in the meow home dir `<app_data>/meow/`
-//! (see `paths::meow_home_dir`) — separate from `bin/` because the two cores'
-//! `geosite.dat` files share a name but not a format.
+//! The mihomo core has its own geodata pair (`Country.mmdb` + `geosite.dat`
+//! in MetaCubeX .mrs format) living in the mihomo home dir
+//! `<app_data>/mihomo/` (see `paths::mihomo_home_dir`) — separate from
+//! `bin/` because the two cores' `geosite.dat` files share a name but not a
+//! format.
 
 use crate::error::{AppError, AppResult};
 use std::io::Read;
@@ -185,29 +186,30 @@ pub fn geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileState); 
 }
 
 // ---------------------------------------------------------------------------
-// meow geodata (Country.mmdb + MetaCubeX .mrs geosite.dat in <app_data>/meow/)
+// mihomo geodata: Country.mmdb (MaxMind) + GeoSite.dat (MetaCubeX mrs —
+// note the exact casing, macOS is case-sensitive) in <data>/mihomo/.
 // ---------------------------------------------------------------------------
 
-const MEOW_GEODATA_FILES: [&str; 2] = ["Country.mmdb", "geosite.dat"];
-/// Same source meow itself downloads from (its own auto-update default).
-const MEOW_GEODATA_BASE_URL: &str =
+const MIHOMO_GEODATA_FILES: [&str; 2] = ["Country.mmdb", "GeoSite.dat"];
+/// Same source mihomo itself downloads from (its auto-update default).
+const MIHOMO_GEODATA_BASE_URL: &str =
     "https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download";
 
-pub fn meow_home(app_data_dir: &Path) -> std::path::PathBuf {
-    crate::core::paths::meow_home_dir(app_data_dir)
+pub fn mihomo_home(app_data_dir: &Path) -> std::path::PathBuf {
+    crate::core::paths::mihomo_home_dir(app_data_dir)
 }
 
-pub fn meow_geodata_present(app_data_dir: &Path) -> bool {
-    let home = meow_home(app_data_dir);
-    MEOW_GEODATA_FILES.iter().all(|f| home.join(f).is_file())
+pub fn mihomo_geodata_present(app_data_dir: &Path) -> bool {
+    let home = mihomo_home(app_data_dir);
+    MIHOMO_GEODATA_FILES.iter().all(|f| home.join(f).is_file())
 }
 
-/// Stage missing meow geodata from an explicit bundled dir
-/// (`resources/bin/<plat>/meow-geodata`). Returns true when all files are
+/// Stage missing mihomo geodata from an explicit bundled dir
+/// (`resources/bin/<plat>/mihomo-geodata`). Returns true when all files are
 /// present afterwards.
-pub fn stage_bundled_meow_geodata_from(app_data_dir: &Path, bundled_dir: &Path) -> bool {
-    let home = meow_home(app_data_dir);
-    for file in MEOW_GEODATA_FILES {
+pub fn stage_bundled_mihomo_geodata_from(app_data_dir: &Path, bundled_dir: &Path) -> bool {
+    let home = mihomo_home(app_data_dir);
+    for file in MIHOMO_GEODATA_FILES {
         let dest = home.join(file);
         if dest.is_file() {
             continue;
@@ -224,9 +226,9 @@ pub fn stage_bundled_meow_geodata_from(app_data_dir: &Path, bundled_dir: &Path) 
     true
 }
 
-/// Stage missing meow geodata from the bundled resources layout.
-pub fn stage_bundled_meow_geodata(app_data_dir: &Path, resource_dir: Option<&Path>) -> bool {
-    if meow_geodata_present(app_data_dir) {
+/// Stage missing mihomo geodata from the bundled resources layout.
+pub fn stage_bundled_mihomo_geodata(app_data_dir: &Path, resource_dir: Option<&Path>) -> bool {
+    if mihomo_geodata_present(app_data_dir) {
         return true;
     }
     let Some(resource_dir) = resource_dir else {
@@ -242,57 +244,57 @@ pub fn stage_bundled_meow_geodata(app_data_dir: &Path, resource_dir: Option<&Pat
         resource_dir.join("bin").join(platform),
         resource_dir.join(platform),
     ] {
-        if stage_bundled_meow_geodata_from(app_data_dir, &dir.join("meow-geodata")) {
+        if stage_bundled_mihomo_geodata_from(app_data_dir, &dir.join("mihomo-geodata")) {
             return true;
         }
     }
     false
 }
 
-/// Download missing meow geodata (sync; ureq). `force` re-downloads for the
+/// Download missing mihomo geodata (sync; ureq). `force` re-downloads for the
 /// manual refresh action in the Rules UI.
-pub fn download_missing_meow_geodata(
+pub fn download_missing_mihomo_geodata(
     app_data_dir: &Path,
     proxy_url: Option<&str>,
     force: bool,
 ) -> AppResult<()> {
-    let home = meow_home(app_data_dir);
+    let home = mihomo_home(app_data_dir);
     std::fs::create_dir_all(&home)?;
-    for file in MEOW_GEODATA_FILES {
+    for file in MIHOMO_GEODATA_FILES {
         let dest = home.join(file);
         if dest.is_file() && !force {
             continue;
         }
-        let url = format!("{MEOW_GEODATA_BASE_URL}/{file}");
+        let url = format!("{MIHOMO_GEODATA_BASE_URL}/{file}");
         let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(120));
         if let Some(proxy) = proxy_url {
             let proxy = ureq::Proxy::new(proxy)
-                .map_err(|e| AppError::Core(format!("meow geodata proxy: {e}")))?;
+                .map_err(|e| AppError::Core(format!("mihomo geodata proxy: {e}")))?;
             builder = builder.proxy(proxy);
         }
         let resp = builder
             .build()
             .get(&url)
             .call()
-            .map_err(|e| AppError::Core(format!("meow geodata download {file}: {e}")))?;
+            .map_err(|e| AppError::Core(format!("mihomo geodata download {file}: {e}")))?;
         let len = resp
             .header("content-length")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
         if len > MAX_DAT_BYTES {
             return Err(AppError::Core(format!(
-                "meow geodata {file} exceeds {MAX_DAT_BYTES} bytes"
+                "mihomo geodata {file} exceeds {MAX_DAT_BYTES} bytes"
             )));
         }
         let mut bytes = Vec::new();
         resp.into_reader()
             .take(MAX_DAT_BYTES)
             .read_to_end(&mut bytes)
-            .map_err(|e| AppError::Core(format!("meow geodata read {file}: {e}")))?;
+            .map_err(|e| AppError::Core(format!("mihomo geodata read {file}: {e}")))?;
         // Sanity: mmdb is ~8 MB, mrs geosite ~4 MB; never tiny.
         if bytes.len() < 1024 {
             return Err(AppError::Core(format!(
-                "meow geodata {file} too small ({} bytes), likely failed",
+                "mihomo geodata {file} too small ({} bytes), likely failed",
                 bytes.len()
             )));
         }
@@ -301,40 +303,40 @@ pub fn download_missing_meow_geodata(
         std::fs::rename(&staged, &dest)?;
         crate::app_log::info(
             "geodata",
-            format!("meow: downloaded {file} ({} bytes)", bytes.len()),
+            format!("mihomo: downloaded {file} ({} bytes)", bytes.len()),
         );
     }
     Ok(())
 }
 
-/// Full ensure chain used before starting meow: staged → bundled → network.
-/// Missing geodata is a hard start failure in meow (GEOIP/GEOSITE rules make
+/// Full ensure chain used before starting mihomo: staged → bundled → network.
+/// Missing geodata is a hard start failure in mihomo (GEOIP/GEOSITE rules make
 /// the process exit), so unlike Xray this returns an error naming the files.
-pub fn ensure_meow_geodata(
+pub fn ensure_mihomo_geodata(
     app_data_dir: &Path,
     resource_dir: Option<&Path>,
     proxy_url: Option<&str>,
 ) -> AppResult<()> {
-    if meow_geodata_present(app_data_dir) {
+    if mihomo_geodata_present(app_data_dir) {
         return Ok(());
     }
-    if stage_bundled_meow_geodata(app_data_dir, resource_dir) {
+    if stage_bundled_mihomo_geodata(app_data_dir, resource_dir) {
         return Ok(());
     }
-    download_missing_meow_geodata(app_data_dir, proxy_url, false)?;
-    if !meow_geodata_present(app_data_dir) {
+    download_missing_mihomo_geodata(app_data_dir, proxy_url, false)?;
+    if !mihomo_geodata_present(app_data_dir) {
         return Err(AppError::Core(
-            "meow geodata (Country.mmdb / geosite.dat) missing — GEOIP/GEOSITE rules cannot load"
+            "mihomo geodata (Country.mmdb / geosite.dat) missing — GEOIP/GEOSITE rules cannot load"
                 .into(),
         ));
     }
     Ok(())
 }
 
-pub fn meow_geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileState); 2] {
-    let home = meow_home(app_data_dir);
+pub fn mihomo_geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileState); 2] {
+    let home = mihomo_home(app_data_dir);
     let mut out = Vec::new();
-    for file in MEOW_GEODATA_FILES {
+    for file in MIHOMO_GEODATA_FILES {
         let path = home.join(file);
         let state = match std::fs::metadata(&path) {
             Ok(meta) => GeodataFileState {
@@ -356,7 +358,7 @@ pub fn meow_geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileSta
     }
     match out.try_into() {
         Ok(arr) => arr,
-        Err(_) => unreachable!("MEOW_GEODATA_FILES has exactly 2 entries"),
+        Err(_) => unreachable!("MIHOMO_GEODATA_FILES has exactly 2 entries"),
     }
 }
 
@@ -492,9 +494,9 @@ mod tests {
     }
 
     #[test]
-    fn meow_geodata_stages_into_home_dir() {
+    fn mihomo_geodata_stages_into_home_dir() {
         let root = std::env::temp_dir().join(format!(
-            "satelite-meow-geodata-{}-{}",
+            "satelite-mihomo-geodata-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -503,21 +505,27 @@ mod tests {
         ));
         let app_data = root.join("app-data");
         std::fs::create_dir_all(&app_data).unwrap();
-        assert!(!meow_geodata_present(&app_data));
-        assert!(!stage_bundled_meow_geodata(&app_data, None));
+        assert!(!mihomo_geodata_present(&app_data));
+        assert!(!stage_bundled_mihomo_geodata(&app_data, None));
 
         let resource_root = root.join("res");
         let suffix = crate::core::paths::detect_platform().unwrap().asset_suffix;
-        let bundled = resource_root.join("bin").join(suffix).join("meow-geodata");
+        let bundled = resource_root
+            .join("bin")
+            .join(suffix)
+            .join("mihomo-geodata");
         std::fs::create_dir_all(&bundled).unwrap();
         std::fs::write(bundled.join("Country.mmdb"), b"fake-mmdb").unwrap();
         std::fs::write(bundled.join("geosite.dat"), b"fake-mrs").unwrap();
 
-        assert!(stage_bundled_meow_geodata(&app_data, Some(&resource_root)));
-        assert!(meow_geodata_present(&app_data));
-        // Lives in the meow home dir, never in bin/ (name collision with
+        assert!(stage_bundled_mihomo_geodata(
+            &app_data,
+            Some(&resource_root)
+        ));
+        assert!(mihomo_geodata_present(&app_data));
+        // Lives in the mihomo home dir, never in bin/ (name collision with
         // Xray's v2ray-format geosite.dat).
-        let home = meow_home(&app_data);
+        let home = mihomo_home(&app_data);
         assert!(home.join("Country.mmdb").is_file());
         assert!(home.join("geosite.dat").is_file());
         assert!(!crate::core::paths::core_dir(&app_data)

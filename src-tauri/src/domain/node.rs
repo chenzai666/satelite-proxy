@@ -96,26 +96,15 @@ impl Protocol {
         )
     }
 
-    /// Whether the meow core (mihomo/Clash Meta in Rust) can serve this
-    /// protocol as an outbound. meow covers the Clash family: SS / VMess /
-    /// VLESS (incl. Vision + REALITY) / Trojan / Hysteria2 / AnyTLS / Snell /
-    /// SOCKS5 / HTTP — but not TUIC, Hysteria v1, ShadowTLS, SSH, Naive, Tor
-    /// or WireGuard. (VMess additionally only accepts tcp/ws transports;
-    /// that is a per-node generation-time check in `config/meow.rs`, not a
-    /// protocol-level exclusion.)
-    pub fn meow_supported(self) -> bool {
-        matches!(
-            self,
-            Self::Shadowsocks
-                | Self::Vmess
-                | Self::Vless
-                | Self::Trojan
-                | Self::Hysteria2
-                | Self::Socks5
-                | Self::Http
-                | Self::AnyTls
-                | Self::Snell
-        )
+    /// Whether the mihomo (Clash Meta) core can serve this protocol as an
+    /// outbound. mihomo is the canonical Clash kernel — full coverage:
+    /// SS(+plugins) / VMess / VLESS (incl. REALITY + Vision) / Trojan /
+    /// Hysteria(1|2) / TUIC / WireGuard / AnyTLS / Snell / SOCKS5 / HTTP /
+    /// SSH. Only Naive and Tor (external-executable shapes) are missing,
+    /// plus a standalone ShadowTLS proxy type (ss+shadow-tls plugin would
+    /// need its own field mapping).
+    pub fn mihomo_supported(self) -> bool {
+        !matches!(self, Self::Naive | Self::Tor | Self::ShadowTls)
     }
 }
 

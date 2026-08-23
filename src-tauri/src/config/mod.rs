@@ -2,7 +2,7 @@ mod builder;
 mod custom;
 mod dns_build;
 mod dns_files;
-mod meow;
+mod mihomo;
 mod punycode;
 mod rule_files;
 mod write;
@@ -15,7 +15,7 @@ pub use builder::{
 pub use custom::inspect_singbox_config;
 pub use dns_build::lookup_hosts;
 pub use dns_files::dump_dns_rules_file;
-pub use meow::build_meow_config;
+pub use mihomo::build_mihomo_config;
 pub use rule_files::{dump_rule_set_files, remove_rule_set_files};
 pub use write::{
     active_config_path, active_yaml_config_path, remove_custom_config, write_active_config,

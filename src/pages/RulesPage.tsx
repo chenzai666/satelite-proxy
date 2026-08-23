@@ -130,9 +130,9 @@ export function RulesPage({ embedded = false }: Props) {
   // Geodata cores (Xray / meow): user-added remote .srs sets are skipped by
   // their generators — the sidebar greys them out (builtin remote sets map
   // onto geosite/geoip matchers backed by geodata files instead).
-  const [geoCore, setGeoCore] = useState<"xray" | "meow" | null>(() => {
+  const [geoCore, setGeoCore] = useState<"xray" | "mihomo" | null>(() => {
     const ct = peekSettings()?.core_type;
-    return ct === "xray" ? "xray" : ct === "meow" ? "meow" : null;
+    return ct === "xray" ? "xray" : ct === "mihomo" ? "mihomo" : null;
   });
   const [geodata, setGeodata] = useState<GeodataInfo | null>(null);
 
@@ -223,7 +223,7 @@ export function RulesPage({ embedded = false }: Props) {
       }
       {
         const ct = s.core_type ?? "singbox";
-        setGeoCore(ct === "xray" ? "xray" : ct === "meow" ? "meow" : null);
+        setGeoCore(ct === "xray" ? "xray" : ct === "mihomo" ? "mihomo" : null);
       }
     } catch {
       /* keep default */
@@ -1585,17 +1585,17 @@ export function RulesPage({ embedded = false }: Props) {
                     {t("rules.xrayGeoHint", { matcher: geo.matcher })}
                   </div>
                   <div className="muted" style={{ marginTop: "0.3rem" }}>
-                    {geoCore === "meow"
-                      ? t("rules.meowGeoSource")
+                    {geoCore === "mihomo"
+                      ? t("rules.mihomoGeoSource")
                       : t("rules.xrayGeoSource")}
                   </div>
                   <div className="remote-cache-row" style={{ marginTop: "0.45rem" }}>
                     <span className="muted">{t("rules.cacheFile")}</span>
                     <code className="remote-cache-path">
-                      {geoCore === "meow"
+                      {geoCore === "mihomo"
                         ? geo.dat === "geoip"
                           ? "Country.mmdb"
-                          : "geosite.dat"
+                          : "GeoSite.dat"
                         : `${geo.dat}.dat`}
                       {file?.present
                         ? ` · ${fmtDatSize(file.bytes)} · ${fmtDatTime(file.modified_at)}`

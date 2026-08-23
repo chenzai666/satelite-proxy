@@ -303,8 +303,8 @@ pub struct GeodataInfo {
 }
 
 /// Geodata state for the kernel-mode Rules card. `kind` selects the pair:
-/// `xray` (default — Loyalsoldier .dat in `bin/`) or `meow` (MetaCubeX
-/// Country.mmdb + mrs geosite.dat in the meow home dir). `force` re-downloads
+/// `xray` (default — Loyalsoldier .dat in `bin/`) or `mihomo` (MetaCubeX
+/// Country.mmdb + mrs geosite.dat in the mihomo home dir). `force` re-downloads
 /// first (routed via the running proxy when the core is up — same policy as
 /// core downloads).
 #[tauri::command]
@@ -323,9 +323,9 @@ pub async fn refresh_geodata(
     let app_data_dir = state.app_data_dir.clone();
     if force {
         match kind {
-            crate::core::CoreKind::Meow => {
+            crate::core::CoreKind::Mihomo => {
                 tauri::async_runtime::spawn_blocking(move || {
-                    crate::core::download_missing_meow_geodata(
+                    crate::core::download_missing_mihomo_geodata(
                         &app_data_dir,
                         proxy_url.as_deref(),
                         true,
@@ -346,7 +346,7 @@ pub async fn refresh_geodata(
         }
     }
     Ok(match kind {
-        crate::core::CoreKind::Meow => meow_geodata_info(&state.app_data_dir),
+        crate::core::CoreKind::Mihomo => mihomo_geodata_info(&state.app_data_dir),
         _ => geodata_info(&state.app_data_dir),
     })
 }
@@ -374,10 +374,10 @@ fn geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
     }
 }
 
-/// Same card shape for the meow pair (geosite.dat = .mrs, geoip =
+/// Same card shape for the mihomo pair (geosite.dat = .mrs, geoip =
 /// Country.mmdb — file states are keyed by their on-disk names).
-fn meow_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
-    let states = crate::core::meow_geodata_state(app_data_dir);
+fn mihomo_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
+    let states = crate::core::mihomo_geodata_state(app_data_dir);
     let find = |name: &str| {
         states
             .iter()

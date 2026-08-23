@@ -211,8 +211,8 @@ pub fn run() {
             // Smart node switch (docs/auto.md): passive + on-demand probe.
             smart_switch::spawn(app.handle().clone());
 
-            // Core watchdog: a core that dies without a user stop (meow has
-            // been observed exiting silently) is auto-restarted, bounded by
+            // Core watchdog: a core that dies without a user stop is
+            // auto-restarted, bounded by
             // an attempt budget so config-error loops cannot spin.
             state::spawn_core_watchdog(app.handle().clone());
 

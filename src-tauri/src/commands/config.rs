@@ -1,5 +1,5 @@
 use crate::config::{
-    active_config_path, active_yaml_config_path, build_meow_config, build_singbox_config,
+    active_config_path, active_yaml_config_path, build_mihomo_config, build_singbox_config,
     build_xray_config, generate_api_secret, write_active_config, write_active_yaml_config,
     BuildOptions,
 };
@@ -668,8 +668,8 @@ pub async fn generate_singbox_config(
             bypass_lan: settings.bypass_lan,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
-            crate::core::CoreKind::Meow => {
-                let built = build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+            crate::core::CoreKind::Mihomo => {
+                let built = build_mihomo_config(&nodes, &opts).map_err(|e| e.to_string())?;
                 let path = write_active_yaml_config(&app_data_dir, &built.yaml)
                     .map_err(|e| e.to_string())?;
                 GenerateConfigResult {
@@ -723,12 +723,12 @@ pub async fn generate_singbox_config(
 
 #[tauri::command]
 pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    // meow keeps its Clash YAML in active.yaml; JSON cores share active.json.
+    // mihomo keeps its Clash YAML in active.yaml; JSON cores share active.json.
     let core_type = state
         .with_store(|store| Ok(store.settings.core_type.clone()))
         .map_err(|e| e.to_string())?;
     let path = match crate::core::CoreKind::parse(&core_type) {
-        crate::core::CoreKind::Meow => active_yaml_config_path(&state.app_data_dir),
+        crate::core::CoreKind::Mihomo => active_yaml_config_path(&state.app_data_dir),
         _ => active_config_path(&state.app_data_dir),
     };
     if path.exists() {
@@ -761,7 +761,7 @@ pub async fn preview_singbox_config(
     let core_type = settings.core_type.clone();
 
     let path = match crate::core::CoreKind::parse(&core_type) {
-        crate::core::CoreKind::Meow => active_yaml_config_path(&state.app_data_dir),
+        crate::core::CoreKind::Mihomo => active_yaml_config_path(&state.app_data_dir),
         _ => active_config_path(&state.app_data_dir),
     };
     tauri::async_runtime::spawn_blocking(move || {
@@ -788,8 +788,8 @@ pub async fn preview_singbox_config(
             bypass_lan: settings.bypass_lan,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
-            crate::core::CoreKind::Meow => {
-                let built = build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+            crate::core::CoreKind::Mihomo => {
+                let built = build_mihomo_config(&nodes, &opts).map_err(|e| e.to_string())?;
                 GenerateConfigResult {
                     path: path.display().to_string(),
                     selected_tag: built.selected_tag,

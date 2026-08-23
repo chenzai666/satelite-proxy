@@ -2,7 +2,7 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    build_meow_config, build_singbox_config, build_xray_config, generate_api_secret,
+    build_mihomo_config, build_singbox_config, build_xray_config, generate_api_secret,
     inspect_singbox_config, outbound_tag, write_active_config, write_active_yaml_config,
     write_custom_config, BuildOptions,
 };
@@ -690,8 +690,8 @@ impl Runtime {
                     enable_system_proxy,
                 )
             }
-            CoreKind::Meow => {
-                return self.start_meow_proxy(
+            CoreKind::Mihomo => {
+                return self.start_mihomo_proxy(
                     app_data_dir,
                     resource_dir,
                     store,
@@ -989,11 +989,11 @@ impl Runtime {
         Ok(self.status(store))
     }
 
-    /// Generate a Clash YAML config and start the meow core. Mirrors the
-    /// sing-box generated path — meow serves a Clash-compatible API, so the
+    /// Generate a Clash YAML config and start the mihomo core. Mirrors the
+    /// sing-box generated path — mihomo serves a Clash-compatible API, so the
     /// same ClashApi health-check / hot-switch / conn-journal machinery is
     /// reused unchanged.
-    fn start_meow_proxy(
+    fn start_mihomo_proxy(
         &mut self,
         app_data_dir: &Path,
         resource_dir: Option<&Path>,
@@ -1010,22 +1010,22 @@ impl Runtime {
                 "no nodes; import a subscription first".into(),
             ));
         }
-        // meow cannot serve every protocol. Mixed subscriptions are fine —
-        // build_meow_config skips incompatible nodes (and vmess non-tcp/ws
+        // A core may not serve every protocol. Mixed subscriptions are fine —
+        // build_mihomo_config skips incompatible nodes (and vmess non-tcp/ws
         // transports) with a warning — but zero compatible nodes cannot run.
         let supported_count = nodes
             .iter()
-            .filter(|n| CoreKind::Meow.supports_node(n))
+            .filter(|n| CoreKind::Mihomo.supports_node(n))
             .count();
         if supported_count == 0 {
             return Err(AppError::Config(
-                "当前启用的节点均不被 meow 内核支持（支持 ss/vmess/非REALITY的vless/trojan/hysteria2/anytls/snell/socks5/http）。请导入兼容订阅或切换内核".into(),
+                "当前启用的节点均不被 mihomo 内核支持（支持 ss/vmess/vless/trojan/hysteria(2)/tuic/wireguard/anytls/snell/socks5/http/ssh）。请导入兼容订阅或切换内核".into(),
             ));
         }
         let unsupported: Vec<&str> = {
             let mut kinds: Vec<&str> = nodes
                 .iter()
-                .filter(|n| !CoreKind::Meow.supports_node(n))
+                .filter(|n| !CoreKind::Mihomo.supports_node(n))
                 .map(|n| n.protocol.as_str())
                 .collect();
             kinds.sort_unstable();
@@ -1035,9 +1035,9 @@ impl Runtime {
         if !unsupported.is_empty() {
             let skipped = nodes.len() - supported_count;
             crate::app_log::warn(
-                "meow_config",
+                "mihomo_config",
                 format!(
-                    "meow 内核跳过 {skipped} 个不支持协议（{}）的节点",
+                    "mihomo 内核跳过 {skipped} 个不支持协议（{}）的节点",
                     unsupported.join("/")
                 ),
             );
@@ -1049,15 +1049,15 @@ impl Runtime {
             ensure_listen_port_available(inb.port, "Inbound")?;
         }
 
-        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Meow);
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Mihomo);
         let bin = bin.ok_or_else(|| {
-            AppError::Core("meow binary not found; download it on the Settings core tab".into())
+            AppError::Core("mihomo binary not found; download it on the Settings core tab".into())
         })?;
 
         // GEOSITE/GEOIP rules hard-fail the core when the geodata files are
-        // missing (meow's own auto-download dials through the not-yet-started
+        // missing (mihomo's own auto-download dials through the not-yet-started
         // proxies) — ensure them first: staged → bundled → direct download.
-        crate::core::ensure_meow_geodata(app_data_dir, resource_dir, None)?;
+        crate::core::ensure_mihomo_geodata(app_data_dir, resource_dir, None)?;
 
         // Reuse the persisted clash_api secret (same policy as sing-box).
         let secret = store
@@ -1066,7 +1066,7 @@ impl Runtime {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
-        let built = build_meow_config(&nodes, &build_options(store, secret.clone()))?;
+        let built = build_mihomo_config(&nodes, &build_options(store, secret.clone()))?;
         let config_path = write_active_yaml_config(app_data_dir, &built.yaml)?;
         store.settings.clash_api_secret = Some(secret.clone());
         // Mirror the selected node onto the store when the persisted pick is
@@ -1080,11 +1080,11 @@ impl Runtime {
                 nodes
                     .iter()
                     .find(|n| n.id == id)
-                    .is_some_and(|n| !CoreKind::Meow.supports_node(n))
+                    .is_some_and(|n| !CoreKind::Mihomo.supports_node(n))
             })
             .unwrap_or(true);
         if needs_pick {
-            if let Some(first) = nodes.iter().find(|n| CoreKind::Meow.supports_node(n)) {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Mihomo.supports_node(n)) {
                 store.settings.current_node_id = Some(first.id.clone());
             }
         }
@@ -1092,7 +1092,7 @@ impl Runtime {
         let log_dir = app_data_dir.join("logs");
         let elevated = store.settings.tun_enabled;
         self.core.start_with_ports(
-            CoreKind::Meow,
+            CoreKind::Mihomo,
             &bin,
             &config_path,
             &log_dir,
@@ -1160,7 +1160,7 @@ impl Runtime {
             let _ = self.core.stop();
             let detail = if log_hint.is_empty() {
                 format!(
-                    "meow started but clash api not responding at 127.0.0.1:{}",
+                    "mihomo started but clash api not responding at 127.0.0.1:{}",
                     store.settings.api_port
                 )
             } else {

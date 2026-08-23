@@ -780,9 +780,7 @@ fn queue_rebuild_if_enabled_set_changed(
 
 fn enabled_flags(state: &AppState) -> Vec<bool> {
     state
-        .with_store(|store| {
-            Ok(store.subscriptions.iter().map(|s| s.enabled).collect())
-        })
+        .with_store(|store| Ok(store.subscriptions.iter().map(|s| s.enabled).collect()))
         .unwrap_or_default()
 }
 

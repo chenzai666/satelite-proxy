@@ -229,12 +229,12 @@ fn pick_asset(
     let expected = kind.asset_name(&version, suffix, platform.is_windows);
     let ext = if platform.is_windows { "zip" } else { "tar.gz" };
     // sing-box assets embed the version (`sing-box-1.13.15-darwin-arm64.tar.gz`);
-    // Xray assets don't (`Xray-macos-arm64-v8a.zip`); meow embeds it too
-    // (`meow-v0.21.0-aarch64-apple-darwin.tar.gz`).
+    // Xray assets don't (`Xray-macos-arm64-v8a.zip`); mihomo embeds it too
+    // (`mihomo-darwin-arm64-v1.19.30.gz`).
     let prefix = match kind {
         CoreKind::SingBox => format!("sing-box-{}", version.trim_start_matches('v')),
         CoreKind::Xray => "Xray-".to_string(),
-        CoreKind::Meow => format!("meow-v{}", version.trim_start_matches('v')),
+        CoreKind::Mihomo => format!("mihomo-"),
     };
 
     let asset = release
@@ -462,6 +462,15 @@ fn install_downloaded_archive(
     let install_result = (|| {
         if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
             extract_binary_from_tar_gz(kind, &archive_path, &staged)?;
+        } else if info.asset_name.ends_with(".gz") {
+            // mihomo darwin/linux assets are a bare gzipped binary.
+            let file =
+                File::open(&archive_path).map_err(|e| AppError::Core(format!("open gz: {e}")))?;
+            let mut dec = GzDecoder::new(file);
+            let mut out =
+                File::create(&staged).map_err(|e| AppError::Core(format!("create binary: {e}")))?;
+            io::copy(&mut dec, &mut out)
+                .map_err(|e| AppError::Core(format!("extract binary: {e}")))?;
         } else if info.asset_name.ends_with(".zip") {
             extract_from_zip(kind, &archive_path, &staged, &bin_dir)?;
         } else {
@@ -621,7 +630,6 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
     let want = kind.binary_name();
     let mut target_index = None;
     let mut dat_indexes = Vec::new();
-    let mut wintun_index = None;
     for i in 0..zip.len() {
         let entry = zip
             .by_index(i)
@@ -631,17 +639,16 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        if file_name == want || tar_binary_matches(kind, file_name) {
+        let stem_matches = file_name
+            .strip_suffix(want.strip_suffix(".exe").unwrap_or(want))
+            .is_some()
+            || file_name == want
+            || tar_binary_matches(kind, file_name);
+        if stem_matches {
             target_index = Some(i);
         } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat")
         {
             dat_indexes.push((i, file_name.to_string()));
-        } else if kind == CoreKind::Meow && file_name == "wintun.dll" {
-            // meow zips ship wintun.dll beside the binary (Windows tun). It is
-            // staged under a meow-specific name so it never clobbers Xray's
-            // own `bin/wintun.dll`; `CoreKind::spawn_env` points meow at it
-            // via MEOW_WINTUN_DLL.
-            wintun_index = Some(i);
         }
     }
     let idx = target_index.ok_or_else(|| {
@@ -678,21 +685,6 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
         }
     }
 
-    if let Some(i) = wintun_index {
-        let mut entry = zip
-            .by_index(i)
-            .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
-        let target = bin_dir.join("meow-wintun.dll");
-        let needs_copy = std::fs::metadata(&target)
-            .map(|m| m.len() != entry.size())
-            .unwrap_or(true);
-        if needs_copy {
-            let mut out = File::create(&target)
-                .map_err(|e| AppError::Core(format!("create meow-wintun.dll: {e}")))?;
-            io::copy(&mut entry, &mut out)
-                .map_err(|e| AppError::Core(format!("extract meow-wintun.dll: {e}")))?;
-        }
-    }
     Ok(())
 }
 
@@ -716,7 +708,7 @@ mod tests {
         let p = detect_platform().expect("platform");
         assert!(!p.asset_suffix.is_empty());
         assert!(!p.xray_asset_suffix.is_empty());
-        assert!(!p.meow_asset_suffix.is_empty());
+        assert!(!p.mihomo_asset_suffix.is_empty());
     }
 
     #[test]

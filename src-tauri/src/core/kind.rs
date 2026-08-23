@@ -11,7 +11,7 @@ use std::path::Path;
 pub enum CoreKind {
     SingBox,
     Xray,
-    Meow,
+    Mihomo,
 }
 
 impl CoreKind {
@@ -31,11 +31,11 @@ impl CoreKind {
                     "xray"
                 }
             }
-            Self::Meow => {
+            Self::Mihomo => {
                 if cfg!(windows) {
-                    "meow.exe"
+                    "mihomo.exe"
                 } else {
-                    "meow"
+                    "mihomo"
                 }
             }
         }
@@ -45,7 +45,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "sing-box",
             Self::Xray => "Xray",
-            Self::Meow => "meow",
+            Self::Mihomo => "mihomo",
         }
     }
 
@@ -54,14 +54,15 @@ impl CoreKind {
         match self {
             Self::SingBox => "singbox",
             Self::Xray => "xray",
-            Self::Meow => "meow",
+            Self::Mihomo => "mihomo",
         }
     }
 
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "xray" => Self::Xray,
-            "meow" => Self::Meow,
+            // Legacy token from the pre-swap meow integration.
+            "mihomo" | "meow" => Self::Mihomo,
             _ => Self::SingBox,
         }
     }
@@ -71,7 +72,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "SagerNet/sing-box",
             Self::Xray => "XTLS/Xray-core",
-            Self::Meow => "madeye/meow-rs",
+            Self::Mihomo => "MetaCubeX/mihomo",
         }
     }
 
@@ -80,14 +81,16 @@ impl CoreKind {
         match self {
             Self::SingBox => "v1.13.15",
             Self::Xray => "v26.3.27",
-            Self::Meow => "v0.21.0",
+            Self::Mihomo => "v1.19.30",
         }
     }
 
-    /// Release asset name for a platform. The naming schemes all differ:
+    /// Release asset name for a platform. The naming schemes differ:
     /// sing-box `sing-box-{ver}-darwin-arm64.tar.gz`, Xray
-    /// `Xray-macos-arm64-v8a.zip` (no version, `64` not `amd64`), meow
-    /// `meow-v{ver}-aarch64-apple-darwin.tar.gz` (Rust target triples).
+    /// `Xray-macos-arm64-v8a.zip` (no version, `64` not `amd64`), mihomo
+    /// `mihomo-{plat}-v{ver}.zip|.gz` (same plat suffixes as sing-box;
+    /// Windows zips carry a versioned inner exe, darwin/linux ship a bare
+    /// gzipped binary).
     pub fn asset_name(self, version: &str, platform_suffix: &str, is_windows: bool) -> String {
         let ver_num = version.trim_start_matches('v');
         match self {
@@ -96,9 +99,9 @@ impl CoreKind {
                 format!("sing-box-{ver_num}-{platform_suffix}.{ext}")
             }
             Self::Xray => format!("Xray-{platform_suffix}.zip"),
-            Self::Meow => {
-                let ext = if is_windows { "zip" } else { "tar.gz" };
-                format!("meow-v{ver_num}-{platform_suffix}.{ext}")
+            Self::Mihomo => {
+                let ext = if is_windows { "zip" } else { "gz" };
+                format!("mihomo-{platform_suffix}-v{ver_num}.{ext}")
             }
         }
     }
@@ -108,14 +111,14 @@ impl CoreKind {
         match self {
             Self::SingBox => &["version"],
             Self::Xray => &["-version"],
-            Self::Meow => &["-v"],
+            Self::Mihomo => &["-v"],
         }
     }
 
     /// Extract the version from `version_args` output. sing-box prints
     /// `sing-box version 1.13.15 (...)`; Xray prints
-    /// `Xray 26.3.27 (Custom) ... (go1.24 ...)`; meow prints
-    /// `Meow Meta 0.21.0` (mihomo `-v` compatibility).
+    /// `Xray 26.3.27 (Custom) ... (go1.24 ...)`; mihomo prints
+    /// `Mihomo Meta v1.19.30 windows amd64 ...`.
     pub fn parse_version_output(self, out: &str) -> Option<String> {
         for line in out.lines() {
             let line = line.trim();
@@ -133,9 +136,14 @@ impl CoreKind {
                         return Some(rest.split_whitespace().next()?.to_string());
                     }
                 }
-                Self::Meow => {
-                    if let Some(rest) = line.strip_prefix("Meow Meta ") {
-                        return Some(rest.split_whitespace().next()?.to_string());
+                Self::Mihomo => {
+                    if let Some(rest) = line.strip_prefix("Mihomo Meta ") {
+                        return Some(
+                            rest.trim_start_matches('v')
+                                .split_whitespace()
+                                .next()?
+                                .to_string(),
+                        );
                     }
                 }
             }
@@ -151,33 +159,33 @@ impl CoreKind {
         None
     }
 
-    /// Full CLI argument vector that validates `config` without starting the
-    /// server. sing-box: `check -c <file>`; Xray: `run -test -c <file>`;
-    /// meow: `-t -f <file> -d <home>` (the home dir hosts its geodata, and
-    /// relative config paths resolve against it, so both are absolute here).
+    /// Full CLI argument vector that validates `config` without starting
+    /// the server. sing-box: `check -c <file>`; Xray: `run -test -c
+    /// <file>`; mihomo: `-t -f <file> -d <home>` (the home dir hosts its
+    /// geodata and caches; config paths must be absolute under `-d`).
     pub fn check_command_args(self, config: &Path) -> Vec<String> {
         let config = config.display().to_string();
         match self {
             Self::SingBox => vec!["check".into(), "-c".into(), config],
             Self::Xray => vec!["run".into(), "-test".into(), "-c".into(), config],
-            Self::Meow => {
+            Self::Mihomo => {
                 let mut args = vec!["-t".into(), "-f".into(), config.clone()];
-                args.extend(meow_home_args(&config));
+                args.extend(mihomo_home_args(&config));
                 args
             }
         }
     }
 
     /// Full CLI argument vector that runs the core with `config`. sing-box
-    /// and Xray: `run -c <file>`; meow: `-f <file> -d <home>` — meow has no
-    /// `run` subcommand, the config alone starts the server.
+    /// and Xray: `run -c <file>`; mihomo: `-f <file> -d <home>` — no `run`
+    /// subcommand, the config alone starts the server.
     pub fn run_command_args(self, config: &Path) -> Vec<String> {
         let config = config.display().to_string();
         match self {
             Self::SingBox | Self::Xray => vec!["run".into(), "-c".into(), config],
-            Self::Meow => {
+            Self::Mihomo => {
                 let mut args = vec!["-f".into(), config.clone()];
-                args.extend(meow_home_args(&config));
+                args.extend(mihomo_home_args(&config));
                 args
             }
         }
@@ -193,16 +201,15 @@ impl CoreKind {
             .as_deref()
         {
             Some("xray") => Self::Xray,
-            Some("meow") => Self::Meow,
+            Some("meow") | Some("mihomo") => Self::Mihomo,
             _ => Self::SingBox,
         }
     }
 
     /// Environment variables the child process needs. Xray resolves
-    /// geosite.dat / geoip.dat (and TLS certs) relative to `bin_dir`; meow
-    /// loads its bundled wintun.dll (Windows tun) from `bin/meow-wintun.dll`
-    /// — kept beside the binary under a meow-specific name so it never
-    /// collides with Xray's own `bin/wintun.dll`.
+    /// geosite.dat / geoip.dat (and TLS certs) relative to `bin_dir`.
+    /// mihomo needs none — its wintun.dll is looked up next to the exe
+    /// (`bin/wintun.dll`, shared with the Xray staging).
     pub fn spawn_env(self, bin_dir: &std::path::Path) -> Vec<(String, String)> {
         match self {
             Self::SingBox => Vec::new(),
@@ -213,7 +220,7 @@ impl CoreKind {
                     ("XRAY_LOCATION_CERT".into(), dir),
                 ]
             }
-            Self::Meow => {
+            Self::Mihomo => {
                 let dll = bin_dir.join("meow-wintun.dll");
                 if cfg!(windows) && dll.is_file() {
                     vec![("MEOW_WINTUN_DLL".into(), dll.display().to_string())]
@@ -229,7 +236,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "sing-box",
             Self::Xray => "xray",
-            Self::Meow => "meow",
+            Self::Mihomo => "mihomo",
         }
     }
 
@@ -240,7 +247,7 @@ impl CoreKind {
         match self {
             Self::SingBox => "version.txt",
             Self::Xray => "xray-version.txt",
-            Self::Meow => "meow-version.txt",
+            Self::Mihomo => "mihomo-version.txt",
         }
     }
 
@@ -251,70 +258,21 @@ impl CoreKind {
         match self {
             Self::SingBox => true,
             Self::Xray => protocol.xray_supported(),
-            Self::Meow => protocol.meow_supported(),
+            Self::Mihomo => protocol.mihomo_supported(),
         }
     }
 
     /// Whether this core can serve the NODE as a whole — protocol plus the
     /// per-node shapes a core cannot represent. sing-box serves everything;
-    /// meow additionally rejects:
-    /// - vless Vision over NON-REALITY TLS: meow's raw passthrough only
-    ///   works over its REALITY stream (transport::enable_raw_* only
-    ///   downcasts RealityTlsStream), so plain-TLS Vision nodes die at
-    ///   "vision: DIRECT requested but transport cannot switch to raw
-    ///   passthrough". These nodes pass TCP probes while dead, so
-    ///   selecting one silently kills the proxy-egress remote DNS.
-    ///   Vision+REALITY works (field-audited: 11/17 of this subscription's
-    ///   REALITY lines pass the kernel delay test, 555-1208ms vs 92-130ms
-    ///   under sing-box — slower, no uTLS, but functional), so REALITY is
-    ///   NOT filtered: dead REALITY nodes are naturally avoided by the
-    ///   through-kernel probes (urltest / smart / latency column all dial
-    ///   for real and show them as timeout);
-    /// - vmess on non-tcp/ws transports (meow parser rejects them);
-    /// - ss + shadow-tls (a sing-box-only outbound detour shape).
+    /// Xray rejects REALITY over non-tcp/grpc (generation-time rule);
+    /// mihomo (canonical Clash Meta, proper uTLS) only lacks our
+    /// ss+shadow-tls detour shape — REALITY/Vision and every vmess
+    /// transport are fine.
     pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
         if !self.supports(node.protocol) {
             return false;
         }
-        if self == Self::Meow {
-            let reality = node
-                .tls
-                .as_ref()
-                .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some());
-            let vision = node.protocol == Protocol::Vless
-                && matches!(
-                    &node.config,
-                    crate::domain::ProtocolConfig::Vless {
-                        flow: Some(f), ..
-                    } if !f.trim().is_empty()
-                );
-            if vision && !reality {
-                return false;
-            }
-            if node.protocol == Protocol::Vmess
-                && !matches!(
-                    node.transport,
-                    None | Some(crate::domain::Transport::Tcp)
-                        | Some(crate::domain::Transport::Ws { .. })
-                )
-            {
-                return false;
-            }
-            if matches!(
-                &node.config,
-                crate::domain::ProtocolConfig::Shadowsocks {
-                    shadow_tls: Some(_),
-                    ..
-                }
-            ) {
-                return false;
-            }
-        }
         if self == Self::Xray {
-            // Mirrors the generation-time rejection in config/xray.rs:
-            // REALITY supports raw (tcp) / grpc only — other transports
-            // (ws/h2/httpupgrade) are dropped from the config, so they must
-            // not linger in listings with lying TCP-probe latencies either.
             let reality = node
                 .tls
                 .as_ref()
@@ -329,22 +287,32 @@ impl CoreKind {
                 return false;
             }
         }
+        if matches!(
+            &node.config,
+            crate::domain::ProtocolConfig::Shadowsocks {
+                shadow_tls: Some(_),
+                ..
+            }
+        ) && matches!(self, Self::Mihomo | Self::Xray)
+        {
+            return false;
+        }
         true
     }
 }
 
-/// `-d <home>` argument pair for meow. The home dir is derived from the
-/// config location: active.yaml lives in `<app_data>/config/`, so the meow
-/// home (holding `Country.mmdb` + `geosite.dat`, see `core::assets`) is the
-/// sibling directory `<app_data>/meow/`. Keeping it separate from `bin/` is
-/// deliberate — meow's `geosite.dat` is MetaCubeX .mrs format and would
+/// `-d <home>` argument pair for mihomo. The home dir is derived from the
+/// config location: active.yaml lives in `<app_data>/config/`, so the
+/// mihomo home (holding `Country.mmdb` + `geosite.dat`, see `core::assets`)
+/// is the sibling directory `<app_data>/mihomo/`. Keeping it separate from
+/// `bin/` is deliberate — mihomo's `geosite.dat` (MetaCubeX .mrs) would
 /// collide with Xray's v2ray-format `bin/geosite.dat` of the same name.
-fn meow_home_args(config: &str) -> Vec<String> {
+fn mihomo_home_args(config: &str) -> Vec<String> {
     let home = Path::new(config)
         .parent()
         .and_then(|p| p.parent())
-        .map(|root| root.join("meow"))
-        .unwrap_or_else(|| Path::new("meow").to_path_buf());
+        .map(|root| root.join("mihomo"))
+        .unwrap_or_else(|| Path::new("mihomo").to_path_buf());
     vec!["-d".into(), home.display().to_string()]
 }
 
@@ -367,7 +335,7 @@ mod tests {
             Some("26.3.27")
         );
         assert_eq!(
-            CoreKind::Meow
+            CoreKind::Mihomo
                 .parse_version_output("Meow Meta 0.21.0\n")
                 .as_deref(),
             Some("0.21.0")
@@ -401,17 +369,17 @@ mod tests {
             "Xray-macos-arm64-v8a.zip"
         );
         assert_eq!(
-            CoreKind::Meow.asset_name("0.21.0", "x86_64-pc-windows-msvc", true),
-            "meow-v0.21.0-x86_64-pc-windows-msvc.zip"
+            CoreKind::Mihomo.asset_name("1.19.30", "windows-amd64", true),
+            "mihomo-windows-amd64-v1.19.30.zip"
         );
         assert_eq!(
-            CoreKind::Meow.asset_name("0.21.0", "aarch64-apple-darwin", false),
-            "meow-v0.21.0-aarch64-apple-darwin.tar.gz"
+            CoreKind::Mihomo.asset_name("1.19.30", "darwin-arm64", false),
+            "mihomo-darwin-arm64-v1.19.30.gz"
         );
     }
 
     #[test]
-    fn meow_command_args_include_home_dir() {
+    fn mihomo_command_args_include_home_dir() {
         let config = Path::new("/data/config/active.yaml");
         let expect_args = |mut head: Vec<String>, config: &str| {
             head.push("-f".into());
@@ -421,8 +389,8 @@ mod tests {
                 Path::new(config)
                     .parent()
                     .and_then(|p| p.parent())
-                    .map(|root| root.join("meow"))
-                    .unwrap_or_else(|| Path::new("meow").to_path_buf())
+                    .map(|root| root.join("mihomo"))
+                    .unwrap_or_else(|| Path::new("mihomo").to_path_buf())
                     .display()
                     .to_string(),
             );
@@ -430,11 +398,11 @@ mod tests {
         };
         let cfg = "/data/config/active.yaml";
         assert_eq!(
-            CoreKind::Meow.check_command_args(config),
+            CoreKind::Mihomo.check_command_args(config),
             expect_args(vec!["-t".into()], cfg)
         );
         assert_eq!(
-            CoreKind::Meow.run_command_args(config),
+            CoreKind::Mihomo.run_command_args(config),
             expect_args(vec![], cfg)
         );
         // JSON cores keep the historical shape.
@@ -453,9 +421,9 @@ mod tests {
     }
 
     #[test]
-    fn meow_home_falls_back_for_relative_config() {
-        let args = meow_home_args("active.yaml");
-        assert_eq!(args, vec!["-d".to_string(), "meow".to_string()]);
+    fn mihomo_home_falls_back_for_relative_config() {
+        let args = mihomo_home_args("active.yaml");
+        assert_eq!(args, vec!["-d".to_string(), "mihomo".to_string()]);
     }
 
     #[test]
@@ -467,16 +435,19 @@ mod tests {
         assert!(!CoreKind::Xray.supports(Protocol::Tuic));
         assert!(CoreKind::SingBox.supports(Protocol::Hysteria2));
         // meow: Clash-family protocols only.
-        assert!(CoreKind::Meow.supports(Protocol::Hysteria2));
-        assert!(CoreKind::Meow.supports(Protocol::AnyTls));
-        assert!(CoreKind::Meow.supports(Protocol::Snell));
-        assert!(!CoreKind::Meow.supports(Protocol::Tuic));
-        assert!(!CoreKind::Meow.supports(Protocol::WireGuard));
-        assert!(!CoreKind::Meow.supports(Protocol::Hysteria));
+        // mihomo: canonical Clash Meta — near-full coverage.
+        assert!(CoreKind::Mihomo.supports(Protocol::Hysteria2));
+        assert!(CoreKind::Mihomo.supports(Protocol::AnyTls));
+        assert!(CoreKind::Mihomo.supports(Protocol::Snell));
+        assert!(CoreKind::Mihomo.supports(Protocol::Tuic));
+        assert!(CoreKind::Mihomo.supports(Protocol::WireGuard));
+        assert!(CoreKind::Mihomo.supports(Protocol::Hysteria));
+        assert!(!CoreKind::Mihomo.supports(Protocol::Naive));
+        assert!(!CoreKind::Mihomo.supports(Protocol::Tor));
     }
 
     #[test]
-    fn meow_node_level_support_matrix() {
+    fn mihomo_node_level_support_matrix() {
         use crate::domain::{ProtocolConfig, ProxyNode, TlsConfig, Transport};
 
         fn node(
@@ -519,7 +490,7 @@ mod tests {
             server_name: Some("www.microsoft.com".into()),
             insecure: None,
             alpn: None,
-            utls_fingerprint: None,
+            utls_fingerprint: Some("chrome".into()),
             reality_public_key: Some("pk".into()),
             reality_short_id: Some("abcd".into()),
         });
@@ -528,53 +499,22 @@ mod tests {
             ..Default::default()
         });
 
-        // meow KEEPS REALITY (field-audited: 11/17 of a real subscription's
-        // REALITY lines pass the kernel delay test).
-        assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, reality.clone(), None)));
-        // meow rejects vless Vision flows: raw passthrough only exists for
-        // its REALITY stream, plain-TLS Vision nodes die mid-handshake
-        // while passing TCP probes.
+        // mihomo (canonical Clash Meta, uTLS): REALITY and Vision both fine.
+        assert!(CoreKind::Mihomo.supports_node(&node(Protocol::Vless, reality.clone(), None)));
         let mut vision = node(Protocol::Vless, plain_tls.clone(), None);
-        vision.config = crate::domain::ProtocolConfig::Vless {
+        vision.config = ProtocolConfig::Vless {
             uuid: "u".into(),
             flow: Some("xtls-rprx-vision".into()),
             packet_encoding: "xudp".into(),
         };
-        assert!(!CoreKind::Meow.supports_node(&vision));
-        // sing-box serves vision nodes happily.
-        assert!(CoreKind::SingBox.supports_node(&vision));
-        // Xray: REALITY over non-tcp/grpc transports is rejected at
-        // generation (config/xray.rs) — hidden from listings too.
-        let reality_ws = node(
-            Protocol::Vless,
-            reality.clone(),
-            Some(Transport::Ws {
-                path: None,
-                headers: None,
-                max_early_data: None,
-            }),
-        );
-        assert!(!CoreKind::Xray.supports_node(&reality_ws));
-        let reality_tcp = node(Protocol::Vless, reality.clone(), Some(Transport::Tcp));
-        assert!(CoreKind::Xray.supports_node(&reality_tcp));
-        // Plain-TLS vless is fine.
-        assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, plain_tls.clone(), None)));
-        // vmess: tcp/ws ok, grpc rejected.
-        assert!(CoreKind::Meow.supports_node(&node(
-            Protocol::Vmess,
-            plain_tls.clone(),
-            Some(Transport::Ws {
-                path: None,
-                headers: None,
-                max_early_data: None
-            })
-        )));
-        assert!(!CoreKind::Meow.supports_node(&node(
+        assert!(CoreKind::Mihomo.supports_node(&vision));
+        // vmess over any transport (grpc here) is fine.
+        assert!(CoreKind::Mihomo.supports_node(&node(
             Protocol::Vmess,
             plain_tls.clone(),
             Some(Transport::Grpc { service_name: None })
         )));
-        // ss + shadow-tls detour rejected; plain ss fine.
+        // ss + shadow-tls detour shape not representable (yet); plain ss fine.
         let mut ss_stls = node(Protocol::Shadowsocks, None, None);
         ss_stls.config = ProtocolConfig::Shadowsocks {
             method: "aes-256-gcm".into(),
@@ -588,21 +528,39 @@ mod tests {
                 fingerprint: None,
             }),
         };
-        assert!(!CoreKind::Meow.supports_node(&ss_stls));
-        assert!(CoreKind::Meow.supports_node(&node(Protocol::Shadowsocks, None, None)));
-        // Protocol-level exclusions still apply; sing-box accepts everything.
-        assert!(!CoreKind::Meow.supports_node(&node(Protocol::Tuic, None, None)));
-        assert!(CoreKind::SingBox.supports_node(&node(Protocol::Vless, reality, None)));
+        assert!(!CoreKind::Mihomo.supports_node(&ss_stls));
+        assert!(CoreKind::Mihomo.supports_node(&node(Protocol::Shadowsocks, None, None)));
+        // Protocol-level: naive/tor/shadowtls standalone excluded.
+        assert!(!CoreKind::Mihomo.supports(Protocol::Naive));
+        assert!(!CoreKind::Mihomo.supports(Protocol::Tor));
+        // Xray: REALITY over ws rejected, over tcp fine (unchanged).
+        let reality_ws = node(
+            Protocol::Vless,
+            reality.clone(),
+            Some(Transport::Ws {
+                path: None,
+                headers: None,
+                max_early_data: None,
+            }),
+        );
+        assert!(!CoreKind::Xray.supports_node(&reality_ws));
+        assert!(CoreKind::Xray.supports_node(&node(
+            Protocol::Vless,
+            reality,
+            Some(Transport::Tcp)
+        )));
+        // sing-box accepts everything.
         assert!(CoreKind::SingBox.supports_node(&ss_stls));
+        assert!(CoreKind::SingBox.supports_node(&vision));
     }
 
     #[test]
     fn settings_roundtrip() {
         assert_eq!(CoreKind::parse("xray"), CoreKind::Xray);
-        assert_eq!(CoreKind::parse("meow"), CoreKind::Meow);
+        assert_eq!(CoreKind::parse("meow"), CoreKind::Mihomo);
         assert_eq!(CoreKind::parse("singbox"), CoreKind::SingBox);
         assert_eq!(CoreKind::parse("garbage"), CoreKind::SingBox);
         assert_eq!(CoreKind::Xray.as_str(), "xray");
-        assert_eq!(CoreKind::Meow.as_str(), "meow");
+        assert_eq!(CoreKind::Mihomo.as_str(), "mihomo");
     }
 }
