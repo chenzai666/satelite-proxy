@@ -580,6 +580,8 @@ const en = {
   "rules.resetAllBuiltin": "Reset all",
   "rules.downloadingTooltip": "Downloading remote rule set",
   "rules.enableEmptyHint": "No effective rules yet — cannot enable",
+  "rules.xraySrsInert":
+    "Not effective under the Xray core (.srs is a sing-box-only format); switch back to sing-box to use it",
   "rules.applyingTooltip": "Applying",
   "rules.setMenuAria": "{name} actions",
   "rules.rename": "Rename",
@@ -1299,6 +1301,8 @@ const zh: Record<MessageKey, string> = {
   "rules.resetAllBuiltin": "重置",
   "rules.downloadingTooltip": "正在下载远程规则集",
   "rules.enableEmptyHint": "暂无可生效的规则，无法启用",
+  "rules.xraySrsInert":
+    "Xray 模式下无效（.srs 为 sing-box 专有格式），切回 sing-box 后可用",
   "rules.applyingTooltip": "正在应用",
   "rules.setMenuAria": "{name} 操作",
   "rules.rename": "重命名",

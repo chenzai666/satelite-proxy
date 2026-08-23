@@ -96,6 +96,11 @@ export function RulesPage({ embedded = false }: Props) {
     return saved === "direct" || saved === "block" ? saved : "proxy";
   });
   const [finalBusy, setFinalBusy] = useState(false);
+  // Xray mode: user-added remote .srs sets are skipped by the generator —
+  // the sidebar greys them out (builtin remote sets map to geosite/geoip).
+  const [xrayCore, setXrayCore] = useState(
+    () => peekSettings()?.core_type === "xray",
+  );
 
   const [editOpen, setEditOpen] = useState(false);
   const [editRule, setEditRule] = useState<Rule | null>(null);
@@ -182,6 +187,7 @@ export function RulesPage({ embedded = false }: Props) {
       if (rf === "direct" || rf === "block" || rf === "proxy") {
         setRouteFinal(rf);
       }
+      setXrayCore((s.core_type ?? "singbox") === "xray");
     } catch {
       /* keep default */
     }
@@ -1148,6 +1154,9 @@ export function RulesPage({ embedded = false }: Props) {
           />,
         );
       }
+      // User-added .srs sets are skipped by the Xray generator (builtin
+      // remote sets map to geosite/geoip and keep working).
+      const xrayInert = !!(xrayCore && s.remote && !s.builtin);
       setCards.push(
         <div
           key={s.id}
@@ -1155,9 +1164,12 @@ export function RulesPage({ embedded = false }: Props) {
           className={[
             "ruleset-item",
             viewSetId === s.id ? "selected" : "",
+            xrayInert ? "xray-inert" : "",
           ]
             .filter(Boolean)
             .join(" ")}
+          style={xrayInert ? { opacity: 0.55 } : undefined}
+          title={xrayInert ? t("rules.xraySrsInert") : undefined}
           onPointerDown={(e) => onItemPointerDown(s.id, e)}
           onClick={() => setViewSetId(s.id)}
           role="listitem"
@@ -1205,13 +1217,17 @@ export function RulesPage({ embedded = false }: Props) {
             <GlassSwitchControl
               checked={s.enabled}
               size="sm"
-              disabled={!s.enabled && s.rule_count === 0}
+              disabled={
+                (!s.enabled && s.rule_count === 0) || xrayInert
+              }
               title={
-                !s.enabled && s.rule_count === 0
-                  ? t("rules.enableEmptyHint")
-                  : s.enabled
-                    ? t("rules.disableSet")
-                    : t("rules.enableSet")
+                xrayInert
+                  ? t("rules.xraySrsInert")
+                  : !s.enabled && s.rule_count === 0
+                    ? t("rules.enableEmptyHint")
+                    : s.enabled
+                      ? t("rules.disableSet")
+                      : t("rules.enableSet")
               }
               onClick={(e) => {
                 e.stopPropagation();
