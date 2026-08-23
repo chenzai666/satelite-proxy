@@ -315,6 +315,25 @@ impl CoreKind {
                 return false;
             }
         }
+        if self == Self::Xray {
+            // Mirrors the generation-time rejection in config/xray.rs:
+            // REALITY supports raw (tcp) / grpc only — other transports
+            // (ws/h2/httpupgrade) are dropped from the config, so they must
+            // not linger in listings with lying TCP-probe latencies either.
+            let reality = node
+                .tls
+                .as_ref()
+                .is_some_and(|t| t.enabled && t.reality_public_key.is_some());
+            if reality
+                && !matches!(
+                    node.transport.as_ref(),
+                    None | Some(crate::domain::Transport::Tcp)
+                        | Some(crate::domain::Transport::Grpc { .. })
+                )
+            {
+                return false;
+            }
+        }
         true
     }
 }
@@ -528,6 +547,20 @@ mod tests {
         assert!(!CoreKind::Meow.supports_node(&vision));
         // sing-box serves vision nodes happily.
         assert!(CoreKind::SingBox.supports_node(&vision));
+        // Xray: REALITY over non-tcp/grpc transports is rejected at
+        // generation (config/xray.rs) — hidden from listings too.
+        let reality_ws = node(
+            Protocol::Vless,
+            reality.clone(),
+            Some(Transport::Ws {
+                path: None,
+                headers: None,
+                max_early_data: None,
+            }),
+        );
+        assert!(!CoreKind::Xray.supports_node(&reality_ws));
+        let reality_tcp = node(Protocol::Vless, reality.clone(), Some(Transport::Tcp));
+        assert!(CoreKind::Xray.supports_node(&reality_tcp));
         // Plain-TLS vless is fine.
         assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, plain_tls.clone(), None)));
         // vmess: tcp/ws ok, grpc rejected.
