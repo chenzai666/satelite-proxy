@@ -159,12 +159,7 @@ impl CoreKind {
         let config = config.display().to_string();
         match self {
             Self::SingBox => vec!["check".into(), "-c".into(), config],
-            Self::Xray => vec![
-                "run".into(),
-                "-test".into(),
-                "-c".into(),
-                config,
-            ],
+            Self::Xray => vec!["run".into(), "-test".into(), "-c".into(), config],
             Self::Meow => {
                 let mut args = vec!["-t".into(), "-f".into(), config.clone()];
                 args.extend(meow_home_args(&config));
@@ -221,10 +216,7 @@ impl CoreKind {
             Self::Meow => {
                 let dll = bin_dir.join("meow-wintun.dll");
                 if cfg!(windows) && dll.is_file() {
-                    vec![(
-                        "MEOW_WINTUN_DLL".into(),
-                        dll.display().to_string(),
-                    )]
+                    vec![("MEOW_WINTUN_DLL".into(), dll.display().to_string())]
                 } else {
                     Vec::new()
                 }
@@ -371,13 +363,11 @@ mod tests {
         // JSON cores keep the historical shape.
         assert_eq!(
             CoreKind::SingBox.check_command_args(config),
-            ["check", "-c", "/data/config/active.yaml"]
-                .map(String::from)
+            ["check", "-c", "/data/config/active.yaml"].map(String::from)
         );
         assert_eq!(
             CoreKind::Xray.check_command_args(config),
-            ["run", "-test", "-c", "/data/config/active.yaml"]
-                .map(String::from)
+            ["run", "-test", "-c", "/data/config/active.yaml"].map(String::from)
         );
         assert_eq!(
             CoreKind::SingBox.run_command_args(config),

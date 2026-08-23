@@ -669,8 +669,7 @@ pub async fn generate_singbox_config(
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Meow => {
-                let built =
-                    build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                let built = build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
                 let path = write_active_yaml_config(&app_data_dir, &built.yaml)
                     .map_err(|e| e.to_string())?;
                 GenerateConfigResult {
@@ -790,8 +789,7 @@ pub async fn preview_singbox_config(
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Meow => {
-                let built =
-                    build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                let built = build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
                 GenerateConfigResult {
                     path: path.display().to_string(),
                     selected_tag: built.selected_tag,

@@ -45,14 +45,20 @@ pub fn detect_platform() -> AppResult<CorePlatform> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
     let (suffix, xray_suffix, meow_suffix, is_windows) = match (os, arch) {
-        ("macos", "aarch64") => ("darwin-arm64", "macos-arm64-v8a", "aarch64-apple-darwin", false),
+        ("macos", "aarch64") => (
+            "darwin-arm64",
+            "macos-arm64-v8a",
+            "aarch64-apple-darwin",
+            false,
+        ),
         ("macos", "x86_64") => ("darwin-amd64", "macos-64", "x86_64-apple-darwin", false),
-        ("linux", "aarch64") => {
-            ("linux-arm64", "linux-arm64-v8a", "aarch64-unknown-linux-gnu", false)
-        }
-        ("linux", "x86_64") => {
-            ("linux-amd64", "linux-64", "x86_64-unknown-linux-gnu", false)
-        }
+        ("linux", "aarch64") => (
+            "linux-arm64",
+            "linux-arm64-v8a",
+            "aarch64-unknown-linux-gnu",
+            false,
+        ),
+        ("linux", "x86_64") => ("linux-amd64", "linux-64", "x86_64-unknown-linux-gnu", false),
         ("windows", "x86_64") => (
             "windows-amd64",
             "windows-64",

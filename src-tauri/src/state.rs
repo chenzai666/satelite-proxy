@@ -1062,7 +1062,8 @@ impl AppState {
                 && node.protocol == crate::domain::Protocol::Vmess
                 && !matches!(
                     node.transport,
-                    None | Some(crate::domain::Transport::Tcp) | Some(crate::domain::Transport::Ws { .. })
+                    None | Some(crate::domain::Transport::Tcp)
+                        | Some(crate::domain::Transport::Ws { .. })
                 )
             {
                 return Err(crate::error::AppError::Core(
@@ -1100,8 +1101,8 @@ impl AppState {
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             Ok((store.settings.clone(), was_kernel))
         })?;
-        let restart_needed = was_kernel
-            || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
+        let restart_needed =
+            was_kernel || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
         Ok((settings, restart_needed, selected_live))
     }
 

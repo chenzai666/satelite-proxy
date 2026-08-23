@@ -19,7 +19,10 @@ use crate::config::builder::{
 };
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
-use crate::domain::{DnsAction, DomainMatcher, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetDnsStrategy, RuleSetStrategy, RuleTarget, RuleType, Transport};
+use crate::domain::{
+    DnsAction, DomainMatcher, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet,
+    RuleSetDnsStrategy, RuleSetStrategy, RuleTarget, RuleType, Transport,
+};
 use crate::error::{AppError, AppResult};
 use serde_yaml::{Mapping, Value as Yaml};
 
@@ -72,7 +75,13 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
             continue;
         }
         // SS + shadow-tls detour is a sing-box-specific outbound shape.
-        if matches!(&node.config, ProtocolConfig::Shadowsocks { shadow_tls: Some(_), .. }) {
+        if matches!(
+            &node.config,
+            ProtocolConfig::Shadowsocks {
+                shadow_tls: Some(_),
+                ..
+            }
+        ) {
             skipped.push(format!("{}: meow 不支持 shadow-tls 插件", node.name));
             continue;
         }
@@ -100,11 +109,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     let mut groups: Vec<Mapping> = Vec::new();
     let probe_url = probe_url_or_default(opts);
     if opts.auto_select.is_kernel() {
-        groups.push(select_group(
-            MAIN_GROUP,
-            vec![AUTO_GROUP.to_string()],
-            None,
-        ));
+        groups.push(select_group(MAIN_GROUP, vec![AUTO_GROUP.to_string()], None));
         groups.push(url_test_group(AUTO_GROUP, tags.clone(), &probe_url));
     } else {
         groups.push(select_group(MAIN_GROUP, tags.clone(), Some(&selected_tag)));
@@ -160,10 +165,7 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
 
     // —— document ——
     let mut root = Mapping::new();
-    root.insert(
-        str_yaml("mixed-port"),
-        num_yaml(opts.mixed_port.into()),
-    );
+    root.insert(str_yaml("mixed-port"), num_yaml(opts.mixed_port.into()));
     root.insert(str_yaml("allow-lan"), Yaml::Bool(opts.allow_lan));
     if opts.allow_lan {
         root.insert(str_yaml("bind-address"), str_yaml("*"));
@@ -288,11 +290,18 @@ fn listeners_block(opts: &BuildOptions) -> Yaml {
             .iter()
             .map(|inb| {
                 let mut l = Mapping::new();
-                l.insert(str_yaml("name"), str_yaml(&format!("in-mixed-{}", inb.port)));
+                l.insert(
+                    str_yaml("name"),
+                    str_yaml(&format!("in-mixed-{}", inb.port)),
+                );
                 l.insert(str_yaml("type"), str_yaml("mixed"));
                 l.insert(
                     str_yaml("listen"),
-                    str_yaml(if inb.allow_lan { "0.0.0.0" } else { "127.0.0.1" }),
+                    str_yaml(if inb.allow_lan {
+                        "0.0.0.0"
+                    } else {
+                        "127.0.0.1"
+                    }),
                 );
                 l.insert(str_yaml("port"), num_yaml(inb.port.into()));
                 Yaml::Mapping(l)
@@ -427,7 +436,9 @@ fn rule_to_meow(
         RuleType::Process => format!("PROCESS-NAME,{payload}"),
         RuleType::Geoip => return None,
     };
-    let Rule { target, node_id, .. } = rule;
+    let Rule {
+        target, node_id, ..
+    } = rule;
     // Node pins point straight at the node proxy; Smart rules with a
     // non-empty keyword pool route through their per-rule url-test group;
     // empty pools (and plain Proxy) fall back to the main group.
@@ -445,7 +456,7 @@ fn rule_to_meow(
             .filter(|s| !s.is_empty())
             .and_then(|id| nodes.iter().find(|n| n.id == id))
             .filter(|n| tags.iter().any(|t| t == &outbound_tag(n)))
-            .map(|n| outbound_tag(n))
+            .map(outbound_tag)
             .unwrap_or_else(|| main_target.to_string()),
     };
     Some(format!("{matcher},{target}"))
@@ -685,12 +696,22 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
     }
 
     match &node.config {
-        ProtocolConfig::Shadowsocks { method, password, plugin, plugin_opts, .. } => {
+        ProtocolConfig::Shadowsocks {
+            method,
+            password,
+            plugin,
+            plugin_opts,
+            ..
+        } => {
             m.insert(str_yaml("cipher"), str_yaml(method));
             m.insert(str_yaml("password"), str_yaml(password));
             apply_ss_plugin(&mut m, plugin.as_deref(), plugin_opts.as_deref());
         }
-        ProtocolConfig::Vmess { uuid, alter_id, security } => {
+        ProtocolConfig::Vmess {
+            uuid,
+            alter_id,
+            security,
+        } => {
             m.insert(str_yaml("uuid"), str_yaml(uuid));
             m.insert(str_yaml("alterId"), num_yaml((*alter_id).into()));
             m.insert(str_yaml("cipher"), str_yaml(security));
@@ -704,7 +725,12 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
         ProtocolConfig::Trojan { password } => {
             m.insert(str_yaml("password"), str_yaml(password));
         }
-        ProtocolConfig::Hysteria2 { password, obfs, obfs_password, .. } => {
+        ProtocolConfig::Hysteria2 {
+            password,
+            obfs,
+            obfs_password,
+            ..
+        } => {
             m.insert(str_yaml("password"), str_yaml(password));
             if let Some(obfs) = obfs.as_deref().filter(|s| !s.trim().is_empty()) {
                 m.insert(str_yaml("obfs"), str_yaml(obfs));
@@ -721,7 +747,9 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
                 m.insert(str_yaml("password"), str_yaml(p));
             }
         }
-        ProtocolConfig::Http { username, password, .. } => {
+        ProtocolConfig::Http {
+            username, password, ..
+        } => {
             if let Some(u) = username.as_deref().filter(|s| !s.is_empty()) {
                 m.insert(str_yaml("username"), str_yaml(u));
             }
@@ -732,7 +760,14 @@ fn node_to_meow_proxy(node: &ProxyNode) -> Mapping {
         ProtocolConfig::AnyTls { password } => {
             m.insert(str_yaml("password"), str_yaml(password));
         }
-        ProtocolConfig::Snell { psk, version, userkey, obfs_mode, obfs_host, .. } => {
+        ProtocolConfig::Snell {
+            psk,
+            version,
+            userkey,
+            obfs_mode,
+            obfs_host,
+            ..
+        } => {
             m.insert(str_yaml("psk"), str_yaml(psk));
             m.insert(str_yaml("version"), str_yaml(&version.to_string()));
             if let Some(key) = userkey.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -847,10 +882,16 @@ fn apply_tls(m: &mut Mapping, node: &ProxyNode) {
 
 /// Transport: network + typed opts (ws / grpc / h2 / httpupgrade).
 fn apply_transport(m: &mut Mapping, node: &ProxyNode) {
-    let Some(transport) = &node.transport else { return };
+    let Some(transport) = &node.transport else {
+        return;
+    };
     match transport {
         Transport::Tcp => {}
-        Transport::Ws { path, headers, max_early_data } => {
+        Transport::Ws {
+            path,
+            headers,
+            max_early_data,
+        } => {
             m.insert(str_yaml("network"), str_yaml("ws"));
             let mut o = Mapping::new();
             if let Some(path) = path.as_deref().filter(|s| !s.is_empty()) {
@@ -1030,7 +1071,10 @@ mod tests {
         let groups = groups_of(&doc);
         assert_eq!(groups[0]["name"].as_str(), Some("proxy"));
         assert_eq!(groups[0]["type"].as_str(), Some("select"));
-        assert_eq!(groups[0]["proxies"][0].as_str(), Some(built.selected_tag.as_str()));
+        assert_eq!(
+            groups[0]["proxies"][0].as_str(),
+            Some(built.selected_tag.as_str())
+        );
         // Proxy shape.
         assert_eq!(doc["proxies"][0]["type"].as_str(), Some("ss"));
         assert_eq!(doc["proxies"][0]["cipher"].as_str(), Some("aes-256-gcm"));
@@ -1391,12 +1435,7 @@ mod tests {
                     RuleTarget::Block,
                     20,
                 ),
-                Rule::new(
-                    RuleType::IpCidr,
-                    "10.0.0.0/8".into(),
-                    RuleTarget::Proxy,
-                    30,
-                ),
+                Rule::new(RuleType::IpCidr, "10.0.0.0/8".into(), RuleTarget::Proxy, 30),
                 Rule::new(
                     RuleType::Process,
                     "chrome.exe".into(),
@@ -1482,7 +1521,10 @@ mod tests {
         let built = build_meow_config(&[node.clone()], &opts).expect("build");
         let rules = rules_of(&parse(&built));
         assert_eq!(rules.last().unwrap(), "MATCH,proxy");
-        assert!(!rules.iter().any(|r| r.contains("a.com")), "Global ignores user rules");
+        assert!(
+            !rules.iter().any(|r| r.contains("a.com")),
+            "Global ignores user rules"
+        );
 
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
@@ -1540,7 +1582,10 @@ mod tests {
         let built = build_meow_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         let dns = &doc["dns"];
-        assert_eq!(dns["nameserver"][0].as_str(), Some("https://1.1.1.1/dns-query"));
+        assert_eq!(
+            dns["nameserver"][0].as_str(),
+            Some("https://1.1.1.1/dns-query")
+        );
         assert_eq!(dns["fallback"][0].as_str(), Some("223.5.5.5"));
         assert_eq!(dns["default-nameserver"][0].as_str(), Some("223.5.5.5"));
         assert_eq!(
@@ -1641,12 +1686,7 @@ mod tests {
                     RuleTarget::Block,
                     20,
                 ),
-                Rule::new(
-                    RuleType::IpCidr,
-                    "10.0.0.0/8".into(),
-                    RuleTarget::Proxy,
-                    30,
-                ),
+                Rule::new(RuleType::IpCidr, "10.0.0.0/8".into(), RuleTarget::Proxy, 30),
                 Rule::new(
                     RuleType::Process,
                     "chrome.exe".into(),

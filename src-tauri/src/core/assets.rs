@@ -205,10 +205,7 @@ pub fn meow_geodata_present(app_data_dir: &Path) -> bool {
 /// Stage missing meow geodata from an explicit bundled dir
 /// (`resources/bin/<plat>/meow-geodata`). Returns true when all files are
 /// present afterwards.
-pub fn stage_bundled_meow_geodata_from(
-    app_data_dir: &Path,
-    bundled_dir: &Path,
-) -> bool {
+pub fn stage_bundled_meow_geodata_from(app_data_dir: &Path, bundled_dir: &Path) -> bool {
     let home = meow_home(app_data_dir);
     for file in MEOW_GEODATA_FILES {
         let dest = home.join(file);
