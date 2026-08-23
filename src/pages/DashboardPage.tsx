@@ -205,6 +205,23 @@ export function DashboardPage({
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const [coreMenuOpen, setCoreMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  /** Flyout close timer: leaving a sub row schedules a close; re-entering
+   *  (row or popup) cancels it — covers the transit over sibling rows. */
+  const subLeaveTimer = useRef<number | null>(null);
+  function cancelSubmenuClose() {
+    if (subLeaveTimer.current != null) {
+      window.clearTimeout(subLeaveTimer.current);
+      subLeaveTimer.current = null;
+    }
+  }
+  function scheduleSubmenuClose() {
+    cancelSubmenuClose();
+    subLeaveTimer.current = window.setTimeout(() => {
+      setConfigMenuOpen(false);
+      setCoreMenuOpen(false);
+    }, 280);
+  }
+  useEffect(() => cancelSubmenuClose, []);
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
   >([]);
@@ -944,9 +961,11 @@ export function DashboardPage({
                   <div
                     className="dash-more-sub"
                     onPointerEnter={() => {
+                      cancelSubmenuClose();
                       setConfigMenuOpen(true);
                       setCoreMenuOpen(false);
                     }}
+                    onPointerLeave={scheduleSubmenuClose}
                   >
                     <button
                       type="button"
@@ -1014,9 +1033,11 @@ export function DashboardPage({
                   <div
                     className="dash-more-sub"
                     onPointerEnter={() => {
+                      cancelSubmenuClose();
                       setCoreMenuOpen(true);
                       setConfigMenuOpen(false);
                     }}
+                    onPointerLeave={scheduleSubmenuClose}
                   >
                     <button
                       type="button"
