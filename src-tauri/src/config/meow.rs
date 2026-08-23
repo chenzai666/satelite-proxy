@@ -613,6 +613,16 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
         str_yaml("default-nameserver"),
         Yaml::Sequence(vec![str_yaml(DOMESTIC_DNS)]),
     );
+    // Node server hostnames resolve through a dedicated plain-UDP list —
+    // never the DoH default or the policy classification. Without this,
+    // `dns_final=remote` makes url-test health checks dial DoH 1.1.1.1
+    // first, which needs a working proxy to reach, which needs its
+    // hostname resolved first (chicken-and-egg → "meow-dns resolver: no
+    // address for <node-host>" WARNs).
+    dns.insert(
+        str_yaml("proxy-server-nameserver"),
+        Yaml::Sequence(vec![str_yaml(DOMESTIC_DNS)]),
+    );
     dns.insert(
         str_yaml("nameserver"),
         Yaml::Sequence(vec![str_yaml(default_ns)]),
@@ -1593,6 +1603,12 @@ mod tests {
         );
         assert_eq!(dns["fallback"][0].as_str(), Some("223.5.5.5"));
         assert_eq!(dns["default-nameserver"][0].as_str(), Some("223.5.5.5"));
+        // Node hostnames must resolve via the dedicated plain-UDP list —
+        // not the DoH default (chicken-and-egg with unreachable proxies).
+        assert_eq!(
+            dns["proxy-server-nameserver"][0].as_str(),
+            Some("223.5.5.5")
+        );
         assert_eq!(
             dns["nameserver-policy"]["+.cn-site.com"].as_str(),
             Some("223.5.5.5")
