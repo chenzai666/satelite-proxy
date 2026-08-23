@@ -1,6 +1,7 @@
 mod download;
 #[cfg(target_os = "windows")]
 mod elevate;
+pub mod kind;
 #[cfg(target_os = "windows")]
 mod job;
 #[cfg(target_os = "macos")]
@@ -11,6 +12,7 @@ pub mod manager;
 mod memory;
 mod paths;
 
+pub use kind::CoreKind;
 pub use memory::read_process_rss_bytes;
 
 pub use download::{

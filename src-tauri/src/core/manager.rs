@@ -1,5 +1,6 @@
-//! sing-box process lifecycle.
+//! Core process lifecycle (sing-box / Xray).
 
+use crate::core::kind::CoreKind;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
@@ -52,6 +53,8 @@ pub struct CoreManager {
     binary_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
+    /// Which core the current/last session runs (log prefix, CLI args).
+    kind: CoreKind,
 }
 
 impl Default for CoreManager {
@@ -66,6 +69,7 @@ impl Default for CoreManager {
             binary_path: None,
             log_path: None,
             log_dir: None,
+            kind: CoreKind::SingBox,
         }
     }
 }
@@ -86,7 +90,7 @@ impl CoreManager {
     fn latest_log_path(&self) -> Option<PathBuf> {
         self.log_dir
             .as_ref()
-            .map(|dir| crate::log_retention::hourly_path(dir, "sing-box"))
+            .map(|dir| crate::log_retention::hourly_path(dir, self.kind.log_prefix()))
             .filter(|path| path.exists())
             .or_else(|| self.log_path.clone())
     }
@@ -155,9 +159,9 @@ impl CoreManager {
         }
     }
 
-    pub fn check_config(binary: &Path, config: &Path) -> AppResult<()> {
+    pub fn check_config(kind: CoreKind, binary: &Path, config: &Path) -> AppResult<()> {
         let mut cmd = Command::new(binary);
-        cmd.args(["check", "-c"]).arg(config);
+        cmd.args(kind.check_args()).arg(config);
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let out = cmd
@@ -191,11 +195,11 @@ impl CoreManager {
                     "进程被系统强制结束 (SIGKILL)，通常不是配置/DNS 语法错误。\n\
                      常见原因：\n\
                      1) 路径未加引号：Application Support 含空格，须写成\n\
-                        sing-box check -c \"/Users/…/Application Support/…/active.json\"\n\
+                        core check -c \"/Users/…/Application Support/…/active.json\"\n\
                      2) 从 target/debug/resources 直接跑内置内核可能被 macOS 杀掉\n\
                         （应用会复制到 Application Support/…/bin/ 再执行）\n\
                      3) 内存不足 / 安全软件拦截\n\
-                     请用:  \"…/bin/sing-box\" check -c \"…/active.json\""
+                     请用:  \"…/bin/core\" check -c \"…/active.json\""
                         .into()
                 } else {
                     format!("exit status {status_s}")
@@ -207,7 +211,8 @@ impl CoreManager {
             }
 
             return Err(AppError::Core(format!(
-                "sing-box check failed ({status_s})\nconfig: {}\nbinary: {}\n{detail}",
+                "{} check failed ({status_s})\nconfig: {}\nbinary: {}\n{detail}",
+                kind.display_name(),
                 config.display(),
                 binary.display(),
             )));
@@ -284,11 +289,12 @@ impl CoreManager {
     /// Start core.
     ///
     /// When `elevated` is true (TUN):
-    /// - **macOS**: one-time setuid on sing-box (`chown root:admin` + `chmod +sx`),
+    /// - **macOS**: one-time setuid on the core binary (`chown root:admin` + `chmod +sx`),
     ///   then normal sidecar spawn (euid root, ruid user — parent can kill).
-    /// - **Windows**: UAC-elevate sing-box directly.
+    /// - **Windows**: UAC-elevate the core directly.
     pub fn start_with_ports(
         &mut self,
+        kind: CoreKind,
         binary: &Path,
         config: &Path,
         log_dir: &Path,
@@ -333,7 +339,7 @@ impl CoreManager {
             }
         }
 
-        Self::check_config(binary, config)?;
+        Self::check_config(kind, binary, config)?;
         // Light re-check only (first ensure_ports_free already waited if needed).
         for &p in &ports {
             if !Self::is_port_free(p) && port_has_listener(p) {
@@ -344,7 +350,7 @@ impl CoreManager {
         fs::create_dir_all(log_dir).map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
         // One file per wall-clock hour. Core restarts within that hour append,
         // preserving the sequence around TUN and capture-mode transitions.
-        let log_path = crate::log_retention::hourly_path(log_dir, "sing-box");
+        let log_path = crate::log_retention::hourly_path(log_dir, kind.log_prefix());
         crate::log_retention::cleanup_current_hour(log_dir)
             .map_err(|e| AppError::Core(format!("clean logs: {e}")))?;
         let _ = OpenOptions::new()
@@ -359,23 +365,27 @@ impl CoreManager {
         self.log_dir = Some(log_dir.to_path_buf());
         self.config_path = Some(config.to_path_buf());
         self.binary_path = Some(binary.to_path_buf());
+        self.kind = kind;
         self.elevated_pid = None;
         self.child = None;
         self.run_mode = RunMode::None;
 
         #[cfg(target_os = "windows")]
         if elevated {
-            return self.start_elevated_windows(binary, config, &log_path, mixed_port);
+            return self.start_elevated_windows(kind, binary, config, &log_path, mixed_port);
         }
 
         let mut cmd = Command::new(binary);
-        cmd.args(["run", "-c"]).arg(config);
+        cmd.args(kind.run_args()).arg(config);
         // sing-box writes cache.db (fakeip/rule-set cache) relative to its cwd.
         // GUI apps launched from Finder/Dock inherit cwd "/" (read-only), which
         // makes cache_file init FATAL as soon as it's enabled. Anchor cwd to the
         // config's own directory (always writable — active.json lives there).
         if let Some(dir) = config.parent() {
             cmd.current_dir(dir);
+        }
+        if let Some(bin_dir) = binary.parent() {
+            cmd.envs(kind.spawn_env(bin_dir));
         }
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -386,7 +396,7 @@ impl CoreManager {
             .map_err(|e| {
                 self.state = CoreState::Error;
                 self.last_error = Some(e.to_string());
-                AppError::Core(format!("spawn sing-box failed: {e}"))
+                AppError::Core(format!("spawn {} failed: {e}", kind.display_name()))
             })?;
 
         // Tie the child to the parent's lifetime via a Job Object: if this
@@ -416,6 +426,7 @@ impl CoreManager {
         let mut child = child;
         let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(
             log_dir.to_path_buf(),
+            kind.log_prefix(),
         )));
         if let Some(stdout) = child.stdout.take() {
             spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
@@ -429,11 +440,14 @@ impl CoreManager {
         self.wait_until_ready(mixed_port)
     }
 
-    /// Start sing-box elevated via UAC (Windows). Needed for TUN to create the
+    /// Start the core elevated via UAC (Windows). Needed for TUN to create the
     /// virtual adapter. stdout/stderr are appended to `log_path` directly.
+    /// The kind is re-derived inside the elevated helper from the binary path,
+    /// so it is not forwarded again here.
     #[cfg(target_os = "windows")]
     fn start_elevated_windows(
         &mut self,
+        _kind: CoreKind,
         binary: &Path,
         config: &Path,
         _log_path: &Path,
@@ -604,9 +618,9 @@ fn escape_windows_arg(path: &Path) -> String {
     path.to_string_lossy().replace('"', "\\\"")
 }
 
-/// Elevated helper entry point. It owns the real sing-box child, captures both
+/// Elevated helper entry point. It owns the real core child, captures both
 /// output streams through the same hourly writer, and binds the child to a Job
-/// Object so killing the helper also kills sing-box.
+/// Object so killing the helper also kills the core.
 #[cfg(target_os = "windows")]
 pub fn try_run_elevated_log_helper() -> Option<i32> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -619,12 +633,13 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     let binary = PathBuf::from(&args[marker + 1]);
     let config = PathBuf::from(&args[marker + 2]);
     let log_dir = PathBuf::from(&args[marker + 3]);
+    let kind = CoreKind::from_binary_path(&binary);
     if fs::create_dir_all(&log_dir).is_err() {
         return Some(3);
     }
-    let mut command = Command::new(binary);
+    let mut command = Command::new(&binary);
     command
-        .args(["run", "-c"])
+        .args(kind.run_args())
         .arg(&config)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -633,6 +648,9 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     // writable, predictable location regardless of the launcher's own cwd.
     if let Some(dir) = config.parent() {
         command.current_dir(dir);
+    }
+    if let Some(bin_dir) = binary.parent() {
+        command.envs(kind.spawn_env(bin_dir));
     }
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -643,7 +661,10 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
         let _ = child.wait();
         return Some(5);
     }
-    let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(log_dir)));
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(
+        log_dir,
+        kind.log_prefix(),
+    )));
     if let Some(stdout) = child.stdout.take() {
         spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
     }
@@ -884,6 +905,7 @@ fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
 
 struct RotatingCoreWriter {
     log_dir: PathBuf,
+    log_prefix: &'static str,
     file_hour: Option<u64>,
     file: Option<File>,
     file_bytes: u64,
@@ -891,9 +913,10 @@ struct RotatingCoreWriter {
 }
 
 impl RotatingCoreWriter {
-    fn new(log_dir: PathBuf) -> Self {
+    fn new(log_dir: PathBuf, log_prefix: &'static str) -> Self {
         Self {
             log_dir,
+            log_prefix,
             file_hour: None,
             file: None,
             file_bytes: 0,
@@ -904,7 +927,7 @@ impl RotatingCoreWriter {
     fn write(&mut self, bytes: &[u8]) {
         let hour = crate::log_retention::current_hour();
         if self.file_hour != Some(hour) || self.file.is_none() {
-            let path = crate::log_retention::hourly_path_for(&self.log_dir, "sing-box", hour);
+            let path = crate::log_retention::hourly_path_for(&self.log_dir, self.log_prefix, hour);
             match OpenOptions::new().create(true).append(true).open(&path) {
                 Ok(opened) => {
                     self.file_bytes = opened.metadata().map(|m| m.len()).unwrap_or(0);

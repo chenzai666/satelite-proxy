@@ -293,10 +293,19 @@ pub struct AppSettings {
     /// Which config the kernel should run: `generated` or `singbox:<profile_id>`.
     #[serde(default = "default_runtime_source")]
     pub runtime_source: String,
+    /// Which core binary generates config and runs: `singbox` (default) | `xray`.
+    /// Switching goes through the dedicated `set_core_type` command (restarts
+    /// a running core); plain `update_settings` never touches it.
+    #[serde(default = "default_core_type")]
+    pub core_type: String,
 }
 
 fn default_runtime_source() -> String {
     "generated".into()
+}
+
+fn default_core_type() -> String {
+    "singbox".into()
 }
 
 /// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
@@ -421,6 +430,7 @@ impl Default for AppSettings {
             find_process: true,
             smart_switch: false,
             runtime_source: default_runtime_source(),
+            core_type: default_core_type(),
         }
     }
 }

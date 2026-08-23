@@ -1,7 +1,7 @@
 use crate::core::{
     active_core_version, bundled_core_version, detect_platform, download_latest_core_with_progress,
     fetch_latest_app_tag, fetch_latest_app_tag_via_redirect, fetch_latest_release_with_proxy,
-    inspect_core_bin, CoreDownloadResult, CoreSource,
+    inspect_core_bin, CoreDownloadResult, CoreKind, CoreSource,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -10,8 +10,15 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const CORE_DOWNLOAD_EVENT: &str = "core-download-progress";
 
+fn parse_kind(raw: Option<String>) -> CoreKind {
+    CoreKind::parse(raw.as_deref().unwrap_or("singbox"))
+}
+
 #[derive(Debug, Serialize)]
 pub struct CoreInfo {
+    /// `singbox` | `xray`
+    pub kind: String,
+    pub name: String,
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
@@ -26,21 +33,28 @@ pub struct CoreInfo {
 
 /// Local core status only (no network). Prefer this for page load.
 #[tauri::command]
-pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreInfo, String> {
+pub fn get_core_info(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: Option<String>,
+) -> Result<CoreInfo, String> {
+    let kind = parse_kind(kind);
     let platform = detect_platform().map_err(|e| e.to_string())?;
     let resource_dir = app.path().resource_dir().ok();
     let res = resource_dir.as_deref();
 
-    let (path, source) = inspect_core_bin(&state.app_data_dir, res);
+    let (path, source) = inspect_core_bin(&state.app_data_dir, res, kind);
     // Metadata-only inspection: do not stage/copy the bundled core during page load.
-    let version = active_core_version(&state.app_data_dir, res);
-    let bundled_version = bundled_core_version(res);
+    let version = active_core_version(&state.app_data_dir, res, kind);
+    let bundled_version = bundled_core_version(res, kind);
 
     Ok(CoreInfo {
+        kind: kind.as_str().into(),
+        name: kind.display_name().into(),
         installed: path.is_some(),
         version,
         path: path.map(|p| p.display().to_string()),
-        platform: platform.asset_suffix.to_string(),
+        platform: platform.asset_suffix_for(kind).to_string(),
         latest_version: None,
         update_available: false,
         source: match source {
@@ -56,10 +70,12 @@ pub fn get_core_info(app: AppHandle, state: State<'_, AppState>) -> Result<CoreI
 #[tauri::command]
 pub async fn check_core_update(
     state: State<'_, AppState>,
+    kind: Option<String>,
     local_version: Option<String>,
 ) -> Result<CoreUpdateInfo, String> {
+    let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
-    let latest = fetch_latest_release_with_proxy(proxy_url.as_deref())
+    let latest = fetch_latest_release_with_proxy(kind, proxy_url.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let update_available = match &local_version {
@@ -67,6 +83,7 @@ pub async fn check_core_update(
         None => true,
     };
     Ok(CoreUpdateInfo {
+        kind: kind.as_str().into(),
         latest_version: latest.version,
         update_available,
         asset_name: latest.asset_name,
@@ -76,6 +93,7 @@ pub async fn check_core_update(
 
 #[derive(Debug, Serialize)]
 pub struct CoreUpdateInfo {
+    pub kind: String,
     pub latest_version: String,
     pub update_available: bool,
     pub asset_name: String,
@@ -219,13 +237,21 @@ fn app_update_info(
 pub async fn download_core(
     app: AppHandle,
     state: State<'_, AppState>,
+    kind: Option<String>,
     tag: Option<String>,
 ) -> Result<CoreDownloadResult, String> {
+    let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
     let progress_app = app.clone();
-    download_latest_core_with_progress(&state.app_data_dir, tag, proxy_url, move |progress| {
-        let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
-    })
+    download_latest_core_with_progress(
+        kind,
+        &state.app_data_dir,
+        tag,
+        proxy_url,
+        move |progress| {
+            let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
+        },
+    )
     .await
     .map_err(|e| e.to_string())
 }
@@ -233,11 +259,42 @@ pub async fn download_core(
 #[tauri::command]
 pub async fn fetch_core_latest(
     state: State<'_, AppState>,
+    kind: Option<String>,
 ) -> Result<crate::core::LatestReleaseInfo, String> {
+    let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
-    fetch_latest_release_with_proxy(proxy_url.as_deref())
+    fetch_latest_release_with_proxy(kind, proxy_url.as_deref())
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Switch the active core (singbox | xray). Restarts a running core so the
+/// new core takes over the mixed port immediately.
+#[tauri::command]
+pub async fn set_core_type(
+    app: AppHandle,
+    kind: String,
+) -> Result<crate::domain::AppSettings, String> {
+    let parsed = CoreKind::parse(&kind);
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        let running = state.is_core_running();
+        let settings = state
+            .with_store_mut(|store| {
+                store.settings.core_type = parsed.as_str().to_string();
+                Ok(store.settings.clone())
+            })
+            .map_err(|e| e.to_string())?;
+        if running {
+            crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
+        }
+        Ok(settings)
+    })
+    .await
+    .map_err(|e| format!("core type switch task: {e}"))?
 }
 
 /// Absolute path of the running executable — the app's own install location,

@@ -93,7 +93,7 @@ pub async fn download_core_to(
     app_data_dir: &std::path::Path,
     tag: Option<String>,
 ) -> Result<core::CoreDownloadResult, String> {
-    core::download_latest_core(app_data_dir, tag)
+    core::download_latest_core(core::CoreKind::SingBox, app_data_dir, tag)
         .await
         .map_err(|e| e.to_string())
 }
@@ -382,6 +382,7 @@ pub fn run() {
             commands::get_app_install_path,
             commands::download_core,
             commands::fetch_core_latest,
+            commands::set_core_type,
             commands::test_nodes_latency,
             commands::test_custom_nodes_latency,
             commands::get_proxy_status,

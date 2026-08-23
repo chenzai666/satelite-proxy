@@ -9,6 +9,7 @@ use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
+use crate::core::CoreKind;
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
@@ -679,7 +680,7 @@ impl Runtime {
             ensure_listen_port_available(inb.port, "Inbound")?;
         }
 
-        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
         // Reuse the persisted clash_api secret so it survives restarts; only
@@ -727,6 +728,7 @@ impl Runtime {
         // TUN creates utun + routes → macOS setuid sing-box / Windows UAC.
         let elevated = store.settings.tun_enabled;
         self.core.start_with_ports(
+            CoreKind::SingBox,
             &bin,
             &config_path,
             &log_dir,
@@ -852,12 +854,13 @@ impl Runtime {
             ensure_listen_port_available(port, "Clash API")?;
         }
 
-        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
         let log_dir = app_data_dir.join("logs");
         let elevated = insight.has_tun;
         self.core.start_with_ports(
+            CoreKind::SingBox,
             &bin,
             &config_path,
             &log_dir,

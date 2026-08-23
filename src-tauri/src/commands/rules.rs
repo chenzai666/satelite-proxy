@@ -298,7 +298,12 @@ pub async fn list_remote_rule_items(
     let persist_count = query.trim().is_empty();
     let core = if format == "binary" {
         let resource_dir = app.path().resource_dir().ok();
-        crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref()).0
+        crate::core::resolve_core_bin(
+            &state.app_data_dir,
+            resource_dir.as_deref(),
+            crate::core::CoreKind::SingBox,
+        )
+        .0
     } else {
         None
     };

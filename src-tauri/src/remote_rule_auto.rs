@@ -340,8 +340,11 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
                 parsed.display_count
             } else {
                 let resource_dir = app.path().resource_dir().ok();
-                let (core, _) =
-                    crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref());
+                let (core, _) = crate::core::resolve_core_bin(
+                    &state.app_data_dir,
+                    resource_dir.as_deref(),
+                    crate::core::CoreKind::SingBox,
+                );
                 match core {
                     // Regular binary rule-set: decompile with the core for
                     // an against-the-core check and an exact JSON count.
@@ -584,7 +587,8 @@ mod tests {
 
     #[test]
     fn decompiles_binary_srs_with_bundled_core_when_available() {
-        let Some(core) = crate::core::find_bundled_core(None) else {
+        let Some(core) = crate::core::find_bundled_core(None, crate::core::CoreKind::SingBox)
+        else {
             return;
         };
         const SRS: &[u8] = &[

@@ -1,8 +1,9 @@
-//! Download sing-box core from GitHub releases (SagerNet/sing-box).
+//! Download cores from GitHub releases (SagerNet/sing-box, XTLS/Xray-core).
 
+use crate::core::kind::CoreKind;
 use crate::core::paths::{
-    binary_name, core_bin_path, core_dir, detect_platform, normalize_version,
-    read_version_of_binary, write_version_file, CorePlatform,
+    core_bin_path, core_dir, detect_platform, normalize_version, read_version_of_binary,
+    write_version_file, CorePlatform,
 };
 use crate::error::{AppError, AppResult};
 use flate2::read::GzDecoder;
@@ -13,11 +14,23 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tar::Archive;
 
-const GITHUB_LATEST: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
-const GITHUB_TAG: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/";
 const APP_GITHUB_LATEST: &str = "https://api.github.com/repos/zn0wii/satelite-proxy/releases/latest";
 const APP_RELEASES_PAGE: &str = "https://github.com/zn0wii/satelite-proxy/releases/latest";
 const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
+
+fn github_latest_url(kind: CoreKind) -> String {
+    format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        kind.repo()
+    )
+}
+
+fn github_tag_url(kind: CoreKind) -> String {
+    format!(
+        "https://api.github.com/repos/{}/releases/tags/",
+        kind.repo()
+    )
+}
 
 #[derive(Debug, Deserialize)]
 struct GhRelease {
@@ -34,6 +47,7 @@ struct GhAsset {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CoreDownloadResult {
+    pub kind: String,
     pub version: String,
     pub path: String,
     pub asset_name: String,
@@ -43,6 +57,7 @@ pub struct CoreDownloadResult {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CoreDownloadProgress {
+    pub kind: String,
     pub stage: &'static str,
     pub downloaded: u64,
     pub total: Option<u64>,
@@ -52,6 +67,7 @@ pub struct CoreDownloadProgress {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LatestReleaseInfo {
+    pub kind: String,
     pub version: String,
     pub asset_name: String,
     pub download_url: String,
@@ -59,33 +75,36 @@ pub struct LatestReleaseInfo {
     pub platform: String,
 }
 
-/// Default pin used only when GitHub API is unreachable.
-const FALLBACK_VERSION: &str = "v1.13.15";
-
 pub async fn fetch_latest_release_with_proxy(
+    kind: CoreKind,
     proxy_url: Option<&str>,
 ) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
-    match fetch_release_json(GITHUB_LATEST, proxy_url).await {
-        Ok(release) => pick_asset(release, platform),
+    match fetch_release_json(&github_latest_url(kind), proxy_url).await {
+        Ok(release) => pick_asset(kind, release, platform),
         Err(api_err) => {
             // API blocked/unreachable → direct asset URL with pinned fallback version
             let _ = api_err;
-            Ok(synthetic_release_info(FALLBACK_VERSION, platform))
+            Ok(synthetic_release_info(
+                kind,
+                kind.fallback_version(),
+                platform,
+            ))
         }
     }
 }
 
 async fn fetch_release_by_tag_with_proxy(
+    kind: CoreKind,
     tag: &str,
     proxy_url: Option<&str>,
 ) -> AppResult<LatestReleaseInfo> {
     let platform = detect_platform()?;
     let tag = normalize_version(tag);
-    let url = format!("{GITHUB_TAG}{tag}");
+    let url = format!("{}{tag}", github_tag_url(kind));
     match fetch_release_json(&url, proxy_url).await {
-        Ok(release) => pick_asset(release, platform),
-        Err(_) => Ok(synthetic_release_info(&tag, platform)),
+        Ok(release) => pick_asset(kind, release, platform),
+        Err(_) => Ok(synthetic_release_info(kind, &tag, platform)),
     }
 }
 
@@ -188,55 +207,66 @@ fn extract_tag_from_release_url(url: &str) -> AppResult<String> {
 }
 
 /// Fallback when GitHub API is blocked: build asset URL from known version tag.
-fn synthetic_release_info(tag: &str, platform: CorePlatform) -> LatestReleaseInfo {
+fn synthetic_release_info(kind: CoreKind, tag: &str, platform: CorePlatform) -> LatestReleaseInfo {
     let version = normalize_version(tag);
-    let ver_num = version.trim_start_matches('v').to_string();
-    let ext = if platform.is_windows { "zip" } else { "tar.gz" };
-    let asset_name = format!("sing-box-{ver_num}-{}.{ext}", platform.asset_suffix);
-    let download_url =
-        format!("https://github.com/SagerNet/sing-box/releases/download/{version}/{asset_name}");
+    let suffix = platform.asset_suffix_for(kind);
+    let asset_name = kind.asset_name(&version, suffix, platform.is_windows);
+    let download_url = format!(
+        "https://github.com/{}/releases/download/{version}/{asset_name}",
+        kind.repo()
+    );
     LatestReleaseInfo {
+        kind: kind.as_str().into(),
         version,
         asset_name,
         download_url,
         size: 0,
-        platform: platform.asset_suffix.to_string(),
+        platform: suffix.to_string(),
     }
 }
 
-fn pick_asset(release: GhRelease, platform: CorePlatform) -> AppResult<LatestReleaseInfo> {
+fn pick_asset(
+    kind: CoreKind,
+    release: GhRelease,
+    platform: CorePlatform,
+) -> AppResult<LatestReleaseInfo> {
     let version = normalize_version(&release.tag_name);
-    let ver_num = version.trim_start_matches('v');
-    // Prefer exact: sing-box-{ver}-{suffix}.tar.gz / .zip
+    let suffix = platform.asset_suffix_for(kind);
+    let expected = kind.asset_name(&version, suffix, platform.is_windows);
     let ext = if platform.is_windows { "zip" } else { "tar.gz" };
-    let expected = format!("sing-box-{ver_num}-{}.{ext}", platform.asset_suffix);
+    // sing-box assets embed the version (`sing-box-1.13.15-darwin-arm64.tar.gz`);
+    // Xray assets don't (`Xray-macos-arm64-v8a.zip`).
+    let prefix = match kind {
+        CoreKind::SingBox => format!("sing-box-{}", version.trim_start_matches('v')),
+        CoreKind::Xray => "Xray-".to_string(),
+    };
 
     let asset = release
         .assets
         .iter()
         .find(|a| a.name == expected)
         .or_else(|| {
-            // fallback: contains suffix and correct extension, not legacy
+            // fallback: kind prefix + platform suffix + correct extension
             release.assets.iter().find(|a| {
-                a.name.contains(platform.asset_suffix)
-                    && a.name.starts_with("sing-box-")
+                a.name.starts_with(&prefix)
+                    && a.name.contains(suffix)
                     && a.name.ends_with(ext)
                     && !a.name.contains("legacy")
             })
         })
         .ok_or_else(|| {
             AppError::Core(format!(
-                "no asset for platform {} (expected {expected})",
-                platform.asset_suffix
+                "no asset for platform {suffix} (expected {expected})"
             ))
         })?;
 
     Ok(LatestReleaseInfo {
+        kind: kind.as_str().into(),
         version,
         asset_name: asset.name.clone(),
         download_url: asset.browser_download_url.clone(),
         size: asset.size,
-        platform: platform.asset_suffix.to_string(),
+        platform: suffix.to_string(),
     })
 }
 
@@ -250,7 +280,7 @@ fn http_client_with_redirect(
 ) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
-        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)")
+        .user_agent("SateliteProxy/0.1 (core-downloader)")
         .redirect(policy);
     if let Some(proxy_url) = proxy_url {
         builder = builder.proxy(
@@ -301,29 +331,32 @@ mod app_update_tests {
     }
 }
 
-/// Download latest (or given tag) and install into `{app_data}/bin/sing-box`.
+/// Download latest (or given tag) and install into `{app_data}/bin/<core>`.
 pub async fn download_latest_core(
+    kind: CoreKind,
     app_data_dir: &Path,
     tag: Option<String>,
 ) -> AppResult<CoreDownloadResult> {
-    download_latest_core_with_progress(app_data_dir, tag, None, |_| {}).await
+    download_latest_core_with_progress(kind, app_data_dir, tag, None, |_| {}).await
 }
 
 pub async fn download_latest_core_with_progress(
+    kind: CoreKind,
     app_data_dir: &Path,
     tag: Option<String>,
     proxy_url: Option<String>,
     progress: impl Fn(CoreDownloadProgress) + Send + Sync + 'static,
 ) -> AppResult<CoreDownloadResult> {
     let info = if let Some(t) = tag {
-        fetch_release_by_tag_with_proxy(&t, proxy_url.as_deref()).await?
+        fetch_release_by_tag_with_proxy(kind, &t, proxy_url.as_deref()).await?
     } else {
-        fetch_latest_release_with_proxy(proxy_url.as_deref()).await?
+        fetch_latest_release_with_proxy(kind, proxy_url.as_deref()).await?
     };
-    download_and_install(app_data_dir, &info, proxy_url.as_deref(), progress).await
+    download_and_install(kind, app_data_dir, &info, proxy_url.as_deref(), progress).await
 }
 
 async fn download_and_install<F>(
+    kind: CoreKind,
     app_data_dir: &Path,
     info: &LatestReleaseInfo,
     proxy_url: Option<&str>,
@@ -360,6 +393,7 @@ where
             if downloaded == 0 || percent != last_percent {
                 last_percent = percent;
                 download_progress(CoreDownloadProgress {
+                    kind: kind.as_str().into(),
                     stage: "downloading",
                     downloaded,
                     total,
@@ -379,6 +413,7 @@ where
     let info = info.clone();
     let downloaded = bytes.len() as u64;
     progress(CoreDownloadProgress {
+        kind: kind.as_str().into(),
         stage: "installing",
         downloaded,
         total: Some(downloaded),
@@ -386,11 +421,12 @@ where
         via_proxy,
     });
     let result = tokio::task::spawn_blocking(move || {
-        install_downloaded_archive(&app_data_dir, &info, bytes)
+        install_downloaded_archive(kind, &app_data_dir, &info, bytes)
     })
     .await
     .map_err(|error| AppError::Core(format!("install core task: {error}")))??;
     progress(CoreDownloadProgress {
+        kind: kind.as_str().into(),
         stage: "done",
         downloaded,
         total: Some(downloaded),
@@ -408,6 +444,7 @@ fn validate_archive_size_hint(size: u64) -> AppResult<()> {
 }
 
 fn install_downloaded_archive(
+    kind: CoreKind,
     app_data_dir: &Path,
     info: &LatestReleaseInfo,
     bytes: Vec<u8>,
@@ -422,15 +459,15 @@ fn install_downloaded_archive(
             .map_err(|e| AppError::Core(format!("write archive: {e}")))?;
     }
 
-    let dest = core_bin_path(app_data_dir);
-    let staged = staged_core_path(&dest);
-    let previous = previous_core_path(&dest);
+    let dest = core_bin_path(app_data_dir, kind);
+    let staged = staged_core_path(kind, &dest);
+    let previous = previous_core_path(kind, &dest);
     let _ = fs::remove_file(&staged);
     let install_result = (|| {
         if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
-            extract_singbox_from_tar_gz(&archive_path, &staged)?;
+            extract_binary_from_tar_gz(kind, &archive_path, &staged)?;
         } else if info.asset_name.ends_with(".zip") {
-            extract_singbox_from_zip(&archive_path, &staged)?;
+            extract_from_zip(kind, &archive_path, &staged, &bin_dir)?;
         } else {
             return Err(AppError::Core(format!(
                 "unsupported archive: {}",
@@ -446,7 +483,7 @@ fn install_downloaded_archive(
             fs::set_permissions(&staged, perms)?;
         }
 
-        let actual_version = read_version_of_binary(&staged)?;
+        let actual_version = read_version_of_binary(kind, &staged)?;
         if !versions_match(&actual_version, &info.version) {
             return Err(AppError::Core(format!(
                 "downloaded core version mismatch: expected {}, got {actual_version}",
@@ -454,8 +491,8 @@ fn install_downloaded_archive(
             )));
         }
 
-        let had_previous = replace_installed_core(&staged, &dest, &previous)?;
-        if let Err(error) = write_version_file(app_data_dir, &actual_version) {
+        let had_previous = replace_installed_core(kind, &staged, &dest, &previous)?;
+        if let Err(error) = write_version_file(app_data_dir, kind, &actual_version) {
             let _ = fs::remove_file(&dest);
             if had_previous {
                 let _ = fs::rename(&previous, &dest);
@@ -467,6 +504,7 @@ fn install_downloaded_archive(
         }
 
         Ok(CoreDownloadResult {
+            kind: kind.as_str().into(),
             version: actual_version,
             path: dest.display().to_string(),
             asset_name: info.asset_name.clone(),
@@ -482,30 +520,33 @@ fn install_downloaded_archive(
     install_result
 }
 
-fn staged_core_path(dest: &Path) -> PathBuf {
+fn staged_core_path(kind: CoreKind, dest: &Path) -> PathBuf {
+    let stem = kind.binary_name().trim_end_matches(".exe");
     #[cfg(target_os = "windows")]
-    return dest.with_file_name("sing-box.new.exe");
+    return dest.with_file_name(format!("{stem}.new.exe"));
     #[cfg(not(target_os = "windows"))]
-    return dest.with_file_name("sing-box.new");
+    return dest.with_file_name(format!("{stem}.new"));
 }
 
-fn previous_core_path(dest: &Path) -> PathBuf {
+fn previous_core_path(kind: CoreKind, dest: &Path) -> PathBuf {
+    let stem = kind.binary_name().trim_end_matches(".exe");
     #[cfg(target_os = "windows")]
-    return dest.with_file_name("sing-box.previous.exe");
+    return dest.with_file_name(format!("{stem}.previous.exe"));
     #[cfg(not(target_os = "windows"))]
-    return dest.with_file_name("sing-box.previous");
+    return dest.with_file_name(format!("{stem}.previous"));
 }
 
 fn versions_match(actual: &str, expected: &str) -> bool {
     normalize_version(actual) == normalize_version(expected)
 }
 
-fn replace_installed_core(staged: &Path, dest: &Path, previous: &Path) -> AppResult<bool> {
+fn replace_installed_core(kind: CoreKind, staged: &Path, dest: &Path, previous: &Path) -> AppResult<bool> {
     let _ = fs::remove_file(previous);
     #[cfg(target_os = "macos")]
     if dest.exists() {
         crate::core::macos_auth::remove_setuid_core_if_needed(dest)?;
     }
+    let _ = kind;
     let had_previous = dest.exists();
     if had_previous {
         fs::rename(dest, previous)
@@ -520,11 +561,17 @@ fn replace_installed_core(staged: &Path, dest: &Path, previous: &Path) -> AppRes
     Ok(had_previous)
 }
 
-fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
+/// Binary file names accepted inside a sing-box tar.gz (historical layouts).
+fn tar_binary_matches(kind: CoreKind, name: &str) -> bool {
+    let bin = kind.binary_name();
+    let base = bin.trim_end_matches(".exe");
+    name == bin || name == base
+}
+
+fn extract_binary_from_tar_gz(kind: CoreKind, archive: &Path, dest: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open tar.gz: {e}")))?;
     let dec = GzDecoder::new(file);
     let mut tar = Archive::new(dec);
-    let want = binary_name();
     let mut found = false;
 
     for entry in tar
@@ -540,7 +587,7 @@ fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        if name == want || name == "sing-box" || name == "sing-box.exe" {
+        if tar_binary_matches(kind, name) {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -554,19 +601,25 @@ fn extract_singbox_from_tar_gz(archive: &Path, dest: &Path) -> AppResult<()> {
     }
 
     if !found {
-        return Err(AppError::Core(
-            "sing-box binary not found inside tar.gz".into(),
-        ));
+        return Err(AppError::Core(format!(
+            "{} binary not found inside tar.gz",
+            kind.display_name()
+        )));
     }
     Ok(())
 }
 
-fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
+/// Extract the core binary from a release zip. Xray zips additionally ship
+/// `geosite.dat` / `geoip.dat` next to the binary — stage them into `bin_dir`
+/// so `geosite:` / `geoip:` routing works after a user-initiated download
+/// (bundled installs stage them via `paths::stage_bundled_core`).
+fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open zip: {e}")))?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| AppError::Core(format!("zip open: {e}")))?;
-    let want = binary_name();
+    let want = kind.binary_name();
     let mut target_index = None;
+    let mut dat_indexes = Vec::new();
     for i in 0..zip.len() {
         let entry = zip
             .by_index(i)
@@ -576,21 +629,45 @@ fn extract_singbox_from_zip(archive: &Path, dest: &Path) -> AppResult<()> {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        if file_name == want || file_name == "sing-box" || file_name == "sing-box.exe" {
+        if file_name == want || tar_binary_matches(kind, file_name) {
             target_index = Some(i);
-            break;
+        } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat") {
+            dat_indexes.push((i, file_name.to_string()));
         }
     }
-    let idx = target_index
-        .ok_or_else(|| AppError::Core("sing-box binary not found inside zip".into()))?;
-    let mut entry = zip
-        .by_index(idx)
-        .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
+    let idx = target_index.ok_or_else(|| {
+        AppError::Core(format!(
+            "{} binary not found inside zip",
+            kind.display_name()
+        ))
+    })?;
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
+    let mut entry = zip
+        .by_index(idx)
+        .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
     let mut out = File::create(dest).map_err(|e| AppError::Core(format!("create binary: {e}")))?;
     io::copy(&mut entry, &mut out).map_err(|e| AppError::Core(format!("extract binary: {e}")))?;
+    drop(entry);
+
+    for (i, file_name) in dat_indexes {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| AppError::Core(format!("zip entry: {e}")))?;
+        let target = bin_dir.join(&file_name);
+        // Only overwrite when missing or changed in size — dat files can be
+        // shared between installs and are large enough that blind copies hurt.
+        let needs_copy = std::fs::metadata(&target)
+            .map(|m| m.len() != entry.size())
+            .unwrap_or(true);
+        if needs_copy {
+            let mut out = File::create(&target)
+                .map_err(|e| AppError::Core(format!("create {file_name}: {e}")))?;
+            io::copy(&mut entry, &mut out)
+                .map_err(|e| AppError::Core(format!("extract {file_name}: {e}")))?;
+        }
+    }
     Ok(())
 }
 
@@ -613,6 +690,7 @@ mod tests {
     fn platform_suffix_known() {
         let p = detect_platform().expect("platform");
         assert!(!p.asset_suffix.is_empty());
+        assert!(!p.xray_asset_suffix.is_empty());
     }
 
     #[test]
@@ -632,15 +710,31 @@ mod tests {
     fn failed_activation_restores_previous_core() {
         let directory = replacement_test_dir("rollback");
         fs::create_dir_all(&directory).unwrap();
-        let dest = directory.join(binary_name());
-        let staged = staged_core_path(&dest);
-        let previous = previous_core_path(&dest);
+        let dest = directory.join("sing-box");
+        let staged = staged_core_path(CoreKind::SingBox, &dest);
+        let previous = previous_core_path(CoreKind::SingBox, &dest);
         fs::write(&dest, b"old").unwrap();
 
-        assert!(replace_installed_core(&staged, &dest, &previous).is_err());
+        assert!(replace_installed_core(CoreKind::SingBox, &staged, &dest, &previous).is_err());
         assert_eq!(fs::read(&dest).unwrap(), b"old");
         assert!(!previous.exists());
 
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn synthetic_xray_release_url_uses_xtls_repo() {
+        let platform = detect_platform().unwrap();
+        let info = synthetic_release_info(CoreKind::Xray, "v26.3.27", platform);
+        assert_eq!(info.version, "v26.3.27");
+        assert_eq!(
+            info.download_url,
+            format!(
+                "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/{}",
+                info.asset_name
+            )
+        );
+        assert!(info.asset_name.starts_with("Xray-"));
+        assert!(info.asset_name.ends_with(".zip"));
     }
 }
