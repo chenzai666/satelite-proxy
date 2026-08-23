@@ -244,8 +244,10 @@ pub struct AppSettings {
     /// Start proxy core automatically after app launch.
     #[serde(default)]
     pub auto_start_proxy: bool,
-    /// Close all connections after switching node.
-    #[serde(default = "default_true")]
+    /// Close all connections after switching node — manual mode only
+    /// (kernel auto-select and smart switching never interrupt existing
+    /// connections). Default off: smooth handover.
+    #[serde(default)]
     pub close_connections_on_switch: bool,
     /// UI language: `zh` | `en` (sidebar labels stay English).
     #[serde(default = "default_locale")]
@@ -417,7 +419,7 @@ impl Default for AppSettings {
             launch_at_login: false,
             silent_start: false,
             auto_start_proxy: false,
-            close_connections_on_switch: true,
+            close_connections_on_switch: false,
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),

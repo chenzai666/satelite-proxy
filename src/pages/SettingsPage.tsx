@@ -964,7 +964,7 @@ export function SettingsPage() {
               <AppToggle
                 title={t("settings.closeOnSwitch")}
                 desc={t("settings.closeOnSwitchDesc")}
-                checked={settings?.close_connections_on_switch !== false}
+                checked={!!settings?.close_connections_on_switch}
                 disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
               />

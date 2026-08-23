@@ -247,7 +247,7 @@ const en = {
     "Start the core automatically when the app launches",
   "settings.closeOnSwitch": "Close connections on switch",
   "settings.closeOnSwitchDesc":
-    "When changing node, drop existing connections so they rebuild via the new outbound",
+    "Manual mode only: when you switch node, drop existing connections so they rebuild via the new node. Auto/smart switching never interrupts existing connections.",
   "settings.findProcess": "Resolve process name",
   "settings.findProcessDesc":
     "Show the originating app for each connection in the traffic page. Disable to save CPU",
@@ -999,7 +999,7 @@ const zh: Record<MessageKey, string> = {
   "settings.autoStartProxyDesc": "应用启动后自动启动代理核心",
   "settings.closeOnSwitch": "切换节点后关闭连接",
   "settings.closeOnSwitchDesc":
-    "更换当前节点时断开已有连接，按新节点重建",
+    "仅手动模式生效：手动切换节点时断开已有连接，按新节点重建；自动/智能切换不会中断已有连接",
   "settings.findProcess": "解析进程名",
   "settings.findProcessDesc": "在流量页显示每条连接的发起程序；关闭可节省 CPU 占用",
   "settings.toggleSaveNote": "开关即时保存。",
