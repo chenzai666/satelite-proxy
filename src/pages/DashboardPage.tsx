@@ -11,6 +11,7 @@ import {
   peekProxyStatus,
   previewSingboxConfig,
   restartProxy,
+  peekSettings,
   setCoreType,
   setRuntimeSource,
   setOutboundMode,
@@ -258,6 +259,7 @@ export function DashboardPage({
       ]);
 
       const [settings, status] = await statusP;
+      setPendingCore(settings.core_type ?? null);
       setSettingsPorts({
         mixed: settings.mixed_port,
         api: settings.api_port,
@@ -328,9 +330,25 @@ export function DashboardPage({
       .then((s) => {
         setProxy(s);
         pushSpark(s);
+        setPendingCore(peekSettings()?.core_type ?? s.core_type ?? null);
       })
       .catch(() => undefined);
   }, 1000);
+
+  // Core switch transition: the setting flips instantly but the running core
+  // only lands on the new binary after the debounced restart. While the two
+  // disagree (and no custom profile is active — those legitimately run
+  // sing-box), the status card shows a spinner instead of the stale old-core
+  // facts. The 1s poll keeps both sides fresh from any switch entry point.
+  const [pendingCore, setPendingCore] = useState<string | null>(
+    () => peekSettings()?.core_type ?? null,
+  );
+  const coreSwitching =
+    !!proxy?.running &&
+    proxy?.runtime_source !== "singbox" &&
+    pendingCore != null &&
+    proxy?.core_type != null &&
+    pendingCore !== proxy?.core_type;
 
   // Core switches restart asynchronously (500ms debounce + process restart),
   // and the switch commands return before that lands. The 1s poll above
@@ -1281,14 +1299,36 @@ export function DashboardPage({
           <div className="instrument-kv mono">
             <div>
               <span className="kv-k">{t("dashboard.version")}</span>
-              <span className="kv-v">{coreVersion ?? "—"}</span>
+              <span className="kv-v">
+                {coreSwitching ? (
+                  <>
+                    <span
+                      className="lat-spinner ui-mode-restart-spinner"
+                      aria-hidden
+                    />{" "}
+                    {t("dashboard.coreSwitching")}
+                  </>
+                ) : (
+                  (coreVersion ?? "—")
+                )}
+              </span>
             </div>
             <div>
               <span className="kv-k">{t("dashboard.memory")}</span>
               <span className="kv-v">
-                {running && proxy?.core_memory_bytes != null
-                  ? fmtBytes(proxy.core_memory_bytes)
-                  : "—"}
+                {coreSwitching ? (
+                  <>
+                    <span
+                      className="lat-spinner ui-mode-restart-spinner"
+                      aria-hidden
+                    />{" "}
+                    {t("dashboard.coreSwitching")}
+                  </>
+                ) : running && proxy?.core_memory_bytes != null ? (
+                  fmtBytes(proxy.core_memory_bytes)
+                ) : (
+                  "—"
+                )}
               </span>
             </div>
           </div>
