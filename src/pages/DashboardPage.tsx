@@ -1369,7 +1369,22 @@ export function DashboardPage({
             aria-labelledby="preview-modal-title"
           >
             <header className="modal-header">
-              <h2 id="preview-modal-title">{t("common.preview")}</h2>
+              <h2 id="preview-modal-title">
+                {t("common.preview")}
+                {/* Which core this document belongs to — Xray and sing-box
+                    share several top-level keys, so make it explicit. */}
+                <span
+                  className="muted"
+                  style={{ marginLeft: "0.5rem", fontSize: "0.8rem", fontWeight: 400 }}
+                >
+                  ·{" "}
+                  {proxy?.runtime_source === "singbox"
+                    ? "sing-box"
+                    : (proxy?.core_type ?? "singbox") === "xray"
+                      ? "Xray"
+                      : "sing-box"}
+                </span>
+              </h2>
               <button
                 type="button"
                 className="icon-btn"
