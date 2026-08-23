@@ -2249,10 +2249,12 @@ button.node-card:disabled,
   border-radius: 2px;
 }
 
+/* Factory-shipped sets read as neutral metadata — same gray family as the
+   user-set label (text distinguishes them), never accent-tinted. */
 .ruleset-builtin-label {
-  color: var(--primary);
-  background: var(--primary-muted);
-  border: 1px solid var(--primary-border);
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 .ruleset-user-label {
@@ -2282,7 +2284,7 @@ button.node-card:disabled,
 }
 
 .ruleset-origin-label.origin-remote {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .ruleset-origin-label.origin-local {
