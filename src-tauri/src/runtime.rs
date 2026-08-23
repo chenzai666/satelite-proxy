@@ -265,7 +265,13 @@ impl Runtime {
             custom_has_tun: self.custom_has_tun,
             custom_inbound_port: self.custom_inbound_port,
             core_memory_bytes,
-            core_type: store.settings.core_type.clone(),
+            // Report the ACTUAL running kind: custom sing-box profiles always
+            // run the sing-box binary even when settings.core_type is xray.
+            core_type: if self.core.is_running() {
+                self.core.kind().as_str().to_string()
+            } else {
+                store.settings.core_type.clone()
+            },
         }
     }
 

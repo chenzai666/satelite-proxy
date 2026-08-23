@@ -452,6 +452,12 @@ export function DashboardPage({
   );
   const selectedCustomId =
     proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
+  // Custom sing-box profiles cannot run under the Xray core (they always use
+  // the sing-box binary); grey them out while Xray is the active core. The
+  // "generated" option stays live — under Xray it generates an Xray config.
+  // While a custom profile IS running, core_type truthfully reports singbox,
+  // so switching between profiles / back to generated keeps working.
+  const xrayCore = proxy?.core_type === "xray";
 
   async function onPickRuntime(source: string) {
     if (busy) return;
@@ -898,9 +904,16 @@ export function DashboardPage({
                               type="button"
                               role="menuitemradio"
                               aria-checked={selected}
-                              className={selected ? "is-selected" : ""}
-                              disabled={busy}
-                              title={profile.name}
+                              aria-disabled={xrayCore || undefined}
+                              className={`${
+                                selected ? "is-selected" : ""
+                              }${xrayCore ? " is-disabled" : ""}`}
+                              disabled={busy || xrayCore}
+                              title={
+                                xrayCore
+                                  ? t("dashboard.customProfileNeedsSingbox")
+                                  : profile.name
+                              }
                               onClick={() =>
                                 void onPickRuntime(`singbox:${profile.id}`)
                               }

@@ -4823,6 +4823,15 @@ button.check.on {
   color: var(--accent) !important;
 }
 
+/* Xray mode: custom sing-box profiles can't run under that core — grey the
+   entry (and dim the selected accent) while keeping the tooltip readable. */
+.dash-more-submenu button.is-disabled,
+.dash-more-submenu button.is-disabled.is-selected {
+  color: var(--muted) !important;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .dash-more-check {
   width: 0.85rem;
   flex: 0 0 auto;

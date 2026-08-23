@@ -99,6 +99,13 @@ impl CoreManager {
         matches!(self.state, CoreState::Running)
     }
 
+    /// Kind of the current/last session — set by `start_with_ports`. Callers
+    /// wanting the *actual* running core (e.g. custom sing-box profiles keep
+    /// running sing-box even when `settings.core_type` is xray) read this.
+    pub fn kind(&self) -> CoreKind {
+        self.kind
+    }
+
     /// PID of the running core process, however it's owned (sidecar child or elevated).
     pub fn pid(&self) -> Option<u32> {
         match self.run_mode {
