@@ -202,7 +202,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 ### 5.5 内核管理（core/）— 双内核（sing-box / Xray）
 
 - `kind.rs` — ★ `CoreKind` 描述符：binary 名、GitHub repo、release 资产命名（**两内核命名规则不同**：sing-box `sing-box-1.13.15-darwin-arm64.tar.gz` vs Xray `Xray-macos-arm64-v8a.zip`）、CLI 参数（version/-version、check/run -c）、版本输出解析、spawn env（Xray 设 `XRAY_LOCATION_ASSET`/`XRAY_LOCATION_CERT`）、日志前缀、协议支持集。
-- `manager.rs` — 进程生命周期（`CoreKind` 参数化）：sing-box `check -c` / Xray `run -test -c` 校验 → `run -c` 启动；Windows `CREATE_NO_WINDOW`；CoreState 状态机；优雅停止；TUN 提权链路内核无关（helper 按二进制名推断 kind）。
+- `manager.rs` — 进程生命周期（`CoreKind` 参数化）：sing-box `check -c` / Xray `run -test -c` 校验 → `run -c` 启动；**Xray + TUN 跳过预校验**（Xray 的 `-test` 会真建 tun 网卡需管理员，未提权必失败 exit 23；配置错误由提权运行后的日志尾部回报）；Windows `CREATE_NO_WINDOW`；CoreState 状态机；优雅停止；TUN 提权链路内核无关（helper 按二进制名推断 kind）。
 - `download.rs` — GitHub Releases 下载/更新（按 kind 选 repo/资产/提取目标；Xray zip 额外提取 geodata）。
 - `assets.rs` — Xray 资产三连：`ensure_geodata`（staged→bundled→Loyalsoldier v2ray-rules-dat 下载）、`ensure_wintun`（Windows TUN，Xray zip 不带 wintun.dll）。
 - `job.rs` — Windows Job Object 绑定子进程，父进程异常退出时内核随之死亡（防端口占用残留）。

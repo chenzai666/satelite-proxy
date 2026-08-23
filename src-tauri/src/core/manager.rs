@@ -353,7 +353,16 @@ impl CoreManager {
             }
         }
 
-        Self::check_config(kind, binary, config)?;
+        // sing-box `check -c` is pure JSON validation, but Xray's
+        // `run -test -c` actually creates the tun adapter for tun configs —
+        // which needs admin. Running it unelevated fails with access-denied
+        // before the elevated start path is ever reached, so elevated Xray
+        // sessions skip the pre-check; the elevated run surfaces config
+        // errors through the log tail instead.
+        let skip_check = elevated && kind == CoreKind::Xray;
+        if !skip_check {
+            Self::check_config(kind, binary, config)?;
+        }
         // Light re-check only (first ensure_ports_free already waited if needed).
         for &p in &ports {
             if !Self::is_port_free(p) && port_has_listener(p) {
@@ -766,9 +775,13 @@ fn map_tun_permission_hint(err: &str) -> String {
         || lower.contains("configure tun")
         || lower.contains("permission denied")
         || lower.contains("access is denied")
+        // Chinese Windows error text / wintun HRESULT, e.g. from Xray's tun
+        // adapter creation ("拒绝访问。 (Code 0x00000005)").
+        || err.contains("拒绝访问")
+        || err.contains("0x00000005")
     {
         let platform_hint = if cfg!(target_os = "windows") {
-            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行 sing-box。\n\
+            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行内核。\n\
              请在 UAC 弹窗中点「是」；若点了「否」，请关闭 TUN 开关后重试，或以管理员身份运行本程序。"
         } else {
             "TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
