@@ -314,7 +314,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 | 加页面 | `src/pages/` + `App.tsx` lazy 导入 + `NavKey`（types.ts）+ `TopNav` + i18n `nav.*` |
 | 改样式 | `src/App.css` 对应段落；新主题色变体在 `theme/accents.ts` |
 | 加托盘功能 | `src-tauri/src/tray.rs` |
-| 改测速 | `services/latency.rs` + `src/api.ts` testNodesLatency |
+| 改测速 | `services/latency.rs` + `src/api.ts` testNodesLatency（内核运行时一律走 Clash delay API 经真实代理链路探测；直连 TCP 仅在内核停止/custom 配置/Xray 下回退——TCP 直连只反映可达性，会漏报 REALITY/Vision 这类「TCP 活但代理死」的节点） |
 | 改内核下载/资产 | `core/download.rs` + `core/assets.rs` + `scripts/fetch-bundled-*-<平台>` 脚本 + `tauri.*.conf.json` resources 四处联动 |
 | 重大架构 / 模块 / 流程变动 | **同步更新本文档对应章节**（规则见 §0） |
 

@@ -1,11 +1,15 @@
 //! Latency probe helpers.
 //!
-//! - **UI 测速** (`test_nodes_latency`): direct TCP to `server:port` for
-//!   TCP-based protocols. UDP-only protocols (hysteria/hysteria2/tuic) never
-//!   accept a plain TCP connect, so they're routed through the clash delay
-//!   API instead when the core is running; otherwise they report timeout by
-//!   design rather than a misleading raw-reachability failure.
-//! - **Smart switch**: may pass clash API for through-outbound delay when core is up.
+//! - **UI 测速** (`test_nodes_latency`): through-kernel clash delay API for
+//!   every protocol when the core is running — a TCP-connect probe measures
+//!   raw reachability, which lies about proxy health (meow REALITY/Vision
+//!   nodes pass TCP handshakes with flying colors and die mid-proxy). Direct
+//!   TCP is the fallback when the core is stopped or the caller has no
+//!   mapping into the running config (custom sing-box profiles). UDP-only
+//!   protocols (hysteria/hysteria2/tuic) have no TCP fallback at all —
+//!   without the core they report an explicit "start the proxy" error.
+//! - **Smart switch**: passes the clash API when the core is up, so its
+//!   candidate scoring rides the same through-kernel probes.
 //!
 //! Clash path uses **unified delay** (like mihomo / FlClash): probe twice and
 //! report the second RTT so handshake / cold-connect bias is reduced.
@@ -131,13 +135,16 @@ fn spawn_probe_task(
         let server = node.server.clone();
         let port = node.port;
         let tag = outbound_tag(&node);
-        // UDP-only protocols (hysteria/hysteria2/tuic) never accept a plain
-        // TCP connect, so a direct-TCP probe always times out regardless of
-        // node health. Route those through the clash delay API instead when
-        // the core is up. Without the core there's no way to speak the
-        // protocol at all, so report that explicitly instead of running a
-        // TCP probe that can only ever time out and looks like a dead node.
-        let use_clash = node.protocol.is_udp_only() && clash.is_some();
+        // Through-kernel delay is the only meaningful health signal for TCP
+        // protocols too: a plain TCP connect succeeds for nodes whose proxy
+        // path is broken (meow REALITY/Vision nodes ace TCP handshakes and
+        // then die mid-proxy). Whenever the core is up, ask the kernel to
+        // dial the probe URL through the node; direct TCP remains the
+        // fallback for a stopped core and for callers without a mapping
+        // into the running config (custom sing-box profiles, Xray metrics
+        // mode). UDP-only protocols cannot fall back at all — report that
+        // explicitly instead of a TCP probe that can only ever time out.
+        let use_clash = clash.is_some();
         if node.protocol.is_udp_only() && clash.is_none() {
             return (
                 index,
@@ -446,10 +453,26 @@ mod tests {
             );
         }
 
-        // A TCP-based protocol must keep using the direct-TCP probe even
-        // when a clash API is available (unchanged prior behavior).
+        // A TCP-based protocol also probes through the kernel when the
+        // clash API is available — raw TCP reachability lies about proxy
+        // health (meow REALITY/Vision nodes ace TCP and die mid-proxy).
+        // The delay call itself fails here (nothing on port 1), but the
+        // point under test is *which* probe path ran.
         let nodes = vec![node(Protocol::Shadowsocks)];
         let results = probe_nodes(&nodes, Some(200), Some(1), Some(clash), String::new())
+            .await
+            .unwrap();
+        assert_eq!(results[0].method, "clash_api");
+    }
+
+    // Without the clash API (core stopped / custom profiles / Xray), TCP
+    // protocols fall back to the direct-TCP probe — still the raw signal,
+    // but the only one available.
+    #[tokio::test]
+    async fn tcp_protocols_fall_back_to_direct_probe_without_clash_api() {
+        use crate::domain::Protocol;
+        let nodes = vec![node(Protocol::Shadowsocks)];
+        let results = probe_nodes(&nodes, Some(200), Some(1), None, String::new())
             .await
             .unwrap();
         assert_eq!(results[0].method, "tcp");
