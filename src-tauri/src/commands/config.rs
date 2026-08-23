@@ -380,8 +380,8 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .collect();
             // Under the Xray core, protocols it cannot serve are hidden from
             // listings entirely (they reappear after switching back).
-            let xray_mode =
-                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
+            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
+                == crate::core::CoreKind::Xray;
             Ok(store
                 .nodes
                 .iter()
@@ -424,8 +424,8 @@ pub fn list_nodes_page(
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
             // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
-            let xray_mode =
-                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
+            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
+                == crate::core::CoreKind::Xray;
             let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
@@ -497,8 +497,8 @@ pub fn list_node_ids(
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
             // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
-            let xray_mode =
-                crate::core::CoreKind::parse(&store.settings.core_type) == crate::core::CoreKind::Xray;
+            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
+                == crate::core::CoreKind::Xray;
             Ok(store
                 .nodes
                 .iter()

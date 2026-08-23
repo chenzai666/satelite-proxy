@@ -12,6 +12,7 @@ import { SolidSelect } from "../components/SolidSelect";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
 
@@ -308,7 +309,9 @@ export function FailuresPage({ embedded = false }: Props) {
 
   const body = (
     <>
-      {error && !addOpen && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <div className="muted mono traffic-meta">
         {t("fails.count", { n: scoped.length })}
@@ -415,8 +418,6 @@ export function FailuresPage({ embedded = false }: Props) {
           </button>
         </header>
         <form className="modal-body" onSubmit={(e) => void onAddSave(e)}>
-          {error && <div className="banner error">{error}</div>}
-
           <div className="field">
             <span>{t("fails.ruleSet")}</span>
             <div className="fails-set-row">

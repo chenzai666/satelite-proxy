@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readImportFile } from "../api";
 import { GlassButton } from "./GlassButton";
+import { ErrorModal } from "./ErrorModal";
 import { GlassSeg } from "./GlassSeg";
 import { GlassSwitchControl } from "./GlassSwitchControl";
 import {
@@ -54,6 +55,8 @@ interface Props {
   open: boolean;
   busy: boolean;
   error: string | null;
+  /** Clear the passed-in `error` (backends surface import failures here). */
+  onDismissError?: () => void;
   initial?: ConfigFormValues | null;
   isEdit?: boolean;
   title?: string;
@@ -67,6 +70,7 @@ export function AddConfigModal({
   open: isOpen,
   busy,
   error,
+  onDismissError,
   initial = null,
   isEdit = false,
   title,
@@ -421,9 +425,13 @@ export function AddConfigModal({
                   : "支持单行或多行协议链接，也能从 Clash / sing-box 订阅里提取节点。本地文件会拷贝进应用。"}
           </p>
 
-          {(error || fileError) && (
-            <div className="form-error">{error || fileError}</div>
+          {error && (
+            <ErrorModal
+              message={error}
+              onClose={() => onDismissError?.()}
+            />
           )}
+          {fileError && <div className="form-error">{fileError}</div>}
 
           <footer className="modal-footer">
             <GlassButton onClick={onClose} disabled={busy}>

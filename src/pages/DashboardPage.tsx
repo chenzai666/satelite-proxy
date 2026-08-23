@@ -24,6 +24,7 @@ import {
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
@@ -179,12 +180,20 @@ export function DashboardPage({
   const [statusReady, setStatusReady] = useState(false);
   const [detailsReady, setDetailsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Core failure text to surface in the error modal (dead core, not running).
+   *  Remembered dismissal keeps the same message from re-popping on every
+   *  status poll / remount; a new failure text re-opens the modal. */
+  const [dismissedCoreError, setDismissedCoreError] = useState<string | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  /** Config-preview modal: quick line filter + copy feedback. */
+  /** Config-preview modal: full-text search with jump-to-match + copy. */
   const [previewQuery, setPreviewQuery] = useState("");
+  const [previewMatchIdx, setPreviewMatchIdx] = useState(0);
   const [previewCopied, setPreviewCopied] = useState(false);
+  const previewPreRef = useRef<HTMLPreElement | null>(null);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -487,6 +496,7 @@ export function DashboardPage({
     setError(null);
     setMoreOpen(false);
     setPreviewQuery("");
+    setPreviewMatchIdx(0);
     setPreviewCopied(false);
     try {
       if (proxy?.runtime_source === "singbox" && proxy.runtime_profile_id) {
@@ -657,21 +667,42 @@ export function DashboardPage({
     }
   }
 
-  /** Config preview split once per fetch; filter runs over these lines. */
+  /** Config preview split once per fetch; search runs over these lines. */
   const previewLines = useMemo(
     () => (result?.preview ?? "").split("\n"),
     [result?.preview],
   );
   const previewQueryTrimmed = previewQuery.trim();
+  /** Line indices containing the query (null = no query, plain-text fast path).
+   *  `set` gives O(1) membership while rendering every line. */
   const previewMatches = useMemo(() => {
     const q = previewQueryTrimmed.toLowerCase();
     if (!q) return null;
-    const out: { n: number; text: string }[] = [];
+    const indices: number[] = [];
     previewLines.forEach((text, n) => {
-      if (text.toLowerCase().includes(q)) out.push({ n, text });
+      if (text.toLowerCase().includes(q)) indices.push(n);
     });
-    return out;
+    return { indices, set: new Set(indices) };
   }, [previewLines, previewQueryTrimmed]);
+
+  const previewCurIdx =
+    previewMatches && previewMatches.indices.length > 0
+      ? Math.min(previewMatchIdx, previewMatches.indices.length - 1)
+      : 0;
+
+  // Jump-to-match: scroll the full-text preview to the current hit. Instant
+  // (no smooth) — generated configs span thousands of pixels and the WebView
+  // animates that poorly.
+  useEffect(() => {
+    if (!showPreview || !previewMatches || previewMatches.indices.length === 0) {
+      return;
+    }
+    const n = previewMatches.indices[previewCurIdx];
+    const el = previewPreRef.current?.querySelector<HTMLElement>(
+      `[data-n="${n}"]`,
+    );
+    el?.scrollIntoView({ block: "center" });
+  }, [showPreview, previewMatches, previewCurIdx]);
 
   const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
 
@@ -751,13 +782,20 @@ export function DashboardPage({
           : "ok";
 
   const currentLatency = currentNode?.latency_ms;
+  /** Core failure while stopped — surfaced as a modal unless dismissed. */
+  const coreErrorText = proxy?.error && !running ? proxy.error : null;
 
   return (
     <div className="page dashboard-page">
       {toast && <div className="toast">{toast}</div>}
-      {error && <div className="banner error">{error}</div>}
-      {proxy?.error && !running && (
-        <div className="banner error">core: {proxy.error}</div>
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
+      {coreErrorText != null && coreErrorText !== dismissedCoreError && (
+        <ErrorModal
+          message={coreErrorText}
+          onClose={() => setDismissedCoreError(coreErrorText)}
+        />
       )}
 
       {/* —— Hero: orbit + status + embedded controls (no floating QC card) —— */}
@@ -995,6 +1033,7 @@ export function DashboardPage({
                 new Set(
                   [
                     smartProbing ? "smart" : null,
+                    proxy?.core_type === "xray" ? "smart" : null,
                     nodeCount === 0 &&
                     autoSelectMode === "off" &&
                     !smartProbing
@@ -1403,15 +1442,35 @@ export function DashboardPage({
                   className="search preview-search"
                   placeholder={t("dashboard.filterConfig")}
                   value={previewQuery}
-                  onChange={(e) => setPreviewQuery(e.target.value)}
+                  onChange={(e) => {
+                    setPreviewQuery(e.target.value);
+                    setPreviewMatchIdx(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key !== "Enter" ||
+                      !previewMatches ||
+                      previewMatches.indices.length === 0
+                    ) {
+                      return;
+                    }
+                    e.preventDefault();
+                    const len = previewMatches.indices.length;
+                    setPreviewMatchIdx((i) =>
+                      e.shiftKey ? (i - 1 + len) % len : (i + 1) % len,
+                    );
+                  }}
+                  title={t("dashboard.matchJumpHint")}
                   spellCheck={false}
                 />
                 {previewMatches && (
                   <span className="muted preview-match-count">
-                    {t("dashboard.matchCount", {
-                      n: previewMatches.length,
-                      total: previewLines.length,
-                    })}
+                    {previewMatches.indices.length === 0
+                      ? t("dashboard.matchNone")
+                      : t("dashboard.matchPos", {
+                          cur: previewCurIdx + 1,
+                          n: previewMatches.indices.length,
+                        })}
                   </span>
                 )}
                 <GlassButton
@@ -1421,16 +1480,31 @@ export function DashboardPage({
                   {previewCopied ? t("common.copied") : t("common.copy")}
                 </GlassButton>
               </div>
-              <pre className="preview-json">
+              <pre className="preview-json" ref={previewPreRef}>
                 {previewMatches
-                  ? previewMatches.map((m) => (
-                      <span className="preview-line" key={m.n}>
-                        <span className="preview-line-no">{m.n + 1}</span>
-                        <span className="preview-line-text">
-                          {highlightPreviewLine(m.text, previewQueryTrimmed)}
+                  ? previewLines.map((text, n) => {
+                      const isMatch = previewMatches.set.has(n);
+                      const isCurrent =
+                        previewMatches.indices.length > 0 &&
+                        previewMatches.indices[previewCurIdx] === n;
+                      return (
+                        <span
+                          className={`preview-line${isCurrent ? " current" : ""}`}
+                          key={n}
+                          data-n={n}
+                        >
+                          <span className="preview-line-no">{n + 1}</span>
+                          <span className="preview-line-text">
+                            {isMatch
+                              ? highlightPreviewLine(
+                                  text,
+                                  previewQueryTrimmed,
+                                )
+                              : text}
+                          </span>
                         </span>
-                      </span>
-                    ))
+                      );
+                    })
                   : result.preview}
               </pre>
             </div>

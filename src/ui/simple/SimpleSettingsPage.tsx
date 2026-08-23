@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getSettings, updateSettings } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
 import { GlassSwitchControl } from "../../components/GlassSwitchControl";
+import { ErrorModal } from "../../components/ErrorModal";
 import { useI18n, type Locale } from "../../i18n";
 import { useTheme } from "../../theme";
 import type { AppSettings, HeroStyle, ThemeId } from "../../types";
@@ -46,7 +47,9 @@ export function SimpleSettingsPage() {
         </div>
       </header>
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <section className="settings-panel" aria-label={t("settings.tabApp")}>
         <div className="card settings-app-card">

@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { TopNav } from "./components/TopNav";
+import { ErrorModal } from "./components/ErrorModal";
 import { beginCoreBusy } from "./coreBusy";
 import { ImportIntentProvider, useImportIntent } from "./ImportIntentContext";
 import { LocaleProvider } from "./i18n";
@@ -118,14 +119,10 @@ function AppShell() {
   return (
     <>
       {applyError && (
-        <button
-          type="button"
-          className="global-apply-error banner error"
-          onClick={() => setApplyError(null)}
-          title="点击关闭"
-        >
-          {applyError}
-        </button>
+        <ErrorModal
+          message={applyError}
+          onClose={() => setApplyError(null)}
+        />
       )}
       {mode === "simple" ? <SimpleShell /> : <ProShell />}
     </>

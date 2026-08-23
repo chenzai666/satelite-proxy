@@ -159,14 +159,11 @@ pub fn geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileState); 
             Ok(meta) => GeodataFileState {
                 present: true,
                 bytes: meta.len(),
-                modified_at: meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| {
-                        t.duration_since(std::time::UNIX_EPOCH)
-                            .ok()
-                            .map(|d| d.as_secs())
-                    }),
+                modified_at: meta.modified().ok().and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs())
+                }),
             },
             Err(_) => GeodataFileState {
                 present: false,

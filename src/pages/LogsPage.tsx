@@ -6,6 +6,7 @@ import { GlassSwitch } from "../components/GlassSwitch";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 
 const LEVELS: AppLogLevel[] = ["error", "warn", "info", "debug", "trace"];
 
@@ -193,7 +194,9 @@ export function LogsPage() {
         />
       </div>
 
-      {error && <p className="error-banner">{error}</p>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <div className="logs-panel card glass" ref={listRef}>
         {rows.length === 0 ? (

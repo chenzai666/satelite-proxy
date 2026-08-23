@@ -14,9 +14,9 @@ mod memory;
 mod paths;
 
 pub use assets::ensure_geodata;
-pub use assets::{download_missing_geodata, geodata_state};
 #[cfg(target_os = "windows")]
 pub use assets::ensure_wintun;
+pub use assets::{download_missing_geodata, geodata_state};
 pub use kind::CoreKind;
 pub use memory::read_process_rss_bytes;
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getProxyStatus, listConnectionChanges } from "../../api";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
+import { ErrorModal } from "../../components/ErrorModal";
 import type { ConnectionView } from "../../types";
 import { applyConnectionChanges } from "../../connectionChanges";
 
@@ -80,7 +81,9 @@ export function SimpleTrafficPage() {
         placeholder={t("conn.filter")}
       />
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {!running ? (
         <div className="empty card muted">{t("conn.needStart")}</div>
