@@ -56,21 +56,14 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     let mut supported: Vec<ProxyNode> = Vec::new();
     for node in nodes {
         // All meow node-level exclusions live in CoreKind::supports_node:
-        // unsupported protocols, REALITY (strict servers black-hole meow's
-        // fingerprint-less ClientHello), vless Vision flows (raw passthrough
-        // only works over meow's REALITY stream), vmess on non-tcp/ws
-        // transports, ss + shadow-tls. Keep the human-readable reason per
-        // class here.
+        // unsupported protocols, vless Vision over non-REALITY TLS (raw
+        // passthrough only works over meow's REALITY stream; Vision+REALITY
+        // is kept — 11/17 field-audited working, dead ones surface as
+        // through-kernel probe timeouts), vmess on non-tcp/ws transports,
+        // ss + shadow-tls. Keep the human-readable reason per class here.
         if !CoreKind::Meow.supports_node(node) {
             let reason = if !CoreKind::Meow.supports(node.protocol) {
                 format!("meow 不支持 {} 协议", node.protocol.as_str())
-            } else if node
-                .tls
-                .as_ref()
-                .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some())
-            {
-                "meow 的 REALITY 握手不兼容（忽略 client-fingerprint，严格服务端会黑洞）"
-                    .to_string()
             } else if node.protocol == Protocol::Vless
                 && matches!(
                     &node.config,
@@ -78,6 +71,10 @@ pub fn build_meow_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
                         flow: Some(f), ..
                     } if !f.trim().is_empty()
                 )
+                && !node
+                    .tls
+                    .as_ref()
+                    .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some())
             {
                 "meow 的 Vision 直通仅在 REALITY 上实现，普通 TLS 的 Vision 节点会断链".to_string()
             } else if node.protocol == Protocol::Vmess
@@ -1145,22 +1142,24 @@ mod tests {
 
     #[test]
     fn vless_reality_flow_shape() {
-        // REALITY is filtered out of meow configs (strict servers black-hole
-        // meow's fingerprint-less ClientHello) — the node is skipped, and a
-        // plain vless node still maps with its tls/sni fields.
-        let reality = vless_node("vision", Some("xtls-rprx-vision"));
-        let fallback = plain_node("plain");
-        let built = build_meow_config(&[reality, fallback], &default_opts()).expect("build");
-        assert_eq!(built.outbound_tags.len(), 1, "reality node must be skipped");
+        // Vision+REALITY is KEPT under meow (field-audited working; dead
+        // REALITY servers surface as through-kernel probe timeouts) — the
+        // node maps with its flow, reality-opts and fingerprint.
+        let built = build_meow_config(
+            &[vless_node("vision", Some("xtls-rprx-vision"))],
+            &default_opts(),
+        )
+        .expect("build");
         let doc = parse(&built);
-        assert_eq!(doc["proxies"].as_sequence().map(|p| p.len()), Some(1));
         let proxy = &doc["proxies"][0];
         assert_eq!(proxy["type"].as_str(), Some("vless"));
         assert_eq!(proxy["uuid"].as_str(), Some("uuid-1"));
+        assert_eq!(proxy["flow"].as_str(), Some("xtls-rprx-vision"));
         assert_eq!(proxy["tls"].as_bool(), Some(true));
         assert_eq!(proxy["servername"].as_str(), Some("sni.example.com"));
-        // Only-reality nodes hard-error (same class as unsupported protocols).
-        assert!(build_meow_config(&[vless_node("only-reality", None)], &default_opts()).is_err());
+        assert_eq!(proxy["client-fingerprint"].as_str(), Some("chrome"));
+        assert_eq!(proxy["reality-opts"]["public-key"].as_str(), Some("pbk"));
+        assert_eq!(proxy["reality-opts"]["short-id"].as_str(), Some("abcd0123"));
     }
 
     #[test]

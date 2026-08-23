@@ -258,20 +258,18 @@ impl CoreKind {
     /// Whether this core can serve the NODE as a whole — protocol plus the
     /// per-node shapes a core cannot represent. sing-box serves everything;
     /// meow additionally rejects:
-    /// - REALITY (any protocol): meow's REALITY client hand-rolls a minimal
-    ///   ClientHello and ignores `client-fingerprint` (boring-tls/uTLS only
-    ///   covers its plain-TLS path), so strict REALITY servers black-hole
-    ///   the handshake ("Reality TLS: handshake did not complete within
-    ///   10s" — verified against a node that returns 204 through sing-box
-    ///   with the same parameters);
-    /// - vless with a flow (XTLS Vision): meow's raw passthrough only
+    /// - vless Vision over NON-REALITY TLS: meow's raw passthrough only
     ///   works over its REALITY stream (transport::enable_raw_* only
     ///   downcasts RealityTlsStream), so plain-TLS Vision nodes die at
     ///   "vision: DIRECT requested but transport cannot switch to raw
-    ///   passthrough" — and Vision+REALITY is already excluded above.
-    ///   These nodes pass TCP latency probes (they look alive!), so
-    ///   selecting one silently kills the proxy-egress remote DNS and
-    ///   takes the whole network down;
+    ///   passthrough". These nodes pass TCP probes while dead, so
+    ///   selecting one silently kills the proxy-egress remote DNS.
+    ///   Vision+REALITY works (field-audited: 11/17 of this subscription's
+    ///   REALITY lines pass the kernel delay test, 555-1208ms vs 92-130ms
+    ///   under sing-box — slower, no uTLS, but functional), so REALITY is
+    ///   NOT filtered: dead REALITY nodes are naturally avoided by the
+    ///   through-kernel probes (urltest / smart / latency column all dial
+    ///   for real and show them as timeout);
     /// - vmess on non-tcp/ws transports (meow parser rejects them);
     /// - ss + shadow-tls (a sing-box-only outbound detour shape).
     pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
@@ -283,17 +281,14 @@ impl CoreKind {
                 .tls
                 .as_ref()
                 .is_some_and(|t| t.reality_public_key.is_some() || t.reality_short_id.is_some());
-            if reality {
-                return false;
-            }
-            if node.protocol == Protocol::Vless
+            let vision = node.protocol == Protocol::Vless
                 && matches!(
                     &node.config,
                     crate::domain::ProtocolConfig::Vless {
                         flow: Some(f), ..
                     } if !f.trim().is_empty()
-                )
-            {
+                );
+            if vision && !reality {
                 return false;
             }
             if node.protocol == Protocol::Vmess
@@ -533,8 +528,9 @@ mod tests {
             ..Default::default()
         });
 
-        // meow rejects REALITY regardless of protocol.
-        assert!(!CoreKind::Meow.supports_node(&node(Protocol::Vless, reality.clone(), None)));
+        // meow KEEPS REALITY (field-audited: 11/17 of a real subscription's
+        // REALITY lines pass the kernel delay test).
+        assert!(CoreKind::Meow.supports_node(&node(Protocol::Vless, reality.clone(), None)));
         // meow rejects vless Vision flows: raw passthrough only exists for
         // its REALITY stream, plain-TLS Vision nodes die mid-handshake
         // while passing TCP probes.
