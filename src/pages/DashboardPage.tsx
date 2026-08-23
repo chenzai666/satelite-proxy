@@ -332,6 +332,22 @@ export function DashboardPage({
       .catch(() => undefined);
   }, 1000);
 
+  // Core switches restart asynchronously (500ms debounce + process restart),
+  // and the switch commands return before that lands. The 1s poll above
+  // observes the new core_type the moment the restart completes — react to
+  // that edge with a full reload so the version card, memory readout and the
+  // (core-filtered) node list all settle, no matter which entry point
+  // (hero ⋯, top-bar ⋯, Settings) triggered the switch.
+  const prevCoreTypeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const kind = proxy?.core_type ?? null;
+    if (kind == null) return;
+    const first = prevCoreTypeRef.current === null;
+    const changed = prevCoreTypeRef.current !== kind;
+    prevCoreTypeRef.current = kind;
+    if (!first && changed) void reload();
+  }, [proxy?.core_type, reload]);
+
   useEffect(() => {
     if (!moreOpen) return;
     function onDoc(e: MouseEvent) {
