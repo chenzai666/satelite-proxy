@@ -17,7 +17,7 @@
 
 use crate::config::builder::{
     effective_route_rules, filter_pool_tags, outbound_tag, resolve_selected_tag,
-    rule_set_is_empty_for_config, BuildOptions, BuiltConfig,
+    rule_set_is_empty_for_config, smart_pool_tags, BuildOptions, BuiltConfig,
 };
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
@@ -110,6 +110,31 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     }
 
     let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
+
+    // Per-RULE smart pools (target=Smart with per-rule include/exclude
+    // keywords): sing-box gives each a `smart-<id>` selector; under Xray each
+    // becomes a leastPing balancer over the exact pool tags. Empty pools
+    // route to the main target.
+    let mut smart_balancers = Vec::new();
+    let mut smart_balancer_tags: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for rule in effective_rules
+        .iter()
+        .filter(|r| r.enabled && r.target == RuleTarget::Smart && !r.payload.trim().is_empty())
+    {
+        let pool = smart_pool_tags(rule, &supported, &tags);
+        if pool.is_empty() {
+            continue;
+        }
+        let balancer_tag = rule.smart_outbound_tag();
+        smart_balancers.push(json!({
+            "tag": balancer_tag,
+            "selector": pool,
+            "strategy": { "type": "leastPing" },
+        }));
+        smart_balancer_tags.insert(rule.id.clone(), balancer_tag);
+    }
+
     let (route_rules, dns_egress_rules) = build_routing(
         opts,
         &supported,
@@ -117,6 +142,7 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         &effective_rules,
         &main_target,
         &filter_balancer_tags,
+        &smart_balancer_tags,
     );
 
     let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
@@ -199,13 +225,17 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         }));
     }
     balancers.extend(filter_balancers);
+    balancers.extend(smart_balancers);
     if !balancers.is_empty() {
         routing.insert("balancers".into(), Value::Array(balancers));
     }
     config.insert("routing".into(), Value::Object(routing));
     // leastPing needs probe data: keep the observatory up for kernel
-    // auto-select and for any Filter-pool balancer.
-    if opts.auto_select.is_kernel() || !filter_balancer_tags.is_empty() {
+    // auto-select and for any Filter-pool / per-rule smart-pool balancer.
+    if opts.auto_select.is_kernel()
+        || !filter_balancer_tags.is_empty()
+        || !smart_balancer_tags.is_empty()
+    {
         let probe_url = if opts.probe_url.trim().is_empty() {
             "https://www.gstatic.com/generate_204"
         } else {
@@ -355,6 +385,7 @@ fn rule_to_xray(
     nodes: &[ProxyNode],
     tags: &[String],
     main_target: &str,
+    smart_balancer_tags: &std::collections::HashMap<String, String>,
 ) -> Option<Value> {
     use crate::domain::Rule;
     let payload = rule.payload.trim();
@@ -364,8 +395,13 @@ fn rule_to_xray(
     let Rule {
         target, node_id, ..
     } = rule;
-    // Node pins point straight at the node outbound; Smart pools route to the
-    // main target (the app-level smart switch rewrites it on restart).
+    // Node pins point straight at the node outbound. Smart rules with a
+    // non-empty keyword pool route through their per-rule balancer; empty
+    // pools (and plain Proxy) fall back to the main target.
+    let smart_balancer = match target {
+        RuleTarget::Smart => smart_balancer_tags.get(&rule.id),
+        _ => None,
+    };
     let outbound = match target {
         RuleTarget::Direct => "direct".to_string(),
         RuleTarget::Block => "block".to_string(),
@@ -400,7 +436,11 @@ fn rule_to_xray(
             obj.insert("ip".into(), json!([ip_entry(payload)]));
         }
     }
-    obj.insert("outboundTag".into(), json!(outbound));
+    if let Some(balancer) = smart_balancer {
+        obj.insert("balancerTag".into(), json!(balancer));
+    } else {
+        obj.insert("outboundTag".into(), json!(outbound));
+    }
     Some(Value::Object(obj))
 }
 
@@ -434,13 +474,16 @@ fn build_routing(
     effective_rules: &[crate::domain::Rule],
     main_target: &str,
     filter_balancer_tags: &std::collections::HashMap<String, String>,
+    smart_balancer_tags: &std::collections::HashMap<String, String>,
 ) -> (Vec<Value>, Vec<Value>) {
     let mut route_rules = Vec::new();
     match opts.outbound_mode {
         OutboundMode::Rule => {
             if opts.rule_sets.is_empty() {
                 for rule in effective_rules {
-                    if let Some(value) = rule_to_xray(rule, nodes, tags, main_target) {
+                    if let Some(value) =
+                        rule_to_xray(rule, nodes, tags, main_target, smart_balancer_tags)
+                    {
                         route_rules.push(value);
                     }
                 }
@@ -489,7 +532,9 @@ fn build_routing(
                             } else {
                                 crate::config::builder::clamp_rule_pin_to_set(set, &mut rule);
                             }
-                            if let Some(mut value) = rule_to_xray(&rule, nodes, tags, main_target) {
+                            if let Some(mut value) =
+                                rule_to_xray(&rule, nodes, tags, main_target, smart_balancer_tags)
+                            {
                                 if let Some(balancer) = set_balancer {
                                     if let Some(obj) = value.as_object_mut() {
                                         obj.remove("outboundTag");
@@ -1502,6 +1547,73 @@ mod tests {
             .find(|r| r.to_string().contains("stream.tv"))
             .unwrap();
         assert_eq!(stream_rule["outboundTag"], built.selected_tag);
+        assert!(built.value.get("observatory").is_none());
+    }
+
+    #[test]
+    fn per_rule_smart_keyword_pool_routes_through_balancer() {
+        // The user's real shape: a Smart-strategy set holding rules with
+        // target=Smart and per-rule include keywords (e.g. chatgpt.com→新加坡).
+        let sg = vless_node("新加坡-01", None);
+        let hk = vless_node("香港-01", None);
+        let us = vless_node("美国-01", None);
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "chatgpt.com".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        rule.smart_include = vec!["新加坡".into()];
+        let mut set = RuleSet::new_user("AI · 智能", vec![rule]);
+        set.strategy = RuleSetStrategy::Smart;
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[sg, hk, us], &opts).expect("build");
+
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let chatgpt = rules
+            .iter()
+            .find(|r| r.to_string().contains("chatgpt.com"))
+            .expect("chatgpt rule");
+        assert!(chatgpt.get("outboundTag").is_none());
+        let balancer_tag = chatgpt["balancerTag"].as_str().unwrap().to_string();
+        assert!(balancer_tag.starts_with("smart-"));
+
+        let balancers = built.value["routing"]["balancers"].as_array().unwrap();
+        let balancer = balancers
+            .iter()
+            .find(|b| b["tag"] == json!(balancer_tag))
+            .expect("smart pool balancer");
+        // Pool holds exactly the keyword-matched node(s).
+        assert_eq!(balancer["selector"].as_array().unwrap().len(), 1);
+        assert_eq!(balancer["selector"][0], json!(built.outbound_tags[0]));
+        assert_eq!(balancer["strategy"]["type"], "leastPing");
+        // Observatory up (auto_select off) so leastPing has probe data.
+        assert!(built.value["observatory"].is_object());
+    }
+
+    #[test]
+    fn per_rule_smart_empty_pool_falls_back_to_main_target() {
+        let a = vless_node("nodeA", None);
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "wtf.com".into(),
+            RuleTarget::Smart,
+            10,
+        );
+        rule.smart_include = vec!["不存在的关键词".into()];
+        let mut set = RuleSet::new_user("smart", vec![rule]);
+        set.strategy = RuleSetStrategy::Smart;
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[a], &opts).expect("build");
+        let rules = built.value["routing"]["rules"].as_array().unwrap();
+        let wtf = rules
+            .iter()
+            .find(|r| r.to_string().contains("wtf.com"))
+            .unwrap();
+        assert!(wtf.get("balancerTag").is_none());
+        assert_eq!(wtf["outboundTag"], built.selected_tag);
         assert!(built.value.get("observatory").is_none());
     }
 
