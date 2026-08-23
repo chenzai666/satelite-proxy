@@ -300,7 +300,13 @@ const en = {
   "settings.coreUpdateAvail": "update",
   "settings.coreHint":
     "macOS ships a bundled sing-box; a downloaded core takes priority.",
-  "settings.coreVersionTitle": "Kernel version · sing-box",
+  "settings.coreHintXray":
+    "Xray serves vmess/vless/ss/trojan/socks/http/wireguard with XTLS-Reality. Switching the active core restarts it.",
+  "settings.coreKindLabel": "Active core",
+  "settings.coreKindDesc":
+    "Which kernel generates the config and runs. Switching restarts a running core.",
+  "settings.coreActive": "active",
+  "settings.coreVersionTitle": "Kernel version",
   "settings.appVersionTitle": "App version · satelite-proxy",
   "settings.appLatest": "Latest release",
   "settings.appUpToDate": "up to date",
@@ -387,10 +393,14 @@ const en = {
   "nodes.renameSave": "Save",
   "nodes.switchingManual": "Switched to manual mode — restarting core…",
   "nodes.latencyNeedsCore": "Start core to test",
+  "nodes.xrayUnsupported": "This protocol cannot run on the Xray core",
 
   // traffic (active + closed)
   "traffic.title": "Traffic",
   "traffic.desc": "Active and closed connections",
+  "traffic.xrayTitle": "Connection monitoring unavailable under Xray",
+  "traffic.xrayDesc":
+    "The Xray core does not expose per-connection data. Live traffic speed and totals remain on the dashboard (metrics API); switch back to sing-box for the connection list, request history and failures.",
   "traffic.tabLive": "Active",
   "traffic.tabHistory": "Closed",
   "traffic.tabFailures": "Failed",
@@ -1017,7 +1027,12 @@ const zh: Record<MessageKey, string> = {
   "settings.coreUser": "用户下载",
   "settings.coreUpdateAvail": "可更新",
   "settings.coreHint": "macOS 已内置 sing-box，下载的内核优先使用。",
-  "settings.coreVersionTitle": "内核版本 · sing-box",
+  "settings.coreHintXray":
+    "Xray 支持 vmess/vless/ss/trojan/socks/http/wireguard 协议与 XTLS-Reality。切换内核会重启。",
+  "settings.coreKindLabel": "内核类型",
+  "settings.coreKindDesc": "决定由哪个内核生成配置并运行；切换会重启运行中的内核。",
+  "settings.coreActive": "使用中",
+  "settings.coreVersionTitle": "内核版本",
   "settings.appVersionTitle": "软件版本 · satelite-proxy",
   "settings.appLatest": "最新版本",
   "settings.appUpToDate": "已是最新",
@@ -1100,9 +1115,13 @@ const zh: Record<MessageKey, string> = {
   "nodes.renameSave": "保存",
   "nodes.switchingManual": "已切换为手动模式，正在重启内核…",
   "nodes.latencyNeedsCore": "需启动内核后测试",
+  "nodes.xrayUnsupported": "该协议无法在 Xray 内核下使用",
 
   "traffic.title": "流量",
   "traffic.desc": "连接中与已关闭的连接记录",
+  "traffic.xrayTitle": "Xray 内核暂不提供连接监控",
+  "traffic.xrayDesc":
+    "Xray 内核没有逐连接数据接口。实时速率与流量总量仍可在首页查看（metrics 统计）；如需连接列表、请求历史与失败请求，请切换回 sing-box 内核。",
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",
   "traffic.tabFailures": "失败",

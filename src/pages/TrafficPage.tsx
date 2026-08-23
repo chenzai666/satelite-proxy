@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { GlassSeg } from "../components/GlassSeg";
 import { useI18n } from "../i18n";
+import { getProxyStatus, peekProxyStatus } from "../api";
+import type { ProxyStatus } from "../types";
 import { ConnectionsPage } from "./ConnectionsPage";
 import { FailuresPage } from "./FailuresPage";
 import { RequestsPage } from "./RequestsPage";
@@ -10,6 +12,26 @@ type TrafficTab = "live" | "history" | "failures";
 export function TrafficPage() {
   const { t } = useI18n();
   const [tab, setTab] = useState<TrafficTab>("live");
+  const [coreType, setCoreType] = useState<string | null>(
+    () => peekProxyStatus()?.core_type ?? null,
+  );
+
+  useEffect(() => {
+    // Seed from the module snapshot for an instant first paint, then refresh.
+    setCoreType(peekProxyStatus()?.core_type ?? null);
+    let disposed = false;
+    void getProxyStatus()
+      .then((status: ProxyStatus) => {
+        if (!disposed) setCoreType(status.core_type ?? "singbox");
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  // Xray has no per-connection API — all three tabs are connection data.
+  const xrayCore = coreType === "xray";
 
   return (
     <div className="page traffic-page">
@@ -32,7 +54,19 @@ export function TrafficPage() {
 
       {/* key={tab} remounts on tab switch → page-enter fade/slide. */}
       <div className="traffic-panel page-enter" role="tabpanel" key={tab}>
-        {tab === "live" ? (
+        {xrayCore ? (
+          <div className="traffic-xray-notice">
+            <div className="traffic-xray-mark" aria-hidden>
+              ⌁
+            </div>
+            <div>
+              <div className="traffic-xray-title">
+                {t("traffic.xrayTitle")}
+              </div>
+              <p className="muted">{t("traffic.xrayDesc")}</p>
+            </div>
+          </div>
+        ) : tab === "live" ? (
           <ConnectionsPage embedded />
         ) : tab === "history" ? (
           <RequestsPage embedded />

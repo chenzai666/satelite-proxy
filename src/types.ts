@@ -317,7 +317,12 @@ export interface AppSettings {
   smart_switch?: boolean;
   /** `generated` or `singbox:<profile_id>`. */
   runtime_source?: string;
+  /** Which core runs: `singbox` (default) | `xray`. */
+  core_type?: CoreKind;
 }
+
+/** Kernel binary kind. */
+export type CoreKind = "singbox" | "xray";
 
 /** Manual / app smart switch / sing-box urltest. */
 export type AutoSelectMode = "off" | "smart" | "kernel";
@@ -338,6 +343,10 @@ export interface GenerateConfigResult {
 }
 
 export interface CoreInfo {
+  /** `singbox` | `xray`. */
+  kind: CoreKind;
+  /** Display name: sing-box / Xray. */
+  name: string;
   installed: boolean;
   version?: string | null;
   path?: string | null;
@@ -350,6 +359,7 @@ export interface CoreInfo {
 }
 
 export interface CoreDownloadResult {
+  kind?: CoreKind | string;
   version: string;
   path: string;
   asset_name: string;
@@ -358,6 +368,7 @@ export interface CoreDownloadResult {
 }
 
 export interface CoreDownloadProgress {
+  kind?: CoreKind | string;
   stage: "preparing" | "downloading" | "installing" | "done";
   downloaded: number;
   total?: number | null;
@@ -418,6 +429,8 @@ export interface ProxyStatus {
   custom_inbound_port?: number | null;
   /** Resident memory (bytes) of the core process, when known. */
   core_memory_bytes?: number | null;
+  /** Which core is active: `singbox` (default) | `xray`. */
+  core_type?: CoreKind | string;
 }
 
 export type RuleType =

@@ -14,6 +14,7 @@ import {
   getSettings,
   regenerateApiSecret,
   restartProxy,
+  setCoreType,
   updateSettings,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
@@ -31,6 +32,7 @@ import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  CoreKind,
   DiagnosticIssue,
   ExtraInbound,
   HeroStyle,
@@ -140,9 +142,13 @@ export function SettingsPage() {
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
-  const [core, setCore] = useState<CoreInfo | null>(null);
-  const [coreBusy, setCoreBusy] = useState(false);
-  const [coreChecking, setCoreChecking] = useState(false);
+  /** Per-core status (sing-box + Xray). */
+  const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
+    singbox: null,
+    xray: null,
+  });
+  const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
+  const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
   const [coreProgress, setCoreProgress] =
@@ -202,26 +208,29 @@ export function SettingsPage() {
   );
 
   const runCoreUpdateCheck = useCallback(
-    async (localVersion: string | null, reportError: boolean) => {
-      setCoreChecking(true);
+    async (kind: CoreKind, localVersion: string | null, reportError: boolean) => {
+      setCoreCheckingKind(kind);
       if (reportError) setCoreError(null);
       try {
-        const update = await checkCoreUpdate(localVersion);
-        setCore((prev) =>
-          prev
-            ? {
-                ...prev,
-                latest_version: update.latest_version,
-                update_available: update.update_available,
-              }
-            : prev,
-        );
+        const update = await checkCoreUpdate(kind, localVersion);
+        setCores((prev) => {
+          const info = prev[kind];
+          if (!info) return prev;
+          return {
+            ...prev,
+            [kind]: {
+              ...info,
+              latest_version: update.latest_version,
+              update_available: update.update_available,
+            },
+          };
+        });
       } catch (e) {
         if (reportError) {
           setCoreError(typeof e === "string" ? e : String(e));
         }
       } finally {
-        setCoreChecking(false);
+        setCoreCheckingKind(null);
       }
     },
     [],
@@ -230,9 +239,14 @@ export function SettingsPage() {
   const reloadCore = useCallback(async () => {
     setCoreError(null);
     try {
-      const local = await getCoreInfo();
-      setCore(local);
-      void runCoreUpdateCheck(local.version ?? null, false);
+      const results = await Promise.all([
+        getCoreInfo("singbox"),
+        getCoreInfo("xray"),
+      ]);
+      const [singbox, xray] = results;
+      setCores({ singbox, xray });
+      void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
+      void runCoreUpdateCheck("xray", xray.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
@@ -516,13 +530,14 @@ export function SettingsPage() {
     }
   }
 
-  async function onDownloadCore() {
-    setCoreBusy(true);
+  async function onDownloadCore(kind: CoreKind) {
+    setCoreBusyKind(kind);
     setCoreError(null);
     const status = await getProxyStatus().catch(() => null);
     const viaProxy = !!status?.running;
     setCoreProxyAvailable(viaProxy);
     setCoreProgress({
+      kind,
       stage: "preparing",
       downloaded: 0,
       total: null,
@@ -530,17 +545,186 @@ export function SettingsPage() {
       via_proxy: viaProxy,
     });
     try {
-      await downloadCore(null);
+      await downloadCore(kind, null);
       await reloadCore();
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     } finally {
-      setCoreBusy(false);
+      setCoreBusyKind(null);
+      setCoreProgress(null);
     }
   }
 
-  async function onCheckCoreUpdate() {
-    await runCoreUpdateCheck(core?.version ?? null, true);
+  async function onCheckCoreUpdate(kind: CoreKind) {
+    await runCoreUpdateCheck(kind, cores[kind]?.version ?? null, true);
+  }
+
+  /** Switch the active core; a running core restarts onto the new binary. */
+  async function onSwitchCore(kind: CoreKind) {
+    if (settings?.core_type === kind) return;
+    setCoreError(null);
+    try {
+      const s = await setCoreType(kind);
+      setSettings(s);
+    } catch (e) {
+      setCoreError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** One version-management card per core (sing-box / Xray). */
+  function renderCoreCard(kind: CoreKind) {
+    const info = cores[kind];
+    const busy = coreBusyKind === kind;
+    const checking = coreCheckingKind === kind;
+    const active = (settings?.core_type ?? "singbox") === kind;
+    // Progress events carry the core kind; each card shows only its own.
+    const progress =
+      coreProgress && (coreProgress.kind ?? "singbox") === kind
+        ? coreProgress
+        : null;
+    return (
+      <div
+        className={`card core-card kernel-card${active ? " core-active" : ""}`}
+        key={kind}
+      >
+        <div className="ver-hero">
+          <div className="ver-mark" aria-hidden>
+            ⬢
+          </div>
+          <div className="ver-id">
+            <div className="ver-name">
+              {info?.name ?? (kind === "xray" ? "Xray" : "sing-box")}
+              {active && <span className="pill ok">{t("settings.coreActive")}</span>}
+              {info?.installed ? (
+                !active && (
+                  <span className={`pill ${info.source === "bundled" ? "ok" : ""}`}>
+                    {info.source === "bundled"
+                      ? t("settings.coreBundled")
+                      : t("settings.coreInstalled")}
+                  </span>
+                )
+              ) : (
+                <span className="pill warn">{t("settings.coreMissing")}</span>
+              )}
+            </div>
+            <div className="ver-sub muted mono">{info?.platform ?? "…"}</div>
+          </div>
+          <div className="ver-side">
+            <span className="stat-label">{t("settings.coreCurrent")}</span>
+            <div className="ver-ver mono">
+              {info?.version ?? "—"}
+              {info?.source === "downloaded" ? (
+                <span className="pill">{t("settings.coreUser")}</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="ver-grid">
+          <div>
+            <span className="stat-label">{t("settings.coreBundledLabel")}</span>
+            <div className="mono ver-stat">{info?.bundled_version ?? "—"}</div>
+          </div>
+          <div>
+            <span className="stat-label">{t("settings.coreLatestLabel")}</span>
+            <div className="mono ver-stat">
+              {info?.latest_version ?? "—"}
+              {info?.update_available ? (
+                <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+              ) : null}
+            </div>
+          </div>
+          <div className="ver-grid-actions">
+            <GlassButton
+              icon="↻"
+              disabled={busy || checking || !info}
+              onClick={() => void onCheckCoreUpdate(kind)}
+            >
+              {checking
+                ? t("settings.coreChecking")
+                : t("settings.coreCheck")}
+            </GlassButton>
+            <GlassButton
+              variant="primary"
+              icon="⤓"
+              disabled={busy || checking}
+              onClick={() => void onDownloadCore(kind)}
+            >
+              {busy
+                ? t("settings.coreDownloading")
+                : info?.source === "downloaded"
+                  ? info.update_available
+                    ? t("settings.coreUpdate")
+                    : t("settings.coreRedownload")
+                  : t("settings.coreDownload")}
+            </GlassButton>
+          </div>
+        </div>
+
+        {info?.path && (
+          <div className="core-path">
+            <span className="stat-label">{t("settings.corePath")}</span>
+            <code className="path-text mono" title={info.path}>
+              {info.path}
+            </code>
+          </div>
+        )}
+
+        <div
+          className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
+        >
+          <span className="core-route-dot" aria-hidden />
+          <span>
+            {coreProxyAvailable
+              ? t("settings.coreProxyRoute")
+              : t("settings.coreDirectRoute")}
+          </span>
+        </div>
+
+        {busy && progress && (
+          <div className="core-download-progress" aria-live="polite">
+            <div className="core-download-progress-head">
+              <span className="lat-spinner" aria-hidden />
+              <span>
+                {progress.stage === "preparing"
+                  ? t("settings.corePreparing")
+                  : progress.stage === "installing"
+                    ? t("settings.coreInstalling")
+                    : t("settings.coreDownloading")}
+              </span>
+              <span className="mono core-download-percent">
+                {progress.percent != null
+                  ? `${progress.percent}%`
+                  : "…"}
+              </span>
+            </div>
+            <div
+              className={`core-progress-track${progress.percent == null ? " indeterminate" : ""}`}
+            >
+              <span
+                style={{
+                  width: `${progress.percent ?? 24}%`,
+                }}
+              />
+            </div>
+            {progress.downloaded > 0 && (
+              <div className="muted mono core-download-bytes">
+                {fmtCoreBytes(progress.downloaded)}
+                {progress.total
+                  ? ` / ${fmtCoreBytes(progress.total)}`
+                  : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        <p className="hint">
+          {kind === "xray"
+            ? t("settings.coreHintXray")
+            : t("settings.coreHint")}
+        </p>
+      </div>
+    );
   }
 
   async function patchApp(partial: Parameters<typeof updateSettings>[0]) {
@@ -1212,137 +1396,26 @@ export function SettingsPage() {
           <div className="version-block-title">
             {t("settings.coreVersionTitle")}
           </div>
-          <div className="card core-card kernel-card">
-            <div className="ver-hero">
-              <div className="ver-mark" aria-hidden>
-                ⬢
-              </div>
-              <div className="ver-id">
-                <div className="ver-name">
-                  sing-box
-                  {core?.installed ? (
-                    <span className={`pill ${core.source === "bundled" ? "ok" : ""}`}>
-                      {core.source === "bundled"
-                        ? t("settings.coreBundled")
-                        : t("settings.coreInstalled")}
-                    </span>
-                  ) : (
-                    <span className="pill warn">{t("settings.coreMissing")}</span>
-                  )}
-                </div>
-                <div className="ver-sub muted mono">{core?.platform ?? "…"}</div>
-              </div>
-              <div className="ver-side">
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="ver-ver mono">
-                  {core?.version ?? "—"}
-                  {core?.source === "downloaded" ? (
-                    <span className="pill">{t("settings.coreUser")}</span>
-                  ) : null}
-                </div>
+          <div className="core-kind-row">
+            <div className="core-kind-info">
+              <div className="settings-app-title">{t("settings.coreKindLabel")}</div>
+              <div className="settings-app-desc muted">
+                {t("settings.coreKindDesc")}
               </div>
             </div>
-
-            <div className="ver-grid">
-              <div>
-                <span className="stat-label">{t("settings.coreBundledLabel")}</span>
-                <div className="mono ver-stat">{core?.bundled_version ?? "—"}</div>
-              </div>
-              <div>
-                <span className="stat-label">{t("settings.coreLatestLabel")}</span>
-                <div className="mono ver-stat">
-                  {core?.latest_version ?? "—"}
-                  {core?.update_available ? (
-                    <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="ver-grid-actions">
-                <GlassButton
-                  icon="↻"
-                  disabled={coreBusy || coreChecking || !core}
-                  onClick={() => void onCheckCoreUpdate()}
-                >
-                  {coreChecking
-                    ? t("settings.coreChecking")
-                    : t("settings.coreCheck")}
-                </GlassButton>
-                <GlassButton
-                  variant="primary"
-                  icon="⤓"
-                  disabled={coreBusy || coreChecking}
-                  onClick={() => void onDownloadCore()}
-                >
-                  {coreBusy
-                    ? t("settings.coreDownloading")
-                    : core?.source === "downloaded"
-                      ? core.update_available
-                        ? t("settings.coreUpdate")
-                        : t("settings.coreRedownload")
-                      : t("settings.coreDownload")}
-                </GlassButton>
-              </div>
-            </div>
-
-            {core?.path && (
-              <div className="core-path">
-                <span className="stat-label">{t("settings.corePath")}</span>
-                <code className="path-text mono" title={core.path}>
-                  {core.path}
-                </code>
-              </div>
-            )}
-
-            <div
-              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
-            >
-              <span className="core-route-dot" aria-hidden />
-              <span>
-                {coreProxyAvailable
-                  ? t("settings.coreProxyRoute")
-                  : t("settings.coreDirectRoute")}
-              </span>
-            </div>
-
-            {coreBusy && coreProgress && (
-              <div className="core-download-progress" aria-live="polite">
-                <div className="core-download-progress-head">
-                  <span className="lat-spinner" aria-hidden />
-                  <span>
-                    {coreProgress.stage === "preparing"
-                      ? t("settings.corePreparing")
-                      : coreProgress.stage === "installing"
-                        ? t("settings.coreInstalling")
-                        : t("settings.coreDownloading")}
-                  </span>
-                  <span className="mono core-download-percent">
-                    {coreProgress.percent != null
-                      ? `${coreProgress.percent}%`
-                      : "…"}
-                  </span>
-                </div>
-                <div
-                  className={`core-progress-track${coreProgress.percent == null ? " indeterminate" : ""}`}
-                >
-                  <span
-                    style={{
-                      width: `${coreProgress.percent ?? 24}%`,
-                    }}
-                  />
-                </div>
-                {coreProgress.downloaded > 0 && (
-                  <div className="muted mono core-download-bytes">
-                    {fmtCoreBytes(coreProgress.downloaded)}
-                    {coreProgress.total
-                      ? ` / ${fmtCoreBytes(coreProgress.total)}`
-                      : ""}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <p className="hint">{t("settings.coreHint")}</p>
+            <GlassSeg
+              value={(settings?.core_type ?? "singbox") as CoreKind}
+              ariaLabel={t("settings.coreKindLabel")}
+              disabled={coreBusyKind != null}
+              onChange={(v) => void onSwitchCore(v as CoreKind)}
+              options={[
+                { value: "singbox", label: "sing-box" },
+                { value: "xray", label: "Xray" },
+              ]}
+            />
           </div>
+          {renderCoreCard("singbox")}
+          {renderCoreCard("xray")}
           </div>
 
           <div className="version-col">
