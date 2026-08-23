@@ -1,25 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getProxyStatus, restartProxy } from "../api";
+import {
+  getProxyStatus,
+  peekProxyStatus,
+  restartProxy,
+  setCoreType,
+} from "../api";
+import type { CoreKind } from "../types";
 import { useUiMode, type UiMode } from "./UiModeContext";
 
 /**
- * Top-bar ⋯ quick menu: switch runtime UI mode, restart core, and copy the
- * proxy env snippet — reachable from any tab. Single ⋯ keeps the navbar tidy
- * (no duplicate capsule switches next to the theme picker).
+ * Top-bar ⋯ quick menu: switch runtime UI mode, switch core (sing-box/Xray),
+ * restart core, and copy the proxy env snippet — reachable from any tab.
+ * Single ⋯ keeps the navbar tidy (no duplicate capsule switches next to the
+ * theme picker).
  */
 export function UiModeMenu() {
   const { mode, setMode } = useUiMode();
   const [open, setOpen] = useState(false);
   const [mixedPort, setMixedPort] = useState<number | null>(null);
+  const [coreType, setCoreTypeState] = useState<CoreKind>(
+    () => peekProxyStatus()?.core_type === "xray" ? "xray" : "singbox",
+  );
+  const [switchingCore, setSwitchingCore] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Refresh mixed_port so "Copy env" works without a Dashboard mount.
+  // Refresh mixed_port / core type so actions work without a Dashboard mount.
   const refreshPort = useCallback(async () => {
     const s = await getProxyStatus().catch(() => null);
     if (s?.mixed_port) setMixedPort(s.mixed_port);
+    if (s?.core_type === "xray" || s?.core_type === "singbox") {
+      setCoreTypeState(s.core_type);
+    }
   }, []);
 
   useEffect(() => {
@@ -62,6 +76,22 @@ export function UiModeMenu() {
   function pick(next: UiMode) {
     setMode(next);
     setOpen(false);
+  }
+
+  /** Switch the active core; the backend restarts a running core onto the
+   *  new binary (debounced), so a spinner covers the transition. */
+  async function onPickCore(kind: CoreKind) {
+    if (kind === coreType || switchingCore) return;
+    setSwitchingCore(true);
+    try {
+      await setCoreType(kind);
+      setCoreTypeState(kind);
+      flash(kind === "xray" ? "已切换到 Xray" : "已切换到 sing-box");
+    } catch (e) {
+      flash(typeof e === "string" ? e : "切换失败");
+    } finally {
+      setSwitchingCore(false);
+    }
   }
 
   async function onRestart() {
@@ -136,6 +166,48 @@ export function UiModeMenu() {
               {mode === "pro" ? "●" : "○"}
             </span>
             完整模式
+          </button>
+
+          <div className="ui-mode-menu-sep" aria-hidden />
+
+          <div className="ui-mode-menu-label">切换内核</div>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={coreType === "singbox"}
+            className={`ui-mode-menu-item ${coreType === "singbox" ? "active" : ""}`}
+            disabled={switchingCore}
+            onClick={() => void onPickCore("singbox")}
+          >
+            <span className="ui-mode-radio" aria-hidden>
+              {switchingCore && coreType !== "singbox" ? (
+                <span className="lat-spinner ui-mode-restart-spinner" />
+              ) : coreType === "singbox" ? (
+                "●"
+              ) : (
+                "○"
+              )}
+            </span>
+            sing-box
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={coreType === "xray"}
+            className={`ui-mode-menu-item ${coreType === "xray" ? "active" : ""}`}
+            disabled={switchingCore}
+            onClick={() => void onPickCore("xray")}
+          >
+            <span className="ui-mode-radio" aria-hidden>
+              {switchingCore && coreType !== "xray" ? (
+                <span className="lat-spinner ui-mode-restart-spinner" />
+              ) : coreType === "xray" ? (
+                "●"
+              ) : (
+                "○"
+              )}
+            </span>
+            Xray
           </button>
 
           <div className="ui-mode-menu-sep" aria-hidden />
