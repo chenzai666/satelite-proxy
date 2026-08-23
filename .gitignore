@@ -42,6 +42,13 @@ src-tauri/resources/bin/**/geosite.dat
 src-tauri/resources/bin/**/geoip.dat
 src-tauri/resources/bin/**/wintun.dll
 
+# Bundled meow core + geodata (download via scripts/fetch-bundled-meow-*.sh)
+src-tauri/resources/bin/**/meow
+src-tauri/resources/bin/**/meow.exe
+src-tauri/resources/bin/**/meow-version.txt
+src-tauri/resources/bin/**/meow-wintun.dll
+src-tauri/resources/bin/**/meow-geodata/
+
 # Bundled built-in rule sets (download via scripts/fetch-bundled-rule-sets.sh)
 src-tauri/resources/rule-sets/*.srs
 nul

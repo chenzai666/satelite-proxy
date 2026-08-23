@@ -10,6 +10,11 @@
       "resources/bin/windows-amd64/geosite.dat",
       "resources/bin/windows-amd64/geoip.dat",
       "resources/bin/windows-amd64/wintun.dll",
+      "resources/bin/windows-amd64/meow.exe",
+      "resources/bin/windows-amd64/meow-version.txt",
+      "resources/bin/windows-amd64/meow-wintun.dll",
+      "resources/bin/windows-amd64/meow-geodata/Country.mmdb",
+      "resources/bin/windows-amd64/meow-geodata/geosite.dat",
       "resources/rule-sets",
       "resources/dns"
     ]

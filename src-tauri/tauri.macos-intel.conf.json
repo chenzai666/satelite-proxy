@@ -8,6 +8,10 @@
       "resources/bin/darwin-amd64/xray-version.txt",
       "resources/bin/darwin-amd64/geosite.dat",
       "resources/bin/darwin-amd64/geoip.dat",
+      "resources/bin/darwin-amd64/meow",
+      "resources/bin/darwin-amd64/meow-version.txt",
+      "resources/bin/darwin-amd64/meow-geodata/Country.mmdb",
+      "resources/bin/darwin-amd64/meow-geodata/geosite.dat",
       "resources/rule-sets",
       "resources/dns"
     ]
