@@ -2204,9 +2204,13 @@ button.node-card:disabled,
   opacity: 0.5;
 }
 
-.pill.target-proxy {
-  background: var(--primary-muted);
-  color: var(--primary);
+/* Outbound pills use FIXED semantic hues (blue = proxied family, green =
+   direct, red = block) so rule routing stays readable regardless of the
+   accent preset — mirrors the traffic page / spark arc color language. */
+.pill.target-proxy,
+.pill.target-filter {
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
 }
 
 .pill.target-direct {
@@ -2217,12 +2221,6 @@ button.node-card:disabled,
 .pill.target-block {
   background: var(--danger-bg);
   color: var(--danger);
-}
-
-/* Whole-set route pill: node / filter strategies (toolbar badge). */
-.pill.target-filter {
-  background: var(--primary-muted);
-  color: var(--primary);
 }
 
 .ruleset-strategy-label,
@@ -2276,7 +2274,7 @@ button.node-card:disabled,
 }
 
 .ruleset-strategy-label.strategy-node {
-  color: var(--primary);
+  color: var(--accent-blue);
 }
 
 .ruleset-strategy-label.strategy-filter {
@@ -2293,8 +2291,8 @@ button.node-card:disabled,
 }
 
 .pill.target-node {
-  background: var(--primary-muted);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
   max-width: 14rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2304,8 +2302,8 @@ button.node-card:disabled,
 }
 
 .pill.target-smart {
-  background: var(--primary-muted);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
   max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2791,6 +2789,26 @@ tr.rule-row:hover {
 
 .rules-table .rule-type code {
   font-size: 0.72em;
+  font-weight: 600;
+}
+
+/* Rule-type chips (域名 / 域名后缀 / 域名关键字 …): neutral black-family
+   tags, immune to the accent preset — the global `code` chip elsewhere keeps
+   its accent tint. Day theme is the literal ask: black text on a light-black
+   wash; on the dark theme the box stays black with light text so it stays
+   legible on dark glass. */
+.rules-table .rule-type code,
+.remote-rules-table .rule-type code {
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(255, 255, 255, 0.78);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="day"] .rules-table .rule-type code,
+[data-theme="day"] .remote-rules-table .rule-type code {
+  background: rgba(0, 0, 0, 0.08);
+  color: #10151a;
+  border-color: rgba(0, 0, 0, 0.22);
 }
 
 .rule-payload {
@@ -2842,6 +2860,7 @@ tr.rule-row:hover {
 
 .remote-rules-table .rule-type code {
   font-size: 0.72em;
+  font-weight: 600;
 }
 
 .remote-rule-details summary {
