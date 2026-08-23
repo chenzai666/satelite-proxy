@@ -302,15 +302,19 @@ pub struct GeodataInfo {
     pub geoip: GeodataFileInfo,
 }
 
-/// Geodata state for the Xray-mode Rules card; `force` re-downloads both
-/// `.dat` files from Loyalsoldier/v2ray-rules-dat first (routed via the
-/// running proxy when the core is up — same policy as core downloads).
+/// Geodata state for the kernel-mode Rules card. `kind` selects the pair:
+/// `xray` (default — Loyalsoldier .dat in `bin/`) or `meow` (MetaCubeX
+/// Country.mmdb + mrs geosite.dat in the meow home dir). `force` re-downloads
+/// first (routed via the running proxy when the core is up — same policy as
+/// core downloads).
 #[tauri::command]
 pub async fn refresh_geodata(
     state: State<'_, AppState>,
     force: Option<bool>,
+    kind: Option<String>,
 ) -> Result<GeodataInfo, String> {
     let force = force.unwrap_or(false);
+    let kind = crate::core::CoreKind::parse(kind.as_deref().unwrap_or("xray"));
     let proxy_url = if force {
         current_download_proxy(&state)?
     } else {
@@ -318,14 +322,33 @@ pub async fn refresh_geodata(
     };
     let app_data_dir = state.app_data_dir.clone();
     if force {
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::core::download_missing_geodata(&app_data_dir, proxy_url.as_deref(), true)
-        })
-        .await
-        .map_err(|e| format!("geodata task: {e}"))?
-        .map_err(|e| e.to_string())?;
+        match kind {
+            crate::core::CoreKind::Meow => {
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::core::download_missing_meow_geodata(
+                        &app_data_dir,
+                        proxy_url.as_deref(),
+                        true,
+                    )
+                })
+                .await
+                .map_err(|e| format!("geodata task: {e}"))?
+                .map_err(|e| e.to_string())?;
+            }
+            _ => {
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::core::download_missing_geodata(&app_data_dir, proxy_url.as_deref(), true)
+                })
+                .await
+                .map_err(|e| format!("geodata task: {e}"))?
+                .map_err(|e| e.to_string())?;
+            }
+        }
     }
-    Ok(geodata_info(&state.app_data_dir))
+    Ok(match kind {
+        crate::core::CoreKind::Meow => meow_geodata_info(&state.app_data_dir),
+        _ => geodata_info(&state.app_data_dir),
+    })
 }
 
 fn geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
@@ -348,6 +371,31 @@ fn geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
     GeodataInfo {
         geosite: find("geosite.dat"),
         geoip: find("geoip.dat"),
+    }
+}
+
+/// Same card shape for the meow pair (geosite.dat = .mrs, geoip =
+/// Country.mmdb — file states are keyed by their on-disk names).
+fn meow_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
+    let states = crate::core::meow_geodata_state(app_data_dir);
+    let find = |name: &str| {
+        states
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, s)| GeodataFileInfo {
+                present: s.present,
+                bytes: s.bytes,
+                modified_at: s.modified_at,
+            })
+            .unwrap_or(GeodataFileInfo {
+                present: false,
+                bytes: 0,
+                modified_at: None,
+            })
+    };
+    GeodataInfo {
+        geosite: find("geosite.dat"),
+        geoip: find("Country.mmdb"),
     }
 }
 

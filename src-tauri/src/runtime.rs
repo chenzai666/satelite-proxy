@@ -2,8 +2,9 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    build_singbox_config, build_xray_config, generate_api_secret, inspect_singbox_config,
-    outbound_tag, write_active_config, write_custom_config, BuildOptions,
+    build_meow_config, build_singbox_config, build_xray_config, generate_api_secret,
+    inspect_singbox_config, outbound_tag, write_active_config, write_active_yaml_config,
+    write_custom_config, BuildOptions,
 };
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
@@ -988,9 +989,10 @@ impl Runtime {
         Ok(self.status(store))
     }
 
-    /// Generate a Clash YAML config and start the meow core. Full
-    /// implementation lands with `config::meow`; placeholder keeps the
-    /// `CoreKind::Meow` arm of `start_proxy` exhaustive.
+    /// Generate a Clash YAML config and start the meow core. Mirrors the
+    /// sing-box generated path — meow serves a Clash-compatible API, so the
+    /// same ClashApi health-check / hot-switch / conn-journal machinery is
+    /// reused unchanged.
     fn start_meow_proxy(
         &mut self,
         app_data_dir: &Path,
@@ -998,11 +1000,186 @@ impl Runtime {
         store: &mut AppStore,
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
-        let _ = (app_data_dir, resource_dir, enable_system_proxy);
-        let _ = store;
-        Err(AppError::Core(
-            "meow core is not wired up yet (config generator pending)".into(),
-        ))
+        self.custom_inbound_port = None;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = false;
+
+        let nodes = store.enabled_nodes();
+        if nodes.is_empty() {
+            return Err(AppError::Core(
+                "no nodes; import a subscription first".into(),
+            ));
+        }
+        // meow cannot serve every protocol. Mixed subscriptions are fine —
+        // build_meow_config skips incompatible nodes (and vmess non-tcp/ws
+        // transports) with a warning — but zero compatible nodes cannot run.
+        let supported_count = nodes
+            .iter()
+            .filter(|n| CoreKind::Meow.supports(n.protocol))
+            .count();
+        if supported_count == 0 {
+            return Err(AppError::Config(
+                "当前启用的节点均不被 meow 内核支持（支持 ss/vmess/vless/trojan/hysteria2/anytls/snell/socks5/http）。请导入兼容订阅或切换内核".into(),
+            ));
+        }
+        let unsupported: Vec<&str> = {
+            let mut kinds: Vec<&str> = nodes
+                .iter()
+                .filter(|n| !CoreKind::Meow.supports(n.protocol))
+                .map(|n| n.protocol.as_str())
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            kinds
+        };
+        if !unsupported.is_empty() {
+            let skipped = nodes.len() - supported_count;
+            crate::app_log::warn(
+                "meow_config",
+                format!(
+                    "meow 内核跳过 {skipped} 个不支持协议（{}）的节点",
+                    unsupported.join("/")
+                ),
+            );
+        }
+
+        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available(store.settings.api_port, "Clash API")?;
+        for inb in &store.settings.extra_inbounds {
+            ensure_listen_port_available(inb.port, "Inbound")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Meow);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("meow binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // GEOSITE/GEOIP rules hard-fail the core when the geodata files are
+        // missing (meow's own auto-download dials through the not-yet-started
+        // proxies) — ensure them first: staged → bundled → direct download.
+        crate::core::ensure_meow_geodata(app_data_dir, resource_dir, None)?;
+
+        // Reuse the persisted clash_api secret (same policy as sing-box).
+        let secret = store
+            .settings
+            .clash_api_secret
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(generate_api_secret);
+        let built = build_meow_config(&nodes, &build_options(store, secret.clone()))?;
+        let config_path = write_active_yaml_config(app_data_dir, &built.yaml)?;
+        store.settings.clash_api_secret = Some(secret.clone());
+        // Mirror the selected node onto the store when the persisted pick is
+        // absent or incompatible (the generator falls back likewise), so the
+        // UI and config agree and switching stays on a usable node.
+        let needs_pick = store
+            .settings
+            .current_node_id
+            .as_deref()
+            .map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .is_some_and(|n| !CoreKind::Meow.supports(n.protocol))
+            })
+            .unwrap_or(true);
+        if needs_pick {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Meow.supports(n.protocol)) {
+                store.settings.current_node_id = Some(first.id.clone());
+            }
+        }
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = store.settings.tun_enabled;
+        self.core.start_with_ports(
+            CoreKind::Meow,
+            &bin,
+            &config_path,
+            &log_dir,
+            store.settings.mixed_port,
+            Some(store.settings.api_port),
+            &store
+                .settings
+                .extra_inbounds
+                .iter()
+                .map(|inb| inb.port)
+                .collect::<Vec<_>>(),
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+
+        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
+        let max_wait = if elevated {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(6)
+        };
+        let wait_started = Instant::now();
+        let mut ok = false;
+        while wait_started.elapsed() < max_wait {
+            if api.health_ok() {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            self.core.poll();
+            if !self.core.is_running() {
+                break;
+            }
+        }
+        if !ok {
+            let log_hint = self
+                .core
+                .last_error()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    self.core
+                        .log_path()
+                        .and_then(|log| std::fs::read(log).ok())
+                        .and_then(|b| {
+                            let s = String::from_utf8_lossy(&b);
+                            let tail: String = s
+                                .chars()
+                                .rev()
+                                .take(1200)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect();
+                            let cleaned = tail.replace('\0', "");
+                            if cleaned.trim().is_empty() {
+                                None
+                            } else {
+                                Some(cleaned)
+                            }
+                        })
+                })
+                .unwrap_or_default();
+            let _ = self.core.stop();
+            let detail = if log_hint.is_empty() {
+                format!(
+                    "meow started but clash api not responding at 127.0.0.1:{}",
+                    store.settings.api_port
+                )
+            } else {
+                format!(
+                    "meow started but clash api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
+                    store.settings.api_port
+                )
+            };
+            return Err(AppError::Core(detail));
+        }
+        self.api = Some(api);
+        self.xray_metrics = None;
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            let _ = self.set_system_proxy(store, true);
+        }
+
+        Ok(self.status(store))
     }
 
     fn start_custom_proxy(

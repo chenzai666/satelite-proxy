@@ -1030,12 +1030,12 @@ impl AppState {
         close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
-        let xray_core = {
+        let core_kind = {
             let kind = crate::core::CoreKind::parse(
                 self.with_store(|store| Ok(store.settings.core_type.clone()))?
                     .as_str(),
             );
-            kind == crate::core::CoreKind::Xray
+            kind
         };
         let (tag, should_close, kernel_auto) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
@@ -1049,11 +1049,25 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
-            if xray_core && !crate::core::CoreKind::Xray.supports(node.protocol) {
+            if !core_kind.supports(node.protocol) {
                 return Err(crate::error::AppError::Core(format!(
-                    "Xray 内核不支持 {} 协议节点，请切回 sing-box 或选择其他节点",
+                    "{} 内核不支持 {} 协议节点，请切换内核或选择其他节点",
+                    core_kind.display_name(),
                     node.protocol.as_str()
                 )));
+            }
+            // meow's VMess only accepts tcp/ws transports — the config
+            // generator drops such nodes, so switching to one would desync.
+            if core_kind == crate::core::CoreKind::Meow
+                && node.protocol == crate::domain::Protocol::Vmess
+                && !matches!(
+                    node.transport,
+                    None | Some(crate::domain::Transport::Tcp) | Some(crate::domain::Transport::Ws { .. })
+                )
+            {
+                return Err(crate::error::AppError::Core(
+                    "meow 内核的 vmess 仅支持 tcp/ws 传输，请选择其他节点".into(),
+                ));
             }
             Ok((
                 crate::config::outbound_tag(node),
@@ -1067,8 +1081,9 @@ impl AppState {
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
-        // Xray has no selection API at all — same restart path.
-        let selected_live = if xray_core || kernel_auto {
+        // Xray has no selection API at all — same restart path. meow (like
+        // sing-box) selects live through its Clash-compatible API.
+        let selected_live = if core_kind == crate::core::CoreKind::Xray || kernel_auto {
             false
         } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
@@ -1085,7 +1100,8 @@ impl AppState {
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             Ok((store.settings.clone(), was_kernel))
         })?;
-        let restart_needed = was_kernel || (xray_core && self.is_core_running());
+        let restart_needed = was_kernel
+            || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
         Ok((settings, restart_needed, selected_live))
     }
 

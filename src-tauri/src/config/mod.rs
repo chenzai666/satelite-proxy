@@ -17,7 +17,8 @@ pub use dns_build::lookup_hosts;
 pub use dns_files::dump_dns_rules_file;
 pub use rule_files::{dump_rule_set_files, remove_rule_set_files};
 pub use write::{
-    active_config_path, remove_custom_config, write_active_config, write_custom_config,
+    active_config_path, active_yaml_config_path, remove_custom_config, write_active_config,
+    write_active_yaml_config, write_custom_config,
 };
-pub use meow::{build_meow_config, BuiltMeowConfig};
+pub use meow::build_meow_config;
 pub use xray::build_xray_config;

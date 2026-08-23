@@ -1,6 +1,7 @@
 use crate::config::{
-    active_config_path, build_singbox_config, build_xray_config, generate_api_secret,
-    write_active_config, BuildOptions,
+    active_config_path, active_yaml_config_path, build_meow_config, build_singbox_config,
+    build_xray_config, generate_api_secret, write_active_config, write_active_yaml_config,
+    BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
@@ -378,15 +379,14 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .filter(|s| s.enabled)
                 .map(|s| s.id.as_str())
                 .collect();
-            // Under the Xray core, protocols it cannot serve are hidden from
-            // listings entirely (they reappear after switching back).
-            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
-                == crate::core::CoreKind::Xray;
+            // Under a core that cannot serve a protocol, such nodes are
+            // hidden from listings entirely (they reappear after switching).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
+                .filter(|n| core_kind.supports(n.node.protocol))
                 .map(|n| ListedNode {
                     node: n.node.clone(),
                     subscription_id: n.subscription_id.clone(),
@@ -423,14 +423,13 @@ pub fn list_nodes_page(
                 .map(|s| s.id.as_str())
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
-            // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
-            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
-                == crate::core::CoreKind::Xray;
+            // Hide protocols the active core cannot serve (see list_all_nodes).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
+                .filter(|n| core_kind.supports(n.node.protocol))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -496,14 +495,13 @@ pub fn list_node_ids(
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
-            // Xray mode: hide protocols the core cannot serve (see list_all_nodes).
-            let xray_mode = crate::core::CoreKind::parse(&store.settings.core_type)
-                == crate::core::CoreKind::Xray;
+            // Hide protocols the active core cannot serve (see list_all_nodes).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| !xray_mode || n.node.protocol.xray_supported())
+                .filter(|n| core_kind.supports(n.node.protocol))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -669,21 +667,41 @@ pub async fn generate_singbox_config(
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
         };
-        let built = match crate::core::CoreKind::parse(&core_type) {
-            crate::core::CoreKind::Xray => build_xray_config(&nodes, &opts),
-            _ => build_singbox_config(&nodes, &opts),
-        }
-        .map_err(|e| e.to_string())?;
-        let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
-        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-        Ok::<_, String>(GenerateConfigResult {
-            path: path.display().to_string(),
-            selected_tag: built.selected_tag,
-            outbound_count: built.outbound_tags.len(),
-            mixed_port: settings.mixed_port,
-            api_port: settings.api_port,
-            preview,
-        })
+        let result = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Meow => {
+                let built =
+                    build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                let path = write_active_yaml_config(&app_data_dir, &built.yaml)
+                    .map_err(|e| e.to_string())?;
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview: built.yaml,
+                }
+            }
+            kind => {
+                let built = if kind == crate::core::CoreKind::Xray {
+                    build_xray_config(&nodes, &opts)
+                } else {
+                    build_singbox_config(&nodes, &opts)
+                }
+                .map_err(|e| e.to_string())?;
+                let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
+                let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview,
+                }
+            }
+        };
+        Ok::<_, String>(result)
     })
     .await
     .map_err(|e| format!("generate config task: {e}"))??;
@@ -706,7 +724,14 @@ pub async fn generate_singbox_config(
 
 #[tauri::command]
 pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let path = active_config_path(&state.app_data_dir);
+    // meow keeps its Clash YAML in active.yaml; JSON cores share active.json.
+    let core_type = state
+        .with_store(|store| Ok(store.settings.core_type.clone()))
+        .map_err(|e| e.to_string())?;
+    let path = match crate::core::CoreKind::parse(&core_type) {
+        crate::core::CoreKind::Meow => active_yaml_config_path(&state.app_data_dir),
+        _ => active_config_path(&state.app_data_dir),
+    };
     if path.exists() {
         Ok(Some(path.display().to_string()))
     } else {
@@ -736,7 +761,10 @@ pub async fn preview_singbox_config(
         .unwrap_or_else(generate_api_secret);
     let core_type = settings.core_type.clone();
 
-    let path = active_config_path(&state.app_data_dir);
+    let path = match crate::core::CoreKind::parse(&core_type) {
+        crate::core::CoreKind::Meow => active_yaml_config_path(&state.app_data_dir),
+        _ => active_config_path(&state.app_data_dir),
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let opts = BuildOptions {
             mixed_port: settings.mixed_port,
@@ -760,20 +788,38 @@ pub async fn preview_singbox_config(
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
         };
-        let built = match crate::core::CoreKind::parse(&core_type) {
-            crate::core::CoreKind::Xray => build_xray_config(&nodes, &opts),
-            _ => build_singbox_config(&nodes, &opts),
-        }
-        .map_err(|e| e.to_string())?;
-        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-        Ok::<_, String>(GenerateConfigResult {
-            path: path.display().to_string(),
-            selected_tag: built.selected_tag,
-            outbound_count: built.outbound_tags.len(),
-            mixed_port: settings.mixed_port,
-            api_port: settings.api_port,
-            preview,
-        })
+        let result = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Meow => {
+                let built =
+                    build_meow_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview: built.yaml,
+                }
+            }
+            kind => {
+                let built = if kind == crate::core::CoreKind::Xray {
+                    build_xray_config(&nodes, &opts)
+                } else {
+                    build_singbox_config(&nodes, &opts)
+                }
+                .map_err(|e| e.to_string())?;
+                let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview,
+                }
+            }
+        };
+        Ok::<_, String>(result)
     })
     .await
     .map_err(|e| format!("preview config task: {e}"))?

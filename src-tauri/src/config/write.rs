@@ -81,6 +81,36 @@ pub fn write_active_config(app_data_dir: &Path, built: &BuiltConfig) -> AppResul
     Ok(active)
 }
 
+/// Active config path for the meow core (Clash YAML). The JSON cores share
+/// `active.json`; meow keeps its own file — every start rewrites it whole,
+/// so the two dialects never mix (same policy as `active.json`).
+pub fn active_yaml_config_path(app_data_dir: &Path) -> PathBuf {
+    config_dir(app_data_dir).join("active.yaml")
+}
+
+/// Write active.yaml and a timestamped backup (mirrors write_active_config).
+pub fn write_active_yaml_config(app_data_dir: &Path, raw: &str) -> AppResult<PathBuf> {
+    let dir = config_dir(app_data_dir);
+    let backup_dir = dir.join("backup");
+    fs::create_dir_all(&backup_dir)?;
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = backup_dir.join(format!("{ts}.yaml"));
+    fs::write(&backup, raw)?;
+
+    let active = active_yaml_config_path(app_data_dir);
+    let tmp = dir.join("active.yaml.tmp");
+    fs::write(&tmp, raw)?;
+    fs::rename(&tmp, &active)?;
+
+    prune_backups_yaml(&backup_dir, 20)?;
+
+    Ok(active)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +151,18 @@ fn prune_backups(dir: &Path, keep: usize) -> AppResult<()> {
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .collect();
+    entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
+    for e in entries.into_iter().skip(keep) {
+        let _ = fs::remove_file(e.path());
+    }
+    Ok(())
+}
+
+fn prune_backups_yaml(dir: &Path, keep: usize) -> AppResult<()> {
+    let mut entries: Vec<_> = fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "yaml").unwrap_or(false))
         .collect();
     entries.sort_by_key(|e| std::cmp::Reverse(e.file_name()));
     for e in entries.into_iter().skip(keep) {
