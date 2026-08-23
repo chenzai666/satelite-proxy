@@ -211,6 +211,11 @@ pub fn run() {
             // Smart node switch (docs/auto.md): passive + on-demand probe.
             smart_switch::spawn(app.handle().clone());
 
+            // Core watchdog: a core that dies without a user stop (meow has
+            // been observed exiting silently) is auto-restarted, bounded by
+            // an attempt budget so config-error loops cannot spin.
+            state::spawn_core_watchdog(app.handle().clone());
+
             // Deep links (clash:// · sing-box://): show UI; frontend opens add form.
             // Pending URLs live in AppState until the user closes the modal (then cleared).
             let mut launched_via_deep_link = false;

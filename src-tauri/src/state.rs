@@ -1424,4 +1424,146 @@ impl AppState {
 
         Ok(store.settings.clone())
     }
+
+    /// Last observed core state from the status cache; `is_core_running`
+    /// refreshes it as a side effect (and reaps a dead child first).
+    pub fn cached_core_state(&self) -> CoreState {
+        self.cached_status().core_state
+    }
+}
+
+// —— core watchdog ——————————————————————————————————————————————
+
+/// A core that flips running → error without a user-initiated stop is
+/// auto-restarted through the regular debounced apply-and-restart path.
+/// Motivated by field incidents where meow v0.21.0 exits silently (code 1,
+/// no log line) minutes after start; generic across cores. An attempt
+/// budget inside a rolling window keeps a config-error death-loop from
+/// spinning forever — after the budget is spent the core stays down and
+/// the error surfaces in the UI as before.
+const WATCHDOG_POLL_MS: u64 = 2000;
+const WATCHDOG_MAX_ATTEMPTS: usize = 3;
+const WATCHDOG_WINDOW: Duration = Duration::from_secs(600);
+
+/// Pure decision core (unit-tested): restart only on the running→not-running
+/// edge, only for the `Error` state (a deliberate stop lands on `Stopped`),
+/// never during a core transition, and only within the attempt budget.
+fn watchdog_should_restart(
+    was_running: bool,
+    now_running: bool,
+    transitioning: bool,
+    core_state: CoreState,
+    attempts_in_window: usize,
+) -> bool {
+    !now_running
+        && was_running
+        && !transitioning
+        && core_state == CoreState::Error
+        && attempts_in_window < WATCHDOG_MAX_ATTEMPTS
+}
+
+pub fn spawn_core_watchdog(app: tauri::AppHandle) {
+    use tauri::Manager;
+    std::thread::Builder::new()
+        .name("core-watchdog".into())
+        .spawn(move || {
+            let mut was_running = false;
+            let mut attempts: Vec<Instant> = Vec::new();
+            loop {
+                std::thread::sleep(Duration::from_millis(WATCHDOG_POLL_MS));
+                let Some(state) = app.try_state::<AppState>() else {
+                    continue;
+                };
+                // is_core_running also reaps a dead child, flipping the
+                // cached state to error before we read it.
+                let now_running = state.is_core_running();
+                let transitioning = state.is_core_transitioning();
+                let core_state = state.cached_core_state();
+                let now = Instant::now();
+                attempts.retain(|t| now.duration_since(*t) < WATCHDOG_WINDOW);
+                if watchdog_should_restart(
+                    was_running,
+                    now_running,
+                    transitioning,
+                    core_state,
+                    attempts.len(),
+                ) {
+                    attempts.push(now);
+                    app_log::warn(
+                        "core",
+                        format!(
+                            "core died unexpectedly (state {core_state:?}) — auto-restarting (attempt {}/{WATCHDOG_MAX_ATTEMPTS} in {}s)",
+                            attempts.len(),
+                            WATCHDOG_WINDOW.as_secs()
+                        ),
+                    );
+                    crate::rule_apply::request_restart(app.clone(), Vec::new());
+                }
+                was_running = now_running;
+            }
+        })
+        .ok();
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn restarts_only_on_error_edge() {
+        // running → error, no transition, budget left → restart.
+        assert!(watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            0
+        ));
+        // Deliberate stop lands on "stopped" → never auto-restart.
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Stopped,
+            0
+        ));
+        // No edge (was already down) or mid-transition → skip.
+        assert!(!watchdog_should_restart(
+            false,
+            false,
+            false,
+            CoreState::Error,
+            0
+        ));
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            true,
+            CoreState::Error,
+            0
+        ));
+        // Budget exhausted inside the window → skip.
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            WATCHDOG_MAX_ATTEMPTS
+        ));
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            WATCHDOG_MAX_ATTEMPTS + 2
+        ));
+        // Still running → nothing to do.
+        assert!(!watchdog_should_restart(
+            true,
+            true,
+            false,
+            CoreState::Running,
+            0
+        ));
+    }
 }

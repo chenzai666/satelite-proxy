@@ -163,13 +163,14 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.1 入口与生命周期
 
-- `lib.rs` — `run()`：插件注册（opener/dialog/deep-link/single-instance）→ setup（加载 store 失败则弹窗退出）→ 托盘 → 启动 5 个后台任务 → 深链处理 → 静默启动/自动代理恢复。**全部 ~80 个 command 在 `lib.rs:348-431` 注册**，实现在 `commands/*.rs`（`commands/mod.rs` re-export）。
+- `lib.rs` — `run()`：插件注册（opener/dialog/deep-link/single-instance）→ setup（加载 store 失败则弹窗退出）→ 托盘 → 启动 6 个后台任务 → 深链处理 → 静默启动/自动代理恢复。**全部 ~80 个 command 在 `lib.rs:348-431` 注册**，实现在 `commands/*.rs`（`commands/mod.rs` re-export）。
 - 后台任务（均在 setup 中 spawn）：
   - `conn_journal.rs` — 轮询/WS 订阅 Clash 连接快照（UI 可见时 100ms，托盘时降频），维护活跃+历史连接环形日志
   - `subscription_auto.rs` — 按 `auto_update` 间隔定时刷新订阅（默认 1440 分钟）
   - `remote_rule_auto.rs` — 应用侧下载远程规则集缓存到本地，sing-box 只加载本地文件
   - `smart_switch.rs` — 智能选路：被动连接日志感知劣化 → 按需探测 top-K 候选 → 评分+容差+冷却
   - `rule_apply.rs` — 规则变更的 500ms 防抖合并 + 全局串行 apply-and-restart
+  - `state.rs::spawn_core_watchdog` — 内核看门狗：running→error 意外退出（非用户停止）经 `rule_apply::request_restart` 自动重启，10 分钟滚动窗口内最多 3 次防配置错误死循环；决策逻辑 `watchdog_should_restart` 纯函数有单测（背景：meow v0.21.0 曾静默 exit(1)，日志零 ERROR）
 - `main.rs` — 仅调 `run()`。
 
 ### 5.2 状态与存储
