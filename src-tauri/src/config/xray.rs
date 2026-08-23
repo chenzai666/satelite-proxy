@@ -948,7 +948,17 @@ fn stream_settings(node: &ProxyNode) -> Option<Value> {
                 tls_settings.insert("fingerprint".into(), json!(fp));
             }
             if tls.insecure == Some(true) {
-                tls_settings.insert("allowInsecure".into(), json!(true));
+                // Xray ≥ 26 removed `allowInsecure` (rejected at config load,
+                // "migrated to pinnedPeerCertSha256" which needs a cert hash
+                // we don't have). Certificate verification stays ON; nodes
+                // with self-signed certs fail per-connection, not the start.
+                crate::app_log::warn(
+                    "xray_config",
+                    format!(
+                        "node {}: skip-cert-verify is ignored under Xray (cert verification stays on)",
+                        node.name
+                    ),
+                );
             }
             stream.insert("tlsSettings".into(), Value::Object(tls_settings));
         }
@@ -1090,7 +1100,9 @@ mod tests {
         assert_eq!(stream["wsSettings"]["maxEarlyData"], 2048);
         assert_eq!(stream["security"], "tls");
         assert_eq!(stream["tlsSettings"]["serverName"], "sni.example.com");
-        assert_eq!(stream["tlsSettings"]["allowInsecure"], true);
+        // Xray ≥ 26 rejects `allowInsecure` at config load — insecure nodes
+        // keep verification on and never emit the field.
+        assert!(stream["tlsSettings"].get("allowInsecure").is_none());
         assert_eq!(stream["tlsSettings"]["alpn"], json!(["h2", "http/1.1"]));
     }
 
@@ -1329,7 +1341,27 @@ mod tests {
         node.transport = Some(Transport::Grpc {
             service_name: Some("svc".into()),
         });
-        let nodes = vec![node];
+        // Second node: plain TLS + ws + skip-cert-verify — the combination
+        // that once emitted the removed `allowInsecure` field and was
+        // rejected at config load (regression guard).
+        let mut tls_node = vless_node("live-ws", None);
+        tls_node.server = "127.0.0.1".into();
+        tls_node.port = 8443;
+        tls_node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("cdn.example.com".into()),
+            insecure: Some(true),
+            alpn: Some(vec!["http/1.1".into()]),
+            utls_fingerprint: Some("chrome".into()),
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        tls_node.transport = Some(Transport::Ws {
+            path: Some("/ws".into()),
+            headers: None,
+            max_early_data: None,
+        });
+        let nodes = vec![node, tls_node];
         let opts = default_opts();
         let built = build_xray_config(&nodes, &opts).expect("build");
 
