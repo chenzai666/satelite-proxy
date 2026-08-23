@@ -2,6 +2,7 @@ mod builder;
 mod custom;
 mod dns_build;
 mod dns_files;
+mod meow;
 mod punycode;
 mod rule_files;
 mod write;
@@ -18,4 +19,5 @@ pub use rule_files::{dump_rule_set_files, remove_rule_set_files};
 pub use write::{
     active_config_path, remove_custom_config, write_active_config, write_custom_config,
 };
+pub use meow::{build_meow_config, BuiltMeowConfig};
 pub use xray::build_xray_config;
