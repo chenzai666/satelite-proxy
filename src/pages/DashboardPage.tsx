@@ -25,6 +25,7 @@ import {
   useCaptureModeSwitch,
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { isZoomSettling } from "../hooks/viewportScale";
 import { useI18n } from "../i18n";
 import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
@@ -137,6 +138,11 @@ function useSingleLineFit<T extends HTMLElement>(text: string) {
     const el = ref.current;
     if (!el) return;
     const fit = () => {
+      // Root-zoom transitions (maximize magnification) skew computed
+      // font-size and clientWidth mid-animation — the written inline size
+      // would persist after the animation. Skip while settling; the
+      // at-rest synthetic resize (viewportScale.ts) re-fits correctly.
+      if (isZoomSettling()) return;
       // Drop any previous override so the CSS clamp() sets the start size.
       el.style.fontSize = "";
       let size = parseFloat(getComputedStyle(el).fontSize);

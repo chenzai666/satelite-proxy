@@ -243,6 +243,22 @@ body,
   overscroll-behavior-x: none;
 }
 
+/* —— Viewport scale (maximize magnification) —— */
+/* useViewportScale sets `zoom` on <html> when the OS window exceeds the
+   design size (Windows maximize): the whole tree — root, body portals,
+   modals — magnifies at design proportions. Zoom is animatable, so
+   maximize/restore eases instead of snapping. */
+html {
+  transition: zoom 0.18s ease;
+}
+
+/* The simple strip is a fixed-width design: when magnified, pin it to the
+   design width and center instead of stretching wide. */
+html[data-ui-mode="simple"][data-ui-scaled] #root {
+  width: 420px; /* = SIMPLE_WINDOW design width */
+  margin-inline: auto;
+}
+
 button,
 input,
 select,

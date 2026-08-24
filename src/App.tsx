@@ -10,6 +10,7 @@ import { DashboardPage } from "./pages/DashboardPage";
 import type { NavKey } from "./types";
 import { UiModeProvider, useUiMode } from "./ui/UiModeContext";
 import { SimpleShell } from "./ui/simple";
+import { useViewportScale } from "./hooks/useViewportScale";
 import "./App.css";
 
 // Secondary pages: code-split so low-memory WebView recreate only parses home first.
@@ -84,6 +85,10 @@ function ProShell() {
 function AppShell() {
   const { mode } = useUiMode();
   const [applyError, setApplyError] = useState<string | null>(null);
+
+  // Maximize magnification: zoom the whole UI when the OS window exceeds
+  // the design size (see hooks/useViewportScale.ts).
+  useViewportScale(mode);
 
   // Background rule/config apply restarts the core outside invoke wrappers —
   // keep the navbar spinner in sync via the apply-status event.
