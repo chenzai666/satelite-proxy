@@ -121,6 +121,10 @@ pub struct Runtime {
     /// Live connections (last poll)
     live_connections: Vec<ConnectionInfo>,
     live_revision: u64,
+    /// Bumped only when the live id SET changes (adds/removes), not on plain
+    /// traffic-counter updates — lets `live_connection_batch` skip the O(N)
+    /// `order_ids` payload for pure-update deltas.
+    live_order_revision: u64,
     live_item_revisions: HashMap<String, u64>,
     live_removals: VecDeque<(u64, String)>,
     live_diff_floor: u64,
@@ -157,6 +161,7 @@ impl Runtime {
             traffic_speed: (0, 0),
             live_connections: Vec::new(),
             live_revision: 0,
+            live_order_revision: 0,
             live_item_revisions: HashMap::new(),
             live_removals: VecDeque::new(),
             live_diff_floor: 0,
@@ -430,17 +435,26 @@ impl Runtime {
                 .iter()
                 .map(|connection| (connection_history_key(connection), connection))
                 .collect();
+            let mut membership_changed = false;
             for connection in &connections {
                 let id = connection_history_key(connection);
+                let is_new = previous.get(&id).is_none();
                 if previous.get(&id).is_none_or(|old| *old != connection) {
                     self.live_item_revisions.insert(id, revision);
+                    if is_new {
+                        membership_changed = true;
+                    }
                 }
             }
             for id in previous.keys() {
                 if !seen.contains(id) {
+                    membership_changed = true;
                     self.live_item_revisions.remove(id);
                     self.live_removals.push_back((revision, id.clone()));
                 }
+            }
+            if membership_changed {
+                self.live_order_revision = self.live_order_revision.saturating_add(1);
             }
             while self.live_removals.len() > MAX_LIVE_REMOVAL_HISTORY {
                 if let Some((removed_revision, _)) = self.live_removals.pop_front() {
@@ -464,13 +478,15 @@ impl Runtime {
         &mut self,
         store: &AppStore,
         since_revision: Option<u64>,
+        last_order_revision: Option<u64>,
     ) -> LiveConnectionBatch {
         self.core.poll();
         if since_revision == Some(self.live_revision) {
             return LiveConnectionBatch {
                 rows: Vec::new(),
                 removed_ids: Vec::new(),
-                order_ids: Vec::new(),
+                order_ids: None,
+                order_revision: self.live_order_revision,
                 revision: self.live_revision,
                 unchanged: true,
                 full: false,
@@ -479,6 +495,20 @@ impl Runtime {
         let full = since_revision.is_none_or(|since| since < self.live_diff_floor);
         let since = since_revision.unwrap_or(0);
         let tag_info = node_tag_info_map(store);
+        // Order payload is O(N); skip it when the client's order revision is
+        // current — pure traffic-counter deltas then merge in place on the
+        // client without rebuilding the whole array.
+        let order_ids =
+            if full || last_order_revision != Some(self.live_order_revision) {
+                Some(
+                    self.live_connections
+                        .iter()
+                        .map(connection_history_key)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
         LiveConnectionBatch {
             rows: self
                 .live_connections
@@ -500,11 +530,8 @@ impl Runtime {
                     .map(|(_, id)| id.clone())
                     .collect()
             },
-            order_ids: self
-                .live_connections
-                .iter()
-                .map(connection_history_key)
-                .collect(),
+            order_ids,
+            order_revision: self.live_order_revision,
             revision: self.live_revision,
             unchanged: false,
             full,
@@ -1157,7 +1184,12 @@ pub struct ConnectionView {
 pub struct LiveConnectionBatch {
     pub rows: Vec<ConnectionView>,
     pub removed_ids: Vec<String>,
-    pub order_ids: Vec<String>,
+    /// Full id order. Omitted (`None`) when the id set is unchanged since the
+    /// client's `order_revision` — clients then merge `rows` in place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_ids: Option<Vec<String>>,
+    /// Bumps only on membership changes; pass it back on the next poll.
+    pub order_revision: u64,
     pub revision: u64,
     pub unchanged: bool,
     pub full: bool,
@@ -1433,5 +1465,64 @@ mod tests {
 
         assert!(restart_allowed, "stop must allow an immediate restart");
         assert!(!api.is_active(), "stop must cancel Clash API clients");
+    }
+
+}
+
+/// Cross-platform protocol tests (the `tests` module above is macOS-only
+/// because of the /usr/bin/nc listener).
+#[cfg(test)]
+mod live_batch_tests {
+    use super::*;
+
+    #[test]
+    fn live_batch_skips_order_ids_until_membership_changes() {
+        let conn = |id: &str, up: u64| ConnectionInfo {
+            id: id.into(),
+            destination: format!("{id}.example:443"),
+            host: format!("{id}.example"),
+            destination_ip: "1.2.3.4".into(),
+            destination_port: "443".into(),
+            network: "tcp".into(),
+            conn_type: String::new(),
+            source: "127.0.0.1:1".into(),
+            process: String::new(),
+            chains: vec![],
+            node: String::new(),
+            rule: String::new(),
+            rule_payload: String::new(),
+            upload: up,
+            download: 0,
+            start: String::new(),
+        };
+
+        let mut runtime = Runtime::new();
+        let store = AppStore::default();
+        runtime.ingest_connections(vec![conn("a", 1), conn("b", 1)]);
+
+        let first = runtime.live_connection_batch(&store, None, None);
+        assert!(first.full && first.order_ids.is_some());
+        assert_eq!(first.order_ids.as_ref().map(Vec::len), Some(2));
+
+        // Pure counter update — membership unchanged: order_ids omitted.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
+        let delta = runtime.live_connection_batch(&store, Some(first.revision), Some(first.order_revision));
+        assert!(!delta.unchanged && !delta.full);
+        assert!(delta.order_ids.is_none(), "no membership change → skip order_ids");
+        assert_eq!(delta.rows.len(), 2);
+
+        // New id → membership changed → order_ids return and revision bumps.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5), conn("c", 1)]);
+        let delta2 = runtime.live_connection_batch(&store, Some(delta.revision), Some(delta.order_revision));
+        assert!(delta2.order_ids.is_some());
+        assert_eq!(delta2.order_ids.as_ref().map(Vec::len), Some(3));
+        assert!(delta2.order_revision > delta.order_revision);
+
+        // Removal also counts as a membership change.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
+        let delta3 = runtime.live_connection_batch(&store, Some(delta2.revision), Some(delta2.order_revision));
+        assert!(delta3.order_ids.is_some());
+        assert_eq!(delta3.order_ids.as_ref().map(Vec::len), Some(2));
+        assert!(!delta3.removed_ids.is_empty());
     }
 }

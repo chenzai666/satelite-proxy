@@ -14,8 +14,9 @@ use tungstenite::{client as ws_client, Error as WsError};
 
 /// Active UI: catch short-lived conns.
 const WS_INTERVAL_ACTIVE_MS: u64 = 100;
-/// UI hidden / tray-only.
-const WS_INTERVAL_BACKGROUND_MS: u64 = 400;
+/// UI hidden / tray-only. Slow enough to keep history alive without churning
+/// the Rust heap while nobody is looking (docs/webview2-memory-optimization-plan.md).
+const WS_INTERVAL_BACKGROUND_MS: u64 = 1000;
 /// HTTP poll when WS is unavailable.
 const FALLBACK_HTTP_MS: u64 = 350;
 const IDLE_MS: u64 = 500;

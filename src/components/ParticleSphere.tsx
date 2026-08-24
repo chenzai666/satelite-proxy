@@ -719,6 +719,14 @@ function createParticleSphere(
       : null;
   viewObserver?.observe(canvas);
 
+  // Explicit page-visibility stop: rAF is throttled in background WebViews,
+  // but a stopped loop skips the render entirely (no wakeups at all).
+  const onVisibilityChange = () => {
+    if (document.hidden) stopLoop();
+    else startLoop();
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
+
   startLoop();
   if (config.orbit > 0.75 && !reducedMotion) kickOrbit();
 
@@ -734,6 +742,7 @@ function createParticleSphere(
       observer.disconnect();
       viewObserver?.disconnect();
       motionQuery.removeEventListener("change", onMotionChange);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       pointerTarget.removeEventListener("pointermove", onPointerMove);
       pointerTarget.removeEventListener("pointerleave", onPointerLeave);
       pointerTarget.removeEventListener("pointercancel", onPointerLeave);

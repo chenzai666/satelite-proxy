@@ -84,7 +84,9 @@ pub fn update_settings(
     locale: Option<String>,
     theme: Option<String>,
     accent: Option<String>,
+    glow_color: Option<String>,
     hero_style: Option<String>,
+    glass_frost: Option<bool>,
     tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
@@ -200,18 +202,44 @@ pub fn update_settings(
             }
             if let Some(ac) = accent {
                 let ac = ac.trim().to_ascii_lowercase();
+                // Preset ids, or a custom accent picked in the color picker
+                // (stored verbatim as `#rrggbb`).
+                let is_hex = ac.len() == 7
+                    && ac.starts_with('#')
+                    && ac[1..].chars().all(|c| c.is_ascii_hexdigit());
                 if matches!(
                     ac.as_str(),
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
-                ) {
+                ) || is_hex
+                {
                     store.settings.accent = ac;
+                }
+            }
+            if let Some(gl) = glow_color {
+                let gl = gl.trim().to_ascii_lowercase();
+                // "accent" tracks the UI accent; otherwise preset ids or a
+                // custom `#rrggbb` picked in the glow color picker.
+                let is_hex = gl.len() == 7
+                    && gl.starts_with('#')
+                    && gl[1..].chars().all(|c| c.is_ascii_hexdigit());
+                if gl == "accent"
+                    || matches!(
+                        gl.as_str(),
+                        "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
+                    )
+                    || is_hex
+                {
+                    store.settings.glow_color = gl;
                 }
             }
             if let Some(hs) = hero_style {
                 let hs = hs.trim().to_ascii_lowercase();
-                if matches!(hs.as_str(), "particle" | "classic") {
+                if matches!(hs.as_str(), "particle" | "classic" | "smiley") {
                     store.settings.hero_style = hs;
                 }
+            }
+            if let Some(v) = glass_frost {
+                store.settings.glass_frost = v;
             }
             if let Some(raw) = tray_icon {
                 if let Some(style) = crate::domain::TrayIconStyle::parse(&raw) {

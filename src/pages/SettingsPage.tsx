@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  checkAppUpdate,
   checkCoreUpdate,
   diagnoseNetwork,
   downloadCore,
+  getAppInstallPath,
   getCoreInfo,
   getProxyStatus,
   getSettings,
@@ -20,7 +24,8 @@ import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
-import { ACCENTS } from "../theme/accents";
+import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
+import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
 import { useTheme } from "../theme";
 import type {
   AppSettings,
@@ -39,6 +44,11 @@ type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "core";
 
 const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
 
+/** Repository link shown in the bottom-right corner of the settings page. */
+const PROJECT_URL = "https://github.com/zn0wii/satelite-proxy/";
+/** Always-latest app release page, opened from the version tab. */
+const RELEASES_URL = "https://github.com/zn0wii/satelite-proxy/releases/latest";
+
 // Accent preset names are picked from the i18n catalog rather than
 // AccentPreset.name (theme/accents.ts), which is display data only and not
 // locale-aware.
@@ -51,6 +61,11 @@ const ACCENT_LABEL_KEY: Record<string, MessageKey> = {
   cyan: "accent.cyan",
 };
 
+/** Idle custom swatch: a rainbow ring hinting "pick any colour". Replaced by
+ *  the stored custom hex (inline style) once a custom accent is active. */
+const CUSTOM_DOT_RAINBOW =
+  "conic-gradient(from 90deg, #f66, #fc6, #6c6, #6cd, #66c, #c6c, #f66)";
+
 function fmtCoreBytes(value: number) {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -58,18 +73,38 @@ function fmtCoreBytes(value: number) {
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle } =
+  const { theme, setTheme, accent, setAccent, glow, setGlow, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  /** Sponsor easter-egg panel (decrypt-reveal over the sponsor QR). */
+  /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
+  const [sponsorSession, setSponsorSession] = useState("0000");
+  /** Custom accent color picker (the extra swatch after the presets). */
+  const [accentPickerOpen, setAccentPickerOpen] = useState(false);
+  const [glowPickerOpen, setGlowPickerOpen] = useState(false);
+  /** Anchor + viewport position for the sponsor popup (portaled to <body>,
+   * fixed above the trigger button so opening it never reflows the card). */
+  const sponsorBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [sponsorPos, setSponsorPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
 
-  // Any click anywhere dismisses the sponsor panel; the link's own click is
-  // excluded below so opening doesn't immediately bubble into a close.
+  // Click outside the panel/link dismisses it. Ignore clicks inside either
+  // node: the link is portaled to <body>, so React stopPropagation does not
+  // reliably reach this native document listener.
   useEffect(() => {
     if (!sponsorOpen) return;
-    const close = () => setSponsorOpen(false);
+    const close = (e: MouseEvent) => {
+      const node = e.target;
+      if (
+        node instanceof Element &&
+        node.closest(".sponsor-panel, .sponsor-link")
+      ) {
+        return;
+      }
+      setSponsorOpen(false);
+    };
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [sponsorOpen]);
@@ -112,6 +147,22 @@ export function SettingsPage() {
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
   const [coreProgress, setCoreProgress] =
     useState<CoreDownloadProgress | null>(null);
+
+  // App's own version card: local version is instant (getVersion), the
+  // latest GitHub tag needs a network check that routes via the proxy
+  // when the kernel is running (same strategy as the core check).
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [appUpdate, setAppUpdate] = useState<{
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    cached: boolean;
+    checked_at: number | null;
+  } | null>(null);
+  const [appChecking, setAppChecking] = useState(false);
+  const [appError, setAppError] = useState<string | null>(null);
+  /** Absolute path of the app's own executable, shown like the kernel path. */
+  const [appPath, setAppPath] = useState<string | null>(null);
 
   const tabs = useMemo(
     () =>
@@ -205,6 +256,37 @@ export function SettingsPage() {
     void reloadCore();
   }, [reloadCore]);
 
+  /** reportError: surface failures (manual click). force: bypass the 6h
+   * cache and hit the network — manual checks always refresh, auto checks
+   * on tab open reuse a fresh cached result. */
+  const runAppUpdateCheck = useCallback(
+    async (reportError: boolean, force = false) => {
+      setAppChecking(true);
+      if (reportError) setAppError(null);
+      try {
+        setAppUpdate(await checkAppUpdate(force));
+      } catch (e) {
+        if (reportError) {
+          setAppError(typeof e === "string" ? e : String(e));
+        }
+      } finally {
+        setAppChecking(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (tab !== "core") return;
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+    void getAppInstallPath()
+      .then(setAppPath)
+      .catch(() => setAppPath(null));
+    void runAppUpdateCheck(false);
+  }, [tab, runAppUpdateCheck]);
+
   useEffect(() => {
     if (tab !== "core") return;
     void getProxyStatus()
@@ -232,14 +314,21 @@ export function SettingsPage() {
   }, [menuInboundId]);
 
   useEffect(() => {
+    // Settings tabs remount pages often; if this unmounts before listen()
+    // resolves, dispose immediately so the listener doesn't leak.
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<CoreDownloadProgress>("core-download-progress", (event) => {
       setCoreProgress(event.payload);
       setCoreProxyAvailable(event.payload.via_proxy);
     }).then((dispose) => {
-      unlisten = dispose;
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   /** Latest auto-apply fn (called from the debounced effect and re-queued
@@ -529,46 +618,8 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {/* Sponsor easter egg — corner link opens a decrypt-reveal panel.
-       * Portaled to <body>: a transformed ancestor (the page-enter entrance
-       * animation wrapper) becomes the containing block for position:fixed
-       * descendants, which made the link jump once when the animation ended.
-       * App tab only. */}
-      {visibleTab === "app" &&
-        createPortal(
-          <>
-            <button
-              type="button"
-              className="sponsor-link"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSponsorOpen((v) => !v);
-              }}
-            >
-              {t("settings.sponsor")}
-            </button>
-            {sponsorOpen && (
-              <div
-                className="sponsor-panel"
-                role="dialog"
-                aria-label={t("settings.sponsor")}
-              >
-                <DecryptReveal radius={140} dismissOnLeave>
-                  <img
-                    className="sponsor-qr"
-                    src={buymecoffeeUrl}
-                    alt={t("settings.sponsorScan")}
-                    draggable={false}
-                  />
-                </DecryptReveal>
-                <div className="sponsor-caption muted">
-                  {t("settings.sponsorScan")}
-                </div>
-              </div>
-            )}
-          </>,
-          document.body,
-        )}
+      {/* Corner links moved into the version tab's app card (project home +
+       * sponsor easter egg live next to the app's own version info). */}
 
       <GlassSeg
         value={visibleTab}
@@ -616,13 +667,14 @@ export function SettingsPage() {
         {!customRuntime && visibleTab === "rules" && <RulesPage embedded />}
 
         {!customRuntime && visibleTab === "dns" && (
-          <DnsPage embedded section="settings" />
+          <DnsPage embedded />
         )}
         {!customRuntime && visibleTab === "hosts" && <HostsPage embedded />}
       {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">
-            <div className="settings-app-prefs">
+            <div className="settings-app-cols">
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.language")}</div>
@@ -641,6 +693,57 @@ export function SettingsPage() {
                   ]}
                 />
               </div>
+              <AppToggle
+                title={t("settings.launchAtLogin")}
+                desc={t("settings.launchAtLoginDesc")}
+                checked={!!settings?.launch_at_login}
+                disabled={busy}
+                onChange={(v) => void patchApp({ launchAtLogin: v })}
+              />
+              <AppToggle
+                title={t("settings.silentStart")}
+                desc={t("settings.silentStartDesc")}
+                checked={!!settings?.silent_start}
+                disabled={busy}
+                onChange={(v) => void patchApp({ silentStart: v })}
+              />
+              <AppToggle
+                title={t("settings.autoStartProxy")}
+                desc={t("settings.autoStartProxyDesc")}
+                checked={!!settings?.auto_start_proxy}
+                disabled={busy}
+                onChange={(v) => void patchApp({ autoStartProxy: v })}
+              />
+              <AppToggle
+                title={t("settings.closeToTray")}
+                desc={t("settings.closeToTrayDesc")}
+                checked={settings?.close_to_tray !== false}
+                disabled={busy}
+                onChange={(v) => void patchApp({ closeToTray: v })}
+              />
+              <AppToggle
+                title={t("settings.unloadUi")}
+                desc={t("settings.unloadUiDesc")}
+                checked={!!settings?.unload_ui_on_tray}
+                disabled={busy}
+                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
+              />
+              <AppToggle
+                title={t("settings.closeOnSwitch")}
+                desc={t("settings.closeOnSwitchDesc")}
+                checked={settings?.close_connections_on_switch !== false}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
+              />
+              <AppToggle
+                title={t("settings.findProcess")}
+                desc={t("settings.findProcessDesc")}
+                checked={settings?.find_process !== false}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ findProcess: v })}
+              />
+              </div>
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.theme")}</div>
@@ -656,6 +759,24 @@ export function SettingsPage() {
                   options={[
                     { value: "aerospace", label: t("settings.themeAerospace") },
                     { value: "day", label: t("settings.themeDay") },
+                  ]}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row settings-duo-col">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glassFrost")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glassFrostDesc")}
+                  </div>
+                </div>
+                <GlassSeg
+                  value={glassFrost ? "frost" : "lite"}
+                  ariaLabel={t("settings.glassFrost")}
+                  disabled={busy}
+                  onChange={(v) => void setGlassFrost(v === "frost")}
+                  options={[
+                    { value: "lite", label: t("settings.glassFrostLite") },
+                    { value: "frost", label: t("settings.glassFrostFull") },
                   ]}
                 />
               </div>
@@ -690,6 +811,99 @@ export function SettingsPage() {
                       )}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(accent) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(accent)
+                        ? { background: accent, color: accent }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(accent)}
+                    disabled={busy}
+                    onClick={() => setAccentPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(accent) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="settings-app-row settings-app-pref settings-accent-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glow")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glowDesc")}
+                  </div>
+                </div>
+                <div
+                  className="settings-accent-swatches"
+                  role="group"
+                  aria-label={t("settings.glow")}
+                >
+                  {/* "Follow accent" mirrors the accent's effective shade. */}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${glow === "accent" ? "active" : ""}`}
+                    style={{
+                      background: resolveAccent(accent)[theme],
+                      color: resolveAccent(accent)[theme],
+                    }}
+                    title={t("settings.glowFollow")}
+                    aria-label={t("settings.glowFollow")}
+                    aria-pressed={glow === "accent"}
+                    disabled={busy}
+                    onClick={() => void setGlow("accent")}
+                  >
+                    {glow === "accent" ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`settings-accent-dot ${glow === a.id ? "active" : ""}`}
+                      style={{ background: a[theme], color: a[theme] }}
+                      title={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-label={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-pressed={glow === a.id}
+                      disabled={busy}
+                      onClick={() => void setGlow(a.id)}
+                    >
+                      {glow === a.id ? (
+                        <span className="settings-accent-check">✓</span>
+                      ) : (
+                        ""
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(glow) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(glow)
+                        ? { background: glow, color: glow }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(glow)}
+                    disabled={busy}
+                    onClick={() => setGlowPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(glow) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
                 </div>
               </div>
               <div className="settings-app-row settings-app-pref settings-hero-row">
@@ -707,10 +921,11 @@ export function SettingsPage() {
                   options={[
                     { value: "particle", label: t("settings.heroStyleParticle") },
                     { value: "classic", label: t("settings.heroStyleClassic") },
+                    { value: "smiley", label: t("settings.heroStyleSmiley") },
                   ]}
                 />
               </div>
-              <div className="settings-app-row settings-app-pref settings-tray-icon-row">
+              <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.trayIcon")}</div>
                   <div className="settings-app-desc muted">
@@ -725,56 +940,6 @@ export function SettingsPage() {
                 />
               </div>
             </div>
-            <div className="settings-app-toggles">
-              <AppToggle
-                title={t("settings.closeToTray")}
-                desc={t("settings.closeToTrayDesc")}
-                checked={settings?.close_to_tray !== false}
-                disabled={busy}
-                onChange={(v) => void patchApp({ closeToTray: v })}
-              />
-              <AppToggle
-                title={t("settings.unloadUi")}
-                desc={t("settings.unloadUiDesc")}
-                checked={!!settings?.unload_ui_on_tray}
-                disabled={busy}
-                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
-              />
-              <AppToggle
-                title={t("settings.launchAtLogin")}
-                desc={t("settings.launchAtLoginDesc")}
-                checked={!!settings?.launch_at_login}
-                disabled={busy}
-                onChange={(v) => void patchApp({ launchAtLogin: v })}
-              />
-              <AppToggle
-                title={t("settings.silentStart")}
-                desc={t("settings.silentStartDesc")}
-                checked={!!settings?.silent_start}
-                disabled={busy}
-                onChange={(v) => void patchApp({ silentStart: v })}
-              />
-              <AppToggle
-                title={t("settings.autoStartProxy")}
-                desc={t("settings.autoStartProxyDesc")}
-                checked={!!settings?.auto_start_proxy}
-                disabled={busy}
-                onChange={(v) => void patchApp({ autoStartProxy: v })}
-              />
-              <AppToggle
-                title={t("settings.closeOnSwitch")}
-                desc={t("settings.closeOnSwitchDesc")}
-                checked={settings?.close_connections_on_switch !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
-              />
-              <AppToggle
-                title={t("settings.findProcess")}
-                desc={t("settings.findProcessDesc")}
-                checked={settings?.find_process !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ findProcess: v })}
-              />
             </div>
           </div>
           <p className="settings-panel-note muted">{t("settings.toggleSaveNote")}</p>
@@ -783,14 +948,6 @@ export function SettingsPage() {
 
       {visibleTab === "ports" && settings && (
         <section className="settings-panel" aria-label="Ports">
-          {/* Note only — every change auto-commits below (and restarts a
-            running core); there is no save button on this tab. */}
-          <div className="settings-network-card-head settings-ports-toolbar">
-            <div>
-              <strong>{t("settings.networkOptions")}</strong>
-              <div className="muted">{t("settings.networkSaveNote")}</div>
-            </div>
-          </div>
           <div className="settings-ports-columns">
             <div className="card settings-form settings-form-grid">
               <label className="field">
@@ -1048,16 +1205,23 @@ export function SettingsPage() {
       )}
 
       {visibleTab === "core" && (
-        <section className="settings-panel" aria-label="Core">
+        <section className="settings-panel version-split" aria-label="Version">
           {coreError && <div className="banner error">{coreError}</div>}
 
-          <div className="card core-card">
-            <div className="core-row">
-              <div>
-                <div className="stat-label">{t("settings.coreStatus")}</div>
-                <div className="core-status">
+          <div className="version-col">
+          <div className="version-block-title">
+            {t("settings.coreVersionTitle")}
+          </div>
+          <div className="card core-card kernel-card">
+            <div className="ver-hero">
+              <div className="ver-mark" aria-hidden>
+                ⬢
+              </div>
+              <div className="ver-id">
+                <div className="ver-name">
+                  sing-box
                   {core?.installed ? (
-                    <span className="pill ok">
+                    <span className={`pill ${core.source === "bundled" ? "ok" : ""}`}>
                       {core.source === "bundled"
                         ? t("settings.coreBundled")
                         : t("settings.coreInstalled")}
@@ -1065,10 +1229,35 @@ export function SettingsPage() {
                   ) : (
                     <span className="pill warn">{t("settings.coreMissing")}</span>
                   )}
-                  <span className="muted mono">{core?.platform ?? "…"}</span>
+                </div>
+                <div className="ver-sub muted mono">{core?.platform ?? "…"}</div>
+              </div>
+              <div className="ver-side">
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="ver-ver mono">
+                  {core?.version ?? "—"}
+                  {core?.source === "downloaded" ? (
+                    <span className="pill">{t("settings.coreUser")}</span>
+                  ) : null}
                 </div>
               </div>
-              <div className="core-actions">
+            </div>
+
+            <div className="ver-grid">
+              <div>
+                <span className="stat-label">{t("settings.coreBundledLabel")}</span>
+                <div className="mono ver-stat">{core?.bundled_version ?? "—"}</div>
+              </div>
+              <div>
+                <span className="stat-label">{t("settings.coreLatestLabel")}</span>
+                <div className="mono ver-stat">
+                  {core?.latest_version ?? "—"}
+                  {core?.update_available ? (
+                    <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="ver-grid-actions">
                 <GlassButton
                   icon="↻"
                   disabled={coreBusy || coreChecking || !core}
@@ -1095,42 +1284,12 @@ export function SettingsPage() {
               </div>
             </div>
 
-            <div className="core-meta">
-              <div>
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="mono">
-                  {core?.version ?? "—"}
-                  {core?.source === "bundled" ? (
-                    <span className="pill ok" style={{ marginLeft: 8 }}>
-                      {t("settings.coreBundled")}
-                    </span>
-                  ) : null}
-                  {core?.source === "downloaded" ? (
-                    <span className="pill" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUser")}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div>
-                <span className="stat-label">
-                  {t("settings.coreBundledLatest")}
-                </span>
-                <div className="mono">
-                  {core?.bundled_version ?? "—"} / {core?.latest_version ?? "—"}
-                  {core?.update_available ? (
-                    <span className="pill warn" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUpdateAvail")}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-
             {core?.path && (
               <div className="core-path">
                 <span className="stat-label">{t("settings.corePath")}</span>
-                <code className="path-text mono">{core.path}</code>
+                <code className="path-text mono" title={core.path}>
+                  {core.path}
+                </code>
               </div>
             )}
 
@@ -1183,6 +1342,180 @@ export function SettingsPage() {
             )}
 
             <p className="hint">{t("settings.coreHint")}</p>
+          </div>
+          </div>
+
+          <div className="version-col">
+          <div className="version-block-title">
+            {t("settings.appVersionTitle")}
+          </div>
+          <div className="card core-card app-card">
+            <div className="ver-hero">
+              <div className="ver-mark app-mark" aria-hidden>
+                ◈
+              </div>
+              <div className="ver-id">
+                <div className="ver-name">Satelite</div>
+                <div className="ver-sub muted">{t("settings.appTagline")}</div>
+              </div>
+              <div className="ver-side">
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="ver-ver mono">{appVersion ?? "…"}</div>
+              </div>
+            </div>
+
+            <div className="ver-grid">
+              <div>
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="mono ver-stat">{appVersion ?? "—"}</div>
+              </div>
+              <div>
+                <span className="stat-label">{t("settings.appLatest")}</span>
+                <div className="mono ver-stat">
+                  {appChecking && !appUpdate
+                    ? "…"
+                    : (appUpdate?.latest_version ?? "—")}
+                  {appUpdate?.update_available ? (
+                    <span className="pill warn">
+                      {t("settings.coreUpdateAvail")}
+                    </span>
+                  ) : appUpdate ? (
+                    <span className="pill ok">{t("settings.appUpToDate")}</span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="ver-grid-actions">
+                <GlassButton
+                  icon="↻"
+                  disabled={appChecking}
+                  onClick={() => void runAppUpdateCheck(true, true)}
+                >
+                  {appChecking
+                    ? t("settings.coreChecking")
+                    : t("settings.coreCheck")}
+                </GlassButton>
+                {/* The app has no in-app downloader — "re-download" simply
+                   opens the latest GitHub release page in the browser. */}
+                <GlassButton
+                  variant="primary"
+                  icon="⤓"
+                  onClick={() => void openUrl(RELEASES_URL)}
+                >
+                  {t("settings.coreRedownload")}
+                </GlassButton>
+              </div>
+            </div>
+
+            {appError && <div className="banner error">{appError}</div>}
+
+            <div className="core-path">
+              <span className="stat-label">{t("settings.corePath")}</span>
+              <code className="path-text mono" title={appPath ?? undefined}>
+                {appPath ?? "—"}
+              </code>
+            </div>
+
+            <div
+              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
+            >
+              <span className="core-route-dot" aria-hidden />
+              <span>
+                {coreProxyAvailable
+                  ? t("settings.appProxyRoute")
+                  : t("settings.appDirectRoute")}
+              </span>
+            </div>
+
+            <div className="ver-links">
+              <button
+                type="button"
+                className="corner-link project-link"
+                onClick={() => {
+                  openUrl(PROJECT_URL).catch((e) =>
+                    setError(typeof e === "string" ? e : String(e)),
+                  );
+                }}
+              >
+                {t("settings.projectHome")}
+              </button>
+              <button
+                type="button"
+                className="corner-link sponsor-link"
+                ref={sponsorBtnRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const rect = sponsorBtnRef.current?.getBoundingClientRect();
+                  if (rect) {
+                    // Popup bounds (QR 216 + padding + session chrome).
+                    const PANEL_W = 246;
+                    const PANEL_H = 302;
+                    const right = Math.min(
+                      Math.max(12, window.innerWidth - rect.right),
+                      Math.max(12, window.innerWidth - PANEL_W - 12),
+                    );
+                    const top =
+                      rect.top - PANEL_H - 10 >= 12
+                        ? rect.top - PANEL_H - 10
+                        : Math.min(
+                            rect.bottom + 10,
+                            window.innerHeight - PANEL_H - 12,
+                          );
+                    setSponsorPos({ top, right });
+                  }
+                  setSponsorOpen((v) => {
+                    if (!v) {
+                      setSponsorSession(
+                        Math.floor(Math.random() * 0xffff)
+                          .toString(16)
+                          .padStart(4, "0"),
+                      );
+                    }
+                    return !v;
+                  });
+                }}
+              >
+                {t("settings.sponsor")}
+              </button>
+            </div>
+
+            {createPortal(
+              sponsorOpen && (
+                <div
+                  className="sponsor-panel sponsor-session"
+                  role="dialog"
+                  aria-label={t("settings.sponsor")}
+                  onClick={(e) => e.stopPropagation()}
+                  style={
+                    sponsorPos
+                      ? {
+                          top: sponsorPos.top,
+                          right: sponsorPos.right,
+                          bottom: "auto",
+                        }
+                      : undefined
+                  }
+                >
+                  <div className="sponsor-session-bar" aria-hidden="true">
+                    <span>session {sponsorSession}</span>
+                    <span className="sponsor-cursor" />
+                  </div>
+                  <div className="sponsor-session-view">
+                    <DecryptReveal radius={140} dismissOnLeave>
+                      <img
+                        className="sponsor-qr"
+                        src={buymecoffeeUrl}
+                        alt={t("settings.sponsorScan")}
+                        draggable={false}
+                      />
+                    </DecryptReveal>
+                  </div>
+                  <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
+; optional :p`}</pre>
+                </div>
+              ),
+              document.body,
+            )}
+          </div>
           </div>
         </section>
       )}
@@ -1264,6 +1597,42 @@ export function SettingsPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {accentPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(accent) ? accent : resolveAccent(accent)[theme]
+          }
+          title={t("settings.accentCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onApply={(hex) => {
+            setAccentPickerOpen(false);
+            void setAccent(hex);
+          }}
+          onClose={() => setAccentPickerOpen(false)}
+        />
+      )}
+
+      {glowPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(glow)
+              ? glow
+              : resolveAccent(glow === "accent" ? accent : glow)[theme]
+          }
+          title={t("settings.glowCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onPreview={(hex) => applyGlowToDom(hex, accent, theme)}
+          onRestore={() => applyGlowToDom(glow, accent, theme)}
+          onApply={(hex) => {
+            setGlowPickerOpen(false);
+            void setGlow(hex);
+          }}
+          onClose={() => setGlowPickerOpen(false)}
+        />
       )}
       </div>
     </div>

@@ -15,6 +15,8 @@ use tar::Archive;
 
 const GITHUB_LATEST: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
 const GITHUB_TAG: &str = "https://api.github.com/repos/SagerNet/sing-box/releases/tags/";
+const APP_GITHUB_LATEST: &str = "https://api.github.com/repos/zn0wii/satelite-proxy/releases/latest";
+const APP_RELEASES_PAGE: &str = "https://github.com/zn0wii/satelite-proxy/releases/latest";
 const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +111,82 @@ async fn fetch_release_json(url: &str, proxy_url: Option<&str>) -> AppResult<GhR
         .map_err(|e| AppError::Core(format!("parse github release: {e}")))
 }
 
+/// Latest release tag of the app itself (zn0wii/satelite-proxy), used by the
+/// Settings version tab to flag app updates. Tag only — no asset picking,
+/// and unlike the core check there is no pinned fallback: if the API is
+/// unreachable the caller surfaces the error instead of guessing.
+pub async fn fetch_latest_app_tag(proxy_url: Option<&str>) -> AppResult<String> {
+    #[derive(Deserialize)]
+    struct TagOnly {
+        tag_name: String,
+    }
+    let client = http_client(proxy_url)?;
+    let resp = client
+        .get(APP_GITHUB_LATEST)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| AppError::Core(format!("github api: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Core(format!(
+            "github api status {} for {APP_GITHUB_LATEST}",
+            resp.status()
+        )));
+    }
+    let release: TagOnly = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Core(format!("parse github release: {e}")))?;
+    Ok(normalize_version(&release.tag_name))
+}
+
+/// Latest app tag via the `releases/latest` page redirect: github.com 302s
+/// to `…/releases/tag/<tag>`. Preferred over the REST API because it draws
+/// on the website's budget instead of api.github.com's 60 req/h per IP for
+/// unauthenticated callers — an easy 403 behind shared NAT/proxy exits.
+pub async fn fetch_latest_app_tag_via_redirect(
+    proxy_url: Option<&str>,
+) -> AppResult<String> {
+    let client = http_client_with_redirect(
+        proxy_url,
+        reqwest::redirect::Policy::none(),
+    )?;
+    let resp = client
+        .get(APP_RELEASES_PAGE)
+        .send()
+        .await
+        .map_err(|e| AppError::Core(format!("github releases page: {e}")))?;
+    if !resp.status().is_redirection() {
+        return Err(AppError::Core(format!(
+            "github releases page status {} (expected redirect)",
+            resp.status()
+        )));
+    }
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            AppError::Core("github releases redirect missing location".into())
+        })?;
+    extract_tag_from_release_url(location)
+}
+
+/// `…/releases/tag/<tag>` (absolute or relative) → normalized tag.
+fn extract_tag_from_release_url(url: &str) -> AppResult<String> {
+    let path = url.split('?').next().unwrap_or(url);
+    let tag = path
+        .split("/releases/tag/")
+        .last()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    if tag.is_empty() || tag == path {
+        return Err(AppError::Core(format!("unexpected release url: {url}")));
+    }
+    Ok(normalize_version(tag))
+}
+
 /// Fallback when GitHub API is blocked: build asset URL from known version tag.
 fn synthetic_release_info(tag: &str, platform: CorePlatform) -> LatestReleaseInfo {
     let version = normalize_version(tag);
@@ -163,9 +241,17 @@ fn pick_asset(release: GhRelease, platform: CorePlatform) -> AppResult<LatestRel
 }
 
 fn http_client(proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
+    http_client_with_redirect(proxy_url, reqwest::redirect::Policy::default())
+}
+
+fn http_client_with_redirect(
+    proxy_url: Option<&str>,
+    policy: reqwest::redirect::Policy,
+) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
-        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)");
+        .user_agent("SateliteProxy/0.1 (sing-box-core-downloader)")
+        .redirect(policy);
     if let Some(proxy_url) = proxy_url {
         builder = builder.proxy(
             reqwest::Proxy::all(proxy_url)
@@ -173,6 +259,46 @@ fn http_client(proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
         );
     }
     builder.build().map_err(|e| AppError::Core(e.to_string()))
+}
+
+#[cfg(test)]
+mod app_update_tests {
+    use super::extract_tag_from_release_url;
+
+    #[test]
+    fn extracts_tag_from_absolute_url() {
+        assert_eq!(
+            extract_tag_from_release_url(
+                "https://github.com/zn0wii/satelite-proxy/releases/tag/1.0.9"
+            )
+            .unwrap(),
+            "v1.0.9"
+        );
+    }
+
+    #[test]
+    fn extracts_tag_from_relative_url() {
+        assert_eq!(
+            extract_tag_from_release_url("/zn0wii/satelite-proxy/releases/tag/v1.1.0").unwrap(),
+            "v1.1.0"
+        );
+    }
+
+    #[test]
+    fn strips_query_string() {
+        assert_eq!(
+            extract_tag_from_release_url(
+                "https://github.com/zn0wii/satelite-proxy/releases/tag/1.2.0?foo=bar"
+            )
+            .unwrap(),
+            "v1.2.0"
+        );
+    }
+
+    #[test]
+    fn rejects_urls_without_a_tag_segment() {
+        assert!(extract_tag_from_release_url("https://github.com/zn0wii/satelite-proxy").is_err());
+    }
 }
 
 /// Download latest (or given tag) and install into `{app_data}/bin/sing-box`.

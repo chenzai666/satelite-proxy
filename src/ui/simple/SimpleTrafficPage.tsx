@@ -18,15 +18,17 @@ export function SimpleTrafficPage() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const revisionRef = useRef<number | null>(null);
+  const orderRevRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnectionChanges(revisionRef.current),
+        listConnectionChanges(revisionRef.current, orderRevRef.current),
       ]);
       setRunning(!!status?.running);
       revisionRef.current = batch.revision;
+      orderRevRef.current = batch.order_revision;
       if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {

@@ -29,6 +29,7 @@ struct QueryViewCache {
 struct TrafficViewCache {
     live: Vec<ConnectionView>,
     live_revision: u64,
+    live_order_revision: u64,
     requests: QueryViewCache,
     failures: QueryViewCache,
 }
@@ -775,14 +776,19 @@ impl AppState {
         rows
     }
 
-    pub fn live_connection_batch(&self, since_revision: Option<u64>) -> LiveConnectionBatch {
+    pub fn live_connection_batch(
+        &self,
+        since_revision: Option<u64>,
+        last_order_revision: Option<u64>,
+    ) -> LiveConnectionBatch {
         let cached = || {
             let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             if since_revision == Some(cache.live_revision) {
                 LiveConnectionBatch {
                     rows: Vec::new(),
                     removed_ids: Vec::new(),
-                    order_ids: Vec::new(),
+                    order_ids: None,
+                    order_revision: cache.live_order_revision,
                     revision: cache.live_revision,
                     unchanged: true,
                     full: false,
@@ -791,7 +797,10 @@ impl AppState {
                 LiveConnectionBatch {
                     rows: cache.live.clone(),
                     removed_ids: Vec::new(),
-                    order_ids: cache.live.iter().map(|row| row.id.clone()).collect(),
+                    order_ids: Some(
+                        cache.live.iter().map(|row| row.id.clone()).collect(),
+                    ),
+                    order_revision: cache.live_order_revision,
                     revision: cache.live_revision,
                     unchanged: false,
                     full: true,
@@ -811,7 +820,7 @@ impl AppState {
             Err(TryLockError::WouldBlock) => return cached(),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
-        let batch = runtime.live_connection_batch(&store, since_revision);
+        let batch = runtime.live_connection_batch(&store, since_revision, last_order_revision);
         if !batch.unchanged {
             let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             if batch.full {
@@ -819,22 +828,38 @@ impl AppState {
             } else {
                 let removed: std::collections::HashSet<&str> =
                     batch.removed_ids.iter().map(String::as_str).collect();
-                let mut by_id: std::collections::HashMap<String, ConnectionView> = cache
-                    .live
-                    .drain(..)
-                    .filter(|row| !removed.contains(row.id.as_str()))
-                    .map(|row| (row.id.clone(), row))
-                    .collect();
-                for row in &batch.rows {
-                    by_id.insert(row.id.clone(), row.clone());
+                match &batch.order_ids {
+                    Some(order) => {
+                        let mut by_id: std::collections::HashMap<String, ConnectionView> =
+                            cache
+                                .live
+                                .drain(..)
+                                .filter(|row| !removed.contains(row.id.as_str()))
+                                .map(|row| (row.id.clone(), row))
+                                .collect();
+                        for row in &batch.rows {
+                            by_id.insert(row.id.clone(), row.clone());
+                        }
+                        cache.live = order.iter().filter_map(|id| by_id.remove(id)).collect();
+                    }
+                    None => {
+                        // Membership unchanged — overlay updates in place.
+                        let updates: std::collections::HashMap<String, &ConnectionView> =
+                            batch.rows.iter().map(|row| (row.id.clone(), row)).collect();
+                        cache.live = cache
+                            .live
+                            .drain(..)
+                            .filter(|row| !removed.contains(row.id.as_str()))
+                            .map(|row| match updates.get(&row.id) {
+                                Some(updated) => (*updated).clone(),
+                                None => row,
+                            })
+                            .collect();
+                    }
                 }
-                cache.live = batch
-                    .order_ids
-                    .iter()
-                    .filter_map(|id| by_id.remove(id))
-                    .collect();
             }
             cache.live_revision = batch.revision;
+            cache.live_order_revision = batch.order_revision;
         }
         batch
     }

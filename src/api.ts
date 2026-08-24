@@ -251,7 +251,10 @@ export interface SettingsUpdatePayload {
   locale?: string | null;
   theme?: string | null;
   accent?: string | null;
+  /** Background glow: "accent" | preset id | #rrggbb */
+  glowColor?: string | null;
   heroStyle?: string | null;
+  glassFrost?: boolean | null;
   trayIcon?: string | null;
   unloadUiOnTray?: boolean | null;
   /** @deprecated prefer autoSelect */
@@ -301,7 +304,9 @@ function scheduleSettingsWrite() {
       locale: payload.locale ?? null,
       theme: payload.theme ?? null,
       accent: payload.accent ?? null,
+      glowColor: payload.glowColor ?? null,
       heroStyle: payload.heroStyle ?? null,
+      glassFrost: payload.glassFrost ?? null,
       trayIcon: payload.trayIcon ?? null,
       unloadUiOnTray: payload.unloadUiOnTray ?? null,
       smartSwitch: payload.smartSwitch ?? null,
@@ -417,6 +422,24 @@ export function checkCoreUpdate(localVersion?: string | null) {
     asset_name: string;
     size: number;
   }>("check_core_update", { localVersion: localVersion ?? null });
+}
+
+/** Latest app release tag from GitHub; routes via the running proxy.
+ * `force` bypasses the 6h local cache (manual check button); auto checks
+ * on tab open reuse a fresh cached result to spare the API quota. */
+export function checkAppUpdate(force = false) {
+  return invoke<{
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    cached: boolean;
+    checked_at: number | null;
+  }>("check_app_update", { force });
+}
+
+/** Absolute path of the app's own executable (install location). */
+export function getAppInstallPath() {
+  return invoke<string>("get_app_install_path");
 }
 
 export function downloadCore(tag?: string | null) {
@@ -549,14 +572,20 @@ export function setRuleSetDnsStrategy(id: string, strategy: RuleSetDnsStrategy) 
 export function createRuleSet(
   name: string,
   remoteUrl?: string | null,
-  target?: "proxy" | "direct" | "block" | "smart" | null,
+  target?: RuleTarget | null,
   updateInterval?: "disabled" | "1h" | "12h" | "24h" | null,
+  nodeId?: string | null,
+  smartInclude?: string[] | null,
+  smartExclude?: string[] | null,
 ) {
   return invoke<RuleSet>("create_rule_set", {
     name,
     remoteUrl: remoteUrl ?? null,
     target: target ?? null,
     updateInterval: updateInterval ?? null,
+    nodeId: nodeId ?? null,
+    smartInclude: smartInclude ?? null,
+    smartExclude: smartExclude ?? null,
   });
 }
 
@@ -676,9 +705,13 @@ export function listConnections() {
   return invoke<ConnectionView[]>("list_connections");
 }
 
-export function listConnectionChanges(sinceRevision?: number | null) {
+export function listConnectionChanges(
+  sinceRevision?: number | null,
+  lastOrderRevision?: number | null,
+) {
   return invoke<import("./types").LiveConnectionBatch>("list_connection_changes", {
     sinceRevision: sinceRevision ?? null,
+    lastOrderRevision: lastOrderRevision ?? null,
   });
 }
 

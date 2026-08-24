@@ -2,10 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearRequestHistory, listRequests } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
 import type { ConnectionView } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
+
+/** Past this many rows the table renders only the visible window. */
+const VIRTUALIZE_AFTER = 200;
+/** Mirrors the fixed `.conn-table tbody tr` height in App.css. */
+const ROW_H = 35;
 
 function fmtBytes(n: number) {
   if (n < 1024) return `${n} B`;
@@ -102,6 +108,13 @@ export function RequestsPage({ embedded = false }: Props) {
   }
 
   const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  const virtualized = scoped.length > VIRTUALIZE_AFTER;
+  const range = useVirtualRange({
+    itemCount: scoped.length,
+    itemSize: ROW_H,
+    enabled: virtualized,
+  });
+  const visibleRows = virtualized ? scoped.slice(range.start, range.end) : scoped;
   const scopeOpts = useMemo(
     () => [
       { value: "all", label: t("traffic.scopeAll") },
@@ -180,8 +193,13 @@ export function RequestsPage({ embedded = false }: Props) {
                 <th className="conn-th-traffic">{t("conn.traffic")}</th>
               </tr>
             </thead>
-            <tbody>
-              {scoped.map((r) => (
+            <tbody ref={range.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {range.paddingTop > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingTop }} />
+                </tr>
+              )}
+              {visibleRows.map((r) => (
                 <tr key={`${r.id}-${r.last_seen ?? 0}`}>
                   <td className="conn-time">
                     <div
@@ -233,6 +251,11 @@ export function RequestsPage({ embedded = false }: Props) {
                   </td>
                 </tr>
               ))}
+              {range.paddingBottom > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>

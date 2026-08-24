@@ -1,4 +1,5 @@
 import { useTheme } from "../theme";
+import { FaceMark } from "./FaceMark";
 import type { ParticleSphereState } from "./ParticleSphere";
 import { ParticleSphereLazy } from "./ParticleSphereLazy";
 
@@ -25,6 +26,17 @@ export function HeroVisual({
         aria-hidden
       >
         <ParticleSphereLazy state={state} />
+      </div>
+    );
+  }
+
+  if (heroStyle === "smiley") {
+    return (
+      <div
+        className={`orbit face-orbit ${simple ? "simple-orbit" : ""} ${switching ? "pulse switching" : ""}`}
+        aria-hidden
+      >
+        <FaceMark state={state} />
       </div>
     );
   }

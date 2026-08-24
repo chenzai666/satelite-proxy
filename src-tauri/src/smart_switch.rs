@@ -907,21 +907,39 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Enabled smart rules to maintain: per-rule keyword pools inside Mixed sets,
+/// plus one stand-in rule per Filter-strategy set (local or remote). The
+/// stand-in reuses the rule maintenance path — its id doubles as the
+/// whole-set selector tag (`smart-<set id prefix>`), which the config builder
+/// emits for every Filter set, so probing/switching lands on the same group.
 fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
     state
         .with_store(|store| {
             let mut out = Vec::new();
-            for set in store
-                .rule_sets
-                .iter()
-                .filter(|s| s.enabled && s.strategy == RuleSetStrategy::Smart)
-            {
-                for r in set
-                    .rules
-                    .iter()
-                    .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
-                {
-                    out.push(r.clone());
+            for set in store.rule_sets.iter().filter(|s| s.enabled) {
+                match set.strategy {
+                    RuleSetStrategy::Filter => out.push(Rule {
+                        id: set.id.clone(),
+                        ord: 0,
+                        rule_type: crate::domain::RuleType::DomainSuffix,
+                        payload: "set".into(),
+                        target: RuleTarget::Smart,
+                        enabled: true,
+                        node_id: None,
+                        node_name: None,
+                        smart_include: set.smart_include.clone(),
+                        smart_exclude: set.smart_exclude.clone(),
+                    }),
+                    RuleSetStrategy::Smart => {
+                        for r in set
+                            .rules
+                            .iter()
+                            .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
+                        {
+                            out.push(r.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(out)

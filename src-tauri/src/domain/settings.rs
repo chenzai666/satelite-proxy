@@ -256,16 +256,28 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
-    /// Overview hero visual: `particle` | `classic`.
+    /// Background halo (glow) color: `accent` (follow the UI accent) |
+    /// accent preset id | custom `#rrggbb`.
+    #[serde(default = "default_glow_color")]
+    pub glow_color: String,
+    /// Overview hero visual: `particle` | `classic` | `smiley`.
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
+    /// Frosted-glass look for the repeated glass controls (seg / buttons /
+    /// switches). Default true — measured memory cost is ~0 (backdrop blur
+    /// costs frame-compositing time, not resident memory; see
+    /// docs/webview2-memory-optimization-plan.md). "Lite" solid fills remain
+    /// available for low-end GPUs.
+    #[serde(default = "default_glass_frost")]
+    pub glass_frost: bool,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.
     #[serde(default)]
     pub tray_icon: TrayIconStyle,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
-    /// memory. Default false — hide only so reopen is instant. When true, next
-    /// wake recreates the WebView (brief black screen).
-    #[serde(default)]
+    /// memory. Default true — the WebView tree costs 300-400MB resident and
+    /// tray-only sessions don't need it. When true, next wake recreates the
+    /// WebView (brief skeleton before React repaints).
+    #[serde(default = "default_unload_ui_on_tray")]
     pub unload_ui_on_tray: bool,
     /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
@@ -341,6 +353,18 @@ fn default_true() -> bool {
     true
 }
 
+/// Low-memory mode defaults ON — the WebView2 tree holds 300-400MB resident
+/// and tray-only sessions don't need it (docs/webview2-memory-optimization-plan.md).
+fn default_unload_ui_on_tray() -> bool {
+    true
+}
+
+/// Frosted controls by default: measured memory delta is ~0 (blur costs
+/// compositing time, not resident memory) — see the plan doc's P0-1 correction.
+fn default_glass_frost() -> bool {
+    true
+}
+
 fn default_locale() -> String {
     "zh".into()
 }
@@ -351,6 +375,10 @@ fn default_theme() -> String {
 
 fn default_accent() -> String {
     "green".into()
+}
+
+fn default_glow_color() -> String {
+    "accent".into()
 }
 
 fn default_hero_style() -> String {
@@ -384,9 +412,11 @@ impl Default for AppSettings {
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
+            glow_color: default_glow_color(),
             hero_style: default_hero_style(),
+            glass_frost: default_glass_frost(),
             tray_icon: TrayIconStyle::default(),
-            unload_ui_on_tray: false,
+            unload_ui_on_tray: default_unload_ui_on_tray(),
             auto_select: AutoSelectMode::Off,
             find_process: true,
             smart_switch: false,

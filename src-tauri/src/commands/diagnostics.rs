@@ -18,16 +18,18 @@ pub struct DiagnosticIssue {
 /// macOS only). Never modifies system settings — UI-facing detection only.
 #[tauri::command]
 pub fn diagnose_network() -> NetworkDiagnosticsResult {
-    let mut issues = Vec::new();
-
     #[cfg(target_os = "macos")]
-    if let Some(diag) = crate::core::macos_net::diagnose_system_dns_bypass() {
-        issues.push(DiagnosticIssue {
+    let issues = crate::core::macos_net::diagnose_system_dns_bypass()
+        .into_iter()
+        .map(|diag| DiagnosticIssue {
             id: "dns-bypasses-tun".into(),
             issue: diag.issue,
             suggestion: diag.suggestion,
-        });
-    }
+        })
+        .collect();
+
+    #[cfg(not(target_os = "macos"))]
+    let issues = Vec::new();
 
     NetworkDiagnosticsResult { issues }
 }

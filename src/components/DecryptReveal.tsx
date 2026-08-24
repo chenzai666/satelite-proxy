@@ -196,14 +196,21 @@ export function DecryptReveal({
 }: DecryptRevealProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [box, setBox] = useState<{ w: number; h: number } | null>(null);
-  const [ready, setReady] = useState(false);
+  /** Bumped when the inner <img> finishes loading so the canvas effect
+   * can sample it. The image itself is always visible underneath. */
+  const [imgTick, setImgTick] = useState(0);
 
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
     const measure = () => {
       const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) setBox({ w: r.width, h: r.height });
+      if (r.width <= 0 || r.height <= 0) return;
+      setBox((prev) =>
+        prev && prev.w === r.width && prev.h === r.height
+          ? prev
+          : { w: r.width, h: r.height },
+      );
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -212,10 +219,28 @@ export function DecryptReveal({
   }, []);
 
   useEffect(() => {
+    const el = hostRef.current;
+    if (!el) return;
+    const img = el.querySelector("img");
+    if (!img || img.complete) return;
+    const bump = () => setImgTick((n) => n + 1);
+    img.addEventListener("load", bump);
+    img.addEventListener("error", bump);
+    return () => {
+      img.removeEventListener("load", bump);
+      img.removeEventListener("error", bump);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!box) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const host = hostRef.current;
     if (!host) return;
     const img = host.querySelector("img");
+    // Image not painted yet — keep the real <img> visible; this effect
+    // re-runs via imgTick once load fires. Never cover it with a stuck
+    // black backdrop.
     if (!img || !img.complete || img.naturalWidth === 0) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -434,18 +459,9 @@ export function DecryptReveal({
     let entered = false;
     let dismissed = false;
     let dismissTimer: ReturnType<typeof setTimeout> | undefined;
-    const onMove = (e: PointerEvent) => {
-      const rc = host.getBoundingClientRect();
-      target.x = e.clientX - rc.left;
-      target.y = e.clientY - rc.top;
-      wantActive = 1;
-      entered = true;
-    };
-    const onLeave = () => {
-      wantActive = 0;
-      if (!dismissOnLeave || dismissed || !entered) return;
+    const fadeCipher = () => {
+      if (dismissed) return;
       dismissed = true;
-      // Cipher layer dissolves away; the revealed content stays.
       overlay.style.transition = "opacity 520ms ease-out";
       requestAnimationFrame(() => {
         overlay.style.opacity = "0";
@@ -455,6 +471,18 @@ export function DecryptReveal({
         host.removeEventListener("pointermove", onMove);
         host.removeEventListener("pointerleave", onLeave);
       }, 560);
+    };
+    const onMove = (e: PointerEvent) => {
+      const rc = host.getBoundingClientRect();
+      target.x = e.clientX - rc.left;
+      target.y = e.clientY - rc.top;
+      wantActive = 1;
+      entered = true;
+    };
+    const onLeave = () => {
+      wantActive = 0;
+      if (!dismissOnLeave || !entered) return;
+      fadeCipher();
     };
     host.addEventListener("pointermove", onMove);
     host.addEventListener("pointerleave", onLeave);
@@ -533,7 +561,6 @@ export function DecryptReveal({
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    setReady(true);
 
     return () => {
       cancelAnimationFrame(raf);
@@ -541,18 +568,12 @@ export function DecryptReveal({
       host.removeEventListener("pointermove", onMove);
       host.removeEventListener("pointerleave", onLeave);
       overlay.remove();
-      setReady(false);
     };
-  }, [box, cell, aspect, radius, softness, colored, color, brightness, legibility, contrast, exposure, scramble, scrambleSpeed, edgeWidth, edgeFlicker, edgeGlow, edgeTint, passthrough, threshold, background, smoothing, dismissOnLeave]);
-
-  const reduced =
-    typeof window !== "undefined" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, [box, imgTick, cell, aspect, radius, softness, colored, color, brightness, legibility, contrast, exposure, scramble, scrambleSpeed, edgeWidth, edgeFlicker, edgeGlow, edgeTint, passthrough, threshold, background, smoothing, dismissOnLeave]);
 
   return (
     <div ref={hostRef} className={`decrypt-reveal ${className}`}>
       {children}
-      {!reduced && !ready && <div className="dr-backdrop" aria-hidden="true" />}
     </div>
   );
 }
