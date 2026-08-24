@@ -55,6 +55,10 @@ pub struct CoreManager {
     log_dir: Option<PathBuf>,
     /// Which core the current/last session runs (log prefix, CLI args).
     kind: CoreKind,
+    /// Ports the current/last session bound (mixed + api + extras). `stop()`
+    /// waits for these to actually release before returning, so a restart
+    /// immediately after never races the outgoing process for the socket.
+    owned_ports: Vec<u16>,
 }
 
 impl Default for CoreManager {
@@ -70,6 +74,7 @@ impl Default for CoreManager {
             log_path: None,
             log_dir: None,
             kind: CoreKind::SingBox,
+            owned_ports: Vec::new(),
         }
     }
 }
@@ -301,8 +306,9 @@ impl CoreManager {
         } else {
             format!("sudo lsof -iTCP:{port} -sTCP:LISTEN")
         };
+        let snapshot = port_socket_snapshot(port);
         Err(AppError::Core(format!(
-            "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
+            "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}\n当前端口状态: {snapshot}"
         )))
     }
 
@@ -360,6 +366,7 @@ impl CoreManager {
         if !ports.is_empty() {
             Self::ensure_ports_free(&ports)?;
         }
+        self.owned_ports = ports.clone();
 
         #[cfg(target_os = "macos")]
         if elevated {
@@ -368,6 +375,21 @@ impl CoreManager {
                 let msg = map_tun_permission_hint(&e.to_string());
                 self.last_error = Some(msg.clone());
                 return Err(AppError::Core(msg));
+            }
+        } else if let Some(prev) = self.binary_path.as_deref() {
+            // Switching away from a core that was setuid-elevated for TUN (its
+            // binary is still root-owned setuid): a non-elevated bind on the
+            // just-vacated ports can race that root socket's teardown even
+            // after the process and its listener are gone. Elevating the new
+            // core too clears that race — mirrors what happens whenever the
+            // new core is later toggled into TUN itself.
+            if prev != binary && super::macos_auth::core_has_setuid(prev) {
+                if let Err(e) = super::macos_auth::ensure_core_setuid(binary) {
+                    crate::app_log::warn(
+                        "core",
+                        format!("setuid carry-over for {} failed: {e}", kind.display_name()),
+                    );
+                }
             }
         }
 
@@ -637,6 +659,25 @@ impl CoreManager {
         Ok(())
     }
 
+    /// Wait for the ports the just-stopped session owned to actually clear
+    /// (process-exited and socket-released are not the same instant — the OS
+    /// can lag a moment after `wait()`/`try_wait()` returns). Bounded so a
+    /// stuck/leaked port never hangs a restart; the next start's own
+    /// `ensure_ports_free` sweep is the final backstop either way.
+    ///
+    /// Callers opt in explicitly (rather than this running inside `stop()`
+    /// itself) because it spawns `lsof`/`netstat` to probe each port, which
+    /// `force_shutdown` must never do during app-exit shutdown (see there).
+    pub fn await_owned_ports_released(&mut self) {
+        let ports = std::mem::take(&mut self.owned_ports);
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        for port in ports {
+            while Self::has_port_listener(port) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     /// Hard-stop the managed core process during application exit.
     ///
     /// Do not run the port-orphan sweep here. On Windows, the OS rejects new
@@ -813,6 +854,56 @@ fn map_tun_permission_hint(err: &str) -> String {
 
 fn port_has_listener(port: u16) -> bool {
     !listener_pids_on_port(port).is_empty()
+}
+
+/// Snapshot of every socket on `port` (any TCP state, any owner) for diagnostics
+/// when `force_free_port` gives up. Unlike `listener_pids_on_port`, this is not
+/// filtered to LISTEN, so it also surfaces TIME_WAIT/CLOSE_WAIT stragglers and
+/// the owning user, to tell "not really free" apart from "kernel still cooling
+/// the port down" without asking the user to re-run `lsof` by hand.
+fn port_socket_snapshot(port: u16) -> String {
+    #[cfg(unix)]
+    {
+        let out = Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}")])
+            .output();
+        match out {
+            Ok(out) if !out.stdout.is_empty() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() <= 1 {
+                    "无 lsof 记录".into()
+                } else {
+                    lines.join(" | ")
+                }
+            }
+            Ok(_) => "无 lsof 记录".into(),
+            Err(e) => format!("lsof 不可用: {e}"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut cmd = Command::new("netstat");
+        cmd.args(["-ano"]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let needle = format!(":{port}");
+        match cmd.output() {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let matches: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.contains(&needle))
+                    .collect();
+                if matches.is_empty() {
+                    "无 netstat 记录".into()
+                } else {
+                    matches.join(" | ")
+                }
+            }
+            Err(e) => format!("netstat 不可用: {e}"),
+        }
+    }
 }
 
 fn listener_pids_on_port(port: u16) -> Vec<u32> {
