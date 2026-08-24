@@ -5,7 +5,13 @@
          the 24x24 corner span and the 80x80 bounds stay fixed; the mouth
          arc's outer contour is pinned so the heavier frown clears the nose. -->
     <title>Face ID</title>
-    <desc>Face ID smiley, proxy running. Mint smile.</desc>
+    <desc>Face ID smiley, proxy running. Mint smile with a soft mint glow behind it.</desc>
+    <defs>
+        <filter id="glow-blur" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="10"/>
+        </filter>
+    </defs>
+    <rect x="12" y="12" width="56" height="56" rx="6" fill="#2EBE84" opacity="0.45" filter="url(#glow-blur)"/>
     <g id="Face-ID" fill="none" stroke="#2EBE84" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
         <g id="Corners">
             <path d="M 3.50 20.50 L 3.50 13.03 A 9.53 9.53 0 0 1 13.03 3.50 L 20.50 3.50"/>

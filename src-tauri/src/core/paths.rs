@@ -15,7 +15,8 @@ pub struct CorePlatform {
     pub asset_suffix: &'static str,
     /// Xray release asset suffix, e.g. macos-arm64-v8a, windows-64
     pub xray_asset_suffix: &'static str,
-    /// meow release asset suffix (Rust target triples), e.g. aarch64-apple-darwin
+    /// mihomo release asset suffix — same short form as sing-box (e.g.
+    /// darwin-arm64, windows-amd64), not a Rust target triple.
     pub mihomo_asset_suffix: &'static str,
     pub is_windows: bool,
 }
@@ -44,33 +45,13 @@ pub enum CoreSource {
 pub fn detect_platform() -> AppResult<CorePlatform> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let (suffix, xray_suffix, meow_suffix, is_windows) = match (os, arch) {
-        ("macos", "aarch64") => (
-            "darwin-arm64",
-            "macos-arm64-v8a",
-            "aarch64-apple-darwin",
-            false,
-        ),
-        ("macos", "x86_64") => ("darwin-amd64", "macos-64", "x86_64-apple-darwin", false),
-        ("linux", "aarch64") => (
-            "linux-arm64",
-            "linux-arm64-v8a",
-            "aarch64-unknown-linux-gnu",
-            false,
-        ),
-        ("linux", "x86_64") => ("linux-amd64", "linux-64", "x86_64-unknown-linux-gnu", false),
-        ("windows", "x86_64") => (
-            "windows-amd64",
-            "windows-64",
-            "x86_64-pc-windows-msvc",
-            true,
-        ),
-        ("windows", "aarch64") => (
-            "windows-arm64",
-            "windows-arm64-v8a",
-            "aarch64-pc-windows-msvc",
-            true,
-        ),
+    let (suffix, xray_suffix, is_windows) = match (os, arch) {
+        ("macos", "aarch64") => ("darwin-arm64", "macos-arm64-v8a", false),
+        ("macos", "x86_64") => ("darwin-amd64", "macos-64", false),
+        ("linux", "aarch64") => ("linux-arm64", "linux-arm64-v8a", false),
+        ("linux", "x86_64") => ("linux-amd64", "linux-64", false),
+        ("windows", "x86_64") => ("windows-amd64", "windows-64", true),
+        ("windows", "aarch64") => ("windows-arm64", "windows-arm64-v8a", true),
         _ => {
             return Err(AppError::Core(format!("unsupported platform: {os}/{arch}")));
         }
@@ -78,7 +59,8 @@ pub fn detect_platform() -> AppResult<CorePlatform> {
     Ok(CorePlatform {
         asset_suffix: suffix,
         xray_asset_suffix: xray_suffix,
-        mihomo_asset_suffix: meow_suffix,
+        // mihomo release assets use the same short suffix as sing-box.
+        mihomo_asset_suffix: suffix,
         is_windows,
     })
 }

@@ -144,7 +144,7 @@ export function SettingsPage() {
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
-  /** Per-core status (sing-box + Xray + meow). */
+  /** Per-core status (sing-box + Xray + mihomo). */
   const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
     singbox: null,
     xray: null,
@@ -600,7 +600,7 @@ export function SettingsPage() {
     }
   }
 
-  /** One compact version row per core (sing-box / Xray / meow): identity
+  /** One compact version row per core (sing-box / Xray / mihomo): identity
    *  line, bundled/latest meta + actions, then a quiet path foot line. */
   function renderCoreRow(kind: CoreKind) {
     const info = cores[kind];
@@ -625,7 +625,7 @@ export function SettingsPage() {
         }
       >
         <div className="kernel-row-main">
-          {/* Monogram tile: cube = sing-box, bolt = Xray, cat head = meow. */}
+          {/* Monogram tile: cube = sing-box, bolt = Xray, cat head = mihomo. */}
           <div className="ver-mark kernel-mark" aria-hidden>
             <CoreMark kind={kind} />
           </div>

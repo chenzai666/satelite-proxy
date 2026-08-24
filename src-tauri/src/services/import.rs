@@ -57,7 +57,8 @@ pub async fn import_from_url_with_id(
     }
 
     // Many panels only attach `subscription-userinfo` when UA looks like Clash.
-    // FlClash default: `{app}/v{ver} clash-verge Platform/{os}` — we mirror that.
+    // Some panels also gate access by exact-substring UA whitelist, so we mirror
+    // FlClash's UA verbatim for the widest compatibility.
     let ua = subscription_user_agent();
 
     let mut builder = reqwest::Client::builder()
@@ -146,9 +147,10 @@ pub async fn import_from_url_with_id(
 
 /// UA used when fetching subscriptions (must look like Clash for many panels).
 fn subscription_user_agent() -> String {
-    let os = std::env::consts::OS;
-    // Same shape as FlClash `PackageInfo.ua`: include `clash-verge`.
-    format!("SateliteProxy/0.1 clash-verge Platform/{os}")
+    // Some panels (Cloudflare/CDN WAF rules) whitelist by exact lowercase
+    // substring match, e.g. only `flclash` passes while `clash-verge`/`ClashX`
+    // get 403'd. Mimic FlClash's UA directly for the widest compatibility.
+    "flclash/1.0".to_string()
 }
 
 /// Parse `Content-Disposition` for a display name.
@@ -728,9 +730,9 @@ mod tests {
     }
 
     #[test]
-    fn subscription_ua_contains_clash_verge() {
+    fn subscription_ua_contains_flclash() {
         let ua = subscription_user_agent();
-        assert!(ua.to_ascii_lowercase().contains("clash-verge"), "ua={ua}");
+        assert!(ua.to_ascii_lowercase().contains("flclash"), "ua={ua}");
     }
 
     #[test]

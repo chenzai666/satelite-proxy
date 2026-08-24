@@ -66,12 +66,6 @@ impl AppStore {
         let schema_before = store.schema_version;
         store.settings.migrate_auto_select();
         store.settings.migrate_capture_mode();
-        // The meow core was swapped for mihomo in place — normalize the
-        // stored token so the UI's pending-vs-running comparison and the
-        // settings page agree with the reported runtime kind.
-        if store.settings.core_type == "meow" {
-            store.settings.core_type = "mihomo".into();
-        }
         store.dns.ensure_rule_sets();
         store.migrate_unified_rule_sets();
         store.ensure_rule_sets();

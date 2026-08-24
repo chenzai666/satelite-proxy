@@ -54,6 +54,13 @@ pub struct BuildOptions {
     /// after the rule sets (a safety net ahead of `route.final`). Rule mode
     /// only; Global proxies everything by explicit user choice.
     pub bypass_lan: bool,
+    /// macOS-only, Xray-only: the `utunN` device name to bind the TUN
+    /// inbound to. Xray's darwin backend rejects any name that does not
+    /// parse as `utun<digits>` (unlike sing-box, which lets the OS assign
+    /// one), so the caller must probe a free index before building the
+    /// config. `None` on other platforms/cores, where Xray accepts an
+    /// arbitrary interface name.
+    pub tun_interface_name: Option<String>,
 }
 
 impl BuildOptions {
@@ -1500,6 +1507,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -1984,6 +1992,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2095,6 +2104,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2137,6 +2147,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -2185,6 +2196,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2247,6 +2259,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2286,6 +2299,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2330,6 +2344,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2393,6 +2408,7 @@ mod tests {
             tun_ipv6: ipv6,
             block_quic: false,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2437,6 +2453,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2471,6 +2488,7 @@ mod tests {
             tun_ipv6: false,
             block_quic,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2535,6 +2553,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan,
+            tun_interface_name: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2645,6 +2664,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap_err();
@@ -2677,6 +2697,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2710,6 +2731,7 @@ mod tests {
                     tun_ipv6: false,
                     block_quic: false,
                     bypass_lan: false,
+                    tun_interface_name: None,
                 },
             )
             .unwrap();
@@ -2749,6 +2771,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2794,6 +2817,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2840,6 +2864,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2890,6 +2915,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();

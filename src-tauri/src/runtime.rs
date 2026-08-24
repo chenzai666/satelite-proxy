@@ -867,7 +867,7 @@ impl Runtime {
             .count();
         if supported_count == 0 {
             return Err(AppError::Config(
-                "当前启用的节点均不被 Xray 内核支持（仅支持 vmess/vless/shadowsocks/trojan/socks5/http/wireguard）。请导入兼容订阅或切回 sing-box 内核".into(),
+                "当前启用的节点均不被 Xray 内核支持（仅支持 vmess/vless/shadowsocks/trojan/hysteria2(无 obfs)/socks5/http/wireguard）。请导入兼容订阅或切回 sing-box 内核".into(),
             ));
         }
         let unsupported: Vec<&str> = {
@@ -910,7 +910,12 @@ impl Runtime {
             crate::core::ensure_wintun(app_data_dir, resource_dir, None)?;
         }
 
-        let built = build_xray_config(&nodes, &build_options(store, String::new()))?;
+        let mut xray_opts = build_options(store, String::new());
+        #[cfg(target_os = "macos")]
+        if store.settings.tun_enabled {
+            xray_opts.tun_interface_name = Some(pick_free_darwin_utun_name());
+        }
+        let built = build_xray_config(&nodes, &xray_opts)?;
         let config_path = write_active_config(app_data_dir, &built)?;
         // The generator falls back to the first supported node when the
         // persisted pick is incompatible (or absent) — mirror that here so
@@ -1165,7 +1170,7 @@ impl Runtime {
                 )
             } else {
                 format!(
-                    "meow started but clash api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
+                    "mihomo started but clash api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
                     store.settings.api_port
                 )
             };
@@ -1370,6 +1375,14 @@ impl Runtime {
         // force-kill arbitrary listeners here: an empty/test runtime has no
         // ownership proof and could otherwise terminate another running app
         // instance (or an unrelated process using the configured ports).
+        //
+        // Process-exited and socket-released are not the same instant, so
+        // also wait for the ports it held to actually clear. Without this,
+        // `restart_core` immediately re-launching the (possibly different)
+        // core can lose a bind race against the outgoing process's still-
+        // draining listener — the new core then fails with "address already
+        // in use" even though the old one just stopped cleanly.
+        self.core.await_owned_ports_released();
         self.core_started_at = None;
         self.clear_live_connections();
         Ok(())
@@ -1475,7 +1488,29 @@ fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
         tun_ipv6: store.settings.tun_ipv6_enabled,
         block_quic: store.settings.block_quic,
         bypass_lan: store.settings.bypass_lan,
+        tun_interface_name: None,
     }
+}
+
+/// macOS-only: find a `utunN` index with no existing interface, for Xray's
+/// TUN inbound (see `BuildOptions::tun_interface_name`). Falls back to
+/// `utun9` (matching the error message's own example) if `ifconfig` itself
+/// is unavailable — Xray still fails clearly if that happens to collide.
+#[cfg(target_os = "macos")]
+fn pick_free_darwin_utun_name() -> String {
+    let existing: std::collections::HashSet<u32> = std::process::Command::new("ifconfig")
+        .arg("-l")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|name| name.strip_prefix("utun"))
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    (0..1000)
+        .find(|n| !existing.contains(n))
+        .map(|n| format!("utun{n}"))
+        .unwrap_or_else(|| "utun9".into())
 }
 
 fn now_unix_ms() -> i64 {

@@ -1,8 +1,8 @@
 //! Core kind descriptor — everything that differs between sing-box, Xray and
-//! meow at the process-management level (binary name, release asset naming,
+//! mihomo at the process-management level (binary name, release asset naming,
 //! CLI arguments, version output, spawn environment). Config generation lives
 //! separately: `config/builder.rs` (sing-box), `config/xray.rs` (Xray) and
-//! `config/meow.rs` (meow, Clash YAML).
+//! `config/mihomo.rs` (mihomo, Clash YAML).
 
 use crate::domain::Protocol;
 use std::path::Path;
@@ -61,8 +61,7 @@ impl CoreKind {
     pub fn parse(raw: &str) -> Self {
         match raw.trim().to_ascii_lowercase().as_str() {
             "xray" => Self::Xray,
-            // Legacy token from the pre-swap meow integration.
-            "mihomo" | "meow" => Self::Mihomo,
+            "mihomo" => Self::Mihomo,
             _ => Self::SingBox,
         }
     }
@@ -201,7 +200,7 @@ impl CoreKind {
             .as_deref()
         {
             Some("xray") => Self::Xray,
-            Some("meow") | Some("mihomo") => Self::Mihomo,
+            Some("mihomo") => Self::Mihomo,
             _ => Self::SingBox,
         }
     }
@@ -220,14 +219,7 @@ impl CoreKind {
                     ("XRAY_LOCATION_CERT".into(), dir),
                 ]
             }
-            Self::Mihomo => {
-                let dll = bin_dir.join("meow-wintun.dll");
-                if cfg!(windows) && dll.is_file() {
-                    vec![("MEOW_WINTUN_DLL".into(), dll.display().to_string())]
-                } else {
-                    Vec::new()
-                }
-            }
+            Self::Mihomo => Vec::new(),
         }
     }
 
@@ -251,9 +243,9 @@ impl CoreKind {
         }
     }
 
-    /// Whether this core can serve the given outbound protocol. Xray and meow
-    /// each delegate to their `Protocol::*_supported` counterpart — the
-    /// single source of truth lives on the protocol enum.
+    /// Whether this core can serve the given outbound protocol. Xray and
+    /// mihomo each delegate to their `Protocol::*_supported` counterpart —
+    /// the single source of truth lives on the protocol enum.
     pub fn supports(self, protocol: Protocol) -> bool {
         match self {
             Self::SingBox => true,
@@ -264,10 +256,10 @@ impl CoreKind {
 
     /// Whether this core can serve the NODE as a whole — protocol plus the
     /// per-node shapes a core cannot represent. sing-box serves everything;
-    /// Xray rejects REALITY over non-tcp/grpc (generation-time rule);
-    /// mihomo (canonical Clash Meta, proper uTLS) only lacks our
-    /// ss+shadow-tls detour shape — REALITY/Vision and every vmess
-    /// transport are fine.
+    /// Xray rejects REALITY over non-tcp/grpc and hysteria2 with obfs
+    /// (generation-time rules); mihomo (canonical Clash Meta, proper uTLS)
+    /// only lacks our ss+shadow-tls detour shape — REALITY/Vision and every
+    /// vmess transport are fine.
     pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
         if !self.supports(node.protocol) {
             return false;
@@ -285,6 +277,12 @@ impl CoreKind {
                 )
             {
                 return false;
+            }
+            // Xray's hysteria transport has no obfs field.
+            if let crate::domain::ProtocolConfig::Hysteria2 { obfs, .. } = &node.config {
+                if obfs.as_deref().is_some_and(|o| !o.is_empty()) {
+                    return false;
+                }
             }
         }
         if matches!(
@@ -336,7 +334,7 @@ mod tests {
         );
         assert_eq!(
             CoreKind::Mihomo
-                .parse_version_output("Meow Meta 0.21.0\n")
+                .parse_version_output("Mihomo Meta 0.21.0\n")
                 .as_deref(),
             Some("0.21.0")
         );
@@ -431,10 +429,9 @@ mod tests {
         assert!(CoreKind::Xray.supports(Protocol::Vless));
         assert!(CoreKind::Xray.supports(Protocol::Vmess));
         assert!(CoreKind::Xray.supports(Protocol::WireGuard));
-        assert!(!CoreKind::Xray.supports(Protocol::Hysteria2));
+        assert!(CoreKind::Xray.supports(Protocol::Hysteria2));
         assert!(!CoreKind::Xray.supports(Protocol::Tuic));
         assert!(CoreKind::SingBox.supports(Protocol::Hysteria2));
-        // meow: Clash-family protocols only.
         // mihomo: canonical Clash Meta — near-full coverage.
         assert!(CoreKind::Mihomo.supports(Protocol::Hysteria2));
         assert!(CoreKind::Mihomo.supports(Protocol::AnyTls));
@@ -549,6 +546,41 @@ mod tests {
             reality,
             Some(Transport::Tcp)
         )));
+        // Xray: hysteria2 with obfs rejected (no obfs field in Xray's
+        // hysteria transport); plain hysteria2 fine.
+        let mut hy2_obfs = ProxyNode {
+            id: String::new(),
+            name: "hy2".into(),
+            protocol: Protocol::Hysteria2,
+            server: "example.com".into(),
+            port: 443,
+            tls: Some(TlsConfig {
+                enabled: true,
+                server_name: None,
+                insecure: None,
+                alpn: None,
+                utls_fingerprint: None,
+                reality_public_key: None,
+                reality_short_id: None,
+            }),
+            transport: None,
+            udp: Some(true),
+            config: ProtocolConfig::Hysteria2 {
+                password: "pw".into(),
+                up_mbps: None,
+                down_mbps: None,
+                obfs: Some("salamander".into()),
+                obfs_password: Some("obfspw".into()),
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        };
+        assert!(!CoreKind::Xray.supports_node(&hy2_obfs));
+        if let ProtocolConfig::Hysteria2 { obfs, .. } = &mut hy2_obfs.config {
+            *obfs = None;
+        }
+        assert!(CoreKind::Xray.supports_node(&hy2_obfs));
         // sing-box accepts everything.
         assert!(CoreKind::SingBox.supports_node(&ss_stls));
         assert!(CoreKind::SingBox.supports_node(&vision));
@@ -557,7 +589,7 @@ mod tests {
     #[test]
     fn settings_roundtrip() {
         assert_eq!(CoreKind::parse("xray"), CoreKind::Xray);
-        assert_eq!(CoreKind::parse("meow"), CoreKind::Mihomo);
+        assert_eq!(CoreKind::parse("mihomo"), CoreKind::Mihomo);
         assert_eq!(CoreKind::parse("singbox"), CoreKind::SingBox);
         assert_eq!(CoreKind::parse("garbage"), CoreKind::SingBox);
         assert_eq!(CoreKind::Xray.as_str(), "xray");

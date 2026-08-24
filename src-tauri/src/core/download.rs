@@ -711,6 +711,15 @@ mod tests {
         assert!(!p.mihomo_asset_suffix.is_empty());
     }
 
+    /// Regression: mihomo release assets use the sing-box short suffix
+    /// (`darwin-arm64`), not a Rust target triple. A prior mihomo_asset_suffix
+    /// mismatch made every mihomo download 404.
+    #[test]
+    fn mihomo_asset_suffix_matches_singbox_short_form() {
+        let p = detect_platform().expect("platform");
+        assert_eq!(p.mihomo_asset_suffix, p.asset_suffix);
+    }
+
     #[test]
     fn core_archive_size_hint_is_bounded() {
         assert!(validate_archive_size_hint(0).is_ok());

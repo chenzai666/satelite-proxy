@@ -10,7 +10,7 @@ import { useUiMode, type UiMode } from "./UiModeContext";
 
 function coreOf(raw: string | null | undefined): CoreKind {
   if (raw === "xray") return "xray";
-  if (raw === "mihomo" || raw === "meow") return "mihomo";
+  if (raw === "mihomo") return "mihomo";
   return "singbox";
 }
 

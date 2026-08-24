@@ -46,7 +46,7 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         .collect();
     if supported.is_empty() {
         return Err(AppError::Config(
-            "no Xray-compatible nodes (supports vmess/vless/shadowsocks/trojan/socks5/http/wireguard)".into(),
+            "no Xray-compatible nodes (supports vmess/vless/shadowsocks/trojan/hysteria2(no obfs)/socks5/http/wireguard)".into(),
         ));
     }
 
@@ -331,11 +331,14 @@ fn build_inbounds(opts: &BuildOptions) -> Vec<Value> {
         if opts.tun_ipv6 {
             gateway.push("fdfe:dcba:9876::1/126");
         }
+        // macOS requires a name that parses as `utunN` (probed by the
+        // caller); other platforms accept an arbitrary interface name.
+        let tun_name = opts.tun_interface_name.as_deref().unwrap_or("satelite_tun");
         inbounds.push(json!({
             "tag": "tun-in",
             "protocol": "tun",
             "settings": {
-                "name": "satelite_tun",
+                "name": tun_name,
                 "MTU": 9000,
                 "gateway": gateway,
                 "autoSystemRoutingTable": ["0.0.0.0/0", "::/0"],
@@ -874,6 +877,25 @@ fn protocol_settings(node: &ProxyNode) -> AppResult<(&'static str, Value)> {
                 }),
             )
         }
+        ProtocolConfig::Hysteria2 { obfs, .. } => {
+            // Xray's hysteria transport has no obfs field (only unrelated
+            // masquerade options) — salamander-obfuscated nodes can't be
+            // represented and must fail here rather than silently drop obfs.
+            if obfs.as_deref().is_some_and(|o| !o.is_empty()) {
+                return Err(AppError::Config(
+                    "hysteria2 obfs is not supported by Xray".into(),
+                ));
+            }
+            // HysteriaClientConfig.Build() rejects anything but version 2.
+            (
+                "hysteria",
+                json!({
+                    "version": 2,
+                    "address": node.server,
+                    "port": node.port,
+                }),
+            )
+        }
         ProtocolConfig::Trojan { password } => (
             "trojan",
             json!({
@@ -972,21 +994,37 @@ fn other_name(config: &ProtocolConfig) -> &'static str {
 fn stream_settings(node: &ProxyNode) -> Option<Value> {
     let transport = node.transport.as_ref();
     let tls = node.tls.as_ref().filter(|t| t.enabled);
-    if matches!(transport, None | Some(Transport::Tcp)) && tls.is_none() {
+    let is_hysteria2 = node.protocol == crate::domain::Protocol::Hysteria2;
+    if !is_hysteria2 && matches!(transport, None | Some(Transport::Tcp)) && tls.is_none() {
         return None;
     }
-    let network = match transport {
-        None | Some(Transport::Tcp) => "tcp",
-        Some(Transport::Ws { .. }) => "ws",
-        Some(Transport::Grpc { .. }) => "grpc",
-        Some(Transport::Http { .. }) => "http",
-        Some(Transport::HttpUpgrade { .. }) => "httpupgrade",
+    let network = if is_hysteria2 {
+        "hysteria"
+    } else {
+        match transport {
+            None | Some(Transport::Tcp) => "tcp",
+            Some(Transport::Ws { .. }) => "ws",
+            Some(Transport::Grpc { .. }) => "grpc",
+            Some(Transport::Http { .. }) => "http",
+            Some(Transport::HttpUpgrade { .. }) => "httpupgrade",
+        }
     };
 
     let is_reality = tls.is_some_and(|t| t.reality_public_key.is_some());
 
     let mut stream = Map::new();
     stream.insert("network".into(), json!(network));
+
+    if is_hysteria2 {
+        if let crate::domain::ProtocolConfig::Hysteria2 { password, .. } = &node.config {
+            // HysteriaConfig.Build() (streamSettings.hysteriaSettings) also
+            // requires version: 2, same as the outbound settings above.
+            stream.insert(
+                "hysteriaSettings".into(),
+                json!({ "version": 2, "auth": password }),
+            );
+        }
+    }
 
     match transport {
         Some(Transport::Ws {
@@ -1151,6 +1189,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: true,
+            tun_interface_name: None,
         }
     }
 
@@ -1261,17 +1300,73 @@ mod tests {
 
     #[test]
     fn skips_unsupported_protocols() {
-        let mut bad = vless_node("hy2", None);
-        bad.protocol = Protocol::Hysteria2;
-        bad.config = ProtocolConfig::Hysteria2 {
-            password: "x".into(),
+        let mut bad = vless_node("tuic", None);
+        bad.protocol = Protocol::Tuic;
+        bad.config = ProtocolConfig::Tuic {
+            uuid: "u".into(),
+            password: "p".into(),
+            congestion_control: None,
+            udp_relay_mode: None,
+            zero_rtt_handshake: false,
+        };
+        let good = vless_node("ok", None);
+        let built = build_xray_config(&[bad, good], &default_opts()).expect("build");
+        assert_eq!(built.value["outbounds"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn hysteria2_outbound_shape() {
+        let mut node = vless_node("hy2", None);
+        node.protocol = Protocol::Hysteria2;
+        node.transport = None;
+        node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("sni.example.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        node.config = ProtocolConfig::Hysteria2 {
+            password: "secret".into(),
             up_mbps: None,
             down_mbps: None,
             obfs: None,
             obfs_password: None,
         };
+        let built = build_xray_config(&[node], &default_opts()).expect("build");
+        let outbound = &built.value["outbounds"][0];
+        assert_eq!(outbound["protocol"], "hysteria");
+        assert_eq!(outbound["settings"]["version"], 2);
+        assert_eq!(outbound["streamSettings"]["network"], "hysteria");
+        assert_eq!(outbound["streamSettings"]["hysteriaSettings"]["version"], 2);
+        assert_eq!(
+            outbound["streamSettings"]["hysteriaSettings"]["auth"],
+            "secret"
+        );
+        assert_eq!(outbound["streamSettings"]["security"], "tls");
+        assert_eq!(
+            outbound["streamSettings"]["tlsSettings"]["serverName"],
+            "sni.example.com"
+        );
+    }
+
+    #[test]
+    fn hysteria2_with_obfs_is_skipped() {
+        let mut node = vless_node("hy2-obfs", None);
+        node.protocol = Protocol::Hysteria2;
+        node.transport = None;
+        node.config = ProtocolConfig::Hysteria2 {
+            password: "secret".into(),
+            up_mbps: None,
+            down_mbps: None,
+            obfs: Some("salamander".into()),
+            obfs_password: Some("obfspw".into()),
+        };
         let good = vless_node("ok", None);
-        let built = build_xray_config(&[bad, good], &default_opts()).expect("build");
+        let built = build_xray_config(&[node, good], &default_opts()).expect("build");
+        // hy2-obfs skipped; only "ok" + direct + block remain.
         assert_eq!(built.value["outbounds"].as_array().unwrap().len(), 3);
     }
 

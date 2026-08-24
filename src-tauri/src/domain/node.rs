@@ -83,6 +83,10 @@ impl Protocol {
     /// Whether the Xray core can serve this protocol as an outbound. Used to
     /// hide unusable nodes from listings while Xray is the active core
     /// (single source of truth — `CoreKind::supports` delegates here).
+    ///
+    /// Hysteria2 is protocol-level supported (Xray's `hysteria` transport,
+    /// forced to `version: 2`), but nodes using salamander obfs are rejected
+    /// per-node in `config/xray.rs` — Xray has no field for it.
     pub fn xray_supported(self) -> bool {
         matches!(
             self,
@@ -90,6 +94,7 @@ impl Protocol {
                 | Self::Vmess
                 | Self::Vless
                 | Self::Trojan
+                | Self::Hysteria2
                 | Self::Socks5
                 | Self::Http
                 | Self::WireGuard

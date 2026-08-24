@@ -218,7 +218,7 @@ pub fn build_mihomo_config(
     );
 
     let yaml = serde_yaml::to_string(&root)
-        .map_err(|e| AppError::Config(format!("serialize meow config: {e}")))?;
+        .map_err(|e| AppError::Config(format!("serialize mihomo config: {e}")))?;
     Ok(BuiltMihomoConfig {
         yaml,
         outbound_tags: tags,
@@ -346,7 +346,7 @@ fn build_rules(
                     match builtin_remote_mihomo_rule(set, MAIN_GROUP) {
                         Some(s) => rules.push(s),
                         None => crate::app_log::warn(
-                            "meow_config",
+                            "mihomo_config",
                             format!(
                                 "remote rule set '{}' uses the sing-box .srs format and is skipped under mihomo",
                                 set.name
@@ -488,8 +488,8 @@ fn builtin_remote_mihomo_rule(set: &RuleSet, main_target: &str) -> Option<String
 }
 
 /// Explicit private-range bypass (GEOIP,private is a v2ray/sing-box geodata
-/// category that MaxMind mmdb — meow's geoip source — does not carry).
-/// 198.18.0.0/15 (fake-ip) is intentionally absent: meow terminates fake-ip
+/// category that MaxMind mmdb — mihomo's geoip source — does not carry).
+/// 198.18.0.0/15 (fake-ip) is intentionally absent: mihomo terminates fake-ip
 /// internally before rule matching.
 fn bypass_lan_rules() -> Vec<String> {
     const V4: [&str; 9] = [
@@ -523,7 +523,7 @@ fn bypass_lan_rules() -> Vec<String> {
 /// `nameserver` (default resolver by dns_final), `fallback` (the other
 /// side), `nameserver-policy` (per-domain classification from DNS rules and
 /// rule-set dns strategies), `hosts`, and fake-ip when enabled — forced when
-/// tun is on (meow requires it; the user's stored DNS settings are not
+/// tun is on (mihomo requires it; the user's stored DNS settings are not
 /// written back, so turning tun off restores them).
 fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) -> Mapping {
     let mut policy_remote: Vec<String> = Vec::new();
@@ -603,7 +603,7 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
 
     let use_fakeip = opts.tun_enabled || opts.dns.fake_ip.enabled;
     let dns_final = opts.dns.normalize_dns_final();
-    // Remote DoH egress goes through the main proxy group (meow's `#adapter`
+    // Remote DoH egress goes through the main proxy group (mihomo's `#adapter`
     // fragment on DNS entries) — mirroring sing-box's remote-resolver detour
     // and Xray's dns-module routing. Direct egress hits the classic
     // chicken-and-egg: the DoH endpoints are unreachable without a proxy,
@@ -640,7 +640,7 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
     // never the DoH default or the policy classification. Without this,
     // `dns_final=remote` makes url-test health checks dial blocked DoH
     // endpoints first, which need a working proxy to reach, which needs
-    // its hostname resolved first (chicken-and-egg → "meow-dns resolver:
+    // its hostname resolved first (chicken-and-egg → "mihomo-dns resolver:
     // no address for <node-host>" WARNs).
     dns.insert(str_yaml("proxy-server-nameserver"), dns_seq(&domestic_pool));
     dns.insert(str_yaml("nameserver"), dns_seq(default_ns));
@@ -1104,8 +1104,8 @@ mod tests {
         .with_computed_id()
     }
 
-    /** Non-REALITY vless node — the shape meow accepts (vless_node carries
-     * REALITY, which meow filters out since the handshake incompatibility). */
+    /** Non-REALITY vless node — the shape mihomo accepts (vless_node carries
+     * REALITY, which mihomo filters out since the handshake incompatibility). */
     fn plain_node(name: &str) -> ProxyNode {
         let mut n = vless_node(name, None);
         n.tls = Some(TlsConfig {
@@ -1162,6 +1162,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: true,
+            tun_interface_name: None,
         }
     }
 
@@ -1214,7 +1215,7 @@ mod tests {
 
     #[test]
     fn vless_reality_flow_shape() {
-        // Vision+REALITY is KEPT under meow (field-audited working; dead
+        // Vision+REALITY is KEPT under mihomo (field-audited working; dead
         // REALITY servers surface as through-kernel probe timeouts) — the
         // node maps with its flow, reality-opts and fingerprint.
         let built = build_mihomo_config(
@@ -1309,7 +1310,7 @@ mod tests {
 
     #[test]
     fn vmess_non_ws_transport_is_kept() {
-        // mihomo serves vmess over every transport (meow was tcp/ws only).
+        // mihomo serves vmess over every transport (early Clash Meta was tcp/ws only).
         let mut node = vless_node("vmess-grpc", None);
         node.protocol = Protocol::Vmess;
         node.config = ProtocolConfig::Vmess {
@@ -1661,7 +1662,7 @@ mod tests {
             rules.contains(&"IP-CIDR6,fe80::/10,DIRECT,no-resolve".to_string()),
             "v6 private bypass missing: {rules:?}"
         );
-        // fake-ip range must NOT be bypassed (meow terminates it internally).
+        // fake-ip range must NOT be bypassed (mihomo terminates it internally).
         assert!(!rules.iter().any(|r| r.contains("198.18.0.0/15")));
         assert!(rules.contains(&"AND,((NETWORK,udp),(DST-PORT,443)),REJECT".to_string()));
     }
@@ -1787,7 +1788,7 @@ mod tests {
         assert_eq!(nameserver[1].as_str(), Some("https://8.8.8.8/dns-query"));
     }
 
-    /// mihomo supports the `system` resolver natively (meow did not) —
+    /// mihomo supports the `system` resolver natively —
     /// local classification and dns_final=local emit it directly.
     #[test]
     fn dns_local_classification_uses_system_resolver() {
@@ -1830,15 +1831,15 @@ mod tests {
         assert_eq!(listeners[0]["listen"].as_str(), Some("127.0.0.1"));
     }
 
-    /// `cargo test --lib config::meow::tests::live_config_validates -- --ignored`
-    /// Validates a generated config with the real meow binary (`-t`). The
+    /// `cargo test --lib config::mihomo::tests::live_config_validates -- --ignored`
+    /// Validates a generated config with the real mihomo binary (`-t`). The
     /// config deliberately avoids GEOIP/GEOSITE rules so the empty temp home
     /// dir needs no geodata.
     #[test]
-    #[ignore = "needs the bundled dev meow binary"]
+    #[ignore = "needs the bundled dev mihomo binary"]
     fn live_config_validates() {
         let bin = crate::core::find_bundled_core(None, CoreKind::Mihomo)
-            .expect("bundled meow binary — run the fetch-bundled-meow script");
+            .expect("bundled mihomo binary — run the fetch-bundled-mihomo script");
         let mut node = plain_node("live");
         node.server = "127.0.0.1".into();
         node.tls = Some(TlsConfig {
@@ -1915,7 +1916,7 @@ mod tests {
         set.strategy = RuleSetStrategy::Smart;
         // Reproduce the field-reported failure shape: a builtin remote set
         // with Local DNS strategy puts a `geosite:cn` key into
-        // nameserver-policy — the emitted value must be a resolver meow
+        // nameserver-policy — the emitted value must be a resolver mihomo
         // actually accepts (it has no `system` scheme).
         let mut geo_set = crate::domain::build_builtin_remote_set(
             crate::domain::builtin_remote_spec("system-geosite-cn").expect("spec"),
@@ -1934,7 +1935,7 @@ mod tests {
         let built = build_mihomo_config(&[node, ws], &opts).expect("build");
 
         let tmp = std::env::temp_dir().join(format!(
-            "satelite-meow-live-{}",
+            "satelite-mihomo-live-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1945,8 +1946,8 @@ mod tests {
         let config = config_dir.join("active.yaml");
         std::fs::write(&config, &built.yaml).unwrap();
 
-        // The geo_set's GEOSITE rule needs the geodata pair in the meow
-        // home; stage the bundled dev copy (meow's own auto-download dials
+        // The geo_set's GEOSITE rule needs the geodata pair in the mihomo
+        // home; stage the bundled dev copy (mihomo's own auto-download dials
         // through the not-yet-started test proxies and would fail).
         let home = tmp.join("mihomo");
         let _ = std::fs::create_dir_all(&home);
@@ -1960,7 +1961,7 @@ mod tests {
         }
 
         crate::core::manager::CoreManager::check_config(CoreKind::Mihomo, &bin, &config)
-            .expect("meow -t accepts the generated config");
+            .expect("mihomo -t accepts the generated config");
         let _ = std::fs::remove_dir_all(tmp);
     }
 }

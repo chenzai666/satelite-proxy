@@ -666,6 +666,7 @@ pub async fn generate_singbox_config(
             tun_ipv6: settings.tun_ipv6_enabled,
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
+            tun_interface_name: None,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
@@ -786,6 +787,7 @@ pub async fn preview_singbox_config(
             tun_ipv6: settings.tun_ipv6_enabled,
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
+            tun_interface_name: None,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
