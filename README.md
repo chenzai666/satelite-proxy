@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/zn0wii/satelite-proxy/stargazers"><img src="https://img.shields.io/github/stars/zn0wii/satelite-proxy?style=social" alt="Stars" /></a>
+  <a href="https://github.com/chenzai666/satelite-proxy/stargazers"><img src="https://img.shields.io/github/stars/chenzai666/satelite-proxy?style=social" alt="Stars" /></a>
   &nbsp;
   <img src="https://img.shields.io/badge/macOS-Apple%20Silicon%20%7C%20Intel-111111?logo=apple&logoColor=white" alt="macOS" />
   <img src="https://img.shields.io/badge/Windows-x64-0078D4?logo=windows&logoColor=white" alt="Windows" />
@@ -140,7 +140,7 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 
 也可以直接推送到 `main` 分支，GitHub Actions 会自动构建 Windows NSIS 安装包。构建完成后进入仓库的 **Actions → Windows 构建**，在任务页面底部下载 `Satelite-Windows-*` 构建产物；云端产物保留 14 天，也支持在 Actions 页面手动触发构建。
 
-正式发布时推送与应用版本一致、以 `v` 开头的标签（例如 `v1.0.14`），工作流会在构建和测试成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
+正式发布时推送与应用版本一致、以 `v` 开头的标签（例如 `v1.0.15`），工作流会在构建和测试成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
 
 ### 局域网代理
 
@@ -166,7 +166,7 @@ TUIC 节点在订阅未提供 ALPN 时会自动补充标准的 `h3`。如果可�
 
 ---
 
-用着顺手的话，点一颗 [Star](https://github.com/zn0wii/satelite-proxy)，卫星会飞得更稳一点。
+用着顺手的话，点一颗 [Star](https://github.com/chenzai666/satelite-proxy)，卫星会飞得更稳一点。
 
 ## 友情链接
 

@@ -278,7 +278,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 | `ConnectionsPage` (215) | 1.5s revision-delta 增量轮询（`list_connection_changes` + `applyConnectionChanges`） |
 | `RequestsPage` (258) / `FailuresPage` (510) | 已关闭请求/失败请求日志；Failures 可一键生成封锁规则集 |
 | `LogsPage` (207) | 应用日志查看（1.2s 增量，级别过滤+搜索） |
-| `SettingsPage` (1456) | 6 tab：app/ports/rules/dns/hosts/core；内嵌 Rules/Dns/Hosts 页；三内核行（各自版本/下载/更新，进度事件按 kind 分流）、更新检查、诊断、托盘图标选择、赞助二维码（`DecryptReveal`） |
+| `SettingsPage` | 6 tab：app/ports/rules/dns/hosts/core；内嵌 Rules/Dns/Hosts 页；三内核行（各自版本/下载/更新，进度事件按 kind 分流）、更新检查、诊断、托盘图标选择和项目地址 |
 | `RulesPage` (2145) | ★ 最大页面：规则集侧栏+编辑器、本地/远程集、策略/DNS 策略、route.final、拖拽排序、远程规则项浏览；geodata 内核（Xray/mihomo）下内置 3 条显示为 geodata 卡（来源/文件按内核区分，更新走 `refresh_geodata(kind)`），自建 .srs 置灰 |
 | `DnsPage` (329) / `HostsPage` (463) | DNS/Hosts 管理，通常内嵌于 Settings |
 
@@ -290,7 +290,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 - 设计系统：`GlassButton`、`GlassSeg`（区分用户点击与状态重绘才做动画）、`GlassSwitch(+Control)`、`SolidSelect`（**自绘下拉：macOS WKWebView 原生 select 无法主题化**，SolidSelect.tsx:26 注释）。
 - 首页视觉：`HeroVisual`（按 `heroStyle` 分发）→ `ParticleSphere`（three.js，lazy）/ `FaceMark`（Canvas2D 笑脸）/ 经典轨道。
-- 弹窗：`AddConfigModal`（url/file/paste/手动节点/sing-box 五种来源）、`EditLocalNodesModal`、`NodeDraftFields`（16 协议条件字段表单，与 `ManualNodeDraft` 对应）、`AccentColorPickerModal`（自定义主题色取色器；`theme/accents.ts` 支持 `#rrggbb` 自定义 accent，Rust `update_settings` 同步放行）、`DecryptReveal`。
+- 弹窗：`AddConfigModal`（url/file/paste/手动节点/sing-box 五种来源）、`EditLocalNodesModal`、`NodeDraftFields`（16 协议条件字段表单，与 `ManualNodeDraft` 对应）、`AccentColorPickerModal`（自定义主题色取色器；`theme/accents.ts` 支持 `#rrggbb` 自定义 accent，Rust `update_settings` 同步放行）。
 - hooks：
   - `useVisibleInterval` — **通用轮询原语**：页面隐藏暂停、回调不重叠、可见即重发；
   - `useVirtualRange` — 基于 `.main` 滚动容器的列表虚拟化（支持网格 itemsPerRow）；

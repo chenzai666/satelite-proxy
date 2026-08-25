@@ -15,8 +15,8 @@ use std::sync::Arc;
 use tar::Archive;
 
 const APP_GITHUB_LATEST: &str =
-    "https://api.github.com/repos/zn0wii/satelite-proxy/releases/latest";
-const APP_RELEASES_PAGE: &str = "https://github.com/zn0wii/satelite-proxy/releases/latest";
+    "https://api.github.com/repos/chenzai666/satelite-proxy/releases/latest";
+const APP_RELEASES_PAGE: &str = "https://github.com/chenzai666/satelite-proxy/releases/latest";
 const MAX_CORE_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 
 fn github_latest_url(kind: CoreKind) -> String {
@@ -131,7 +131,7 @@ async fn fetch_release_json(url: &str, proxy_url: Option<&str>) -> AppResult<GhR
         .map_err(|e| AppError::Core(format!("parse github release: {e}")))
 }
 
-/// Latest release tag of the app itself (zn0wii/satelite-proxy), used by the
+/// Latest release tag of the app itself (chenzai666/satelite-proxy), used by the
 /// Settings version tab to flag app updates. Tag only — no asset picking,
 /// and unlike the core check there is no pinned fallback: if the API is
 /// unreachable the caller surfaces the error instead of guessing.
@@ -295,17 +295,17 @@ mod app_update_tests {
     fn extracts_tag_from_absolute_url() {
         assert_eq!(
             extract_tag_from_release_url(
-                "https://github.com/zn0wii/satelite-proxy/releases/tag/1.0.9"
+                "https://github.com/chenzai666/satelite-proxy/releases/tag/1.0.15"
             )
             .unwrap(),
-            "v1.0.9"
+            "v1.0.15"
         );
     }
 
     #[test]
     fn extracts_tag_from_relative_url() {
         assert_eq!(
-            extract_tag_from_release_url("/zn0wii/satelite-proxy/releases/tag/v1.1.0").unwrap(),
+            extract_tag_from_release_url("/chenzai666/satelite-proxy/releases/tag/v1.1.0").unwrap(),
             "v1.1.0"
         );
     }
@@ -314,7 +314,7 @@ mod app_update_tests {
     fn strips_query_string() {
         assert_eq!(
             extract_tag_from_release_url(
-                "https://github.com/zn0wii/satelite-proxy/releases/tag/1.2.0?foo=bar"
+                "https://github.com/chenzai666/satelite-proxy/releases/tag/1.2.0?foo=bar"
             )
             .unwrap(),
             "v1.2.0"
@@ -323,7 +323,9 @@ mod app_update_tests {
 
     #[test]
     fn rejects_urls_without_a_tag_segment() {
-        assert!(extract_tag_from_release_url("https://github.com/zn0wii/satelite-proxy").is_err());
+        assert!(
+            extract_tag_from_release_url("https://github.com/chenzai666/satelite-proxy").is_err()
+        );
     }
 }
 
@@ -578,6 +580,20 @@ fn tar_binary_matches(kind: CoreKind, name: &str) -> bool {
     name == bin || name == base
 }
 
+/// Binary file names accepted inside release zips. sing-box and Xray use
+/// their canonical binary names, while Mihomo's official Windows archive
+/// currently contains `mihomo-windows-<arch>.exe` rather than `mihomo.exe`.
+fn zip_binary_matches(kind: CoreKind, name: &str) -> bool {
+    if name.eq_ignore_ascii_case(kind.binary_name()) {
+        return true;
+    }
+    if kind != CoreKind::Mihomo {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("mihomo-windows-") && lower.ends_with(".exe")
+}
+
 fn extract_binary_from_tar_gz(kind: CoreKind, archive: &Path, dest: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open tar.gz: {e}")))?;
     let dec = GzDecoder::new(file);
@@ -627,7 +643,6 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open zip: {e}")))?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| AppError::Core(format!("zip open: {e}")))?;
-    let want = kind.binary_name();
     let mut target_index = None;
     let mut dat_indexes = Vec::new();
     for i in 0..zip.len() {
@@ -639,12 +654,7 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or_default();
-        let stem_matches = file_name
-            .strip_suffix(want.strip_suffix(".exe").unwrap_or(want))
-            .is_some()
-            || file_name == want
-            || tar_binary_matches(kind, file_name);
-        if stem_matches {
+        if zip_binary_matches(kind, file_name) {
             target_index = Some(i);
         } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat")
         {
@@ -718,6 +728,25 @@ mod tests {
     fn mihomo_asset_suffix_matches_singbox_short_form() {
         let p = detect_platform().expect("platform");
         assert_eq!(p.mihomo_asset_suffix, p.asset_suffix);
+    }
+
+    #[test]
+    fn official_windows_zip_binary_names_are_recognized() {
+        assert!(zip_binary_matches(
+            CoreKind::Mihomo,
+            "mihomo-windows-amd64.exe"
+        ));
+        assert!(zip_binary_matches(
+            CoreKind::Mihomo,
+            "mihomo-windows-arm64.exe"
+        ));
+        assert!(zip_binary_matches(CoreKind::Xray, "xray.exe"));
+        assert!(zip_binary_matches(CoreKind::SingBox, "sing-box.exe"));
+        assert!(!zip_binary_matches(CoreKind::Mihomo, "mihomo.exe.dgst"));
+        assert!(!zip_binary_matches(
+            CoreKind::Xray,
+            "Xray-windows-64.zip.dgst"
+        ));
     }
 
     #[test]
