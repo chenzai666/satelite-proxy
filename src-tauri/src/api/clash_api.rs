@@ -543,6 +543,44 @@ impl RequestRecord {
 #[cfg(test)]
 mod parse_tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn close_all_connections_uses_authenticated_delete() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake clash api");
+        let port = listener.local_addr().expect("fake api address").port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept close request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            loop {
+                let read = socket.read(&mut chunk).expect("read close request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).expect("http request text");
+            assert!(request.starts_with("DELETE /connections HTTP/1.1\r\n"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-secret\r\n"));
+            socket
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write close response");
+        });
+
+        ClashApi::new("127.0.0.1", port, "test-secret")
+            .close_all_connections()
+            .expect("close all connections");
+        server.join().expect("fake clash api server");
+    }
 
     #[test]
     fn connections_json_numeric_ports() {

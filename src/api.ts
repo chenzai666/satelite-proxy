@@ -689,6 +689,10 @@ export function listConnectionChanges(sinceRevision?: number | null) {
   });
 }
 
+export function closeAllConnections() {
+  return invoke<void>("close_all_connections");
+}
+
 export interface RequestBatch {
   entries: ConnectionView[];
   cursor: number;

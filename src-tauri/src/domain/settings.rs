@@ -250,7 +250,7 @@ pub struct AppSettings {
     /// Start proxy core automatically after app launch.
     #[serde(default)]
     pub auto_start_proxy: bool,
-    /// Close all connections after switching node.
+    /// Interrupt existing selector connections after switching node.
     #[serde(default = "default_true")]
     pub close_connections_on_switch: bool,
     /// UI language: `zh` | `en` (sidebar labels stay English).

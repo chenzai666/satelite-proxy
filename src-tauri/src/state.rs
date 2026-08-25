@@ -200,7 +200,7 @@ mod kernel_selection_poll_tests {
         state.lock_runtime().api = Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
 
         let (settings, was_kernel, selected_live) = state
-            .select_current_node_serialized("node-a", true, true)
+            .select_current_node_serialized("node-a", true)
             .expect("kernel-mode manual select must not touch the urltest group");
         assert!(!selected_live);
         assert!(was_kernel);
@@ -373,7 +373,7 @@ mod kernel_selection_poll_tests {
 
         let operation_state = Arc::clone(&state);
         let operation = std::thread::spawn(move || {
-            operation_state.select_group_live_serialized("proxy", "node-a", false)
+            operation_state.select_group_live_serialized("proxy", "node-a")
         });
         seen_rx
             .recv_timeout(Duration::from_secs(2))
@@ -998,15 +998,26 @@ impl AppState {
         Ok(())
     }
 
+    /// Close every active connection through the current Clash API session.
+    /// This is intentionally serialized with core transitions so the request
+    /// cannot be sent to an API endpoint that is being replaced.
+    pub fn close_all_connections_serialized(&self) -> AppResult<()> {
+        let _operation = self.begin_core_transition()?;
+        let api = {
+            let runtime = self.lock_runtime();
+            runtime.clash_api_clone()
+        }
+        .ok_or_else(|| crate::error::AppError::Core("内核未启动，无法关闭连接".into()))?;
+
+        api.close_all_connections()?;
+        app_log::info("connections", "all active connections closed");
+        Ok(())
+    }
+
     /// Run a Clash selector update without holding `runtime` across HTTP I/O.
     /// The transition guard prevents a core restart from replacing the API
     /// endpoint between cloning the handle and applying the selection.
-    pub fn select_group_live_serialized(
-        &self,
-        group: &str,
-        node_tag: &str,
-        close_connections: bool,
-    ) -> AppResult<bool> {
+    pub fn select_group_live_serialized(&self, group: &str, node_tag: &str) -> AppResult<bool> {
         let _operation = self.begin_core_transition()?;
         let api = {
             let runtime = self.lock_runtime();
@@ -1017,9 +1028,10 @@ impl AppState {
         };
 
         api.select_proxy(group, node_tag)?;
-        if close_connections {
-            let _ = api.close_all_connections();
-        }
+        app_log::info(
+            "connections",
+            format!("selector {group} switched to {node_tag}"),
+        );
         Ok(true)
     }
 
@@ -1030,10 +1042,9 @@ impl AppState {
         &self,
         node_id: &str,
         manual: bool,
-        close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
-        let (tag, should_close, kernel_auto) = self.with_store(|store| {
+        let (tag, kernel_auto) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
                     "自写配置模式下无法切换节点".into(),
@@ -1047,7 +1058,6 @@ impl AppState {
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
             Ok((
                 crate::config::outbound_tag(node),
-                close_if_enabled && store.settings.close_connections_on_switch,
                 manual && store.settings.auto_select.is_kernel(),
             ))
         })?;
@@ -1061,9 +1071,7 @@ impl AppState {
             false
         } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
-            if should_close {
-                let _ = api.close_all_connections();
-            }
+            app_log::info("connections", format!("main selector switched to {tag}"));
             true
         } else {
             false

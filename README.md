@@ -51,7 +51,7 @@
 - **DNS 与 Hosts**：DoH / DoT / FakeIP，DNS 规则集、系统 Hosts、默认解析器，还能测解析
 - **系统代理 / TUN**：系统代理一键接管；TUN（system / gvisor / mixed）；绕过局域网、可选 TUN IPv6、可拦 QUIC
 - **端口**：mixed / Clash API、多监听、允许局域网
-- **连接与流量**：活跃连接、已关闭、失败请求、流量走向，自动解析进程名
+- **连接与流量**：活跃连接、已关闭、失败请求、流量走向，自动解析进程名；切换节点可自动中断旧连接，流量页也可手动关闭全部连接
 - **托盘常驻**：关窗进托盘，开机启动、静默启动、可选托盘图标；内核在后台，窗口可消失
 - **内核自管**：自动拉取并更新 sing-box，不用自己找二进制、对版本
 - **中英双语文案**，浅色 / 深色，多种主题色
@@ -139,7 +139,7 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 
 也可以直接推送到 `main` 分支，GitHub Actions 会自动构建 Windows NSIS 安装包。构建完成后进入仓库的 **Actions → Windows 构建**，在任务页面底部下载 `Satelite-Windows-*` 构建产物；云端产物保留 14 天，也支持在 Actions 页面手动触发构建。
 
-正式发布时推送与应用版本一致、以 `v` 开头的标签（例如 `v1.0.12`），工作流会在构建和测试成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
+正式发布时推送与应用版本一致、以 `v` 开头的标签（例如 `v1.0.13`），工作流会在构建和测试成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
 
 ### 局域网代理
 

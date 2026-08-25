@@ -292,7 +292,7 @@ export interface AppSettings {
   silent_start?: boolean;
   /** Auto-start proxy after app launch. */
   auto_start_proxy?: boolean;
-  /** Close all connections when switching node. */
+  /** Interrupt existing selector connections when switching node. */
   close_connections_on_switch?: boolean;
   /** UI language: zh | en (sidebar stays English). */
   locale?: string;

@@ -1,6 +1,6 @@
 use crate::config::{
-    active_config_path, apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
-    write_active_config, BuildOptions,
+    active_config_path, apply_udp_node_compatibility, build_singbox_config_with_connection_policy,
+    generate_api_secret, write_active_config, BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
@@ -101,6 +101,7 @@ pub fn update_settings(
     let mut route_final_changed = false;
     let mut find_process_changed = false;
     let mut bypass_lan_changed = false;
+    let mut close_connections_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -188,7 +189,10 @@ pub fn update_settings(
                 store.settings.auto_start_proxy = v;
             }
             if let Some(v) = close_connections_on_switch {
-                store.settings.close_connections_on_switch = v;
+                if store.settings.close_connections_on_switch != v {
+                    close_connections_changed = true;
+                    store.settings.close_connections_on_switch = v;
+                }
             }
             if let Some(loc) = locale {
                 let loc = loc.trim().to_ascii_lowercase();
@@ -299,6 +303,7 @@ pub fn update_settings(
     let need_restart = route_final_changed
         || find_process_changed
         || bypass_lan_changed
+        || close_connections_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -317,7 +322,7 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
         let (settings, was_kernel, _) = state
-            .select_current_node_serialized(&node_id, true, true)
+            .select_current_node_serialized(&node_id, true)
             .map_err(|e| e.to_string())?;
         if was_kernel {
             crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
@@ -613,7 +618,7 @@ pub async fn generate_singbox_config(
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
-        let built = build_singbox_config(
+        let built = build_singbox_config_with_connection_policy(
             &nodes,
             &BuildOptions {
                 mixed_port: settings.mixed_port,
@@ -637,6 +642,7 @@ pub async fn generate_singbox_config(
                 block_quic: settings.block_quic,
                 bypass_lan: settings.bypass_lan,
             },
+            settings.close_connections_on_switch,
         )
         .map_err(|e| e.to_string())?;
         let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
@@ -703,7 +709,7 @@ pub async fn preview_singbox_config(
     let path = active_config_path(&state.app_data_dir);
     tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
-        let built = build_singbox_config(
+        let built = build_singbox_config_with_connection_policy(
             &nodes,
             &BuildOptions {
                 mixed_port: settings.mixed_port,
@@ -727,6 +733,7 @@ pub async fn preview_singbox_config(
                 block_quic: settings.block_quic,
                 bypass_lan: settings.bypass_lan,
             },
+            settings.close_connections_on_switch,
         )
         .map_err(|e| e.to_string())?;
         let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();

@@ -235,9 +235,9 @@ const en = {
   "settings.autoStartProxy": "Auto-start proxy",
   "settings.autoStartProxyDesc":
     "Start the core automatically when the app launches",
-  "settings.closeOnSwitch": "Close connections on switch",
+  "settings.closeOnSwitch": "Migrate connections on switch",
   "settings.closeOnSwitchDesc":
-    "When changing node, drop existing connections so they rebuild via the new outbound",
+    "Interrupt connections using the changed selector so they rebuild via the new outbound",
   "settings.findProcess": "Resolve process name",
   "settings.findProcessDesc":
     "Show the originating app for each connection in the traffic page. Disable to save CPU",
@@ -397,6 +397,9 @@ const en = {
   "conn.desc": "Active connections · ~1s refresh",
   "conn.filter": "Filter destination / node / process…",
   "conn.active": "active {n}",
+  "conn.closeAll": "Close all",
+  "conn.closingAll": "Closing…",
+  "conn.closeAllConfirm": "Close all active connections? Apps will reconnect automatically.",
   "conn.needStart": "Start the proxy on Overview to stream live connections here.",
   "conn.empty": "No active connections",
   "conn.dest": "Destination",
@@ -941,9 +944,9 @@ const zh: Record<MessageKey, string> = {
   "settings.silentStartDesc": "启动时不显示主界面，仅保留托盘",
   "settings.autoStartProxy": "自动运行",
   "settings.autoStartProxyDesc": "应用启动后自动启动代理核心",
-  "settings.closeOnSwitch": "切换节点后关闭连接",
+  "settings.closeOnSwitch": "切换节点后迁移连接",
   "settings.closeOnSwitchDesc":
-    "更换当前节点时断开已有连接，按新节点重建",
+    "仅中断使用该选择器的已有连接，并通过新节点重新建立",
   "settings.findProcess": "解析进程名",
   "settings.findProcessDesc": "在流量页显示每条连接的发起程序；关闭可节省 CPU 占用",
   "settings.toggleSaveNote": "开关即时保存。",
@@ -1096,6 +1099,9 @@ const zh: Record<MessageKey, string> = {
   "conn.desc": "仅当前活跃连接 · 约 1s 刷新",
   "conn.filter": "过滤目标 / 节点 / 进程…",
   "conn.active": "活跃 {n}",
+  "conn.closeAll": "关闭全部连接",
+  "conn.closingAll": "正在关闭…",
+  "conn.closeAllConfirm": "关闭全部活跃连接？应用会自动重新建立连接。",
   "conn.needStart": "请先在概览启动代理，之后这里会显示当前连接。",
   "conn.empty": "暂无活跃连接",
   "conn.dest": "目标",

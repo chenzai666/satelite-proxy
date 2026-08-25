@@ -155,6 +155,17 @@ pub fn apply_udp_node_compatibility(nodes: &mut [ProxyNode], allow_insecure: boo
 
 /// Convert nodes into a complete sing-box config document.
 pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
+    build_singbox_config_with_connection_policy(nodes, opts, true)
+}
+
+/// Build a generated config while preserving the user's connection policy.
+/// The compatibility wrapper defaults to interrupting stale connections;
+/// runtime call sites pass the persisted setting explicitly.
+pub fn build_singbox_config_with_connection_policy(
+    nodes: &[ProxyNode],
+    opts: &BuildOptions,
+    interrupt_exist_connections: bool,
+) -> AppResult<BuiltConfig> {
     if nodes.is_empty() {
         return Err(AppError::Config(
             "no nodes available; import a subscription first".into(),
@@ -212,7 +223,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "interval": "5m",
             "tolerance": 50,
             "idle_timeout": "30m",
-            "interrupt_exist_connections": false,
+            "interrupt_exist_connections": interrupt_exist_connections,
         }));
     } else {
         let mut selector_outbounds = tags.clone();
@@ -222,6 +233,7 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
             "tag": "proxy",
             "outbounds": selector_outbounds,
             "default": selected_tag,
+            "interrupt_exist_connections": interrupt_exist_connections,
         }));
     }
     let use_cliproxy_fallback = matches!(opts.outbound_mode, OutboundMode::Rule);
@@ -243,7 +255,12 @@ pub fn build_singbox_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResu
         }));
     }
     // Per-rule smart selectors (keyword-filtered node pools).
-    outbounds.extend(build_smart_rule_selectors(&effective_rules, nodes, &tags));
+    outbounds.extend(build_smart_rule_selectors(
+        &effective_rules,
+        nodes,
+        &tags,
+        interrupt_exist_connections,
+    ));
     outbounds.extend(node_outbounds);
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
     outbounds.push(json!({ "type": "block", "tag": "block" }));
@@ -824,7 +841,12 @@ pub fn smart_pool_nodes(r: &Rule, nodes: &[ProxyNode]) -> Vec<ProxyNode> {
         .collect()
 }
 
-fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Vec<Value> {
+fn build_smart_rule_selectors(
+    rules: &[Rule],
+    nodes: &[ProxyNode],
+    tags: &[String],
+    interrupt_exist_connections: bool,
+) -> Vec<Value> {
     use crate::domain::RuleTarget;
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -851,6 +873,7 @@ fn build_smart_rule_selectors(rules: &[Rule], nodes: &[ProxyNode], tags: &[Strin
             "tag": group,
             "outbounds": pool,
             "default": default,
+            "interrupt_exist_connections": interrupt_exist_connections,
         }));
     }
     out
@@ -2065,32 +2088,29 @@ mod tests {
     #[test]
     fn builds_selector() {
         let nodes = vec![sample_ss()];
-        let built = build_singbox_config(
-            &nodes,
-            &BuildOptions {
-                mixed_port: 2080,
-                allow_lan: false,
-                api_port: 19090,
-                extra_inbounds: vec![],
-                api_secret: "test".into(),
-                current_node_id: None,
-                log_level: "info".into(),
-                rules: vec![],
-                rule_sets: vec![],
-                tun_enabled: false,
-                tun_stack: "mixed".into(),
-                dns: DnsSettings::default(),
-                outbound_mode: OutboundMode::Rule,
-                route_final: "proxy".into(),
-                auto_select: crate::domain::AutoSelectMode::Off,
-                probe_url: "https://www.gstatic.com/generate_204".into(),
-                find_process: true,
-                tun_ipv6: false,
-                block_quic: false,
-                bypass_lan: false,
-            },
-        )
-        .unwrap();
+        let options = BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: false,
+        };
+        let built = build_singbox_config(&nodes, &options).unwrap();
         assert_eq!(built.outbound_tags.len(), 1);
         assert_eq!(built.selected_tag, "node-aabbccddeeff0011");
         let inbounds = built.value["inbounds"].as_array().unwrap();
@@ -2131,6 +2151,17 @@ mod tests {
             .find(|o| o["tag"] == "proxy")
             .unwrap();
         assert_eq!(proxy["type"], "selector");
+        assert_eq!(proxy["interrupt_exist_connections"], true);
+
+        let keep_existing =
+            build_singbox_config_with_connection_policy(&nodes, &options, false).unwrap();
+        let proxy = keep_existing.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == "proxy")
+            .unwrap();
+        assert_eq!(proxy["interrupt_exist_connections"], false);
     }
 
     #[test]

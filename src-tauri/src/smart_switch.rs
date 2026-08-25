@@ -542,7 +542,7 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
         (outbound_tag(node), node.name.clone())
     };
 
-    match state.select_current_node_serialized(best_id, false, hard_fail) {
+    match state.select_current_node_serialized(best_id, false) {
         Ok((_, _, true)) => {}
         Ok((_, _, false)) => return Err("core not running".into()),
         Err(e) => {
@@ -1089,7 +1089,7 @@ async fn maintain_smart_rule(
     };
 
     let selected = state
-        .select_group_live_serialized(&group, &tag, false)
+        .select_group_live_serialized(&group, &tag)
         .and_then(|selected| {
             selected
                 .then_some(())

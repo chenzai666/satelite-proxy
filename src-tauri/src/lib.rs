@@ -438,6 +438,7 @@ pub fn run() {
             commands::set_rule_enabled,
             commands::list_connections,
             commands::list_connection_changes,
+            commands::close_all_connections,
             commands::list_requests,
             commands::list_request_failures,
             commands::clear_request_history,

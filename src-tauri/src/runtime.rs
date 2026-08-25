@@ -2,7 +2,7 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
 use crate::config::{
-    apply_udp_node_compatibility, build_singbox_config, generate_api_secret,
+    apply_udp_node_compatibility, build_singbox_config_with_connection_policy, generate_api_secret,
     inspect_singbox_config, outbound_tag, subscription_proxy_port, write_active_config,
     write_custom_config, BuildOptions,
 };
@@ -672,7 +672,7 @@ impl Runtime {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
         apply_udp_node_compatibility(&mut nodes, store.settings.udp_tls_compat);
-        let built = build_singbox_config(
+        let built = build_singbox_config_with_connection_policy(
             &nodes,
             &BuildOptions {
                 mixed_port: store.settings.mixed_port,
@@ -696,6 +696,7 @@ impl Runtime {
                 block_quic: store.settings.block_quic,
                 bypass_lan: store.settings.bypass_lan,
             },
+            store.settings.close_connections_on_switch,
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;
         let config_ready_ms = total_started.elapsed().as_millis();

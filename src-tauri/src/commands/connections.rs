@@ -30,6 +30,20 @@ pub async fn list_connection_changes(
 }
 
 #[tauri::command]
+pub async fn close_all_connections(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .close_all_connections_serialized()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("close connections task: {error}"))?
+}
+
+#[tauri::command]
 pub async fn list_requests(
     app: AppHandle,
     query: Option<String>,

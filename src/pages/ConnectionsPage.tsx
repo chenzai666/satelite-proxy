@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getProxyStatus, listConnectionChanges } from "../api";
+import {
+  closeAllConnections,
+  getProxyStatus,
+  listConnectionChanges,
+} from "../api";
+import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
@@ -35,6 +40,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<TrafficScope>("all");
+  const [closing, setClosing] = useState(false);
   const revisionRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
@@ -90,6 +96,22 @@ export function ConnectionsPage({ embedded = false }: Props) {
     [t],
   );
 
+  async function onCloseAll() {
+    if (!confirm(t("conn.closeAllConfirm"))) return;
+    setClosing(true);
+    try {
+      await closeAllConnections();
+      revisionRef.current = null;
+      setRows([]);
+      setError(null);
+      window.setTimeout(() => void reload(), 500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setClosing(false);
+    }
+  }
+
   const toolbar = (
     <div className={`traffic-toolbar ${embedded ? "" : "page-header"}`}>
       {!embedded && (
@@ -114,6 +136,15 @@ export function ConnectionsPage({ embedded = false }: Props) {
           onChange={(v) => setScope(v as TrafficScope)}
           options={scopeOpts}
         />
+        <GlassButton
+          variant="danger"
+          icon="×"
+          onClick={() => void onCloseAll()}
+          disabled={!running || rows.length === 0 || closing}
+          title={t("conn.closeAll")}
+        >
+          {closing ? t("conn.closingAll") : t("conn.closeAll")}
+        </GlassButton>
         <span className={`pill ${running ? "ok" : "warn"}`}>
           {running
             ? t("conn.active", { n: filtered.length })
