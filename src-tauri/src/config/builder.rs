@@ -2023,7 +2023,6 @@ mod tests {
                 .to_string(),
         );
 
-        let tag = set.id.clone();
         let (_, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0]["outbound"], tags[0]);
@@ -2610,6 +2609,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();

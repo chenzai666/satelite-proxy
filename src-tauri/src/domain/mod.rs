@@ -12,9 +12,8 @@ pub use rule::{
     name_matches_keywords, normalize_remote_update_interval, remote_rule_display_count,
     remote_rule_is_complex, remote_update_interval_secs, sanitize_rules, BuiltinRemoteRuleSpec,
     Rule, RuleSet, RuleSetDnsStrategy, RuleSetOwnership, RuleSetStrategy, RuleSetSummary,
-    RuleTarget, RuleType, UserRulePresetSpec, BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID,
-    BUILTIN_SET_NAME, GENERAL_SET_ID, GENERAL_SET_NAME, LEGACY_BUILTIN_REMOTE_IDS,
-    USER_RULE_PRESET_SPECS,
+    RuleTarget, RuleType, BUILTIN_REMOTE_RULE_SETS, BUILTIN_SET_ID, BUILTIN_SET_NAME,
+    GENERAL_SET_ID, GENERAL_SET_NAME, LEGACY_BUILTIN_REMOTE_IDS, USER_RULE_PRESET_SPECS,
 };
 pub use settings::*;
 pub use subscription::*;

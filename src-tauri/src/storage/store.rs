@@ -1939,7 +1939,7 @@ mod tests {
 
     #[test]
     fn new_sets_start_disabled_and_empty_sets_cannot_be_enabled() {
-        use crate::domain::{Rule, RuleSetStrategy, RuleTarget, RuleType};
+        use crate::domain::{Rule, RuleTarget, RuleType};
         let mut store = AppStore::default();
         let local = store
             .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![])
