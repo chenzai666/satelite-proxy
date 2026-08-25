@@ -149,7 +149,7 @@ pub async fn import_from_url_with_id(
 fn subscription_user_agent() -> String {
     // FlClash shape plus the verbatim `flclash/1` token: covers panels that
     // substring-match either `clash-verge` or `flclash` in the UA.
-    "SateliteProxy/0.1 clash-verge flclash/1".to_string()
+    "satelite-proxy/0.1 clash-verge/v2.5 flclash/1".to_string()
 }
 
 /// Parse `Content-Disposition` for a display name.
