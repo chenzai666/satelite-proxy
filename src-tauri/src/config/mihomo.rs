@@ -84,6 +84,11 @@ pub fn build_mihomo_config(
 
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
+    let (remote_providers, remote_provider_tags) = if opts.outbound_mode == OutboundMode::Rule {
+        build_remote_rule_providers(&opts.rule_sets)
+    } else {
+        (Mapping::new(), std::collections::HashMap::new())
+    };
 
     // —— proxy-groups ——
     // Kernel auto-select: the main group IS a url-test group over all nodes
@@ -105,11 +110,11 @@ pub fn build_mihomo_config(
     let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
     let mut filter_group_tags: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for set in opts
-        .rule_sets
-        .iter()
-        .filter(|s| s.enabled && s.remote.is_none() && s.strategy == RuleSetStrategy::Filter)
-    {
+    for set in opts.rule_sets.iter().filter(|s| {
+        s.enabled
+            && s.strategy == RuleSetStrategy::Filter
+            && (s.remote.is_none() || remote_provider_tags.contains_key(&s.id))
+    }) {
         if rule_set_is_empty_for_config(set) {
             continue;
         }
@@ -163,6 +168,7 @@ pub fn build_mihomo_config(
         &effective_rules,
         &filter_group_tags,
         &smart_group_tags,
+        &remote_provider_tags,
     );
 
     // —— document ——
@@ -212,6 +218,9 @@ pub fn build_mihomo_config(
         str_yaml("proxy-groups"),
         Yaml::Sequence(groups.into_iter().map(Yaml::Mapping).collect()),
     );
+    if !remote_providers.is_empty() {
+        root.insert(str_yaml("rule-providers"), Yaml::Mapping(remote_providers));
+    }
     root.insert(
         str_yaml("rules"),
         Yaml::Sequence(rules.into_iter().map(Yaml::String).collect()),
@@ -329,6 +338,7 @@ fn build_rules(
     effective_rules: &[Rule],
     filter_group_tags: &std::collections::HashMap<String, String>,
     smart_group_tags: &std::collections::HashMap<String, String>,
+    remote_provider_tags: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
     let mut rules = Vec::new();
     // Rule mode compiles user rule sets; Global/Direct ignore them (the
@@ -345,13 +355,18 @@ fn build_rules(
                 if set.remote.is_some() {
                     match builtin_remote_mihomo_rule(set, MAIN_GROUP) {
                         Some(s) => rules.push(s),
-                        None => crate::app_log::warn(
-                            "mihomo_config",
-                            format!(
-                                "remote rule set '{}' uses the sing-box .srs format and is skipped under mihomo",
-                                set.name
-                            ),
-                        ),
+                        None => {
+                            if let Some(provider) = remote_provider_tags.get(&set.id) {
+                                let target = remote_set_mihomo_target(
+                                    set,
+                                    nodes,
+                                    tags,
+                                    MAIN_GROUP,
+                                    filter_group_tags,
+                                );
+                                rules.push(format!("RULE-SET,{provider},{target}"));
+                            }
+                        }
                     }
                     continue;
                 }
@@ -410,6 +425,339 @@ fn build_rules(
     };
     rules.push(format!("MATCH,{final_target}"));
     rules
+}
+
+/// Build inline classical rule-providers from Satelite's validated local
+/// remote-rule cache. This keeps route semantics available under mihomo
+/// without asking mihomo to understand sing-box source JSON / binary SRS.
+/// Provider tags are generated locally instead of embedding RuleSet ids in a
+/// comma-delimited rule string, avoiding malformed YAML/rule injection from a
+/// damaged or newer store.
+fn build_remote_rule_providers(
+    sets: &[RuleSet],
+) -> (Mapping, std::collections::HashMap<String, String>) {
+    let mut providers = Mapping::new();
+    let mut tags = std::collections::HashMap::new();
+    let mut total_rules = 0usize;
+
+    for (index, set) in sets
+        .iter()
+        .filter(|set| set.enabled && set.remote.is_some())
+        .enumerate()
+    {
+        if matches!(
+            set.id.as_str(),
+            "system-geosite-cn" | "system-geoip-cn" | "system-geolocation-not-cn"
+        ) {
+            continue;
+        }
+        match remote_set_classical_payload(set) {
+            Ok((payload, unsupported)) if !payload.is_empty() => {
+                let tag = format!("satelite-remote-{index}");
+                let mut provider = Mapping::new();
+                provider.insert(str_yaml("type"), str_yaml("inline"));
+                provider.insert(str_yaml("behavior"), str_yaml("classical"));
+                provider.insert(str_yaml("format"), str_yaml("yaml"));
+                provider.insert(
+                    str_yaml("payload"),
+                    Yaml::Sequence(payload.iter().map(|rule| str_yaml(rule)).collect()),
+                );
+                total_rules += payload.len();
+                providers.insert(str_yaml(&tag), Yaml::Mapping(provider));
+                tags.insert(set.id.clone(), tag);
+                if unsupported > 0 {
+                    crate::app_log::warn(
+                        "mihomo_config",
+                        format!(
+                            "remote rule set '{}' loaded with {unsupported} unsupported entries omitted",
+                            set.name
+                        ),
+                    );
+                }
+            }
+            Ok(_) => crate::app_log::warn(
+                "mihomo_config",
+                format!(
+                    "remote rule set '{}' has no mihomo-compatible entries",
+                    set.name
+                ),
+            ),
+            Err(error) => crate::app_log::warn(
+                "mihomo_config",
+                format!(
+                    "remote rule set '{}' unavailable under mihomo: {error}",
+                    set.name
+                ),
+            ),
+        }
+    }
+
+    if !tags.is_empty() {
+        crate::app_log::info(
+            "mihomo_config",
+            format!(
+                "loaded {} remote rule sets into mihomo ({total_rules} classical rules)",
+                tags.len()
+            ),
+        );
+    }
+    (providers, tags)
+}
+
+fn remote_set_classical_payload(set: &RuleSet) -> Result<(Vec<String>, usize), String> {
+    let remote = set
+        .remote
+        .as_ref()
+        .ok_or_else(|| "missing remote definition".to_string())?;
+    let path = remote
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "cache is not downloaded".to_string())?;
+    let bytes = std::fs::read(path).map_err(|error| format!("read cache: {error}"))?;
+    let rules = if remote.format.eq_ignore_ascii_case("binary") {
+        crate::srs::parse_with_rules(&bytes)?
+            .rules
+            .ok_or_else(|| "binary cache contains no readable rules".to_string())?
+    } else {
+        let source: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| format!("parse cache: {error}"))?;
+        source
+            .get("rules")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .ok_or_else(|| "source cache has no rules array".to_string())?
+    };
+    Ok(classical_payload_from_source_rules(&rules))
+}
+
+fn classical_payload_from_source_rules(rules: &[serde_json::Value]) -> (Vec<String>, usize) {
+    let mut payload = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut unsupported = 0usize;
+
+    for rule in rules {
+        let Some(object) = rule.as_object() else {
+            unsupported += 1;
+            continue;
+        };
+        if object.contains_key("type")
+            || object
+                .get("invert")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            unsupported += 1;
+            continue;
+        }
+        let mut groups: std::collections::BTreeMap<&'static str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut valid = true;
+        for (field, value) in object {
+            if field == "invert" {
+                continue;
+            }
+            let Some(group) = remote_rule_group(field) else {
+                valid = false;
+                break;
+            };
+            let values = value
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_else(|| std::slice::from_ref(value));
+            if values.is_empty() {
+                valid = false;
+                break;
+            }
+            for value in values {
+                let Some(rendered) = render_remote_rule_atom(field, value) else {
+                    valid = false;
+                    break;
+                };
+                groups.entry(group).or_default().push(rendered);
+            }
+            if !valid {
+                break;
+            }
+        }
+        if !valid || groups.is_empty() {
+            unsupported += 1;
+            continue;
+        }
+
+        // sing-box ORs matchers within one category (domain/IP, port, source
+        // address, ...), then ANDs the non-empty categories. A classical
+        // provider ORs its payload rows, so preserve that exact structure:
+        // flatten a single category, or emit one explicit logical AND row.
+        if groups.len() == 1 {
+            for atom in groups.into_values().flatten() {
+                if seen.insert(atom.clone()) {
+                    payload.push(atom);
+                }
+            }
+            continue;
+        }
+        let conditions = groups
+            .into_values()
+            .map(|mut atoms| {
+                atoms.sort();
+                atoms.dedup();
+                if atoms.len() == 1 {
+                    atoms.pop().unwrap_or_default()
+                } else {
+                    format!(
+                        "OR,({})",
+                        atoms
+                            .into_iter()
+                            .map(|atom| format!("({atom})"))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                }
+            })
+            .map(|condition| format!("({condition})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let logical = format!("AND,({conditions})");
+        if seen.insert(logical.clone()) {
+            payload.push(logical);
+        }
+    }
+    (payload, unsupported)
+}
+
+fn remote_rule_group(field: &str) -> Option<&'static str> {
+    match field {
+        "domain" | "domain_suffix" | "domain_keyword" | "domain_regex" | "ip_cidr" => {
+            Some("destination")
+        }
+        "port" | "port_range" => Some("destination_port"),
+        "source_ip_cidr" => Some("source_address"),
+        "source_port" | "source_port_range" => Some("source_port"),
+        "network" => Some("network"),
+        "process_name" => Some("process_name"),
+        "process_path" => Some("process_path"),
+        _ => None,
+    }
+}
+
+fn render_remote_rule_atom(field: &str, value: &serde_json::Value) -> Option<String> {
+    match field {
+        "domain" => domain_text(value, false).map(|value| format!("DOMAIN,{value}")),
+        "domain_suffix" => domain_text(value, true).map(|value| format!("DOMAIN-SUFFIX,{value}")),
+        "domain_keyword" => safe_rule_text(value).map(|value| format!("DOMAIN-KEYWORD,{value}")),
+        "domain_regex" => safe_rule_text(value).map(|value| format!("DOMAIN-REGEX,{value}")),
+        "ip_cidr" => cidr_text(value).map(|value| {
+            let kind = if value.contains(':') {
+                "IP-CIDR6"
+            } else {
+                "IP-CIDR"
+            };
+            format!("{kind},{value},no-resolve")
+        }),
+        "source_ip_cidr" => cidr_text(value).map(|value| format!("SRC-IP-CIDR,{value},no-resolve")),
+        "process_name" => safe_rule_text(value).map(|value| format!("PROCESS-NAME,{value}")),
+        "process_path" => safe_rule_text(value).map(|value| format!("PROCESS-PATH,{value}")),
+        "network" => safe_rule_text(value)
+            .map(str::to_ascii_lowercase)
+            .filter(|value| matches!(value.as_str(), "tcp" | "udp"))
+            .map(|value| format!("NETWORK,{value}")),
+        "port" | "port_range" => port_text(value).map(|value| format!("DST-PORT,{value}")),
+        "source_port" | "source_port_range" => {
+            port_text(value).map(|value| format!("SRC-PORT,{value}"))
+        }
+        _ => None,
+    }
+}
+
+/// Remote rule caches are untrusted network input. Classical provider entries
+/// are comma-delimited strings, so reject separators/control characters that
+/// could append an unexpected policy or inject another rule.
+fn safe_rule_text(value: &serde_json::Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| {
+            !value
+                .chars()
+                .any(|character| character == ',' || character.is_control())
+        })
+}
+
+fn domain_text(value: &serde_json::Value, suffix: bool) -> Option<String> {
+    let value = safe_rule_text(value)?;
+    let value = if suffix {
+        value.trim_start_matches(['*', '.'])
+    } else {
+        value
+    };
+    if value.is_empty() {
+        return None;
+    }
+    let ascii = to_ascii_domain(value);
+    (!ascii.is_empty()).then_some(ascii)
+}
+
+fn cidr_text(value: &serde_json::Value) -> Option<&str> {
+    let value = safe_rule_text(value)?;
+    let (address, prefix) = value.split_once('/')?;
+    let address = address.parse::<std::net::IpAddr>().ok()?;
+    let prefix = prefix.parse::<u8>().ok()?;
+    let valid = match address {
+        std::net::IpAddr::V4(_) => prefix <= 32,
+        std::net::IpAddr::V6(_) => prefix <= 128,
+    };
+    valid.then_some(value)
+}
+
+fn port_text(value: &serde_json::Value) -> Option<String> {
+    let normalized = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        // sing-box uses `start:end`; Mihomo classical rules use `start-end`.
+        .map(|value| value.replace(':', "-"))
+        .or_else(|| value.as_u64().map(|value| value.to_string()))?;
+    let ports = normalized
+        .split('-')
+        .map(str::parse::<u16>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if ports.is_empty()
+        || ports.len() > 2
+        || ports.iter().any(|port| *port == 0)
+        || (ports.len() == 2 && ports[0] > ports[1])
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+fn remote_set_mihomo_target(
+    set: &RuleSet,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    main_target: &str,
+    filter_group_tags: &std::collections::HashMap<String, String>,
+) -> String {
+    match set.strategy {
+        RuleSetStrategy::Direct => "DIRECT".into(),
+        RuleSetStrategy::Block => "REJECT".into(),
+        RuleSetStrategy::Node => set
+            .node_id
+            .as_deref()
+            .and_then(|id| nodes.iter().find(|node| node.id == id))
+            .map(outbound_tag)
+            .filter(|tag| tags.iter().any(|candidate| candidate == tag))
+            .unwrap_or_else(|| main_target.to_string()),
+        RuleSetStrategy::Filter => filter_group_tags
+            .get(&set.id)
+            .cloned()
+            .unwrap_or_else(|| main_target.to_string()),
+        _ => main_target.to_string(),
+    }
 }
 
 /// Swap the target of a rendered "TYPE,payload,target" rule string.
@@ -1646,6 +1994,74 @@ mod tests {
         assert!(rules.contains(&"GEOSITE,cn,DIRECT".to_string()));
         assert!(rules.contains(&"GEOIP,cn,proxy".to_string()));
         assert!(rules.contains(&"GEOSITE,geolocation-!cn,proxy".to_string()));
+    }
+
+    #[test]
+    fn source_remote_set_becomes_inline_classical_provider() {
+        let cache = std::env::temp_dir().join(format!(
+            "satelite-mihomo-provider-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &cache,
+            br#"{"rules":[{"domain":["exact.example"],"domain_suffix":[".suffix.example"],"domain_keyword":["needle"],"ip_cidr":["10.0.0.0/8","2001:db8::/32"],"process_name":["client.exe"]}]}"#,
+        )
+        .unwrap();
+        let mut set = RuleSet::new_remote(
+            "remote",
+            "https://example.com/rules.json",
+            RuleTarget::Block,
+        );
+        // A store id is data, not trusted rule syntax. The generator must use
+        // its own safe provider tag rather than interpolating this value.
+        set.id = "bad,id\nMATCH,DIRECT".into();
+        set.strategy = RuleSetStrategy::Block;
+        let remote = set.remote.as_mut().unwrap();
+        remote.local_path = Some(cache.to_string_lossy().to_string());
+        remote.format = "source".into();
+
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_mihomo_config(&[plain_node("n1")], &opts).expect("build");
+        let _ = std::fs::remove_file(&cache);
+        let doc = parse(&built);
+        let provider = &doc["rule-providers"]["satelite-remote-0"];
+        assert_eq!(provider["type"].as_str(), Some("inline"));
+        assert_eq!(provider["behavior"].as_str(), Some("classical"));
+        let payload: Vec<&str> = provider["payload"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(serde_yaml::Value::as_str)
+            .collect();
+        assert_eq!(payload.len(), 1);
+        let logical = payload[0];
+        assert!(logical.starts_with("AND,("));
+        assert!(logical.contains("OR,((DOMAIN,exact.example)"));
+        assert!(logical.contains("DOMAIN-SUFFIX,suffix.example"));
+        assert!(logical.contains("DOMAIN-KEYWORD,needle"));
+        assert!(logical.contains("IP-CIDR,10.0.0.0/8,no-resolve"));
+        assert!(logical.contains("IP-CIDR6,2001:db8::/32,no-resolve"));
+        assert!(logical.contains("(PROCESS-NAME,client.exe)"));
+        let rules = rules_of(&doc);
+        assert!(rules.contains(&"RULE-SET,satelite-remote-0,REJECT".to_string()));
+        assert!(!built.yaml.contains("bad,id"));
+    }
+
+    #[test]
+    fn unsupported_remote_logical_rules_are_not_broadened() {
+        let rules = vec![serde_json::json!({
+            "type": "logical",
+            "mode": "and",
+            "rules": [{"domain": ["example.com"]}, {"port": [443]}]
+        })];
+        let (payload, unsupported) = classical_payload_from_source_rules(&rules);
+        assert!(payload.is_empty());
+        assert_eq!(unsupported, 1);
     }
 
     #[test]

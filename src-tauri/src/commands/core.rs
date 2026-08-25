@@ -1,7 +1,7 @@
 use crate::core::{
     active_core_version, bundled_core_version, detect_platform, download_latest_core_with_progress,
     fetch_latest_app_tag, fetch_latest_app_tag_via_redirect, fetch_latest_release_with_proxy,
-    inspect_core_bin, CoreDownloadResult, CoreKind, CoreSource,
+    inspect_core_bin, CoreDownloadProgress, CoreDownloadResult, CoreKind, CoreSource,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -254,12 +254,62 @@ pub async fn download_core(
 ) -> Result<CoreDownloadResult, String> {
     let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
+    let via_proxy = proxy_url.is_some();
     let progress_app = app.clone();
-    download_latest_core_with_progress(kind, &state.app_data_dir, tag, proxy_url, move |progress| {
-        let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
-    })
+    let result = download_latest_core_with_progress(
+        kind,
+        &state.app_data_dir,
+        tag,
+        proxy_url.clone(),
+        move |progress| {
+            let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
+        },
+    )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // A downloaded mihomo binary is not usable with Satelite's GEOSITE/GEOIP
+    // rules until its data pair exists. Fetch it while the old core is still
+    // running so the current proxy can carry the download; otherwise the first
+    // switch/start appears frozen while a stopped-core path downloads it.
+    if kind == CoreKind::Mihomo {
+        let _ = app.emit(
+            CORE_DOWNLOAD_EVENT,
+            CoreDownloadProgress {
+                kind: kind.as_str().into(),
+                stage: "installing",
+                downloaded: result.bytes,
+                total: Some(result.bytes),
+                percent: Some(100),
+                via_proxy,
+            },
+        );
+        let app_data_dir = state.app_data_dir.clone();
+        let resource_dir = app.path().resource_dir().ok();
+        let geodata_proxy = proxy_url;
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::core::ensure_mihomo_geodata(
+                &app_data_dir,
+                resource_dir.as_deref(),
+                geodata_proxy.as_deref(),
+            )
+        })
+        .await
+        .map_err(|e| format!("mihomo geodata task: {e}"))?
+        .map_err(|e| e.to_string())?;
+        let _ = app.emit(
+            CORE_DOWNLOAD_EVENT,
+            CoreDownloadProgress {
+                kind: kind.as_str().into(),
+                stage: "done",
+                downloaded: result.bytes,
+                total: Some(result.bytes),
+                percent: Some(100),
+                via_proxy,
+            },
+        );
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -274,7 +324,7 @@ pub async fn fetch_core_latest(
         .map_err(|e| e.to_string())
 }
 
-/// Switch the active core (singbox | xray). Restarts a running core so the
+/// Switch the active core (singbox | xray | mihomo). Restarts a running core so the
 /// new core takes over the mixed port immediately.
 #[tauri::command]
 pub async fn set_core_type(
@@ -287,6 +337,21 @@ pub async fn set_core_type(
         let state = worker_app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
+        if parsed == CoreKind::Mihomo
+            && !crate::core::mihomo_geodata_state(&state.app_data_dir)
+                .iter()
+                .all(|(_, file)| file.present)
+        {
+            let proxy_url = current_download_proxy(&state)?;
+            let resource_dir = worker_app.path().resource_dir().ok();
+            crate::app_log::info("geodata", "preparing mihomo geodata before core switch");
+            crate::core::ensure_mihomo_geodata(
+                &state.app_data_dir,
+                resource_dir.as_deref(),
+                proxy_url.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
+        }
         let running = state.is_core_running();
         let settings = state
             .with_store_mut(|store| {

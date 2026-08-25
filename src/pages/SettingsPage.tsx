@@ -122,6 +122,7 @@ export function SettingsPage() {
     mihomo: null,
   });
   const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
+  const [coreSwitchingKind, setCoreSwitchingKind] = useState<CoreKind | null>(null);
   const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
@@ -565,12 +566,15 @@ export function SettingsPage() {
   /** Switch the active core; a running core restarts onto the new binary. */
   async function onSwitchCore(kind: CoreKind) {
     if (settings?.core_type === kind) return;
+    setCoreSwitchingKind(kind);
     setCoreError(null);
     try {
       const s = await setCoreType(kind);
       setSettings(s);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
+    } finally {
+      setCoreSwitchingKind(null);
     }
   }
 
@@ -579,6 +583,7 @@ export function SettingsPage() {
   function renderCoreRow(kind: CoreKind) {
     const info = cores[kind];
     const busy = coreBusyKind === kind;
+    const switching = coreSwitchingKind === kind;
     const checking = coreCheckingKind === kind;
     const active = (settings?.core_type ?? "singbox") === kind;
     // Progress events carry the core kind; each row shows only its own.
@@ -614,7 +619,7 @@ export function SettingsPage() {
             aria-pressed={active}
             aria-label={t("settings.coreUse")}
             title={t("settings.coreUse")}
-            disabled={coreBusyKind != null}
+            disabled={coreBusyKind != null || coreSwitchingKind != null}
             onClick={() => void onSwitchCore(kind)}
           >
             <span className="core-radio-dot" aria-hidden />
@@ -622,7 +627,11 @@ export function SettingsPage() {
           {/* Fixed-width slot on BOTH rows (empty when active) so the pill /
              platform columns line up between the two cores. */}
           <span className="kernel-switch-hint muted">
-            {active ? "" : t("settings.coreSwitchHint")}
+            {switching
+              ? t("dashboard.coreSwitching")
+              : active
+                ? ""
+                : t("settings.coreSwitchHint")}
           </span>
           {info?.installed ? (
             !active && (
