@@ -52,7 +52,11 @@ jobs:
 
       - name: 运行 Rust 单元测试
         shell: pwsh
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+        run: |
+          # 默认安装包只内置 sing-box。cargo test 也必须使用相同覆盖配置，
+          # 否则 Tauri build.rs 会按基础配置查找未下载的 Xray/Mihomo 文件。
+          $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
