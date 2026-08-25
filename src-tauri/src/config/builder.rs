@@ -1321,7 +1321,16 @@ fn tls_to_json(tls: &TlsConfig) -> Option<Value> {
             o["alpn"] = json!(alpn);
         }
     }
-    if let Some(fp) = normalize_utls_fingerprint(tls.utls_fingerprint.as_deref()) {
+    let normalized_fp = normalize_utls_fingerprint(tls.utls_fingerprint.as_deref());
+    // Reality requires uTLS; fall back to "chrome" when the subscription didn't
+    // provide a valid fingerprint, otherwise sing-box rejects the outbound with
+    // "uTLS is required by reality client".
+    let fp_for_utls = if tls.reality_public_key.is_some() {
+        Some(normalized_fp.clone().unwrap_or_else(|| "chrome".to_string()))
+    } else {
+        normalized_fp
+    };
+    if let Some(fp) = fp_for_utls {
         o["utls"] = json!({
             "enabled": true,
             "fingerprint": fp
