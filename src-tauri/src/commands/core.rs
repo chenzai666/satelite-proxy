@@ -117,6 +117,8 @@ pub struct AppUpdateInfo {
 /// failures back off instead of retrying on every page open.
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
 struct AppUpdateCache {
+    /// Repository that produced this cache. Missing on pre-1.0.16 caches.
+    source: Option<String>,
     latest_version: Option<String>,
     /// Unix seconds of the last successful network check.
     checked_at: Option<u64>,
@@ -125,6 +127,7 @@ struct AppUpdateCache {
 }
 
 const APP_UPDATE_CACHE_FILE: &str = "update_cache.json";
+const APP_UPDATE_SOURCE: &str = "chenzai666/satelite-proxy";
 /// Fresh window for an auto (non-forced) check result.
 const APP_UPDATE_TTL_SECS: u64 = 6 * 3600;
 /// After a failed network check, auto checks back off this long.
@@ -134,7 +137,16 @@ fn load_app_update_cache(state: &AppState) -> AppUpdateCache {
     std::fs::read(state.app_data_dir.join(APP_UPDATE_CACHE_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .map(cache_for_current_source)
         .unwrap_or_default()
+}
+
+fn cache_for_current_source(cache: AppUpdateCache) -> AppUpdateCache {
+    if cache.source.as_deref() == Some(APP_UPDATE_SOURCE) {
+        cache
+    } else {
+        AppUpdateCache::default()
+    }
 }
 
 fn store_app_update_cache(state: &AppState, cache: &AppUpdateCache) {
@@ -187,6 +199,7 @@ pub async fn check_app_update(
             store_app_update_cache(
                 &state,
                 &AppUpdateCache {
+                    source: Some(APP_UPDATE_SOURCE.into()),
                     latest_version: Some(version.clone()),
                     checked_at: Some(now),
                     next_try_at: 0,
@@ -201,6 +214,7 @@ pub async fn check_app_update(
                 store_app_update_cache(
                     &state,
                     &AppUpdateCache {
+                        source: Some(APP_UPDATE_SOURCE.into()),
                         latest_version: Some(version.clone()),
                         checked_at: Some(checked_at),
                         next_try_at: now + APP_UPDATE_FAILURE_BACKOFF_SECS,
@@ -453,7 +467,30 @@ pub fn get_lan_ip() -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer_version;
+    use super::{cache_for_current_source, is_newer_version, AppUpdateCache, APP_UPDATE_SOURCE};
+
+    #[test]
+    fn update_cache_from_previous_repository_is_invalidated() {
+        let old: AppUpdateCache = serde_json::from_str(
+            r#"{"latest_version":"v1.0.9","checked_at":1787633447,"next_try_at":0}"#,
+        )
+        .unwrap();
+        let migrated = cache_for_current_source(old);
+        assert!(migrated.latest_version.is_none());
+        assert!(migrated.checked_at.is_none());
+    }
+
+    #[test]
+    fn update_cache_from_current_repository_is_kept() {
+        let current = AppUpdateCache {
+            source: Some(APP_UPDATE_SOURCE.into()),
+            latest_version: Some("v1.0.16".into()),
+            checked_at: Some(1),
+            next_try_at: 0,
+        };
+        let loaded = cache_for_current_source(current);
+        assert_eq!(loaded.latest_version.as_deref(), Some("v1.0.16"));
+    }
 
     #[test]
     fn bundled_ahead_of_latest_release_is_not_an_update() {
