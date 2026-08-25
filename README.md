@@ -140,7 +140,7 @@ pwsh scripts/build-windows.ps1 -Bundle msi  # MSI
 
 也可以直接推送到 `main` 分支，GitHub Actions 会自动构建 Windows NSIS 安装包。构建完成后进入仓库的 **Actions → Windows 构建**，在任务页面底部下载 `Satelite-Windows-*` 构建产物；云端产物保留 14 天，也支持在 Actions 页面手动触发构建。
 
-正式发布时推送与应用版本一致、以 `v` 开头的标签（例如 `v1.0.16`），工作流会在构建和测试成功后自动创建 GitHub Release，并把 Windows 安装包上传到 Release 资产。
+应用版本已固定为 `1.0.16`，后续功能和修复不再递增版本号。工作流会校验 `package.json`、`Cargo.toml` 和 `Cargo.lock`，任一处偏离 `1.0.16` 都会阻止构建。正式 Release 固定使用 `v1.0.16`；后续构建以 Git 提交 SHA 和 GitHub Actions 构建时间区分，不再创建 `v1.0.17` 等新版本标签。由于版本号不再变化，已安装的 `1.0.16` 不会仅靠版本比较提示同版本的新构建，需要按提交 SHA 或发布时间判断是否重新下载安装。
 
 ### 局域网代理
 

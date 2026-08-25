@@ -1,7 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-08-23（v1.0.9，三内核：sing-box / Xray / mihomo）。
+最后核对：2026-08-25（应用版本永久固定为 1.0.16，三内核：sing-box / Xray / mihomo）。
 
 ## 0. 阅读与维护规则（必读）
 
@@ -326,7 +326,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 8. 构建细节与产物
 
-- **版本号**：`package.json`（1.0.9）是唯一真源，`tauri.conf.json` 引用它；`Cargo.toml`（1.0.4）落后且不自动同步——发版时手动检查三处。
+- **固定版本号**：应用版本永久保持 `1.0.16`，禁止递增。`scripts/check-fixed-version.ps1` 与 GitHub Actions 同时校验 `package.json`、`Cargo.toml`、`Cargo.lock`；后续构建以提交 SHA 和构建时间区分，固定 Release 标签为 `v1.0.16`。
 - **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`）。
 - **Rust 测试布局**：集成测试 `src-tauri/tests/parse_subscription.rs`（fixtures 在 `tests/fixtures/`：clash yaml ×2、singbox json ×1）；`download_core_live.rs` 为 `#[ignore]` 真网测试；单测散落各文件 `#[cfg(test)]`。
 - **换行符**：`.gitattributes` 规定源码 eol=lf、`.ps1/.bat/.cmd` 为 CRLF。
