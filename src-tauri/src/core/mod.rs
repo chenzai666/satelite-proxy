@@ -23,8 +23,8 @@ pub use memory::read_process_rss_bytes;
 
 pub use download::{
     download_latest_core, download_latest_core_with_progress, fetch_latest_app_tag,
-    fetch_latest_app_tag_via_redirect, fetch_latest_release_with_proxy, CoreDownloadResult,
-    LatestReleaseInfo,
+    fetch_latest_app_tag_via_redirect, fetch_latest_release_with_proxy, CoreDownloadProgress,
+    CoreDownloadResult, LatestReleaseInfo,
 };
 #[cfg(test)]
 pub use paths::find_bundled_core;
