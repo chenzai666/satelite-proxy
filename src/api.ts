@@ -194,6 +194,10 @@ export function updateNode(id: string, draft: import("./types").ManualNodeDraft)
   return invoke<ProxyNode>("update_node", { id, draft });
 }
 
+export function deleteNode(id: string) {
+  return invoke<void>("delete_node", { id });
+}
+
 /**
  * Cross-mount snapshots of the latest resolved settings / proxy status.
  * Tab switches remount pages (key={nav} page-enter animation), so control

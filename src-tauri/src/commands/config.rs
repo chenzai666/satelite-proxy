@@ -422,6 +422,30 @@ pub fn update_node(
 }
 
 #[tauri::command]
+pub fn delete_node(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (node, enabled) = state
+        .with_store_mut(|store| {
+            let enabled = store.nodes.iter().any(|entry| {
+                entry.node.id == id
+                    && store
+                        .subscriptions
+                        .iter()
+                        .any(|sub| sub.id == entry.subscription_id && sub.enabled)
+            });
+            Ok((store.delete_node(&id)?, enabled))
+        })
+        .map_err(|e| e.to_string())?;
+    if enabled && state.is_core_running() {
+        crate::app_log::info(
+            "subscription",
+            format!("{}: node deleted; queued core rebuild", node.name),
+        );
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
         .with_store(|store| {

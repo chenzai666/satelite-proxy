@@ -399,6 +399,7 @@ pub fn run() {
             commands::rename_node,
             commands::get_node_draft,
             commands::update_node,
+            commands::delete_node,
             commands::generate_singbox_config,
             commands::preview_singbox_config,
             commands::get_active_config_path,

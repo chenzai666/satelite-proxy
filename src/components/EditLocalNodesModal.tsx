@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { getNodeDraft, listSubscriptionNodes, updateNode } from "../api";
+import {
+  deleteNode,
+  getNodeDraft,
+  listSubscriptionNodes,
+  updateNode,
+} from "../api";
 import { useI18n } from "../i18n";
 import type { ManualNodeDraft, ProxyNode } from "../types";
 import { ErrorModal } from "./ErrorModal";
@@ -31,7 +36,7 @@ export function EditLocalNodesModal({
   const [loading, setLoading] = useState(false);
   const [loadingDraft, setLoadingDraft] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<"saved" | "deleted" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const serializedDraft = useMemo(() => JSON.stringify(draft), [draft]);
@@ -42,7 +47,7 @@ export function EditLocalNodesModal({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setSaved(false);
+    setStatus(null);
     setDraft(null);
     setBaseline("");
     void listSubscriptionNodes(profileId)
@@ -75,7 +80,7 @@ export function EditLocalNodesModal({
     if (dirty && !window.confirm(t("nodes.unsavedConfirm"))) return;
     setSelectedId(id);
     setLoadingDraft(true);
-    setSaved(false);
+    setStatus(null);
     setError(null);
     try {
       const next = await getNodeDraft(id);
@@ -103,7 +108,7 @@ export function EditLocalNodesModal({
     }
     const nextDraft = { ...draft, name };
     setBusy(true);
-    setSaved(false);
+    setStatus(null);
     setError(null);
     try {
       const updated = await updateNode(selectedId, nextDraft);
@@ -112,7 +117,43 @@ export function EditLocalNodesModal({
       );
       setDraft(nextDraft);
       setBaseline(JSON.stringify(nextDraft));
-      setSaved(true);
+      setStatus("saved");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!selectedId || busy) return;
+    const index = nodes.findIndex((node) => node.id === selectedId);
+    const selected = nodes[index];
+    if (!selected || !window.confirm(t("nodes.deleteConfirm", { name: selected.name }))) {
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    setError(null);
+    try {
+      await deleteNode(selectedId);
+      const remaining = nodes.filter((node) => node.id !== selectedId);
+      const next = remaining[Math.min(index, remaining.length - 1)];
+      setNodes(remaining);
+      setSelectedId(next?.id ?? null);
+      setDraft(null);
+      setBaseline("");
+      setStatus("deleted");
+      if (next) {
+        setLoadingDraft(true);
+        try {
+          const nextDraft = await getNodeDraft(next.id);
+          setDraft(nextDraft);
+          setBaseline(JSON.stringify(nextDraft));
+        } finally {
+          setLoadingDraft(false);
+        }
+      }
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -185,7 +226,7 @@ export function EditLocalNodesModal({
                         spellCheck={false}
                         value={draft.name ?? ""}
                         onChange={(event) => {
-                          setSaved(false);
+                          setStatus(null);
                           setDraft({ ...draft, name: event.target.value });
                         }}
                         disabled={busy}
@@ -195,7 +236,7 @@ export function EditLocalNodesModal({
                       value={draft}
                       disabled={busy}
                       onChange={(next) => {
-                        setSaved(false);
+                        setStatus(null);
                         setDraft(next);
                       }}
                     />
@@ -204,11 +245,21 @@ export function EditLocalNodesModal({
               </div>
             </div>
           )}
-          {saved && (
-            <div className="node-editor-saved">{t("nodes.saveSuccess")}</div>
+          {status && (
+            <div className="node-editor-saved">
+              {t(status === "saved" ? "nodes.saveSuccess" : "nodes.deleteSuccess")}
+            </div>
           )}
           {error && <ErrorModal message={error} onClose={() => setError(null)} />}
-          <footer className="modal-footer">
+          <footer className="modal-footer node-editor-footer">
+            <GlassButton
+              variant="danger"
+              className="node-editor-delete"
+              onClick={() => void handleDelete()}
+              disabled={busy || loading || loadingDraft || !selectedId}
+            >
+              {t("common.delete")}
+            </GlassButton>
             <GlassButton onClick={closeModal} disabled={busy}>
               {t("common.close")}
             </GlassButton>

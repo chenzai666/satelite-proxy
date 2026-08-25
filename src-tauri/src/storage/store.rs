@@ -47,6 +47,10 @@ pub struct AppStore {
     /// local edits can be reapplied without modifying the remote subscription.
     #[serde(default)]
     pub node_overrides: std::collections::BTreeMap<String, ProxyNode>,
+    /// Nodes deleted locally, keyed by `subscription-id|source-node-id`.
+    /// Tombstones keep remote subscription refreshes from restoring them.
+    #[serde(default)]
+    pub deleted_node_ids: std::collections::BTreeSet<String>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -690,11 +694,20 @@ impl AppStore {
 
     pub fn upsert_subscription(
         &mut self,
-        sub: Subscription,
+        mut sub: Subscription,
         nodes: Vec<ProxyNode>,
     ) -> AppResult<()> {
         let id = sub.id.clone();
         self.nodes.retain(|n| n.subscription_id != id);
+        let nodes: Vec<_> = nodes
+            .into_iter()
+            .filter(|node| {
+                !self
+                    .deleted_node_ids
+                    .contains(&Self::node_override_key(&id, &node.id))
+            })
+            .collect();
+        sub.node_count = nodes.len() as u32;
         if let Some(existing) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             *existing = sub;
         } else {
@@ -730,7 +743,7 @@ impl AppStore {
             return Err(AppError::NotFound(id.to_string()));
         }
         self.nodes.retain(|n| n.subscription_id != id);
-        self.clear_node_overrides_for_subscription(id);
+        self.clear_node_customizations_for_subscription(id);
         if self.settings.runtime_source().singbox_id() == Some(id) {
             self.settings
                 .set_runtime_source(crate::domain::RuntimeSource::Generated);
@@ -967,10 +980,12 @@ impl AppStore {
         format!("{subscription_id}|{node_id}")
     }
 
-    pub fn clear_node_overrides_for_subscription(&mut self, subscription_id: &str) {
+    pub fn clear_node_customizations_for_subscription(&mut self, subscription_id: &str) {
         let prefix = format!("{subscription_id}|");
         self.node_overrides
             .retain(|key, _| !key.starts_with(&prefix));
+        self.deleted_node_ids
+            .retain(|key| !key.starts_with(&prefix));
     }
 
     pub fn update_node(&mut self, id: &str, mut edited: ProxyNode) -> AppResult<ProxyNode> {
@@ -991,6 +1006,27 @@ impl AppStore {
             edited.clone(),
         );
         Ok(edited)
+    }
+
+    pub fn delete_node(&mut self, id: &str) -> AppResult<ProxyNode> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|entry| entry.node.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        let stored = self.nodes.remove(index);
+        let key = Self::node_override_key(&stored.subscription_id, id);
+        self.node_overrides.remove(&key);
+        self.deleted_node_ids.insert(key);
+        if let Some(subscription) = self
+            .subscriptions
+            .iter_mut()
+            .find(|subscription| subscription.id == stored.subscription_id)
+        {
+            subscription.node_count = subscription.node_count.saturating_sub(1);
+        }
+        self.ensure_current_node_valid();
+        Ok(stored.node)
     }
 
     fn apply_node_alias(&self, node: &mut ProxyNode) {
@@ -2958,6 +2994,32 @@ mod tests {
 
         store.remove_subscription("id-s").unwrap();
         assert!(store.node_overrides.is_empty());
+    }
+
+    #[test]
+    fn deleted_node_stays_deleted_after_refresh() {
+        let mut store = AppStore::default();
+        let first = sample_hy2("a", "HK-01");
+        let second = sample_hy2("b", "HK-02");
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![first.clone(), second.clone()])
+            .unwrap();
+        store.settings.current_node_id = Some("a".into());
+
+        store.delete_node("a").unwrap();
+        assert!(store.find_node("a").is_none());
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b"));
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
+
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![first, second])
+            .unwrap();
+        assert!(store.find_node("a").is_none());
+        assert!(store.find_node("b").is_some());
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
+
+        store.remove_subscription("id-s").unwrap();
+        assert!(store.deleted_node_ids.is_empty());
     }
 
     #[test]

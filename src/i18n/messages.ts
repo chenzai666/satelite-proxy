@@ -411,6 +411,10 @@ const en = {
   "nodes.unsavedConfirm": "Discard unsaved changes to this node?",
   "nodes.invalidDraft": "Complete the required node fields before saving.",
   "nodes.saveSuccess": "Node saved. An active core will reload automatically.",
+  "nodes.deleteConfirm":
+    'Delete "{name}" from this profile? This local deletion remains applied after subscription refresh.',
+  "nodes.deleteSuccess":
+    "Node deleted. An active core will reload automatically.",
   "nodes.switchingManual": "Switched to manual mode — restarting core…",
   "nodes.latencyNeedsCore": "Start core to test",
 
@@ -1175,6 +1179,9 @@ const zh: Record<MessageKey, string> = {
   "nodes.unsavedConfirm": "要放弃当前节点尚未保存的修改吗？",
   "nodes.invalidDraft": "请填写当前协议所需的节点信息后再保存。",
   "nodes.saveSuccess": "节点已保存；内核正在运行时会自动重载。",
+  "nodes.deleteConfirm":
+    "确定从此订阅中删除“{name}”吗？这是本地删除，订阅刷新后仍会保持删除状态。",
+  "nodes.deleteSuccess": "节点已删除；内核正在运行时会自动重载。",
   "nodes.switchingManual": "已切换为手动模式，正在重启内核…",
   "nodes.latencyNeedsCore": "需启动内核后测试",
 

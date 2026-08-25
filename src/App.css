@@ -2186,9 +2186,13 @@ button.node-card:disabled,
   font-size: 0.68rem;
 }
 
-.node-editor-modal {
+.modal.node-editor-modal {
   width: min(980px, calc(100vw - 2rem));
-  max-height: min(90vh, 900px);
+  height: min(90vh, 900px);
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .node-editor-profile,
@@ -2196,14 +2200,17 @@ button.node-card:disabled,
   margin: 0.25rem 0 0;
 }
 
-.node-editor-body {
+.modal.node-editor-modal .node-editor-body {
+  flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .node-editor-layout {
   display: grid;
-  grid-template-columns: minmax(210px, 0.8fr) minmax(340px, 1.8fr);
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.8fr);
   gap: 1rem;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
@@ -2253,7 +2260,17 @@ button.node-card:disabled,
 }
 
 .node-editor-form {
+  min-width: 0;
   padding: 0.1rem 0.6rem 0.4rem 0.1rem;
+}
+
+.node-editor-form .field,
+.node-editor-form .field-grid,
+.node-editor-form input,
+.node-editor-form textarea {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .node-editor-saved {
@@ -2261,14 +2278,28 @@ button.node-card:disabled,
   font-size: 0.82rem;
 }
 
+.node-editor-footer {
+  flex: 0 0 auto;
+}
+
+.node-editor-delete {
+  margin-right: auto;
+}
+
 @media (max-width: 720px) {
+  .modal.node-editor-modal {
+    width: min(100%, 620px);
+    height: calc(100vh - 2rem);
+  }
+
   .node-editor-layout {
     grid-template-columns: 1fr;
-    overflow: visible;
+    grid-template-rows: minmax(120px, 0.65fr) minmax(0, 1.35fr);
+    overflow: hidden;
   }
 
   .node-editor-list {
-    max-height: 180px;
+    max-height: none;
   }
 }
 
