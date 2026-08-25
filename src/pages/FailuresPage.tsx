@@ -9,10 +9,17 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { SolidSelect } from "../components/SolidSelect";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import type { ConnectionView, RuleSetSummary, RuleTarget } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
+
+/** Past this many rows the table renders only the visible window. */
+const VIRTUALIZE_AFTER = 200;
+/** Mirrors the fixed `.conn-table tbody tr` height in App.css. */
+const ROW_H = 35;
 
 function fmtTime(ms?: number | null) {
   if (!ms) return "—";
@@ -153,6 +160,25 @@ export function FailuresPage({ embedded = false }: Props) {
   );
 
   const scoped = useMemo(() => scopeFilter(rows, scope), [rows, scope]);
+  // Per-row host/suffix parsing memoized so the 2.5s poll re-renders don't
+  // re-split/regex every row (up to 800) on each pass.
+  const scopedMeta = useMemo(
+    () =>
+      scoped.map((r) => {
+        const host = rowHost(r);
+        return { row: r, host, suffix: extractDomainSuffix(host) };
+      }),
+    [scoped],
+  );
+  const virtualized = scopedMeta.length > VIRTUALIZE_AFTER;
+  const range = useVirtualRange({
+    itemCount: scopedMeta.length,
+    itemSize: ROW_H,
+    enabled: virtualized,
+  });
+  const visibleMeta = virtualized
+    ? scopedMeta.slice(range.start, range.end)
+    : scopedMeta;
   const scopeOpts = useMemo(
     () => [
       { value: "all", label: t("traffic.scopeAll") },
@@ -283,7 +309,9 @@ export function FailuresPage({ embedded = false }: Props) {
 
   const body = (
     <>
-      {error && !addOpen && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <div className="muted mono traffic-meta">
         {t("fails.count", { n: scoped.length })}
@@ -307,11 +335,13 @@ export function FailuresPage({ embedded = false }: Props) {
                 <th className="conn-th-actions">{t("common.actions")}</th>
               </tr>
             </thead>
-            <tbody>
-              {scoped.map((r) => {
-                const host = rowHost(r);
-                const suffix = extractDomainSuffix(host);
-                return (
+            <tbody ref={range.containerRef as React.RefObject<HTMLTableSectionElement>}>
+              {range.paddingTop > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingTop }} />
+                </tr>
+              )}
+              {visibleMeta.map(({ row: r, host, suffix }) => (
                   <tr key={`${r.id}-${r.closed_at ?? r.last_seen ?? 0}`}>
                     <td className="conn-time">
                       <div className="conn-cell" title={fmtTime(r.closed_at ?? r.last_seen)}>
@@ -360,8 +390,12 @@ export function FailuresPage({ embedded = false }: Props) {
                       </button>
                     </td>
                   </tr>
-                );
-              })}
+                ))}
+              {range.paddingBottom > 0 && (
+                <tr aria-hidden className="virt-pad">
+                  <td colSpan={6} style={{ height: range.paddingBottom }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -384,8 +418,6 @@ export function FailuresPage({ embedded = false }: Props) {
           </button>
         </header>
         <form className="modal-body" onSubmit={(e) => void onAddSave(e)}>
-          {error && <div className="banner error">{error}</div>}
-
           <div className="field">
             <span>{t("fails.ruleSet")}</span>
             <div className="fails-set-row">

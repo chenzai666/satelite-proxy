@@ -3,10 +3,17 @@ import { clearAppLogs, listAppLogs, type AppLogEntry, type AppLogLevel } from ".
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitch } from "../components/GlassSwitch";
+import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 
 const LEVELS: AppLogLevel[] = ["error", "warn", "info", "debug", "trace"];
+
+/** Past this many lines the list renders only the visible window. */
+const VIRTUALIZE_AFTER = 200;
+/** Mirrors the fixed `.log-line` height in App.css. */
+const ROW_H = 25;
 
 function levelRank(l: AppLogLevel): number {
   switch (l) {
@@ -129,6 +136,16 @@ export function LogsPage() {
 
   const countLabel = useMemo(() => `${rows.length}`, [rows.length]);
 
+  const virtualized = rows.length > VIRTUALIZE_AFTER;
+  const range = useVirtualRange({
+    itemCount: rows.length,
+    itemSize: ROW_H,
+    enabled: virtualized,
+    // The log list scrolls inside its own panel, not the app shell.
+    scrollerSelector: ".logs-panel",
+  });
+  const visibleRows = virtualized ? rows.slice(range.start, range.end) : rows;
+
   return (
     <div className="page logs-page">
       <div className="page-header traffic-header">
@@ -187,18 +204,27 @@ export function LogsPage() {
         />
       </div>
 
-      {error && <p className="error-banner">{error}</p>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <div className="logs-panel card glass" ref={listRef}>
         {rows.length === 0 ? (
           <p className="muted logs-empty">{t("logs.empty")}</p>
         ) : (
-          <ul className="logs-list mono">
-            {rows.map((e) => (
+          <ul
+            className="logs-list mono"
+            ref={range.containerRef as React.RefObject<HTMLUListElement>}
+          >
+            {range.paddingTop > 0 && (
+              <li aria-hidden className="virt-pad" style={{ height: range.paddingTop }} />
+            )}
+            {visibleRows.map((e) => (
               <li
                 key={e.id}
                 className={`log-line log-${e.level}`}
                 data-level={e.level}
+                title={e.message}
                 style={{
                   opacity: levelRank(e.level) < levelRank(minLevel) ? 0.5 : 1,
                 }}
@@ -209,6 +235,9 @@ export function LogsPage() {
                 <span className="log-msg">{e.message}</span>
               </li>
             ))}
+            {range.paddingBottom > 0 && (
+              <li aria-hidden className="virt-pad" style={{ height: range.paddingBottom }} />
+            )}
           </ul>
         )}
       </div>

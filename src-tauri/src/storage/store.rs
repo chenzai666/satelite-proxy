@@ -246,6 +246,10 @@ impl AppStore {
                     enabled: true,
                     ownership: RuleSetOwnership::User,
                     strategy: RuleSetStrategy::Smart,
+                    node_id: None,
+                    node_name: None,
+                    smart_include: Vec::new(),
+                    smart_exclude: Vec::new(),
                     dns_strategy: RuleSetDnsStrategy::Remote,
                     remote: None,
                     dns_rules: Vec::new(),
@@ -365,7 +369,9 @@ impl AppStore {
                             RuleSetStrategy::Proxy => "代理",
                             RuleSetStrategy::Direct => "直连",
                             RuleSetStrategy::Block => "拦截",
-                            RuleSetStrategy::Smart => "智能",
+                            // Legacy v2 data never carries Node/Filter; the
+                            // arm only keeps the match exhaustive.
+                            _ => "智能",
                         };
                         sibling.id = format!("{}-{key}", set.id);
                         sibling.name = format!("{} · {suffix}", set.name);
@@ -418,6 +424,10 @@ impl AppStore {
                             RuleSetOwnership::User
                         },
                         strategy,
+                        node_id: None,
+                        node_name: None,
+                        smart_include: Vec::new(),
+                        smart_exclude: Vec::new(),
                         dns_strategy: match key {
                             "direct" => RuleSetDnsStrategy::Local,
                             "smart" => RuleSetDnsStrategy::Domestic,
@@ -453,8 +463,12 @@ impl AppStore {
                     })
                     .unwrap_or_else(|| match set.strategy {
                         RuleSetStrategy::Direct => RuleSetDnsStrategy::Local,
+                        // Legacy v2 data predates Node/Filter; group them with
+                        // the proxy-like strategies for DNS pairing.
                         RuleSetStrategy::Proxy
                         | RuleSetStrategy::Block
+                        | RuleSetStrategy::Node
+                        | RuleSetStrategy::Filter
                         | RuleSetStrategy::Smart => RuleSetDnsStrategy::Remote,
                     });
 
@@ -1025,6 +1039,10 @@ impl AppStore {
                 enabled: s.enabled,
                 ownership: s.ownership,
                 strategy: s.strategy,
+                node_id: s.node_id.clone(),
+                node_name: s.node_name.clone(),
+                smart_include: s.smart_include.clone(),
+                smart_exclude: s.smart_exclude.clone(),
                 dns_strategy: s.dns_strategy,
                 resettable: is_builtin_remote_id(&s.id),
                 remote: s.remote.clone(),
@@ -1082,37 +1100,17 @@ impl AppStore {
         Ok(())
     }
 
-    /// Apply one target to EVERY rule of a local set (batch set-routes).
-    /// proxy/direct/block collapse to a plain strategy (whole-set, same as a
-    /// strategy flip); node/smart force the set to Smart and rewrite each
-    /// rule with the pin / keywords. Returns (set, needs_core_restart).
-    pub fn batch_set_rule_targets(
-        &mut self,
-        id: &str,
+    /// Validate + normalize whole-set route parameters: a node pin for
+    /// `node` targets (must exist), normalized keyword filters for `smart`
+    /// targets (no include/exclude overlap). Returns (pin, include, exclude).
+    fn resolve_set_route_params(
+        &self,
         target: crate::domain::RuleTarget,
         node_id: Option<String>,
         smart_include: Vec<String>,
         smart_exclude: Vec<String>,
-    ) -> AppResult<(RuleSet, bool)> {
-        use crate::domain::{RuleSetStrategy, RuleTarget};
-        let set = self
-            .rule_sets
-            .iter_mut()
-            .find(|set| set.id == id)
-            .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
-        let is_remote = set.remote.is_some();
-        // Remote sets route the whole set by target; node pins and keyword
-        // filters are local per-rule features.
-        if is_remote
-            && !matches!(
-                target,
-                RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
-            )
-        {
-            return Err(crate::error::AppError::Config(
-                "远程规则集仅支持代理 / 直连 / 屏蔽".into(),
-            ));
-        }
+    ) -> AppResult<(Option<(String, String)>, Vec<String>, Vec<String>)> {
+        use crate::domain::{keyword_list_overlap, Rule, RuleTarget};
         let pin = if target == RuleTarget::Node {
             let nid = node_id
                 .as_deref()
@@ -1129,35 +1127,81 @@ impl AppStore {
         } else {
             None
         };
-        match target {
-            RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block => {
-                set.strategy = match target {
-                    RuleTarget::Direct => RuleSetStrategy::Direct,
-                    RuleTarget::Block => RuleSetStrategy::Block,
-                    _ => RuleSetStrategy::Proxy,
-                };
-                if let Some(dns) = set.strategy.recommended_dns_strategy() {
-                    set.dns_strategy = dns;
-                }
-            }
-            RuleTarget::Node | RuleTarget::Smart => {
-                set.strategy = RuleSetStrategy::Smart;
-            }
+        let include = Rule::normalize_keywords(&smart_include);
+        let exclude = Rule::normalize_keywords(&smart_exclude);
+        if let Some(k) = keyword_list_overlap(&include, &exclude).first() {
+            return Err(crate::error::AppError::Config(format!(
+                "关键词不能同时出现在白名单和黑名单中：{k}"
+            )));
         }
+        Ok((pin, include, exclude))
+    }
+
+    /// Apply one whole-set route target + parameters: strategy flip, set-level
+    /// pin/keyword fields, and the recommended DNS pairing. Shared by the
+    /// batch path and both create paths. `node` → Node, `smart` → Filter.
+    fn apply_set_route(
+        set: &mut RuleSet,
+        target: crate::domain::RuleTarget,
+        pin: &Option<(String, String)>,
+        include: &[String],
+        exclude: &[String],
+    ) {
+        use crate::domain::{RuleSetStrategy, RuleTarget};
+        set.strategy = RuleSetStrategy::from_target(target);
+        set.node_id = pin.as_ref().map(|(id, _)| id.clone());
+        set.node_name = pin.as_ref().map(|(_, name)| name.clone());
+        set.smart_include = if target == RuleTarget::Smart {
+            include.to_vec()
+        } else {
+            Vec::new()
+        };
+        set.smart_exclude = if target == RuleTarget::Smart {
+            exclude.to_vec()
+        } else {
+            Vec::new()
+        };
+        if let Some(dns) = set.strategy.recommended_dns_strategy() {
+            set.dns_strategy = dns;
+        }
+    }
+
+    /// Apply one target to EVERY rule of a set (batch set-routes). Works for
+    /// local sets (rewrites each rule) and remote sets (whole-set target —
+    /// node pins and keyword filters live on the set level there).
+    /// proxy/direct/block collapse to a plain strategy; node/smart become the
+    /// whole-set Node/Filter strategies. Returns (set, needs_core_restart).
+    pub fn batch_set_rule_targets(
+        &mut self,
+        id: &str,
+        target: crate::domain::RuleTarget,
+        node_id: Option<String>,
+        smart_include: Vec<String>,
+        smart_exclude: Vec<String>,
+    ) -> AppResult<(RuleSet, bool)> {
+        use crate::domain::RuleTarget;
+        let (pin, include, exclude) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
+        let set = self
+            .rule_sets
+            .iter_mut()
+            .find(|set| set.id == id)
+            .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
+        Self::apply_set_route(set, target, &pin, &include, &exclude);
         if let Some(remote) = set.remote.as_mut() {
-            remote.target = target.clone();
+            remote.target = target;
         }
         for rule in &mut set.rules {
-            rule.target = target.clone();
+            rule.target = target;
             rule.node_id = pin.as_ref().map(|(id, _)| id.clone());
             rule.node_name = pin.as_ref().map(|(_, name)| name.clone());
             rule.smart_include = if target == RuleTarget::Smart {
-                smart_include.clone()
+                include.clone()
             } else {
                 Vec::new()
             };
             rule.smart_exclude = if target == RuleTarget::Smart {
-                smart_exclude.clone()
+                exclude.clone()
             } else {
                 Vec::new()
             };
@@ -1166,23 +1210,26 @@ impl AppStore {
         Ok((set.clone(), needs_restart))
     }
 
-    /// Create a local user set with an initial route strategy (the new-set
+    /// Create a local user set with an initial whole-set route (the new-set
     /// dialog's 路由 choice, mirroring the remote flow). DNS strategy follows
     /// the recommended pairing via the same helper the flip path uses.
+    /// `node`/`smart` targets carry the set-level pin / keyword filters.
     pub fn create_local_rule_set(
         &mut self,
         name: &str,
-        strategy: crate::domain::RuleSetStrategy,
-    ) -> RuleSet {
+        target: crate::domain::RuleTarget,
+        node_id: Option<String>,
+        smart_include: Vec<String>,
+        smart_exclude: Vec<String>,
+    ) -> AppResult<RuleSet> {
+        let (pin, include, exclude) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
         let mut set = RuleSet::new_user(name, vec![]);
-        set.strategy = strategy;
-        if let Some(dns_strategy) = strategy.recommended_dns_strategy() {
-            set.dns_strategy = dns_strategy;
-        }
+        Self::apply_set_route(&mut set, target, &pin, &include, &exclude);
         // New sets start disabled — enable once they hold effective rules.
         set.enabled = false;
         self.rule_sets.insert(0, set.clone());
-        set
+        Ok(set)
     }
 
     pub fn create_remote_rule_set(
@@ -1191,16 +1238,22 @@ impl AppStore {
         url: &str,
         target: crate::domain::RuleTarget,
         update_interval: &str,
-    ) -> RuleSet {
+        node_id: Option<String>,
+        smart_include: Vec<String>,
+        smart_exclude: Vec<String>,
+    ) -> AppResult<RuleSet> {
+        let (pin, include, exclude) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
         let mut set = RuleSet::new_remote(name, url, target);
         if let Some(remote) = set.remote.as_mut() {
             remote.update_interval = update_interval.to_string();
         }
+        Self::apply_set_route(&mut set, target, &pin, &include, &exclude);
         // New sets start disabled — enable after the first successful
         // download produces a cached rule file.
         set.enabled = false;
         self.rule_sets.insert(0, set.clone());
-        set
+        Ok(set)
     }
 
     pub fn enabled_rule_sets(&self) -> Vec<RuleSet> {
@@ -1609,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_set_rule_targets_node_forces_smart_and_pins_all() {
+    fn batch_set_rule_targets_node_and_smart_set_whole_set_strategies() {
         use crate::domain::{
             Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetStrategy, RuleTarget,
             RuleType,
@@ -1657,18 +1710,56 @@ mod tests {
         let (updated, _) = store
             .batch_set_rule_targets(&id, RuleTarget::Node, Some("node-1".into()), vec![], vec![])
             .unwrap();
-        assert_eq!(updated.strategy, RuleSetStrategy::Smart);
+        // Batch node → whole-set Node strategy + set-level pin; every local
+        // rule carries the same pin for per-row display.
+        assert_eq!(updated.strategy, RuleSetStrategy::Node);
+        assert_eq!(updated.node_id.as_deref(), Some("node-1"));
+        assert_eq!(updated.node_name.as_deref(), Some("东京 01"));
         assert!(updated.rules.iter().all(|r| {
             r.target == RuleTarget::Node
                 && r.node_id.as_deref() == Some("node-1")
                 && r.node_name.as_deref() == Some("东京 01")
         }));
 
-        // Batch to direct collapses back to a plain uniform strategy.
+        // Batch keywords → whole-set Filter strategy with set-level filters.
+        let (updated, _) = store
+            .batch_set_rule_targets(
+                &id,
+                RuleTarget::Smart,
+                None,
+                vec!["东京".into(), "东京 ".into()],
+                vec!["香港".into()],
+            )
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Filter);
+        assert_eq!(updated.smart_include, vec!["东京".to_string()]);
+        assert_eq!(updated.smart_exclude, vec!["香港".to_string()]);
+        assert!(updated.node_id.is_none());
+        assert!(updated.rules.iter().all(|r| {
+            r.target == RuleTarget::Smart
+                && r.smart_include == vec!["东京".to_string()]
+                && r.smart_exclude == vec!["香港".to_string()]
+        }));
+
+        // Include/exclude overlap is rejected.
+        assert!(store
+            .batch_set_rule_targets(
+                &id,
+                RuleTarget::Smart,
+                None,
+                vec!["东京".into()],
+                vec!["东京".into()],
+            )
+            .is_err());
+
+        // Batch to direct collapses back to a plain uniform strategy and
+        // clears the set-level pin / filters.
         let (updated, _) = store
             .batch_set_rule_targets(&id, RuleTarget::Direct, None, vec![], vec![])
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Direct);
+        assert!(updated.node_id.is_none());
+        assert!(updated.smart_include.is_empty());
         assert!(updated
             .rules
             .iter()
@@ -1679,12 +1770,17 @@ mod tests {
     fn batch_set_rule_targets_routes_remote_whole_set() {
         use crate::domain::{RuleSetStrategy, RuleTarget};
         let mut store = AppStore::default();
-        let set = store.create_remote_rule_set(
-            "远程集",
-            "https://example.com/rules.json",
-            RuleTarget::Proxy,
-            "1h",
-        );
+        let set = store
+            .create_remote_rule_set(
+                "远程集",
+                "https://example.com/rules.json",
+                RuleTarget::Proxy,
+                "1h",
+                None,
+                vec![],
+                vec![],
+            )
+            .unwrap();
 
         let (updated, _) = store
             .batch_set_rule_targets(&set.id, RuleTarget::Direct, None, vec![], vec![])
@@ -1695,17 +1791,65 @@ mod tests {
             RuleTarget::Direct
         );
 
-        // Node / smart stay local-only for remote sets.
-        assert!(store
-            .batch_set_rule_targets(&set.id, RuleTarget::Smart, None, vec![], vec![])
-            .is_err());
+        // Remote sets support the whole-set node pin / keyword filters too.
+        let node_pin = crate::domain::ProxyNode {
+            id: "n1".into(),
+            name: "东京 01".into(),
+            protocol: crate::domain::Protocol::Shadowsocks,
+            server: "example.com".into(),
+            port: 8388,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: crate::domain::ProtocolConfig::Shadowsocks {
+                method: "aes-256-gcm".into(),
+                password: "x".into(),
+                plugin: None,
+                plugin_opts: None,
+                shadow_tls: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        };
+        store.nodes.push(StoredNode {
+            subscription_id: "sub".into(),
+            node: node_pin,
+        });
+        let (updated, _) = store
+            .batch_set_rule_targets(&set.id, RuleTarget::Node, Some("n1".into()), vec![], vec![])
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Node);
+        assert_eq!(updated.node_id.as_deref(), Some("n1"));
+        assert_eq!(
+            updated.remote.expect("remote config").target,
+            RuleTarget::Node
+        );
+
+        let (updated, _) = store
+            .batch_set_rule_targets(
+                &set.id,
+                RuleTarget::Smart,
+                None,
+                vec!["东京".into()],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(updated.strategy, RuleSetStrategy::Filter);
+        assert_eq!(updated.smart_include, vec!["东京".to_string()]);
+        assert_eq!(
+            updated.remote.expect("remote config").target,
+            RuleTarget::Smart
+        );
     }
 
     #[test]
     fn create_local_rule_set_applies_initial_strategy() {
-        use crate::domain::RuleSetStrategy;
+        use crate::domain::{RuleSetStrategy, RuleTarget};
         let mut store = AppStore::default();
-        let set = store.create_local_rule_set("本地直连集", RuleSetStrategy::Direct);
+        let set = store
+            .create_local_rule_set("本地直连集", RuleTarget::Direct, None, vec![], vec![])
+            .unwrap();
         assert_eq!(set.strategy, RuleSetStrategy::Direct);
         // DNS pairing follows the same recommendation as a strategy flip.
         assert_eq!(
@@ -1717,13 +1861,24 @@ mod tests {
 
     #[test]
     fn create_local_rule_set_smart_pairs_remote_dns() {
-        use crate::domain::RuleSetStrategy;
+        use crate::domain::{RuleSetStrategy, RuleTarget};
         let mut store = AppStore::default();
-        let set = store.create_local_rule_set("混合集", RuleSetStrategy::Smart);
-        assert_eq!(set.strategy, RuleSetStrategy::Smart);
+        // Keyword target creates a whole-set Filter (per-rule pools stay a
+        // Mixed-only concern).
+        let set = store
+            .create_local_rule_set(
+                "过滤集",
+                RuleTarget::Smart,
+                None,
+                vec!["东京".into()],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(set.strategy, RuleSetStrategy::Filter);
+        assert_eq!(set.smart_include, vec!["东京".to_string()]);
         assert_eq!(
             set.dns_strategy,
-            RuleSetStrategy::Smart.recommended_dns_strategy().unwrap()
+            RuleSetStrategy::Filter.recommended_dns_strategy().unwrap()
         );
     }
 
@@ -1731,7 +1886,9 @@ mod tests {
     fn new_sets_start_disabled_and_empty_sets_cannot_be_enabled() {
         use crate::domain::{Rule, RuleSetStrategy, RuleTarget, RuleType};
         let mut store = AppStore::default();
-        let local = store.create_local_rule_set("新本地", RuleSetStrategy::Proxy);
+        let local = store
+            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![])
+            .unwrap();
         assert!(!local.enabled, "new local sets start disabled");
         assert!(
             store.set_rule_set_enabled(&local.id, true).is_err(),
@@ -1750,12 +1907,17 @@ mod tests {
         // Disabling a populated set stays allowed.
         store.set_rule_set_enabled(&local.id, false).unwrap();
 
-        let remote = store.create_remote_rule_set(
-            "新远程",
-            "https://example.com/r.json",
-            RuleTarget::Proxy,
-            "1h",
-        );
+        let remote = store
+            .create_remote_rule_set(
+                "新远程",
+                "https://example.com/r.json",
+                RuleTarget::Proxy,
+                "1h",
+                None,
+                vec![],
+                vec![],
+            )
+            .unwrap();
         assert!(!remote.enabled, "new remote sets start disabled");
         // No downloaded cache file yet → still empty for config purposes.
         assert!(store.set_rule_set_enabled(&remote.id, true).is_err());
@@ -2614,15 +2776,22 @@ mod tests {
             .rule_sets
             .push(RuleSet::new_user("已有规则", Vec::new()));
 
-        let local = store.create_local_rule_set("新本地", RuleSetStrategy::Proxy);
+        let local = store
+            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![])
+            .unwrap();
         assert_eq!(store.rule_sets[0].id, local.id);
 
-        let remote = store.create_remote_rule_set(
-            "新远程",
-            "https://example.com/rules.json",
-            RuleTarget::Proxy,
-            "1h",
-        );
+        let remote = store
+            .create_remote_rule_set(
+                "新远程",
+                "https://example.com/rules.json",
+                RuleTarget::Proxy,
+                "1h",
+                None,
+                vec![],
+                vec![],
+            )
+            .unwrap();
         assert_eq!(store.rule_sets[0].id, remote.id);
         assert_eq!(store.rule_sets[1].id, local.id);
     }

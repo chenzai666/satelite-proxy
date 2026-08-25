@@ -93,7 +93,7 @@ pub async fn download_core_to(
     app_data_dir: &std::path::Path,
     tag: Option<String>,
 ) -> Result<core::CoreDownloadResult, String> {
-    core::download_latest_core(app_data_dir, tag)
+    core::download_latest_core(core::CoreKind::SingBox, app_data_dir, tag)
         .await
         .map_err(|e| e.to_string())
 }
@@ -230,6 +230,11 @@ pub fn run() {
 
             // Smart node switch (docs/auto.md): passive + on-demand probe.
             smart_switch::spawn(app.handle().clone());
+
+            // Core watchdog: a core that dies without a user stop is
+            // auto-restarted, bounded by
+            // an attempt budget so config-error loops cannot spin.
+            state::spawn_core_watchdog(app.handle().clone());
 
             // Deep links (clash:// · sing-box://): show UI; frontend opens add form.
             // Pending URLs live in AppState until the user closes the modal (then cleared).
@@ -398,8 +403,12 @@ pub fn run() {
             commands::get_core_info,
             commands::get_lan_ip,
             commands::check_core_update,
+            commands::check_app_update,
+            commands::get_app_install_path,
             commands::download_core,
             commands::fetch_core_latest,
+            commands::refresh_geodata,
+            commands::set_core_type,
             commands::test_nodes_latency,
             commands::test_custom_nodes_latency,
             commands::get_proxy_status,
@@ -444,6 +453,7 @@ pub fn run() {
             commands::clear_request_history,
             commands::list_app_logs,
             commands::clear_app_logs,
+            commands::get_core_log_tail,
             parse_subscription_text,
             set_ui_mode_pref,
             peek_pending_import_urls,

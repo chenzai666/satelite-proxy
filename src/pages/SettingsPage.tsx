@@ -1,31 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  checkAppUpdate,
   checkCoreUpdate,
   diagnoseNetwork,
   downloadCore,
+  getAppInstallPath,
   getCoreInfo,
   getProxyStatus,
   getSettings,
   regenerateApiSecret,
   restartProxy,
+  setCoreType,
   updateSettings,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
+import { ErrorModal } from "../components/ErrorModal";
 import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
+import { CoreMark } from "../components/CoreMark";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
-import { ACCENTS } from "../theme/accents";
+import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
+import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
 import { useTheme } from "../theme";
 import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  CoreKind,
   DiagnosticIssue,
   ExtraInbound,
   HeroStyle,
@@ -39,6 +48,11 @@ type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "core";
 
 const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
 
+/** Repository link shown in the bottom-right corner of the settings page. */
+const PROJECT_URL = "https://github.com/zn0wii/satelite-proxy/";
+/** Always-latest app release page, opened from the version tab. */
+const RELEASES_URL = "https://github.com/zn0wii/satelite-proxy/releases/latest";
+
 // Accent preset names are picked from the i18n catalog rather than
 // AccentPreset.name (theme/accents.ts), which is display data only and not
 // locale-aware.
@@ -51,6 +65,11 @@ const ACCENT_LABEL_KEY: Record<string, MessageKey> = {
   cyan: "accent.cyan",
 };
 
+/** Idle custom swatch: a rainbow ring hinting "pick any colour". Replaced by
+ *  the stored custom hex (inline style) once a custom accent is active. */
+const CUSTOM_DOT_RAINBOW =
+  "conic-gradient(from 90deg, #f66, #fc6, #6c6, #6cd, #66c, #c6c, #f66)";
+
 function fmtCoreBytes(value: number) {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   return `${(value / (1024 * 1024)).toFixed(1)} MB`;
@@ -58,13 +77,22 @@ function fmtCoreBytes(value: number) {
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
-  const { theme, setTheme, accent, setAccent, heroStyle, setHeroStyle } =
+  const { theme, setTheme, accent, setAccent, glow, setGlow, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   /** Sponsor QR panel (decrypt-reveal over the image). */
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorSession, setSponsorSession] = useState("0000");
+  /** Custom accent color picker (the extra swatch after the presets). */
+  const [accentPickerOpen, setAccentPickerOpen] = useState(false);
+  const [glowPickerOpen, setGlowPickerOpen] = useState(false);
+  /** Anchor + viewport position for the sponsor popup (portaled to <body>,
+   * fixed above the trigger button so opening it never reflows the card). */
+  const sponsorBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [sponsorPos, setSponsorPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
 
   // Click outside the panel/link dismisses it. Ignore clicks inside either
   // node: the link is portaled to <body>, so React stopPropagation does not
@@ -118,13 +146,34 @@ export function SettingsPage() {
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
-  const [core, setCore] = useState<CoreInfo | null>(null);
-  const [coreBusy, setCoreBusy] = useState(false);
-  const [coreChecking, setCoreChecking] = useState(false);
+  /** Per-core status (sing-box + Xray + mihomo). */
+  const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
+    singbox: null,
+    xray: null,
+    mihomo: null,
+  });
+  const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
+  const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
   const [coreProgress, setCoreProgress] =
     useState<CoreDownloadProgress | null>(null);
+
+  // App's own version card: local version is instant (getVersion), the
+  // latest GitHub tag needs a network check that routes via the proxy
+  // when the kernel is running (same strategy as the core check).
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [appUpdate, setAppUpdate] = useState<{
+    current_version: string;
+    latest_version: string;
+    update_available: boolean;
+    cached: boolean;
+    checked_at: number | null;
+  } | null>(null);
+  const [appChecking, setAppChecking] = useState(false);
+  const [appError, setAppError] = useState<string | null>(null);
+  /** Absolute path of the app's own executable, shown like the kernel path. */
+  const [appPath, setAppPath] = useState<string | null>(null);
 
   const tabs = useMemo(
     () =>
@@ -164,26 +213,29 @@ export function SettingsPage() {
   );
 
   const runCoreUpdateCheck = useCallback(
-    async (localVersion: string | null, reportError: boolean) => {
-      setCoreChecking(true);
+    async (kind: CoreKind, localVersion: string | null, reportError: boolean) => {
+      setCoreCheckingKind(kind);
       if (reportError) setCoreError(null);
       try {
-        const update = await checkCoreUpdate(localVersion);
-        setCore((prev) =>
-          prev
-            ? {
-                ...prev,
-                latest_version: update.latest_version,
-                update_available: update.update_available,
-              }
-            : prev,
-        );
+        const update = await checkCoreUpdate(kind, localVersion);
+        setCores((prev) => {
+          const info = prev[kind];
+          if (!info) return prev;
+          return {
+            ...prev,
+            [kind]: {
+              ...info,
+              latest_version: update.latest_version,
+              update_available: update.update_available,
+            },
+          };
+        });
       } catch (e) {
         if (reportError) {
           setCoreError(typeof e === "string" ? e : String(e));
         }
       } finally {
-        setCoreChecking(false);
+        setCoreCheckingKind(null);
       }
     },
     [],
@@ -192,9 +244,16 @@ export function SettingsPage() {
   const reloadCore = useCallback(async () => {
     setCoreError(null);
     try {
-      const local = await getCoreInfo();
-      setCore(local);
-      void runCoreUpdateCheck(local.version ?? null, false);
+      const results = await Promise.all([
+        getCoreInfo("singbox"),
+        getCoreInfo("xray"),
+        getCoreInfo("mihomo"),
+      ]);
+      const [singbox, xray, mihomo] = results;
+      setCores({ singbox, xray, mihomo });
+      void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
+      void runCoreUpdateCheck("xray", xray.version ?? null, false);
+      void runCoreUpdateCheck("mihomo", mihomo.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
@@ -218,6 +277,37 @@ export function SettingsPage() {
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
     void reloadCore();
   }, [reloadCore]);
+
+  /** reportError: surface failures (manual click). force: bypass the 6h
+   * cache and hit the network — manual checks always refresh, auto checks
+   * on tab open reuse a fresh cached result. */
+  const runAppUpdateCheck = useCallback(
+    async (reportError: boolean, force = false) => {
+      setAppChecking(true);
+      if (reportError) setAppError(null);
+      try {
+        setAppUpdate(await checkAppUpdate(force));
+      } catch (e) {
+        if (reportError) {
+          setAppError(typeof e === "string" ? e : String(e));
+        }
+      } finally {
+        setAppChecking(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (tab !== "core") return;
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+    void getAppInstallPath()
+      .then(setAppPath)
+      .catch(() => setAppPath(null));
+    void runAppUpdateCheck(false);
+  }, [tab, runAppUpdateCheck]);
 
   useEffect(() => {
     if (tab !== "core") return;
@@ -246,14 +336,21 @@ export function SettingsPage() {
   }, [menuInboundId]);
 
   useEffect(() => {
+    // Settings tabs remount pages often; if this unmounts before listen()
+    // resolves, dispose immediately so the listener doesn't leak.
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<CoreDownloadProgress>("core-download-progress", (event) => {
       setCoreProgress(event.payload);
       setCoreProxyAvailable(event.payload.via_proxy);
     }).then((dispose) => {
-      unlisten = dispose;
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   /** Latest auto-apply fn (called from the debounced effect and re-queued
@@ -428,6 +525,30 @@ export function SettingsPage() {
     }
   }
 
+  /** Copy-feedback for the truncated path lines (kernel rows + app card). */
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  async function onCopyPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopiedPath(path);
+      window.setTimeout(() => setCopiedPath(null), 1500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** Relative time for the app card's "last check" row (backend stores unix
+   *  seconds). */
+  function formatCheckedAt(ts: number | null | undefined): string {
+    if (!ts) return "—";
+    const minutes = Math.floor((Date.now() / 1000 - ts) / 60);
+    if (minutes < 1) return t("settings.relJustNow");
+    if (minutes < 60) return t("settings.relMinAgo", { n: minutes });
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return t("settings.relHourAgo", { n: hours });
+    return t("settings.relDayAgo", { n: Math.floor(hours / 24) });
+  }
+
   /** User-triggered secret rotation; backend restarts a running core so the
    * new secret is live immediately. */
   async function onRegenerateSecret() {
@@ -443,13 +564,14 @@ export function SettingsPage() {
     }
   }
 
-  async function onDownloadCore() {
-    setCoreBusy(true);
+  async function onDownloadCore(kind: CoreKind) {
+    setCoreBusyKind(kind);
     setCoreError(null);
     const status = await getProxyStatus().catch(() => null);
     const viaProxy = !!status?.running;
     setCoreProxyAvailable(viaProxy);
     setCoreProgress({
+      kind,
       stage: "preparing",
       downloaded: 0,
       total: null,
@@ -457,17 +579,206 @@ export function SettingsPage() {
       via_proxy: viaProxy,
     });
     try {
-      await downloadCore(null);
+      await downloadCore(kind, null);
       await reloadCore();
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     } finally {
-      setCoreBusy(false);
+      setCoreBusyKind(null);
+      setCoreProgress(null);
     }
   }
 
-  async function onCheckCoreUpdate() {
-    await runCoreUpdateCheck(core?.version ?? null, true);
+  async function onCheckCoreUpdate(kind: CoreKind) {
+    await runCoreUpdateCheck(kind, cores[kind]?.version ?? null, true);
+  }
+
+  /** Switch the active core; a running core restarts onto the new binary. */
+  async function onSwitchCore(kind: CoreKind) {
+    if (settings?.core_type === kind) return;
+    setCoreError(null);
+    try {
+      const s = await setCoreType(kind);
+      setSettings(s);
+    } catch (e) {
+      setCoreError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** One compact version row per core (sing-box / Xray / mihomo): identity
+   *  line, bundled/latest meta + actions, then a quiet path foot line. */
+  function renderCoreRow(kind: CoreKind) {
+    const info = cores[kind];
+    const busy = coreBusyKind === kind;
+    const checking = coreCheckingKind === kind;
+    const active = (settings?.core_type ?? "singbox") === kind;
+    // Progress events carry the core kind; each row shows only its own.
+    const progress =
+      coreProgress && (coreProgress.kind ?? "singbox") === kind
+        ? coreProgress
+        : null;
+    return (
+      <div
+        className={`kernel-row${active ? " core-active" : ""}`}
+        key={kind}
+        title={
+          kind === "xray"
+            ? t("settings.coreHintXray")
+            : kind === "mihomo"
+              ? t("settings.coreHintMihomo")
+              : t("settings.coreHint")
+        }
+      >
+        <div className="kernel-row-main">
+          {/* Monogram tile: cube = sing-box, bolt = Xray, cat head = mihomo. */}
+          <div className="ver-mark kernel-mark" aria-hidden>
+            <CoreMark kind={kind} />
+          </div>
+          <span className="kernel-name">
+            {info?.name ?? (kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box")}
+          </span>
+          {/* Radio-style enable: clicking switches the active core (a
+             running core restarts onto the new binary). */}
+          <button
+            type="button"
+            className={`core-radio${active ? " on" : ""}`}
+            aria-pressed={active}
+            aria-label={t("settings.coreUse")}
+            title={t("settings.coreUse")}
+            disabled={coreBusyKind != null}
+            onClick={() => void onSwitchCore(kind)}
+          >
+            <span className="core-radio-dot" aria-hidden />
+          </button>
+          {/* Fixed-width slot on BOTH rows (empty when active) so the pill /
+             platform columns line up between the two cores. */}
+          <span className="kernel-switch-hint muted">
+            {active ? "" : t("settings.coreSwitchHint")}
+          </span>
+          {info?.installed ? (
+            !active && (
+              <span className={`pill ${info.source === "bundled" ? "ok" : ""}`}>
+                {info.source === "bundled"
+                  ? t("settings.coreBundled")
+                  : t("settings.coreInstalled")}
+              </span>
+            )
+          ) : (
+            <span className="pill warn">{t("settings.coreMissing")}</span>
+          )}
+          <span className="kernel-platform muted mono">
+            {info?.platform ?? "…"}
+          </span>
+          <span className="kernel-version mono">
+            {info?.version ?? "—"}
+            {info?.source === "downloaded" ? (
+              <span className="pill">{t("settings.coreUser")}</span>
+            ) : null}
+          </span>
+        </div>
+
+        <div className="kernel-row-meta">
+          <span className="kernel-meta-item mono">
+            {t("settings.coreBundledShort")} {info?.bundled_version ?? "—"}
+          </span>
+          <span className="kernel-meta-sep" aria-hidden>
+            ·
+          </span>
+          <span className="kernel-meta-item mono">
+            {t("settings.coreLatestShort")} {info?.latest_version ?? "—"}
+          </span>
+          {info?.update_available ? (
+            <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+          ) : null}
+          <div className="kernel-row-actions">
+            <GlassButton
+              icon="↻"
+              disabled={busy || checking || !info}
+              onClick={() => void onCheckCoreUpdate(kind)}
+            >
+              {checking
+                ? t("settings.coreChecking")
+                : t("settings.coreCheck")}
+            </GlassButton>
+            <GlassButton
+              variant="primary"
+              icon="⤓"
+              disabled={busy || checking}
+              onClick={() => void onDownloadCore(kind)}
+            >
+              {busy
+                ? t("settings.coreDownloading")
+                : info?.source === "downloaded"
+                  ? info.update_available
+                    ? t("settings.coreUpdate")
+                    : t("settings.coreRedownload")
+                  : t("settings.coreDownload")}
+            </GlassButton>
+          </div>
+        </div>
+
+        {busy && progress && (
+          <div className="core-download-progress" aria-live="polite">
+            <div className="core-download-progress-head">
+              <span className="lat-spinner" aria-hidden />
+              <span>
+                {progress.stage === "preparing"
+                  ? t("settings.corePreparing")
+                  : progress.stage === "installing"
+                    ? t("settings.coreInstalling")
+                    : t("settings.coreDownloading")}
+              </span>
+              <span className="mono core-download-percent">
+                {progress.percent != null
+                  ? `${progress.percent}%`
+                  : "…"}
+              </span>
+            </div>
+            <div
+              className={`core-progress-track${progress.percent == null ? " indeterminate" : ""}`}
+            >
+              <span
+                style={{
+                  width: `${progress.percent ?? 24}%`,
+                }}
+              />
+            </div>
+            {progress.downloaded > 0 && (
+              <div className="muted mono core-download-bytes">
+                {fmtCoreBytes(progress.downloaded)}
+                {progress.total
+                  ? ` / ${fmtCoreBytes(progress.total)}`
+                  : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="kernel-row-foot">
+          {active && coreProxyAvailable && (
+            <span className="kernel-run">
+              <span className="kernel-run-dot" aria-hidden />
+              {t("dashboard.coreRunning")}
+            </span>
+          )}
+          {info?.path && (
+            <>
+              <code className="kernel-path mono" title={info.path}>
+                {info.path}
+              </code>
+              <GlassButton
+                iconOnly
+                icon={copiedPath === info.path ? "✓" : "⧉"}
+                className="kernel-copy-btn"
+                title={copiedPath === info.path ? t("common.copied") : t("common.copy")}
+                aria-label={t("common.copy")}
+                onClick={() => void onCopyPath(info.path!)}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    );
   }
 
   async function patchApp(partial: Parameters<typeof updateSettings>[0]) {
@@ -545,59 +856,8 @@ export function SettingsPage() {
         </div>
       </header>
 
-      {/* Sponsor QR — portaled to <body> so a transformed ancestor (the
-       * page-enter animation wrapper) cannot become the containing block
-       * for these position:fixed nodes. App tab only. */}
-      {visibleTab === "app" &&
-        createPortal(
-          <>
-            <button
-              type="button"
-              className="sponsor-link"
-              onClick={(e) => {
-                e.stopPropagation();
-                setSponsorOpen((v) => {
-                  if (!v) {
-                    setSponsorSession(
-                      Math.floor(Math.random() * 0xffff)
-                        .toString(16)
-                        .padStart(4, "0"),
-                    );
-                  }
-                  return !v;
-                });
-              }}
-            >
-              {t("settings.sponsor")}
-            </button>
-            {sponsorOpen && (
-              <div
-                className="sponsor-panel sponsor-session"
-                role="dialog"
-                aria-label={t("settings.sponsor")}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="sponsor-session-bar" aria-hidden="true">
-                  <span>session {sponsorSession}</span>
-                  <span className="sponsor-cursor" />
-                </div>
-                <div className="sponsor-session-view">
-                  <DecryptReveal radius={140} dismissOnLeave>
-                    <img
-                      className="sponsor-qr"
-                      src={buymecoffeeUrl}
-                      alt={t("settings.sponsorScan")}
-                      draggable={false}
-                    />
-                  </DecryptReveal>
-                </div>
-                <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
-; optional :p`}</pre>
-              </div>
-            )}
-          </>,
-          document.body,
-        )}
+      {/* Corner links moved into the version tab's app card (project home +
+       * sponsor easter egg live next to the app's own version info). */}
 
       <GlassSeg
         value={visibleTab}
@@ -624,7 +884,7 @@ export function SettingsPage() {
         visibleTab !== "rules" &&
         visibleTab !== "dns" &&
         visibleTab !== "hosts" && (
-        <div className="banner error">{error}</div>
+        <ErrorModal message={error} onClose={() => setError(null)} />
       )}
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
@@ -651,7 +911,8 @@ export function SettingsPage() {
       {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">
-            <div className="settings-app-prefs">
+            <div className="settings-app-cols">
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.language")}</div>
@@ -670,6 +931,57 @@ export function SettingsPage() {
                   ]}
                 />
               </div>
+              <AppToggle
+                title={t("settings.launchAtLogin")}
+                desc={t("settings.launchAtLoginDesc")}
+                checked={!!settings?.launch_at_login}
+                disabled={busy}
+                onChange={(v) => void patchApp({ launchAtLogin: v })}
+              />
+              <AppToggle
+                title={t("settings.silentStart")}
+                desc={t("settings.silentStartDesc")}
+                checked={!!settings?.silent_start}
+                disabled={busy}
+                onChange={(v) => void patchApp({ silentStart: v })}
+              />
+              <AppToggle
+                title={t("settings.autoStartProxy")}
+                desc={t("settings.autoStartProxyDesc")}
+                checked={!!settings?.auto_start_proxy}
+                disabled={busy}
+                onChange={(v) => void patchApp({ autoStartProxy: v })}
+              />
+              <AppToggle
+                title={t("settings.closeToTray")}
+                desc={t("settings.closeToTrayDesc")}
+                checked={settings?.close_to_tray !== false}
+                disabled={busy}
+                onChange={(v) => void patchApp({ closeToTray: v })}
+              />
+              <AppToggle
+                title={t("settings.unloadUi")}
+                desc={t("settings.unloadUiDesc")}
+                checked={!!settings?.unload_ui_on_tray}
+                disabled={busy}
+                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
+              />
+              <AppToggle
+                title={t("settings.closeOnSwitch")}
+                desc={t("settings.closeOnSwitchDesc")}
+                checked={!!settings?.close_connections_on_switch}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
+              />
+              <AppToggle
+                title={t("settings.findProcess")}
+                desc={t("settings.findProcessDesc")}
+                checked={settings?.find_process !== false}
+                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
+                onChange={(v) => void patchApp({ findProcess: v })}
+              />
+              </div>
+              <div className="settings-app-col">
               <div className="settings-app-row settings-app-pref">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.theme")}</div>
@@ -685,6 +997,24 @@ export function SettingsPage() {
                   options={[
                     { value: "aerospace", label: t("settings.themeAerospace") },
                     { value: "day", label: t("settings.themeDay") },
+                  ]}
+                />
+              </div>
+              <div className="settings-app-row settings-app-pref settings-hero-row settings-duo-col">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glassFrost")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glassFrostDesc")}
+                  </div>
+                </div>
+                <GlassSeg
+                  value={glassFrost ? "frost" : "lite"}
+                  ariaLabel={t("settings.glassFrost")}
+                  disabled={busy}
+                  onChange={(v) => void setGlassFrost(v === "frost")}
+                  options={[
+                    { value: "lite", label: t("settings.glassFrostLite") },
+                    { value: "frost", label: t("settings.glassFrostFull") },
                   ]}
                 />
               </div>
@@ -719,6 +1049,99 @@ export function SettingsPage() {
                       )}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(accent) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(accent)
+                        ? { background: accent, color: accent }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(accent)}
+                    disabled={busy}
+                    onClick={() => setAccentPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(accent) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                </div>
+              </div>
+              <div className="settings-app-row settings-app-pref settings-accent-row">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.glow")}</div>
+                  <div className="settings-app-desc muted">
+                    {t("settings.glowDesc")}
+                  </div>
+                </div>
+                <div
+                  className="settings-accent-swatches"
+                  role="group"
+                  aria-label={t("settings.glow")}
+                >
+                  {/* "Follow accent" mirrors the accent's effective shade. */}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${glow === "accent" ? "active" : ""}`}
+                    style={{
+                      background: resolveAccent(accent)[theme],
+                      color: resolveAccent(accent)[theme],
+                    }}
+                    title={t("settings.glowFollow")}
+                    aria-label={t("settings.glowFollow")}
+                    aria-pressed={glow === "accent"}
+                    disabled={busy}
+                    onClick={() => void setGlow("accent")}
+                  >
+                    {glow === "accent" ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
+                  {ACCENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className={`settings-accent-dot ${glow === a.id ? "active" : ""}`}
+                      style={{ background: a[theme], color: a[theme] }}
+                      title={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-label={t(ACCENT_LABEL_KEY[a.id] ?? "settings.glow")}
+                      aria-pressed={glow === a.id}
+                      disabled={busy}
+                      onClick={() => void setGlow(a.id)}
+                    >
+                      {glow === a.id ? (
+                        <span className="settings-accent-check">✓</span>
+                      ) : (
+                        ""
+                      )}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`settings-accent-dot ${isCustomHexAccent(glow) ? "active" : ""}`}
+                    style={
+                      isCustomHexAccent(glow)
+                        ? { background: glow, color: glow }
+                        : { background: CUSTOM_DOT_RAINBOW }
+                    }
+                    title={t("accent.custom")}
+                    aria-label={t("accent.custom")}
+                    aria-pressed={isCustomHexAccent(glow)}
+                    disabled={busy}
+                    onClick={() => setGlowPickerOpen(true)}
+                  >
+                    {isCustomHexAccent(glow) ? (
+                      <span className="settings-accent-check">✓</span>
+                    ) : (
+                      ""
+                    )}
+                  </button>
                 </div>
               </div>
               <div className="settings-app-row settings-app-pref settings-hero-row">
@@ -736,10 +1159,11 @@ export function SettingsPage() {
                   options={[
                     { value: "particle", label: t("settings.heroStyleParticle") },
                     { value: "classic", label: t("settings.heroStyleClassic") },
+                    { value: "smiley", label: t("settings.heroStyleSmiley") },
                   ]}
                 />
               </div>
-              <div className="settings-app-row settings-app-pref settings-tray-icon-row">
+              <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.trayIcon")}</div>
                   <div className="settings-app-desc muted">
@@ -754,56 +1178,6 @@ export function SettingsPage() {
                 />
               </div>
             </div>
-            <div className="settings-app-toggles">
-              <AppToggle
-                title={t("settings.closeToTray")}
-                desc={t("settings.closeToTrayDesc")}
-                checked={settings?.close_to_tray !== false}
-                disabled={busy}
-                onChange={(v) => void patchApp({ closeToTray: v })}
-              />
-              <AppToggle
-                title={t("settings.unloadUi")}
-                desc={t("settings.unloadUiDesc")}
-                checked={!!settings?.unload_ui_on_tray}
-                disabled={busy}
-                onChange={(v) => void patchApp({ unloadUiOnTray: v })}
-              />
-              <AppToggle
-                title={t("settings.launchAtLogin")}
-                desc={t("settings.launchAtLoginDesc")}
-                checked={!!settings?.launch_at_login}
-                disabled={busy}
-                onChange={(v) => void patchApp({ launchAtLogin: v })}
-              />
-              <AppToggle
-                title={t("settings.silentStart")}
-                desc={t("settings.silentStartDesc")}
-                checked={!!settings?.silent_start}
-                disabled={busy}
-                onChange={(v) => void patchApp({ silentStart: v })}
-              />
-              <AppToggle
-                title={t("settings.autoStartProxy")}
-                desc={t("settings.autoStartProxyDesc")}
-                checked={!!settings?.auto_start_proxy}
-                disabled={busy}
-                onChange={(v) => void patchApp({ autoStartProxy: v })}
-              />
-              <AppToggle
-                title={t("settings.closeOnSwitch")}
-                desc={t("settings.closeOnSwitchDesc")}
-                checked={settings?.close_connections_on_switch !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
-              />
-              <AppToggle
-                title={t("settings.findProcess")}
-                desc={t("settings.findProcessDesc")}
-                checked={settings?.find_process !== false}
-                disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
-                onChange={(v) => void patchApp({ findProcess: v })}
-              />
             </div>
           </div>
           <p className="settings-panel-note muted">{t("settings.toggleSaveNote")}</p>
@@ -1081,141 +1455,223 @@ export function SettingsPage() {
       )}
 
       {visibleTab === "core" && (
-        <section className="settings-panel" aria-label="Core">
-          {coreError && <div className="banner error">{coreError}</div>}
+        <section className="settings-panel version-split" aria-label="Version">
+          {coreError && (
+            <ErrorModal
+              message={coreError}
+              onClose={() => setCoreError(null)}
+            />
+          )}
 
-          <div className="card core-card">
-            <div className="core-row">
+          <div className="version-col">
+            <div className="version-block-title">
+              {t("settings.coreVersionTitle")}
+            </div>
+            <div className="card core-card kernel-list">
+              {renderCoreRow("singbox")}
+              {renderCoreRow("xray")}
+              {renderCoreRow("mihomo")}
+            </div>
+          </div>
+
+          <div className="version-col">
+            <div className="version-block-title">
+              {t("settings.appVersionTitle")}
+            </div>
+            <div className="card core-card app-card">
+            <div className="ver-hero">
+              <div className="ver-mark app-mark" aria-hidden>
+                ◈
+              </div>
+              <div className="ver-id">
+                <div className="ver-name">Satelite</div>
+                <div className="ver-sub muted">{t("settings.appTagline")}</div>
+              </div>
+              <div className="ver-side">
+                <span className="stat-label">{t("settings.coreCurrent")}</span>
+                <div className="ver-ver mono">{appVersion ?? "…"}</div>
+              </div>
+            </div>
+
+            <div className="ver-grid">
               <div>
-                <div className="stat-label">{t("settings.coreStatus")}</div>
-                <div className="core-status">
-                  {core?.installed ? (
-                    <span className="pill ok">
-                      {core.source === "bundled"
-                        ? t("settings.coreBundled")
-                        : t("settings.coreInstalled")}
+                <span className="stat-label">{t("settings.appLatest")}</span>
+                <div className="mono ver-stat">
+                  {appChecking && !appUpdate
+                    ? "…"
+                    : (appUpdate?.latest_version ?? "—")}
+                  {appUpdate?.update_available ? (
+                    <span className="pill warn">
+                      {t("settings.coreUpdateAvail")}
                     </span>
-                  ) : (
-                    <span className="pill warn">{t("settings.coreMissing")}</span>
-                  )}
-                  <span className="muted mono">{core?.platform ?? "…"}</span>
+                  ) : appUpdate ? (
+                    <span className="pill ok">{t("settings.appUpToDate")}</span>
+                  ) : null}
                 </div>
               </div>
-              <div className="core-actions">
+              <div className="ver-grid-actions">
                 <GlassButton
                   icon="↻"
-                  disabled={coreBusy || coreChecking || !core}
-                  onClick={() => void onCheckCoreUpdate()}
+                  disabled={appChecking}
+                  onClick={() => void runAppUpdateCheck(true, true)}
                 >
-                  {coreChecking
+                  {appChecking
                     ? t("settings.coreChecking")
                     : t("settings.coreCheck")}
                 </GlassButton>
+                {/* The app has no in-app downloader — "re-download" simply
+                   opens the latest GitHub release page in the browser. */}
                 <GlassButton
                   variant="primary"
                   icon="⤓"
-                  disabled={coreBusy || coreChecking}
-                  onClick={() => void onDownloadCore()}
+                  onClick={() => void openUrl(RELEASES_URL)}
                 >
-                  {coreBusy
-                    ? t("settings.coreDownloading")
-                    : core?.source === "downloaded"
-                      ? core.update_available
-                        ? t("settings.coreUpdate")
-                        : t("settings.coreRedownload")
-                      : t("settings.coreDownload")}
+                  {t("settings.coreRedownload")}
                 </GlassButton>
               </div>
             </div>
 
-            <div className="core-meta">
-              <div>
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="mono">
-                  {core?.version ?? "—"}
-                  {core?.source === "bundled" ? (
-                    <span className="pill ok" style={{ marginLeft: 8 }}>
-                      {t("settings.coreBundled")}
-                    </span>
-                  ) : null}
-                  {core?.source === "downloaded" ? (
-                    <span className="pill" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUser")}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-              <div>
-                <span className="stat-label">
-                  {t("settings.coreBundledLatest")}
+            {appError && (
+              <ErrorModal
+                message={appError}
+                onClose={() => setAppError(null)}
+              />
+            )}
+
+            {/* Quiet key/value rows filling the equal-height card: last
+               update check, host platform (the core binary targets it),
+               build stack. */}
+            <div className="app-info-list">
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appCheckedLabel")}
                 </span>
-                <div className="mono">
-                  {core?.bundled_version ?? "—"} / {core?.latest_version ?? "—"}
-                  {core?.update_available ? (
-                    <span className="pill warn" style={{ marginLeft: 8 }}>
-                      {t("settings.coreUpdateAvail")}
-                    </span>
-                  ) : null}
-                </div>
+                <span className="app-info-value">
+                  {appChecking ? "…" : formatCheckedAt(appUpdate?.checked_at)}
+                </span>
+              </div>
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appPlatformLabel")}
+                </span>
+                <span className="app-info-value">
+                  {cores.singbox?.platform ?? cores.xray?.platform ?? cores.mihomo?.platform ?? "—"}
+                </span>
+              </div>
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appStackLabel")}
+                </span>
+                <span className="app-info-value">Tauri · React · Rust</span>
               </div>
             </div>
 
-            {core?.path && (
-              <div className="core-path">
-                <span className="stat-label">{t("settings.corePath")}</span>
-                <code className="path-text mono">{core.path}</code>
+            {appPath && (
+              <div className="kernel-row-foot">
+                <code className="kernel-path mono" title={appPath}>
+                  {appPath}
+                </code>
+                <GlassButton
+                  iconOnly
+                  icon={copiedPath === appPath ? "✓" : "⧉"}
+                  className="kernel-copy-btn"
+                  title={copiedPath === appPath ? t("common.copied") : t("common.copy")}
+                  aria-label={t("common.copy")}
+                  onClick={() => void onCopyPath(appPath)}
+                />
               </div>
             )}
 
-            <div
-              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
-            >
-              <span className="core-route-dot" aria-hidden />
-              <span>
-                {coreProxyAvailable
-                  ? t("settings.coreProxyRoute")
-                  : t("settings.coreDirectRoute")}
-              </span>
+            <div className="ver-links">
+              <button
+                type="button"
+                className="corner-link project-link"
+                onClick={() => {
+                  openUrl(PROJECT_URL).catch((e) =>
+                    setError(typeof e === "string" ? e : String(e)),
+                  );
+                }}
+              >
+                {t("settings.projectHome")}
+              </button>
+              <button
+                type="button"
+                className="corner-link sponsor-link"
+                ref={sponsorBtnRef}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const rect = sponsorBtnRef.current?.getBoundingClientRect();
+                  if (rect) {
+                    // Popup bounds (QR 216 + padding + session chrome).
+                    const PANEL_W = 246;
+                    const PANEL_H = 302;
+                    const right = Math.min(
+                      Math.max(12, window.innerWidth - rect.right),
+                      Math.max(12, window.innerWidth - PANEL_W - 12),
+                    );
+                    const top =
+                      rect.top - PANEL_H - 10 >= 12
+                        ? rect.top - PANEL_H - 10
+                        : Math.min(
+                            rect.bottom + 10,
+                            window.innerHeight - PANEL_H - 12,
+                          );
+                    setSponsorPos({ top, right });
+                  }
+                  setSponsorOpen((v) => {
+                    if (!v) {
+                      setSponsorSession(
+                        Math.floor(Math.random() * 0xffff)
+                          .toString(16)
+                          .padStart(4, "0"),
+                      );
+                    }
+                    return !v;
+                  });
+                }}
+              >
+                {t("settings.sponsor")}
+              </button>
             </div>
 
-            {coreBusy && coreProgress && (
-              <div className="core-download-progress" aria-live="polite">
-                <div className="core-download-progress-head">
-                  <span className="lat-spinner" aria-hidden />
-                  <span>
-                    {coreProgress.stage === "preparing"
-                      ? t("settings.corePreparing")
-                      : coreProgress.stage === "installing"
-                        ? t("settings.coreInstalling")
-                        : t("settings.coreDownloading")}
-                  </span>
-                  <span className="mono core-download-percent">
-                    {coreProgress.percent != null
-                      ? `${coreProgress.percent}%`
-                      : "…"}
-                  </span>
-                </div>
+            {createPortal(
+              sponsorOpen && (
                 <div
-                  className={`core-progress-track${coreProgress.percent == null ? " indeterminate" : ""}`}
+                  className="sponsor-panel sponsor-session"
+                  role="dialog"
+                  aria-label={t("settings.sponsor")}
+                  onClick={(e) => e.stopPropagation()}
+                  style={
+                    sponsorPos
+                      ? {
+                          top: sponsorPos.top,
+                          right: sponsorPos.right,
+                          bottom: "auto",
+                        }
+                      : undefined
+                  }
                 >
-                  <span
-                    style={{
-                      width: `${coreProgress.percent ?? 24}%`,
-                    }}
-                  />
-                </div>
-                {coreProgress.downloaded > 0 && (
-                  <div className="muted mono core-download-bytes">
-                    {fmtCoreBytes(coreProgress.downloaded)}
-                    {coreProgress.total
-                      ? ` / ${fmtCoreBytes(coreProgress.total)}`
-                      : ""}
+                  <div className="sponsor-session-bar" aria-hidden="true">
+                    <span>session {sponsorSession}</span>
+                    <span className="sponsor-cursor" />
                   </div>
-                )}
-              </div>
+                  <div className="sponsor-session-view">
+                    <DecryptReveal radius={140} dismissOnLeave>
+                      <img
+                        className="sponsor-qr"
+                        src={buymecoffeeUrl}
+                        alt={t("settings.sponsorScan")}
+                        draggable={false}
+                      />
+                    </DecryptReveal>
+                  </div>
+                  <pre className="sponsor-session-foot" aria-hidden="true">{`payload: beer.qr
+; optional :p`}</pre>
+                </div>
+              ),
+              document.body,
             )}
-
-            <p className="hint">{t("settings.coreHint")}</p>
+          </div>
           </div>
         </section>
       )}
@@ -1297,6 +1753,42 @@ export function SettingsPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {accentPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(accent) ? accent : resolveAccent(accent)[theme]
+          }
+          title={t("settings.accentCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onApply={(hex) => {
+            setAccentPickerOpen(false);
+            void setAccent(hex);
+          }}
+          onClose={() => setAccentPickerOpen(false)}
+        />
+      )}
+
+      {glowPickerOpen && (
+        <AccentColorPickerModal
+          current={
+            isCustomHexAccent(glow)
+              ? glow
+              : resolveAccent(glow === "accent" ? accent : glow)[theme]
+          }
+          title={t("settings.glowCustomTitle")}
+          applyLabel={t("common.save")}
+          cancelLabel={t("common.cancel")}
+          onPreview={(hex) => applyGlowToDom(hex, accent, theme)}
+          onRestore={() => applyGlowToDom(glow, accent, theme)}
+          onApply={(hex) => {
+            setGlowPickerOpen(false);
+            void setGlow(hex);
+          }}
+          onClose={() => setGlowPickerOpen(false)}
+        />
       )}
       </div>
     </div>

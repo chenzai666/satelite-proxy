@@ -11,6 +11,8 @@ import {
   peekProxyStatus,
   previewSingboxConfig,
   restartProxy,
+  peekSettings,
+  setCoreType,
   setRuntimeSource,
   setOutboundMode,
   startProxy,
@@ -23,7 +25,9 @@ import {
   useCaptureModeSwitch,
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { isZoomSettling } from "../hooks/viewportScale";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
@@ -31,6 +35,7 @@ import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import type {
   AutoSelectMode,
+  CoreKind,
   GenerateConfigResult,
   OutboundMode,
   ProxyNode,
@@ -134,6 +139,11 @@ function useSingleLineFit<T extends HTMLElement>(text: string) {
     const el = ref.current;
     if (!el) return;
     const fit = () => {
+      // Root-zoom transitions (maximize magnification) skew computed
+      // font-size and clientWidth mid-animation — the written inline size
+      // would persist after the animation. Skip while settling; the
+      // at-rest synthetic resize (viewportScale.ts) re-fits correctly.
+      if (isZoomSettling()) return;
       // Drop any previous override so the CSS clamp() sets the start size.
       el.style.fontSize = "";
       let size = parseFloat(getComputedStyle(el).fontSize);
@@ -153,7 +163,6 @@ export function DashboardPage({
   onGoProfiles,
   onGoNodes,
   onGoTraffic,
-  onGoSettings,
 }: Props) {
   const { t } = useI18n();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
@@ -180,12 +189,20 @@ export function DashboardPage({
   const [statusReady, setStatusReady] = useState(false);
   const [detailsReady, setDetailsReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Core failure text to surface in the error modal (dead core, not running).
+   *  Remembered dismissal keeps the same message from re-popping on every
+   *  status poll / remount; a new failure text re-opens the modal. */
+  const [dismissedCoreError, setDismissedCoreError] = useState<string | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateConfigResult | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  /** Config-preview modal: quick line filter + copy feedback. */
+  /** Config-preview modal: full-text search with jump-to-match + copy. */
   const [previewQuery, setPreviewQuery] = useState("");
+  const [previewMatchIdx, setPreviewMatchIdx] = useState(0);
   const [previewCopied, setPreviewCopied] = useState(false);
+  const previewPreRef = useRef<HTMLPreElement | null>(null);
   /** Bootstrap probe after enabling smart switch (does not lock other controls). */
   const [smartProbing, setSmartProbing] = useState(false);
   const smartGenRef = useRef(0);
@@ -196,7 +213,25 @@ export function DashboardPage({
   const [showSystemRestartNotice, setShowSystemRestartNotice] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const [coreMenuOpen, setCoreMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  /** Flyout close timer: leaving a sub row schedules a close; re-entering
+   *  (row or popup) cancels it — covers the transit over sibling rows. */
+  const subLeaveTimer = useRef<number | null>(null);
+  function cancelSubmenuClose() {
+    if (subLeaveTimer.current != null) {
+      window.clearTimeout(subLeaveTimer.current);
+      subLeaveTimer.current = null;
+    }
+  }
+  function scheduleSubmenuClose() {
+    cancelSubmenuClose();
+    subLeaveTimer.current = window.setTimeout(() => {
+      setConfigMenuOpen(false);
+      setCoreMenuOpen(false);
+    }, 280);
+  }
+  useEffect(() => cancelSubmenuClose, []);
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
   >([]);
@@ -215,7 +250,12 @@ export function DashboardPage({
     });
   }, []);
 
-  /** Full reload (actions after start/stop/etc). */
+  /** Display name for a core_type token (menu / version card / preview). */
+function coreDisplayName(kind: string | null | undefined): string {
+  return kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box";
+}
+
+/** Full reload (actions after start/stop/etc). */
   const reload = useCallback(async () => {
     setError(null);
     try {
@@ -227,11 +267,14 @@ export function DashboardPage({
       const detailP = Promise.all([
         listSubscriptions(),
         listAllNodes(),
-        getCoreInfo().catch(() => null),
+        getCoreInfo("singbox").catch(() => null),
+        getCoreInfo("xray").catch(() => null),
+        getCoreInfo("mihomo").catch(() => null),
         getLanIp().catch(() => null),
       ]);
 
       const [settings, status] = await statusP;
+      setPendingCore(settings.core_type ?? null);
       setSettingsPorts({
         mixed: settings.mixed_port,
         api: settings.api_port,
@@ -242,7 +285,8 @@ export function DashboardPage({
       pushSpark(status);
       setStatusReady(true);
 
-      const [subList, nodeList, core, lan] = await detailP;
+      const [subList, nodeList, coreSingbox, coreXray, coreMihomo, lan] =
+        await detailP;
       setSubs(subList);
       setNodes(nodeList);
       setLanIp(lan ?? null);
@@ -251,9 +295,18 @@ export function DashboardPage({
         nodeList[0] ??
         null;
       setCurrentNode(cur);
+      // Version card shows the ACTIVE core's name + version (core_type reports
+      // the actually running kind; while stopped it falls back to the setting).
+      const activeKind = status?.core_type ?? settings.core_type ?? "singbox";
+      const core =
+        activeKind === "xray"
+          ? coreXray
+          : activeKind === "mihomo"
+            ? coreMihomo
+            : coreSingbox;
       if (core?.installed) {
         const ver = (core.version ?? "ok").replace(/^v/, "");
-        setCoreVersion(ver);
+        setCoreVersion(`${core.name} ${ver}`.trim());
       } else {
         setCoreVersion(null);
       }
@@ -300,9 +353,57 @@ export function DashboardPage({
       .then((s) => {
         setProxy(s);
         pushSpark(s);
+        setPendingCore(peekSettings()?.core_type ?? s.core_type ?? null);
+        // Kernel auto-select (any core) and app-side smart picks persist the
+        // current node in the backend; the status carries it — reflect a
+        // change without waiting for a full reload. Only touch the display
+        // node when it's in the loaded list (avoid flashing "disconnected"
+        // mid-subscription-switch) and never clobber optimistic switch UI.
+        const nid = s.current_node_id ?? null;
+        if (
+          !busy &&
+          !customRuntime &&
+          nid !== currentNodeId &&
+          nid !== currentNode?.id
+        ) {
+          setCurrentNodeId(nid);
+          const node = nodes.find((n) => n.id === nid);
+          if (node) setCurrentNode(node);
+        }
       })
       .catch(() => undefined);
   }, 1000);
+
+  // Core switch transition: the setting flips instantly but the running core
+  // only lands on the new binary after the debounced restart. While the two
+  // disagree (and no custom profile is active — those legitimately run
+  // sing-box), the status card shows a spinner instead of the stale old-core
+  // facts. The 1s poll keeps both sides fresh from any switch entry point.
+  const [pendingCore, setPendingCore] = useState<string | null>(
+    () => peekSettings()?.core_type ?? null,
+  );
+  const coreSwitching =
+    !!proxy?.running &&
+    proxy?.runtime_source !== "singbox" &&
+    pendingCore != null &&
+    proxy?.core_type != null &&
+    pendingCore !== proxy?.core_type;
+
+  // Core switches restart asynchronously (500ms debounce + process restart),
+  // and the switch commands return before that lands. The 1s poll above
+  // observes the new core_type the moment the restart completes — react to
+  // that edge with a full reload so the version card, memory readout and the
+  // (core-filtered) node list all settle, no matter which entry point
+  // (hero ⋯, top-bar ⋯, Settings) triggered the switch.
+  const prevCoreTypeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const kind = proxy?.core_type ?? null;
+    if (kind == null) return;
+    const first = prevCoreTypeRef.current === null;
+    const changed = prevCoreTypeRef.current !== kind;
+    prevCoreTypeRef.current = kind;
+    if (!first && changed) void reload();
+  }, [proxy?.core_type, reload]);
 
   useEffect(() => {
     if (!moreOpen) return;
@@ -459,6 +560,13 @@ export function DashboardPage({
   );
   const selectedCustomId =
     proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
+  // Custom sing-box profiles cannot run under the Xray/mihomo cores (they
+  // always use the sing-box binary); grey them out while a foreign core is
+  // active. The "generated" option stays live — it generates for the active
+  // core. While a custom profile IS running, core_type truthfully reports
+  // singbox, so switching between profiles / back to generated keeps working.
+  const foreignCore =
+    proxy?.core_type === "xray" || proxy?.core_type === "mihomo";
 
   async function onPickRuntime(source: string) {
     if (busy) return;
@@ -478,11 +586,31 @@ export function DashboardPage({
     }
   }
 
+  /** Hero ⋯ → 指定内核: switch the active core (restarts a running core). */
+  async function onSwitchCore(kind: CoreKind) {
+    if (busy || (proxy?.core_type ?? "singbox") === kind) return;
+    setBusy(true);
+    setError(null);
+    setMoreOpen(false);
+    setCoreMenuOpen(false);
+    try {
+      await setCoreType(kind);
+      const s = await getProxyStatus();
+      setProxy(s);
+      await reload();
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onPreview() {
     setBusy(true);
     setError(null);
     setMoreOpen(false);
     setPreviewQuery("");
+    setPreviewMatchIdx(0);
     setPreviewCopied(false);
     try {
       if (proxy?.runtime_source === "singbox" && proxy.runtime_profile_id) {
@@ -505,6 +633,13 @@ export function DashboardPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  function closePreview() {
+    setShowPreview(false);
+    // Release the preview string + its split-lines array — generated configs
+    // reach hundreds of KB and the dashboard is the always-mounted home page.
+    setResult(null);
   }
 
   async function onProbeLatency() {
@@ -646,21 +781,42 @@ export function DashboardPage({
     }
   }
 
-  /** Config preview split once per fetch; filter runs over these lines. */
+  /** Config preview split once per fetch; search runs over these lines. */
   const previewLines = useMemo(
     () => (result?.preview ?? "").split("\n"),
     [result?.preview],
   );
   const previewQueryTrimmed = previewQuery.trim();
+  /** Line indices containing the query (null = no query, plain-text fast path).
+   *  `set` gives O(1) membership while rendering every line. */
   const previewMatches = useMemo(() => {
     const q = previewQueryTrimmed.toLowerCase();
     if (!q) return null;
-    const out: { n: number; text: string }[] = [];
+    const indices: number[] = [];
     previewLines.forEach((text, n) => {
-      if (text.toLowerCase().includes(q)) out.push({ n, text });
+      if (text.toLowerCase().includes(q)) indices.push(n);
     });
-    return out;
+    return { indices, set: new Set(indices) };
   }, [previewLines, previewQueryTrimmed]);
+
+  const previewCurIdx =
+    previewMatches && previewMatches.indices.length > 0
+      ? Math.min(previewMatchIdx, previewMatches.indices.length - 1)
+      : 0;
+
+  // Jump-to-match: scroll the full-text preview to the current hit. Instant
+  // (no smooth) — generated configs span thousands of pixels and the WebView
+  // animates that poorly.
+  useEffect(() => {
+    if (!showPreview || !previewMatches || previewMatches.indices.length === 0) {
+      return;
+    }
+    const n = previewMatches.indices[previewCurIdx];
+    const el = previewPreRef.current?.querySelector<HTMLElement>(
+      `[data-n="${n}"]`,
+    );
+    el?.scrollIntoView({ block: "center" });
+  }, [showPreview, previewMatches, previewCurIdx]);
 
   const enabledSubs = useMemo(() => subs.filter((s) => s.enabled), [subs]);
 
@@ -740,13 +896,20 @@ export function DashboardPage({
           : "ok";
 
   const currentLatency = currentNode?.latency_ms;
+  /** Core failure while stopped — surfaced as a modal unless dismissed. */
+  const coreErrorText = proxy?.error && !running ? proxy.error : null;
 
   return (
     <div className="page dashboard-page">
       {toast && <div className="toast">{toast}</div>}
-      {error && <div className="banner error">{error}</div>}
-      {proxy?.error && !running && (
-        <div className="banner error">core: {proxy.error}</div>
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
+      {coreErrorText != null && coreErrorText !== dismissedCoreError && (
+        <ErrorModal
+          message={coreErrorText}
+          onClose={() => setDismissedCoreError(coreErrorText)}
+        />
       )}
 
       {/* —— Hero: orbit + status + embedded controls (no floating QC card) —— */}
@@ -820,7 +983,16 @@ export function DashboardPage({
                 className="btn-pill ghost dash-more-btn"
                 aria-expanded={moreOpen}
                 aria-haspopup="menu"
-                onClick={() => setMoreOpen((v) => !v)}
+                onClick={() => {
+                  setMoreOpen((v) => {
+                    // Fresh open: submenus start closed (no stale hover state).
+                    if (!v) {
+                      setConfigMenuOpen(false);
+                      setCoreMenuOpen(false);
+                    }
+                    return !v;
+                  });
+                }}
               >
                 ···
               </button>
@@ -861,14 +1033,27 @@ export function DashboardPage({
                   >
                     {t("common.preview")}
                   </button>
-                  <div className="dash-more-sub">
+                  {/* Submenus open on hover (click still works for touch) and
+                      are mutually exclusive — hovering one closes the other. */}
+                  <div
+                    className="dash-more-sub"
+                    onPointerEnter={() => {
+                      cancelSubmenuClose();
+                      setConfigMenuOpen(true);
+                      setCoreMenuOpen(false);
+                    }}
+                    onPointerLeave={scheduleSubmenuClose}
+                  >
                     <button
                       type="button"
                       role="menuitem"
                       aria-haspopup="menu"
                       aria-expanded={configMenuOpen}
                       disabled={busy}
-                      onClick={() => setConfigMenuOpen((v) => !v)}
+                      onClick={() => {
+                        setConfigMenuOpen(true);
+                        setCoreMenuOpen(false);
+                      }}
                     >
                       <span>{t("dashboard.pickConfig")}</span>
                       <span className="dash-more-caret" aria-hidden>
@@ -898,9 +1083,16 @@ export function DashboardPage({
                               type="button"
                               role="menuitemradio"
                               aria-checked={selected}
-                              className={selected ? "is-selected" : ""}
-                              disabled={busy}
-                              title={profile.name}
+                              aria-disabled={foreignCore || undefined}
+                              className={`${
+                                selected ? "is-selected" : ""
+                              }${foreignCore ? " is-disabled" : ""}`}
+                              disabled={busy || foreignCore}
+                              title={
+                                foreignCore
+                                  ? t("dashboard.customProfileNeedsSingbox")
+                                  : profile.name
+                              }
                               onClick={() =>
                                 void onPickRuntime(`singbox:${profile.id}`)
                               }
@@ -915,17 +1107,56 @@ export function DashboardPage({
                       </div>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMoreOpen(false);
+                  <div
+                    className="dash-more-sub"
+                    onPointerEnter={() => {
+                      cancelSubmenuClose();
+                      setCoreMenuOpen(true);
                       setConfigMenuOpen(false);
-                      onGoSettings?.();
                     }}
+                    onPointerLeave={scheduleSubmenuClose}
                   >
-                    {t("dashboard.advancedSettings")}
-                  </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      aria-haspopup="menu"
+                      aria-expanded={coreMenuOpen}
+                      disabled={busy}
+                      onClick={() => {
+                        setCoreMenuOpen(true);
+                        setConfigMenuOpen(false);
+                      }}
+                    >
+                      <span>{t("dashboard.pickCore")}</span>
+                      <span className="dash-more-caret" aria-hidden>
+                        ›
+                      </span>
+                    </button>
+                    {coreMenuOpen && (
+                      <div className="dash-more-submenu card glass" role="menu">
+                        {(["singbox", "xray", "mihomo"] as const).map((kind) => {
+                          const selected =
+                            (proxy?.core_type ?? "singbox") === kind;
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              role="menuitemradio"
+                              aria-checked={selected}
+                              className={selected ? "is-selected" : ""}
+                              disabled={busy}
+                              onClick={() => void onSwitchCore(kind)}
+                            >
+                              <span className="dash-more-check" aria-hidden>
+                                {selected ? "●" : "○"}
+                              </span>
+                              {coreDisplayName(kind)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -977,6 +1208,7 @@ export function DashboardPage({
                 new Set(
                   [
                     smartProbing ? "smart" : null,
+                    proxy?.core_type === "xray" ? "smart" : null,
                     nodeCount === 0 &&
                     autoSelectMode === "off" &&
                     !smartProbing
@@ -992,7 +1224,10 @@ export function DashboardPage({
               }
               titles={{
                 kernel: t("dashboard.autoSelectKernelHint"),
-                smart: t("dashboard.smartSwitchDesc"),
+                smart:
+                  proxy?.core_type === "xray"
+                    ? t("dashboard.smartSwitchNeedsSingbox")
+                    : t("dashboard.smartSwitchDesc"),
                 off: t("dashboard.autoSelectDesc"),
               }}
               onChange={(v) => void onSetAutoSelect(v as AutoSelectMode)}
@@ -1076,7 +1311,11 @@ export function DashboardPage({
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">
         <article className="instrument accent-green">
           <header className="instrument-head">
-            <span className="instrument-label">{t("dashboard.cardCore")}</span>
+            {/* Label carries the active core's name (core_type falls back to
+                the setting while stopped, so this is correct either way). */}
+            <span className="instrument-label">
+              {t("dashboard.cardCore")} · {coreDisplayName(proxy?.core_type)}
+            </span>
           </header>
           <div
             className={`instrument-value readout${
@@ -1102,14 +1341,36 @@ export function DashboardPage({
           <div className="instrument-kv mono">
             <div>
               <span className="kv-k">{t("dashboard.version")}</span>
-              <span className="kv-v">{coreVersion ?? "—"}</span>
+              <span className="kv-v">
+                {coreSwitching ? (
+                  <>
+                    <span
+                      className="lat-spinner ui-mode-restart-spinner"
+                      aria-hidden
+                    />{" "}
+                    {t("dashboard.coreSwitching")}
+                  </>
+                ) : (
+                  (coreVersion ?? "—")
+                )}
+              </span>
             </div>
             <div>
               <span className="kv-k">{t("dashboard.memory")}</span>
               <span className="kv-v">
-                {running && proxy?.core_memory_bytes != null
-                  ? fmtBytes(proxy.core_memory_bytes)
-                  : "—"}
+                {coreSwitching ? (
+                  <>
+                    <span
+                      className="lat-spinner ui-mode-restart-spinner"
+                      aria-hidden
+                    />{" "}
+                    {t("dashboard.coreSwitching")}
+                  </>
+                ) : running && proxy?.core_memory_bytes != null ? (
+                  fmtBytes(proxy.core_memory_bytes)
+                ) : (
+                  "—"
+                )}
               </span>
             </div>
           </div>
@@ -1351,11 +1612,24 @@ export function DashboardPage({
             aria-labelledby="preview-modal-title"
           >
             <header className="modal-header">
-              <h2 id="preview-modal-title">{t("common.preview")}</h2>
+              <h2 id="preview-modal-title">
+                {t("common.preview")}
+                {/* Which core this document belongs to — Xray and sing-box
+                    share several top-level keys, so make it explicit. */}
+                <span
+                  className="muted"
+                  style={{ marginLeft: "0.5rem", fontSize: "0.8rem", fontWeight: 400 }}
+                >
+                  ·{" "}
+                  {proxy?.runtime_source === "singbox"
+                    ? "sing-box"
+                    : coreDisplayName(proxy?.core_type ?? "singbox")}
+                </span>
+              </h2>
               <button
                 type="button"
                 className="icon-btn"
-                onClick={() => setShowPreview(false)}
+                onClick={closePreview}
                 aria-label={t("common.close")}
               >
                 ×
@@ -1367,15 +1641,35 @@ export function DashboardPage({
                   className="search preview-search"
                   placeholder={t("dashboard.filterConfig")}
                   value={previewQuery}
-                  onChange={(e) => setPreviewQuery(e.target.value)}
+                  onChange={(e) => {
+                    setPreviewQuery(e.target.value);
+                    setPreviewMatchIdx(0);
+                  }}
+                  onKeyDown={(e) => {
+                    if (
+                      e.key !== "Enter" ||
+                      !previewMatches ||
+                      previewMatches.indices.length === 0
+                    ) {
+                      return;
+                    }
+                    e.preventDefault();
+                    const len = previewMatches.indices.length;
+                    setPreviewMatchIdx((i) =>
+                      e.shiftKey ? (i - 1 + len) % len : (i + 1) % len,
+                    );
+                  }}
+                  title={t("dashboard.matchJumpHint")}
                   spellCheck={false}
                 />
                 {previewMatches && (
                   <span className="muted preview-match-count">
-                    {t("dashboard.matchCount", {
-                      n: previewMatches.length,
-                      total: previewLines.length,
-                    })}
+                    {previewMatches.indices.length === 0
+                      ? t("dashboard.matchNone")
+                      : t("dashboard.matchPos", {
+                          cur: previewCurIdx + 1,
+                          n: previewMatches.indices.length,
+                        })}
                   </span>
                 )}
                 <GlassButton
@@ -1385,16 +1679,31 @@ export function DashboardPage({
                   {previewCopied ? t("common.copied") : t("common.copy")}
                 </GlassButton>
               </div>
-              <pre className="preview-json">
+              <pre className="preview-json" ref={previewPreRef}>
                 {previewMatches
-                  ? previewMatches.map((m) => (
-                      <span className="preview-line" key={m.n}>
-                        <span className="preview-line-no">{m.n + 1}</span>
-                        <span className="preview-line-text">
-                          {highlightPreviewLine(m.text, previewQueryTrimmed)}
+                  ? previewLines.map((text, n) => {
+                      const isMatch = previewMatches.set.has(n);
+                      const isCurrent =
+                        previewMatches.indices.length > 0 &&
+                        previewMatches.indices[previewCurIdx] === n;
+                      return (
+                        <span
+                          className={`preview-line${isCurrent ? " current" : ""}`}
+                          key={n}
+                          data-n={n}
+                        >
+                          <span className="preview-line-no">{n + 1}</span>
+                          <span className="preview-line-text">
+                            {isMatch
+                              ? highlightPreviewLine(
+                                  text,
+                                  previewQueryTrimmed,
+                                )
+                              : text}
+                          </span>
                         </span>
-                      </span>
-                    ))
+                      );
+                    })
                   : result.preview}
               </pre>
             </div>

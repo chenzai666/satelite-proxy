@@ -10,6 +10,7 @@ import {
   testNodesLatency,
 } from "../../api";
 import { GlassSeg } from "../../components/GlassSeg";
+import { ErrorModal } from "../../components/ErrorModal";
 import { HeroVisual } from "../../components/HeroVisual";
 import { SystemProxyRestartNotice } from "../../components/SystemProxyRestartNotice";
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
@@ -239,7 +240,9 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   return (
     <div className="simple-page simple-connect">
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <section className={`dash-hero simple-dash-hero is-${orbitState}`}>
         <button

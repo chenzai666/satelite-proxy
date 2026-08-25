@@ -250,7 +250,9 @@ pub struct AppSettings {
     /// Start proxy core automatically after app launch.
     #[serde(default)]
     pub auto_start_proxy: bool,
-    /// Interrupt existing selector connections after switching node.
+    /// Rebuild existing proxy connections after switching nodes. sing-box can
+    /// interrupt the changed selector; Clash-compatible cores use their
+    /// connection API.
     #[serde(default = "default_true")]
     pub close_connections_on_switch: bool,
     /// UI language: `zh` | `en` (sidebar labels stay English).
@@ -262,16 +264,28 @@ pub struct AppSettings {
     /// UI accent (brand/primary color) preset id, e.g. `green` | `blue` | ...
     #[serde(default = "default_accent")]
     pub accent: String,
-    /// Overview hero visual: `particle` | `classic`.
+    /// Background halo (glow) color: `accent` (follow the UI accent) |
+    /// accent preset id | custom `#rrggbb`.
+    #[serde(default = "default_glow_color")]
+    pub glow_color: String,
+    /// Overview hero visual: `particle` | `classic` | `smiley`.
     #[serde(default = "default_hero_style")]
     pub hero_style: String,
+    /// Frosted-glass look for the repeated glass controls (seg / buttons /
+    /// switches). Default true — measured memory cost is ~0 (backdrop blur
+    /// costs frame-compositing time, not resident memory; see
+    /// docs/webview2-memory-optimization-plan.md). "Lite" solid fills remain
+    /// available for low-end GPUs.
+    #[serde(default = "default_glass_frost")]
+    pub glass_frost: bool,
     /// Menu-bar / tray mark: badge | mark | ghost | buddy.
     #[serde(default)]
     pub tray_icon: TrayIconStyle,
     /// Low-memory mode: when closing to tray, destroy WebView to free GPU/JS
-    /// memory. Default false — hide only so reopen is instant. When true, next
-    /// wake recreates the WebView (brief black screen).
-    #[serde(default)]
+    /// memory. Default true — the WebView tree costs 300-400MB resident and
+    /// tray-only sessions don't need it. When true, next wake recreates the
+    /// WebView (brief skeleton before React repaints).
+    #[serde(default = "default_unload_ui_on_tray")]
     pub unload_ui_on_tray: bool,
     /// Node auto-select: off | smart (app) | kernel (sing-box urltest).
     #[serde(default)]
@@ -287,10 +301,19 @@ pub struct AppSettings {
     /// Which config the kernel should run: `generated` or `singbox:<profile_id>`.
     #[serde(default = "default_runtime_source")]
     pub runtime_source: String,
+    /// Which core binary generates config and runs: `singbox` (default) | `xray`.
+    /// Switching goes through the dedicated `set_core_type` command (restarts
+    /// a running core); plain `update_settings` never touches it.
+    #[serde(default = "default_core_type")]
+    pub core_type: String,
 }
 
 fn default_runtime_source() -> String {
     "generated".into()
+}
+
+fn default_core_type() -> String {
+    "singbox".into()
 }
 
 /// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
@@ -347,6 +370,18 @@ fn default_true() -> bool {
     true
 }
 
+/// Low-memory mode defaults ON — the WebView2 tree holds 300-400MB resident
+/// and tray-only sessions don't need it (docs/webview2-memory-optimization-plan.md).
+fn default_unload_ui_on_tray() -> bool {
+    true
+}
+
+/// Frosted controls by default: measured memory delta is ~0 (blur costs
+/// compositing time, not resident memory) — see the plan doc's P0-1 correction.
+fn default_glass_frost() -> bool {
+    true
+}
+
 fn default_locale() -> String {
     "zh".into()
 }
@@ -357,6 +392,10 @@ fn default_theme() -> String {
 
 fn default_accent() -> String {
     "green".into()
+}
+
+fn default_glow_color() -> String {
+    "accent".into()
 }
 
 fn default_hero_style() -> String {
@@ -387,17 +426,20 @@ impl Default for AppSettings {
             launch_at_login: false,
             silent_start: false,
             auto_start_proxy: false,
-            close_connections_on_switch: true,
+            close_connections_on_switch: false,
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
+            glow_color: default_glow_color(),
             hero_style: default_hero_style(),
+            glass_frost: default_glass_frost(),
             tray_icon: TrayIconStyle::default(),
-            unload_ui_on_tray: false,
+            unload_ui_on_tray: default_unload_ui_on_tray(),
             auto_select: AutoSelectMode::Off,
             find_process: true,
             smart_switch: false,
             runtime_source: default_runtime_source(),
+            core_type: default_core_type(),
         }
     }
 }
@@ -473,7 +515,10 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
         assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
         assert_eq!(TrayIconStyle::parse("warning"), Some(TrayIconStyle::Danger));
-        assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
+        assert_eq!(
+            TrayIconStyle::parse("danger2"),
+            Some(TrayIconStyle::Danger2)
+        );
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
         assert_eq!(TrayIconStyle::parse("nope"), None);

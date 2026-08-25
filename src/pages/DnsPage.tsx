@@ -7,6 +7,7 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
+import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import type { DnsFinalStrategy, DnsSettings, DnsTestResult } from "../types";
 
@@ -111,7 +112,9 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
   if (!dns) {
     return (
       <div className={embedded ? "settings-embed" : "page"}>
-        <div className="banner error">{error}</div>
+        {error && (
+          <ErrorModal message={error} onClose={() => setError(null)} />
+        )}
       </div>
     );
   }
@@ -129,7 +132,9 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
         </header>
       )}
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       <div className="dns-stack dns-grid dns-section-settings">
         <section className="card dns-panel dns-cell dns-cell-general">

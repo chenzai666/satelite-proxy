@@ -298,7 +298,12 @@ pub async fn list_remote_rule_items(
     let persist_count = query.trim().is_empty();
     let core = if format == "binary" {
         let resource_dir = app.path().resource_dir().ok();
-        crate::core::resolve_core_bin(&state.app_data_dir, resource_dir.as_deref()).0
+        crate::core::resolve_core_bin(
+            &state.app_data_dir,
+            resource_dir.as_deref(),
+            crate::core::CoreKind::SingBox,
+        )
+        .0
     } else {
         None
     };
@@ -497,7 +502,14 @@ pub fn set_rule_set_strategy(
                 .ok_or_else(|| crate::error::AppError::NotFound(id.clone()))?;
             if set.remote.is_some() && strategy == RuleSetStrategy::Smart {
                 return Err(crate::error::AppError::Config(
-                    "远程规则集不支持智能单项策略".into(),
+                    "远程规则集没有单条规则，无法转为混合策略".into(),
+                ));
+            }
+            // Node/Filter carry whole-set parameters (node pin / keywords)
+            // that this command cannot accept — the batch path owns them.
+            if matches!(strategy, RuleSetStrategy::Node | RuleSetStrategy::Filter) {
+                return Err(crate::error::AppError::Config(
+                    "指定 / 过滤策略需要节点或关键词参数，请在「批量设置路由」中修改".into(),
                 ));
             }
             set.strategy = strategy;
@@ -621,6 +633,9 @@ pub fn create_rule_set(
     remote_url: Option<String>,
     target: Option<RuleTarget>,
     update_interval: Option<String>,
+    node_id: Option<String>,
+    smart_include: Option<Vec<String>>,
+    smart_exclude: Option<Vec<String>>,
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
@@ -643,6 +658,10 @@ pub fn create_rule_set(
                     "已存在同名规则集「{n}」"
                 )));
             }
+            let target = target.unwrap_or(RuleTarget::Proxy);
+            let node_id = node_id.filter(|v| !v.trim().is_empty());
+            let smart_include = smart_include.unwrap_or_default();
+            let smart_exclude = smart_exclude.unwrap_or_default();
             if let Some(url) = remote_url
                 .as_deref()
                 .map(str::trim)
@@ -653,15 +672,6 @@ pub fn create_rule_set(
                         "远程规则集 URL 必须以 http:// 或 https:// 开头".into(),
                     ));
                 }
-                let target = target.unwrap_or(RuleTarget::Proxy);
-                if !matches!(
-                    target,
-                    RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
-                ) {
-                    return Err(crate::error::AppError::Config(
-                        "远程规则集仅支持 proxy/direct/block 策略".into(),
-                    ));
-                }
                 let update_interval = update_interval.as_deref().unwrap_or("disabled");
                 let update_interval = crate::domain::normalize_remote_update_interval(
                     update_interval,
@@ -669,29 +679,20 @@ pub fn create_rule_set(
                 .ok_or_else(|| {
                     crate::error::AppError::Config("自动更新周期必须是 disabled/1h/12h/24h".into())
                 })?;
-                Ok(store.create_remote_rule_set(n, url, target, update_interval))
-            } else {
-                // Local set: an optional initial strategy from the new-set
-                // dialog's 路由 choice (Mixed is local-only; remote keeps p/d/b).
-                let target = target.unwrap_or(RuleTarget::Proxy);
-                if !matches!(
+                store.create_remote_rule_set(
+                    n,
+                    url,
                     target,
-                    RuleTarget::Proxy
-                        | RuleTarget::Direct
-                        | RuleTarget::Block
-                        | RuleTarget::Smart
-                ) {
-                    return Err(crate::error::AppError::Config(
-                        "本地规则集仅支持 proxy/direct/block/smart 策略".into(),
-                    ));
-                }
-                let strategy = match target {
-                    RuleTarget::Direct => RuleSetStrategy::Direct,
-                    RuleTarget::Block => RuleSetStrategy::Block,
-                    RuleTarget::Smart => RuleSetStrategy::Smart,
-                    _ => RuleSetStrategy::Proxy,
-                };
-                Ok(store.create_local_rule_set(n, strategy))
+                    update_interval,
+                    node_id,
+                    smart_include,
+                    smart_exclude,
+                )
+            } else {
+                // Local set: an optional initial whole-set route from the
+                // new-set dialog (node/smart carry the set-level pin /
+                // keyword filters; Mixed stays an emergent per-rule state).
+                store.create_local_rule_set(n, target, node_id, smart_include, smart_exclude)
             }
         })
         .map_err(|e| e.to_string())?;
@@ -843,19 +844,15 @@ pub fn reset_builtin_rule_set(
 ) -> Result<RuleSet, String> {
     let (restored, stale_cache) = state
         .with_store_mut(|store| {
-            let (sets, stale, export_ids) = store.reset_all_builtin_rule_sets(
-                &state.app_data_dir,
-                state.resource_dir.as_deref(),
-            );
+            let (sets, stale, export_ids) = store
+                .reset_all_builtin_rule_sets(&state.app_data_dir, state.resource_dir.as_deref());
             for id in &export_ids {
                 remove_rule_set_files(&state.app_data_dir, id);
             }
             sets.into_iter()
                 .next()
                 .map(|set| (set, stale))
-                .ok_or_else(|| {
-                    crate::error::AppError::NotFound("builtin remote rule sets".into())
-                })
+                .ok_or_else(|| crate::error::AppError::NotFound("builtin remote rule sets".into()))
         })
         .map_err(|e| e.to_string())?;
     crate::rule_apply::request_restart(app, stale_cache);

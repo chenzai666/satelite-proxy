@@ -1,6 +1,7 @@
 use crate::config::{
-    active_config_path, apply_udp_node_compatibility, build_singbox_config_with_connection_policy,
-    generate_api_secret, write_active_config, BuildOptions,
+    active_config_path, active_yaml_config_path, apply_udp_node_compatibility, build_mihomo_config,
+    build_singbox_config_with_connection_policy, build_xray_config, generate_api_secret,
+    write_active_config, write_active_yaml_config, BuildOptions,
 };
 use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
@@ -85,7 +86,9 @@ pub fn update_settings(
     locale: Option<String>,
     theme: Option<String>,
     accent: Option<String>,
+    glow_color: Option<String>,
     hero_style: Option<String>,
+    glass_frost: Option<bool>,
     tray_icon: Option<String>,
     unload_ui_on_tray: Option<bool>,
     smart_switch: Option<bool>,
@@ -208,18 +211,44 @@ pub fn update_settings(
             }
             if let Some(ac) = accent {
                 let ac = ac.trim().to_ascii_lowercase();
+                // Preset ids, or a custom accent picked in the color picker
+                // (stored verbatim as `#rrggbb`).
+                let is_hex = ac.len() == 7
+                    && ac.starts_with('#')
+                    && ac[1..].chars().all(|c| c.is_ascii_hexdigit());
                 if matches!(
                     ac.as_str(),
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
-                ) {
+                ) || is_hex
+                {
                     store.settings.accent = ac;
+                }
+            }
+            if let Some(gl) = glow_color {
+                let gl = gl.trim().to_ascii_lowercase();
+                // "accent" tracks the UI accent; otherwise preset ids or a
+                // custom `#rrggbb` picked in the glow color picker.
+                let is_hex = gl.len() == 7
+                    && gl.starts_with('#')
+                    && gl[1..].chars().all(|c| c.is_ascii_hexdigit());
+                if gl == "accent"
+                    || matches!(
+                        gl.as_str(),
+                        "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
+                    )
+                    || is_hex
+                {
+                    store.settings.glow_color = gl;
                 }
             }
             if let Some(hs) = hero_style {
                 let hs = hs.trim().to_ascii_lowercase();
-                if matches!(hs.as_str(), "particle" | "classic") {
+                if matches!(hs.as_str(), "particle" | "classic" | "smiley") {
                     store.settings.hero_style = hs;
                 }
+            }
+            if let Some(v) = glass_frost {
+                store.settings.glass_frost = v;
             }
             if let Some(raw) = tray_icon {
                 if let Some(style) = crate::domain::TrayIconStyle::parse(&raw) {
@@ -359,10 +388,14 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .filter(|s| s.enabled)
                 .map(|s| s.id.as_str())
                 .collect();
+            // Under a core that cannot serve a protocol, such nodes are
+            // hidden from listings entirely (they reappear after switching).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .map(|n| ListedNode {
                     node: n.node.clone(),
                     subscription_id: n.subscription_id.clone(),
@@ -399,10 +432,13 @@ pub fn list_nodes_page(
                 .map(|s| s.id.as_str())
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
+            // Hide protocols the active core cannot serve (see list_all_nodes).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -468,10 +504,13 @@ pub fn list_node_ids(
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
+            // Hide protocols the active core cannot serve (see list_all_nodes).
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
+                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -573,10 +612,7 @@ pub(crate) fn custom_config_nodes(state: &AppState) -> Result<Vec<ListedNode>, S
 /// names only exist in the node store — recover them by matching the id
 /// prefix embedded in the tag. Ids are left untouched so latency results
 /// stay stable across calls.
-fn restore_generated_tag_names(
-    nodes: &mut [ListedNode],
-    prefix_names: &HashMap<String, String>,
-) {
+fn restore_generated_tag_names(nodes: &mut [ListedNode], prefix_names: &HashMap<String, String>) {
     for listed in nodes.iter_mut() {
         let Some(suffix) = listed.node.name.strip_prefix("node-") else {
             continue;
@@ -615,46 +651,71 @@ pub async fn generate_singbox_config(
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(generate_api_secret);
+    let core_type = settings.core_type.clone();
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
-        let built = build_singbox_config_with_connection_policy(
-            &nodes,
-            &BuildOptions {
-                mixed_port: settings.mixed_port,
-                allow_lan: settings.allow_lan,
-                api_port: settings.api_port,
-                extra_inbounds: settings.extra_inbounds.clone(),
-                api_secret: worker_secret,
-                current_node_id: settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules,
-                rule_sets: remote_rule_sets,
-                tun_enabled: settings.tun_enabled,
-                tun_stack: settings.tun_stack.clone(),
-                dns,
-                outbound_mode: settings.outbound_mode,
-                route_final: settings.route_final.clone(),
-                auto_select: settings.auto_select,
-                probe_url: settings.probe_url.clone(),
-                find_process: settings.find_process,
-                tun_ipv6: settings.tun_ipv6_enabled,
-                block_quic: settings.block_quic,
-                bypass_lan: settings.bypass_lan,
-            },
-            settings.close_connections_on_switch,
-        )
-        .map_err(|e| e.to_string())?;
-        let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
-        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-        Ok::<_, String>(GenerateConfigResult {
-            path: path.display().to_string(),
-            selected_tag: built.selected_tag,
-            outbound_count: built.outbound_tags.len(),
+        let opts = BuildOptions {
             mixed_port: settings.mixed_port,
+            allow_lan: settings.allow_lan,
             api_port: settings.api_port,
-            preview,
-        })
+            extra_inbounds: settings.extra_inbounds.clone(),
+            api_secret: worker_secret,
+            current_node_id: settings.current_node_id.clone(),
+            log_level: "info".into(),
+            rules,
+            rule_sets: remote_rule_sets,
+            tun_enabled: settings.tun_enabled,
+            tun_stack: settings.tun_stack.clone(),
+            dns,
+            outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
+            tun_ipv6: settings.tun_ipv6_enabled,
+            block_quic: settings.block_quic,
+            bypass_lan: settings.bypass_lan,
+            tun_interface_name: None,
+        };
+        let result = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Mihomo => {
+                let built = build_mihomo_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                let path = write_active_yaml_config(&app_data_dir, &built.yaml)
+                    .map_err(|e| e.to_string())?;
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview: built.yaml,
+                }
+            }
+            kind => {
+                let built = if kind == crate::core::CoreKind::Xray {
+                    build_xray_config(&nodes, &opts)
+                } else {
+                    build_singbox_config_with_connection_policy(
+                        &nodes,
+                        &opts,
+                        settings.close_connections_on_switch,
+                    )
+                }
+                .map_err(|e| e.to_string())?;
+                let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
+                let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview,
+                }
+            }
+        };
+        Ok::<_, String>(result)
     })
     .await
     .map_err(|e| format!("generate config task: {e}"))??;
@@ -677,7 +738,14 @@ pub async fn generate_singbox_config(
 
 #[tauri::command]
 pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    let path = active_config_path(&state.app_data_dir);
+    // mihomo keeps its Clash YAML in active.yaml; JSON cores share active.json.
+    let core_type = state
+        .with_store(|store| Ok(store.settings.core_type.clone()))
+        .map_err(|e| e.to_string())?;
+    let path = match crate::core::CoreKind::parse(&core_type) {
+        crate::core::CoreKind::Mihomo => active_yaml_config_path(&state.app_data_dir),
+        _ => active_config_path(&state.app_data_dir),
+    };
     if path.exists() {
         Ok(Some(path.display().to_string()))
     } else {
@@ -705,46 +773,72 @@ pub async fn preview_singbox_config(
         .clash_api_secret
         .clone()
         .unwrap_or_else(generate_api_secret);
+    let core_type = settings.core_type.clone();
 
-    let path = active_config_path(&state.app_data_dir);
+    let path = match crate::core::CoreKind::parse(&core_type) {
+        crate::core::CoreKind::Mihomo => active_yaml_config_path(&state.app_data_dir),
+        _ => active_config_path(&state.app_data_dir),
+    };
     tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
-        let built = build_singbox_config_with_connection_policy(
-            &nodes,
-            &BuildOptions {
-                mixed_port: settings.mixed_port,
-                allow_lan: settings.allow_lan,
-                api_port: settings.api_port,
-                extra_inbounds: settings.extra_inbounds.clone(),
-                api_secret: secret,
-                current_node_id: settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules,
-                rule_sets: remote_rule_sets,
-                tun_enabled: settings.tun_enabled,
-                tun_stack: settings.tun_stack.clone(),
-                dns,
-                outbound_mode: settings.outbound_mode,
-                route_final: settings.route_final.clone(),
-                auto_select: settings.auto_select,
-                probe_url: settings.probe_url.clone(),
-                find_process: settings.find_process,
-                tun_ipv6: settings.tun_ipv6_enabled,
-                block_quic: settings.block_quic,
-                bypass_lan: settings.bypass_lan,
-            },
-            settings.close_connections_on_switch,
-        )
-        .map_err(|e| e.to_string())?;
-        let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
-        Ok::<_, String>(GenerateConfigResult {
-            path: path.display().to_string(),
-            selected_tag: built.selected_tag,
-            outbound_count: built.outbound_tags.len(),
+        let opts = BuildOptions {
             mixed_port: settings.mixed_port,
+            allow_lan: settings.allow_lan,
             api_port: settings.api_port,
-            preview,
-        })
+            extra_inbounds: settings.extra_inbounds.clone(),
+            api_secret: secret,
+            current_node_id: settings.current_node_id.clone(),
+            log_level: "info".into(),
+            rules,
+            rule_sets: remote_rule_sets,
+            tun_enabled: settings.tun_enabled,
+            tun_stack: settings.tun_stack.clone(),
+            dns,
+            outbound_mode: settings.outbound_mode,
+            route_final: settings.route_final.clone(),
+            auto_select: settings.auto_select,
+            probe_url: settings.probe_url.clone(),
+            find_process: settings.find_process,
+            tun_ipv6: settings.tun_ipv6_enabled,
+            block_quic: settings.block_quic,
+            bypass_lan: settings.bypass_lan,
+            tun_interface_name: None,
+        };
+        let result = match crate::core::CoreKind::parse(&core_type) {
+            crate::core::CoreKind::Mihomo => {
+                let built = build_mihomo_config(&nodes, &opts).map_err(|e| e.to_string())?;
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview: built.yaml,
+                }
+            }
+            kind => {
+                let built = if kind == crate::core::CoreKind::Xray {
+                    build_xray_config(&nodes, &opts)
+                } else {
+                    build_singbox_config_with_connection_policy(
+                        &nodes,
+                        &opts,
+                        settings.close_connections_on_switch,
+                    )
+                }
+                .map_err(|e| e.to_string())?;
+                let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
+                GenerateConfigResult {
+                    path: path.display().to_string(),
+                    selected_tag: built.selected_tag,
+                    outbound_count: built.outbound_tags.len(),
+                    mixed_port: settings.mixed_port,
+                    api_port: settings.api_port,
+                    preview,
+                }
+            }
+        };
+        Ok::<_, String>(result)
     })
     .await
     .map_err(|e| format!("preview config task: {e}"))?
@@ -785,7 +879,9 @@ mod tests {
                 {"type": "direct", "tag": "direct"}
             ]
         }"#;
-        assert!(extract_custom_nodes(content, "sub1", "x").unwrap().is_empty());
+        assert!(extract_custom_nodes(content, "sub1", "x")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

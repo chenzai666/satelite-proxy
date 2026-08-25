@@ -92,7 +92,10 @@ fn json_u16(value: Option<&Value>) -> Option<u16> {
 }
 
 fn split_host_port(raw: &str) -> Option<(String, u16)> {
-    let raw = raw.trim().trim_start_matches("http://").trim_start_matches("https://");
+    let raw = raw
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     if let Some(rest) = raw.strip_prefix('[') {
         let (host, tail) = rest.split_once(']')?;
         let port = tail.trim_start_matches(':').parse().ok()?;

@@ -212,9 +212,9 @@ pub async fn import_from_url_with_id(
 
 /// UA used when fetching subscriptions (must look like Clash for many panels).
 fn subscription_user_agent() -> String {
-    let os = std::env::consts::OS;
-    // Same shape as FlClash `PackageInfo.ua`: include `clash-verge`.
-    format!("SateliteProxy/0.1 clash-verge Platform/{os}")
+    // FlClash shape plus the verbatim `flclash/1` token: covers panels that
+    // substring-match either `clash-verge` or `flclash` in the UA.
+    "satelite-proxy/0.1 clash-verge/v2.5 flclash/1".to_string()
 }
 
 /// Parse `Content-Disposition` for a display name.
@@ -797,6 +797,7 @@ mod tests {
     fn subscription_ua_contains_clash_verge() {
         let ua = subscription_user_agent();
         assert!(ua.to_ascii_lowercase().contains("clash-verge"), "ua={ua}");
+        assert!(ua.to_ascii_lowercase().contains("flclash"), "ua={ua}");
     }
 
     #[test]

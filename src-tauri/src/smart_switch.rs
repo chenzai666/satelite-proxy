@@ -314,7 +314,30 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             to_name: None,
             latency_ms: None,
             probed: 0,
-            message: "custom runtime".into(),
+            message: "custom runtime mode".into(),
+        });
+    }
+
+    // Smart switch leans on the Clash API connection journal for passive
+    // health and for live group selection — neither exists under Xray.
+    if state
+        .with_store(|s| {
+            Ok(crate::core::CoreKind::parse(&s.settings.core_type) == crate::core::CoreKind::Xray)
+        })
+        .unwrap_or(false)
+    {
+        app_log::warn(
+            "smart_switch",
+            "bootstrap skipped: Xray core (no connection journal)",
+        );
+        return Ok(SmartSwitchNowResult {
+            switched: false,
+            from_id: None,
+            to_id: None,
+            to_name: None,
+            latency_ms: None,
+            probed: 0,
+            message: "smart switch requires the sing-box core".into(),
         });
     }
 
@@ -324,7 +347,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         c.set_phase(Phase::Probing);
     }
 
-    let (current_id, mut nodes, probe_url) = {
+    let (current_id, nodes, probe_url) = {
         let store = state.lock_store();
         (
             store.settings.current_node_id.clone(),
@@ -332,10 +355,17 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
             store.settings.probe_url.clone(),
         )
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    // Main-node candidates must be servable by the running core (a core may drop
+    // REALITY nodes — they pass TCP probes and would win the race, then the
+    // pick is rejected by the switch guard).
+    let mut nodes: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     if nodes.is_empty() {
         ctrl().set_phase(Phase::Ok);
@@ -595,10 +625,15 @@ async fn tick(state: &AppState) -> Result<(), String> {
             store.settings.probe_url.clone(),
         )
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    // See the bootstrap path: only core-servable nodes are candidates.
+    let nodes: Vec<_> = nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     let Some(current_id) = current_id else {
         return Ok(());
@@ -907,21 +942,39 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Enabled smart rules to maintain: per-rule keyword pools inside Mixed sets,
+/// plus one stand-in rule per Filter-strategy set (local or remote). The
+/// stand-in reuses the rule maintenance path — its id doubles as the
+/// whole-set selector tag (`smart-<set id prefix>`), which the config builder
+/// emits for every Filter set, so probing/switching lands on the same group.
 fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
     state
         .with_store(|store| {
             let mut out = Vec::new();
-            for set in store
-                .rule_sets
-                .iter()
-                .filter(|s| s.enabled && s.strategy == RuleSetStrategy::Smart)
-            {
-                for r in set
-                    .rules
-                    .iter()
-                    .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
-                {
-                    out.push(r.clone());
+            for set in store.rule_sets.iter().filter(|s| s.enabled) {
+                match set.strategy {
+                    RuleSetStrategy::Filter => out.push(Rule {
+                        id: set.id.clone(),
+                        ord: 0,
+                        rule_type: crate::domain::RuleType::DomainSuffix,
+                        payload: "set".into(),
+                        target: RuleTarget::Smart,
+                        enabled: true,
+                        node_id: None,
+                        node_name: None,
+                        smart_include: set.smart_include.clone(),
+                        smart_exclude: set.smart_exclude.clone(),
+                    }),
+                    RuleSetStrategy::Smart => {
+                        for r in set
+                            .rules
+                            .iter()
+                            .filter(|r| r.enabled && matches!(r.target, RuleTarget::Smart))
+                        {
+                            out.push(r.clone());
+                        }
+                    }
+                    _ => {}
                 }
             }
             Ok(out)
@@ -944,17 +997,25 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
 
-    let (nodes, probe_url) = {
+    let (all_nodes, probe_url) = {
         let store = state.lock_store();
         (store.enabled_nodes(), store.settings.probe_url.clone())
     };
-    let clash = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
     let Some(api) = clash else {
         return Ok(());
     };
+    // Only nodes the running core can actually serve are pool members in
+    // the generated config (e.g. unsupported node shapes — which can pass TCP
+    // probes beautifully and would otherwise win the score race, then the
+    // switch PUT of their tag 400s as a non-member).
+    let nodes: Vec<ProxyNode> = all_nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
 
     for rule in rules {
         if let Err(e) = maintain_smart_rule(state, &rule, &nodes, &probe_url, api.clone()).await {
@@ -1195,14 +1256,19 @@ pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(),
     if !state.is_core_running() {
         return Ok(());
     }
-    let (nodes, probe_url) = {
+    let (all_nodes, probe_url) = {
         let store = state.lock_store();
         (store.enabled_nodes(), store.settings.probe_url.clone())
     };
-    let api = {
+    let (clash, core_kind) = {
         let rt = state.lock_runtime();
-        rt.clash_api_clone()
+        (rt.clash_api_clone(), rt.core.kind())
     };
+    let api = clash;
+    let nodes: Vec<_> = all_nodes
+        .into_iter()
+        .filter(|n| core_kind.supports_node(n))
+        .collect();
     let Some(api) = api else {
         return Ok(());
     };

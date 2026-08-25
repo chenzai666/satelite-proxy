@@ -300,8 +300,13 @@ export interface AppSettings {
   theme?: string;
   /** UI accent (brand/primary color) preset id, e.g. green | blue | purple ... */
   accent?: string;
-  /** Overview hero visual: particle | classic */
+  /** Background glow color: "accent" (follow) | preset id | #rrggbb */
+  glow_color?: string;
+  /** Overview hero visual: particle | classic | smiley */
   hero_style?: HeroStyle;
+  /** Frosted-glass look for repeated glass controls (costs backdrop-filter
+   * GPU layers; default off = solid fills). */
+  glass_frost?: boolean;
   /** Tray mark: badge | mark | ghost | buddy */
   tray_icon?: TrayIconStyle;
   /** Destroy WebView when closing to tray (free GPU/JS; tray+core stay). */
@@ -314,14 +319,19 @@ export interface AppSettings {
   smart_switch?: boolean;
   /** `generated` or `singbox:<profile_id>`. */
   runtime_source?: string;
+  /** Which core runs: `singbox` (default) | `xray` | `mihomo`. */
+  core_type?: CoreKind;
 }
+
+/** Kernel binary kind. */
+export type CoreKind = "singbox" | "xray" | "mihomo";
 
 /** Manual / app smart switch / sing-box urltest. */
 export type AutoSelectMode = "off" | "smart" | "kernel";
 
 export type ThemeId = "aerospace" | "day";
 
-export type HeroStyle = "particle" | "classic";
+export type HeroStyle = "particle" | "classic" | "smiley";
 
 export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid";
 
@@ -335,6 +345,10 @@ export interface GenerateConfigResult {
 }
 
 export interface CoreInfo {
+  /** `singbox` | `xray` | `mihomo`. */
+  kind: CoreKind;
+  /** Display name: sing-box / Xray. */
+  name: string;
   installed: boolean;
   version?: string | null;
   path?: string | null;
@@ -347,6 +361,7 @@ export interface CoreInfo {
 }
 
 export interface CoreDownloadResult {
+  kind?: CoreKind | string;
   version: string;
   path: string;
   asset_name: string;
@@ -355,6 +370,7 @@ export interface CoreDownloadResult {
 }
 
 export interface CoreDownloadProgress {
+  kind?: CoreKind | string;
   stage: "preparing" | "downloading" | "installing" | "done";
   downloaded: number;
   total?: number | null;
@@ -415,6 +431,8 @@ export interface ProxyStatus {
   custom_inbound_port?: number | null;
   /** Resident memory (bytes) of the core process, when known. */
   core_memory_bytes?: number | null;
+  /** Which core is active: `singbox` (default) | `xray` | `mihomo`. */
+  core_type?: CoreKind | string;
 }
 
 export type RuleType =
@@ -434,20 +452,35 @@ export interface RuleSetSummary {
   enabled: boolean;
   ownership: "builtin" | "user" | "system";
   strategy: RuleSetStrategy;
+  /** Set-level route parameters (strategy === "node" | "filter"). */
+  node_id?: string | null;
+  node_name?: string | null;
+  smart_include?: string[];
+  smart_exclude?: string[];
   dns_strategy: RuleSetDnsStrategy;
   /** Restorable by Reset: only the bundled remote rule sets. */
   resettable: boolean;
   remote?: RemoteRuleSetConfig | null;
 }
 
-export type RuleSetStrategy = "proxy" | "direct" | "block" | "smart";
+/** Whole-set route strategies. `node` (pinned node) and `filter`
+ *  (keyword-filtered pool) are whole-set pins whose parameters live on the
+ *  set level; `smart` (Mixed) keeps per-rule decisions. */
+export type RuleSetStrategy =
+  | "proxy"
+  | "direct"
+  | "block"
+  | "node"
+  | "filter"
+  | "smart";
 export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
 
 export interface RemoteRuleSetConfig {
   url: string;
   format: "source" | "binary" | string;
   update_interval: "disabled" | "1h" | "12h" | "24h" | string;
-  target: "proxy" | "direct" | "block";
+  /** Whole-set route; `node`/`smart` use the set-level pin / filters. */
+  target: RuleTarget;
   local_path?: string | null;
   download_status?: "idle" | "downloading" | "ready" | "error" | string;
   download_error?: string | null;
@@ -479,6 +512,14 @@ export interface RuleSet {
   enabled: boolean;
   ownership: "builtin" | "user" | "system";
   strategy: RuleSetStrategy;
+  /** When strategy is `node`: whole-set pinned node id. */
+  node_id?: string | null;
+  /** Snapshot name at pin time (stale UI when id missing). */
+  node_name?: string | null;
+  /** When strategy is `filter`: whitelist keywords (OR). Empty = all nodes. */
+  smart_include?: string[];
+  /** When strategy is `filter`: blacklist keywords (OR). */
+  smart_exclude?: string[];
   dns_strategy: RuleSetDnsStrategy;
   remote?: RemoteRuleSetConfig | null;
   dns_rules: DnsRule[];
@@ -533,7 +574,10 @@ export interface ConnectionView {
 export interface LiveConnectionBatch {
   rows: ConnectionView[];
   removed_ids: string[];
-  order_ids: string[];
+  /** Full id order. Omitted when membership is unchanged since the client's
+   * last `order_revision` — then merge `rows` in place without reordering. */
+  order_ids?: string[] | null;
+  order_revision: number;
   revision: number;
   unchanged: boolean;
   full: boolean;

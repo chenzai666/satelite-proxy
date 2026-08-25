@@ -6,6 +6,9 @@ interface VirtualRangeOptions {
   itemsPerRow?: number;
   enabled?: boolean;
   overscanRows?: number;
+  /** Scroll container to listen to. Defaults to the app shell scroller;
+   * pages whose list scrolls inside its own panel pass e.g. ".logs-panel". */
+  scrollerSelector?: string;
 }
 
 interface RowRange {
@@ -20,6 +23,7 @@ export function useVirtualRange({
   itemsPerRow = 1,
   enabled = true,
   overscanRows = 6,
+  scrollerSelector = ".main",
 }: VirtualRangeOptions) {
   const containerRef = useRef<HTMLElement | null>(null);
   const totalRows = Math.ceil(itemCount / itemsPerRow);
@@ -35,7 +39,7 @@ export function useVirtualRange({
       return;
     }
 
-    const scroller = container.closest<HTMLElement>(".main");
+    const scroller = container.closest<HTMLElement>(scrollerSelector);
     if (!scroller) {
       setRows({ startRow: 0, endRow: totalRows });
       return;
@@ -81,7 +85,7 @@ export function useVirtualRange({
       scroller.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
     };
-  }, [enabled, itemSize, overscanRows, totalRows]);
+  }, [enabled, itemSize, overscanRows, scrollerSelector, totalRows]);
 
   return useMemo(() => {
     if (!enabled) {

@@ -1,4 +1,7 @@
 use crate::app_log::{self, LogBatch, LogLevel};
+use crate::state::AppState;
+use serde::Serialize;
+use tauri::State;
 
 #[tauri::command]
 pub async fn list_app_logs(
@@ -22,4 +25,33 @@ pub async fn list_app_logs(
 #[tauri::command]
 pub fn clear_app_logs() -> Result<(), String> {
     app_log::clear()
+}
+
+#[derive(Debug, Serialize)]
+pub struct CoreLogTail {
+    /// Absolute path of the log file (current or last core session).
+    pub path: Option<String>,
+    pub lines: Vec<String>,
+}
+
+/// Tail of the active core's hourly log file. Xray has no per-connection
+/// API, so the Xray-mode traffic page streams the core log instead — at
+/// `info` level Xray logs accepted connections and routing decisions there.
+#[tauri::command]
+pub fn get_core_log_tail(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<CoreLogTail, String> {
+    let limit = limit.unwrap_or(300).clamp(1, 1_000);
+    let tail = state.lock_runtime().core.core_log_tail(limit);
+    Ok(match tail {
+        Some((path, lines)) => CoreLogTail {
+            path: Some(path.display().to_string()),
+            lines,
+        },
+        None => CoreLogTail {
+            path: None,
+            lines: Vec::new(),
+        },
+    })
 }

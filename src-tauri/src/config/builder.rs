@@ -44,6 +44,7 @@ pub fn subscription_proxy_port(
     unreachable!("dynamic port range cannot be exhausted by configured listeners")
 }
 
+#[derive(Clone)]
 pub struct BuildOptions {
     pub mixed_port: u16,
     /// Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1.
@@ -87,6 +88,13 @@ pub struct BuildOptions {
     /// after the rule sets (a safety net ahead of `route.final`). Rule mode
     /// only; Global proxies everything by explicit user choice.
     pub bypass_lan: bool,
+    /// macOS-only, Xray-only: the `utunN` device name to bind the TUN
+    /// inbound to. Xray's darwin backend rejects any name that does not
+    /// parse as `utun<digits>` (unlike sing-box, which lets the OS assign
+    /// one), so the caller must probe a free index before building the
+    /// config. `None` on other platforms/cores, where Xray accepts an
+    /// arbitrary interface name.
+    pub tun_interface_name: Option<String>,
 }
 
 impl BuildOptions {
@@ -220,7 +228,7 @@ pub fn build_singbox_config_with_connection_policy(
             "tag": "proxy",
             "outbounds": tags.clone(),
             "url": url,
-            "interval": "5m",
+            "interval": "1m",
             "tolerance": 50,
             "idle_timeout": "30m",
             "interrupt_exist_connections": interrupt_exist_connections,
@@ -257,6 +265,13 @@ pub fn build_singbox_config_with_connection_policy(
     // Per-rule smart selectors (keyword-filtered node pools).
     outbounds.extend(build_smart_rule_selectors(
         &effective_rules,
+        nodes,
+        &tags,
+        interrupt_exist_connections,
+    ));
+    // Whole-set keyword pools for Filter-strategy sets (local + remote).
+    outbounds.extend(build_filter_set_selectors(
+        &opts.rule_sets,
         nodes,
         &tags,
         interrupt_exist_connections,
@@ -460,7 +475,7 @@ fn tun_addresses(ipv6: bool) -> Vec<&'static str> {
     addrs
 }
 
-fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
+pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
     if sets.is_empty() {
         return fallback.to_vec();
     }
@@ -470,6 +485,12 @@ fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
         .iter()
         .filter(|set| set.enabled && set.remote.is_none())
     {
+        // Filter sets route through one whole-set selector; letting their
+        // rules through here would spawn per-rule selectors that nothing
+        // references (dead outbounds).
+        if set.strategy == RuleSetStrategy::Filter {
+            continue;
+        }
         let mut rules = set.rules.clone();
         rules.sort_by_key(|rule| rule.ord);
         for mut rule in rules {
@@ -479,6 +500,8 @@ fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
                 rule.node_name = None;
                 rule.smart_include.clear();
                 rule.smart_exclude.clear();
+            } else {
+                clamp_rule_pin_to_set(set, &mut rule);
             }
             rule.ord = global_ord;
             global_ord += 10;
@@ -486,6 +509,38 @@ fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<Rule> {
         }
     }
     out
+}
+
+/// Clamp a rule's node/smart pin to the whole-set strategy. Plain sets
+/// (proxy/direct/block) collapse pins to the strategy target; Node sets pin
+/// to the set-level node; Filter sets rewrite the keywords to the set-level
+/// filters. Smart (Mixed) sets keep per-rule decisions untouched.
+pub(crate) fn clamp_rule_pin_to_set(set: &RuleSet, rule: &mut Rule) {
+    if set.strategy == RuleSetStrategy::Smart
+        || matches!(
+            rule.target,
+            RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
+        )
+    {
+        return;
+    }
+    match set.strategy {
+        RuleSetStrategy::Direct => rule.target = RuleTarget::Direct,
+        RuleSetStrategy::Block => rule.target = RuleTarget::Block,
+        RuleSetStrategy::Node => {
+            // Set-level pin is authoritative; a stale id falls back to the
+            // main `proxy` group inside resolve_rule_outbound.
+            rule.target = RuleTarget::Node;
+            rule.node_id = set.node_id.clone();
+            rule.node_name = set.node_name.clone();
+        }
+        RuleSetStrategy::Filter => {
+            rule.target = RuleTarget::Smart;
+            rule.smart_include = set.smart_include.clone();
+            rule.smart_exclude = set.smart_exclude.clone();
+        }
+        _ => rule.target = RuleTarget::Proxy,
+    }
 }
 
 /// Register every enabled logical set as a sing-box rule-set, then reference
@@ -537,25 +592,15 @@ fn build_grouped_rule_sets(
         // Local sets route per rule: each rule's own target wins. Under a
         // plain strategy the per-rule choice is proxy/direct/block only —
         // node/smart pins (e.g. left over from an earlier smart phase) are
-        // clamped to the set strategy. `set_rule_set_strategy` retargets all
-        // rules on flip, so a plain set stays uniform unless the user
-        // deliberately mixes per-rule routes. Remote sets have no local
-        // rules and keep their single set-level route.
+        // clamped to the set strategy, Node/Filter sets clamp them to the
+        // set-level pin / keyword pool. `set_rule_set_strategy` and the batch
+        // path retarget all rules on flip, so a plain set stays uniform unless
+        // the user deliberately mixes per-rule routes. Remote sets have no
+        // local rules and keep their single set-level route.
         if set.remote.is_none() {
             route_local_set_grouped(set, nodes, tags, &mut definitions, &mut route_rules);
         } else {
-            match set.strategy {
-                RuleSetStrategy::Block => {
-                    route_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
-                }
-                _ => {
-                    route_rules.push(json!({
-                        "rule_set": [set.id],
-                        "action": "route",
-                        "outbound": if set.strategy == RuleSetStrategy::Direct { "direct" } else { "proxy" },
-                    }));
-                }
-            }
+            route_rules.push(remote_set_route_rule(set, nodes, tags));
         }
 
         if set.strategy == RuleSetStrategy::Block {
@@ -572,10 +617,85 @@ fn build_grouped_rule_sets(
     (definitions, route_rules, dns_rules)
 }
 
+/// Whole-set route rule for a remote set. Node pins and Filter pools fall
+/// back to the main `proxy` group when the pin is stale / the keyword pool is
+/// empty (no selector is emitted in that case either — see
+/// `build_filter_set_selectors`).
+fn remote_set_route_rule(set: &RuleSet, nodes: &[ProxyNode], tags: &[String]) -> Value {
+    if set.strategy == RuleSetStrategy::Block {
+        return json!({ "rule_set": [set.id], "action": "reject" });
+    }
+    let outbound = match set.strategy {
+        RuleSetStrategy::Direct => "direct".to_string(),
+        RuleSetStrategy::Node => node_pin_outbound(set.node_id.as_deref(), nodes, tags),
+        RuleSetStrategy::Filter => {
+            let pool = filter_pool_tags(&set.smart_include, &set.smart_exclude, nodes, tags);
+            if pool.is_empty() {
+                "proxy".to_string()
+            } else {
+                set.smart_set_outbound_tag()
+            }
+        }
+        _ => "proxy".to_string(),
+    };
+    json!({ "rule_set": [set.id], "action": "route", "outbound": outbound })
+}
+
+/// Outbound tag of a pinned node, or the main `proxy` group when the id is
+/// missing / stale / not part of the generated outbounds.
+fn node_pin_outbound(node_id: Option<&str>, nodes: &[ProxyNode], tags: &[String]) -> String {
+    if let Some(id) = node_id.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(node) = nodes.iter().find(|n| n.id == id) {
+            let tag = outbound_tag(node);
+            if tags.iter().any(|t| t == &tag) {
+                return tag;
+            }
+        }
+    }
+    "proxy".into()
+}
+
+/// Whole-set selectors for Filter-strategy sets (local + remote): one
+/// keyword-filtered pool per set, tagged like a per-rule smart selector
+/// (`smart-<id prefix>` — set ids never collide with rule hash ids) so
+/// smart_switch can probe/switch it through a stand-in rule with the same id.
+fn build_filter_set_selectors(
+    sets: &[RuleSet],
+    nodes: &[ProxyNode],
+    tags: &[String],
+    interrupt_exist_connections: bool,
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for set in sets
+        .iter()
+        .filter(|set| set.enabled && set.strategy == RuleSetStrategy::Filter)
+    {
+        // Sets that contribute nothing to the config never reach a route
+        // rule; a selector for them would be a dead outbound.
+        if rule_set_is_empty_for_config(set) {
+            continue;
+        }
+        let pool = filter_pool_tags(&set.smart_include, &set.smart_exclude, nodes, tags);
+        if pool.is_empty() {
+            continue;
+        }
+        let default = pool.first().cloned().unwrap_or_else(|| "direct".into());
+        out.push(json!({
+            "type": "selector",
+            "tag": set.smart_set_outbound_tag(),
+            "outbounds": pool,
+            "default": default,
+            "interrupt_exist_connections": interrupt_exist_connections,
+        }));
+    }
+    out
+}
+
 /// Per-rule routing for a local set: group effective rules by resolved
 /// outbound and emit one child inline rule-set per group (the parent set
 /// definition stays registered for DNS). Shared by every local strategy —
-/// Smart honors node/smart targets; plain strategies clamp them.
+/// Smart honors node/smart targets; plain strategies clamp them; Node/Filter
+/// sets clamp to the set-level pin / keyword pool.
 fn route_local_set_grouped(
     set: &RuleSet,
     nodes: &[ProxyNode],
@@ -583,6 +703,21 @@ fn route_local_set_grouped(
     definitions: &mut Vec<Value>,
     route_rules: &mut Vec<Value>,
 ) {
+    // Filter sets route every smart-pool rule through one whole-set selector
+    // (falling back to `proxy` on an empty pool) instead of per-rule tags.
+    let filter_key = if set.strategy == RuleSetStrategy::Filter {
+        let pool = filter_pool_tags(&set.smart_include, &set.smart_exclude, nodes, tags);
+        format!(
+            "route:{}",
+            if pool.is_empty() {
+                "proxy".to_string()
+            } else {
+                set.smart_set_outbound_tag()
+            }
+        )
+    } else {
+        String::new()
+    };
     let mut groups: Vec<(String, Vec<Rule>)> = Vec::new();
     let mut sorted: Vec<Rule> = set
         .rules
@@ -592,20 +727,11 @@ fn route_local_set_grouped(
         .collect();
     sorted.sort_by_key(|rule| rule.ord);
     for mut rule in sorted {
-        if set.strategy != RuleSetStrategy::Smart
-            && !matches!(
-                rule.target,
-                RuleTarget::Proxy | RuleTarget::Direct | RuleTarget::Block
-            )
-        {
-            rule.target = match set.strategy {
-                RuleSetStrategy::Direct => RuleTarget::Direct,
-                RuleSetStrategy::Block => RuleTarget::Block,
-                _ => RuleTarget::Proxy,
-            };
-        }
+        clamp_rule_pin_to_set(set, &mut rule);
         let key = if rule.target == RuleTarget::Block {
             "reject".to_string()
+        } else if set.strategy == RuleSetStrategy::Filter && rule.target == RuleTarget::Smart {
+            filter_key.clone()
         } else {
             format!("route:{}", resolve_rule_outbound(&rule, nodes, tags))
         };
@@ -726,7 +852,11 @@ fn build_headless_rules(rules: &[Rule]) -> Option<Vec<Value>> {
     (!headless.is_empty()).then_some(headless)
 }
 
-fn resolve_selected_tag(nodes: &[ProxyNode], tags: &[String], current_id: Option<&str>) -> String {
+pub(crate) fn resolve_selected_tag(
+    nodes: &[ProxyNode],
+    tags: &[String],
+    current_id: Option<&str>,
+) -> String {
     if let Some(id) = current_id {
         if let Some(node) = nodes.iter().find(|n| n.id == id) {
             let tag = outbound_tag(node);
@@ -790,18 +920,9 @@ fn resolve_rule_outbound(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Stri
         RuleTarget::Direct | RuleTarget::Proxy | RuleTarget::Block => {
             r.target.outbound_tag().into()
         }
-        RuleTarget::Node => {
-            if let Some(id) = r.node_id.as_deref().filter(|s| !s.is_empty()) {
-                if let Some(node) = nodes.iter().find(|n| n.id == id) {
-                    let tag = outbound_tag(node);
-                    if tags.iter().any(|t| t == &tag) {
-                        return tag;
-                    }
-                }
-            }
-            // Stale pin (subscription updated / node removed / sub disabled).
-            RuleTarget::Proxy.outbound_tag().into()
-        }
+        // Stale pins (subscription updated / node removed / sub disabled) fall
+        // back to the main `proxy` group inside node_pin_outbound.
+        RuleTarget::Node => node_pin_outbound(r.node_id.as_deref(), nodes, tags),
         RuleTarget::Smart => {
             let pool = smart_pool_tags(r, nodes, tags);
             if pool.is_empty() {
@@ -815,9 +936,20 @@ fn resolve_rule_outbound(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Stri
 
 /// Node outbound tags matching a smart rule's include/exclude name filters.
 pub fn smart_pool_tags(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Vec<String> {
+    filter_pool_tags(&r.smart_include, &r.smart_exclude, nodes, tags)
+}
+
+/// Node outbound tags matching include/exclude keyword filters, preferring
+/// historically better latency as the selector default.
+pub fn filter_pool_tags(
+    include: &[String],
+    exclude: &[String],
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> Vec<String> {
     let mut pool: Vec<(u32, String)> = nodes
         .iter()
-        .filter(|n| r.smart_name_matches(&n.name))
+        .filter(|n| crate::domain::name_matches_keywords(&n.name, include, exclude))
         .filter_map(|n| {
             let tag = outbound_tag(n);
             if tags.iter().any(|t| t == &tag) {
@@ -827,7 +959,6 @@ pub fn smart_pool_tags(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Vec<St
             }
         })
         .collect();
-    // Prefer historically better latency as selector default.
     pool.sort_by_key(|(lat, _)| *lat);
     pool.into_iter().map(|(_, tag)| tag).collect()
 }
@@ -1342,7 +1473,20 @@ fn tls_to_json(tls: &TlsConfig) -> Option<Value> {
             o["alpn"] = json!(alpn);
         }
     }
-    if let Some(fp) = normalize_utls_fingerprint(tls.utls_fingerprint.as_deref()) {
+    let normalized_fp = normalize_utls_fingerprint(tls.utls_fingerprint.as_deref());
+    // Reality requires uTLS; fall back to "chrome" when the subscription didn't
+    // provide a valid fingerprint, otherwise sing-box rejects the outbound with
+    // "uTLS is required by reality client".
+    let fp_for_utls = if tls.reality_public_key.is_some() {
+        Some(
+            normalized_fp
+                .clone()
+                .unwrap_or_else(|| "chrome".to_string()),
+        )
+    } else {
+        normalized_fp
+    };
+    if let Some(fp) = fp_for_utls {
         o["utls"] = json!({
             "enabled": true,
             "fingerprint": fp
@@ -1575,6 +1719,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -1856,6 +2001,159 @@ mod tests {
         assert_eq!(routes[0]["outbound"], "direct");
     }
 
+    fn node_tags(nodes: &[ProxyNode]) -> Vec<String> {
+        nodes.iter().map(outbound_tag).collect()
+    }
+
+    #[test]
+    fn remote_node_set_routes_whole_set_to_pinned_node() {
+        let nodes = vec![sample_ss()];
+        let tags = node_tags(&nodes);
+        let mut set = RuleSet::new_remote(
+            "指定节点集",
+            "https://example.com/pin.json",
+            RuleTarget::Node,
+        );
+        set.node_id = Some(nodes[0].id.clone());
+        set.node_name = Some(nodes[0].name.clone());
+        set.remote.as_mut().unwrap().local_path = Some(
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        let tag = set.id.clone();
+        let (_, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["outbound"], tags[0]);
+
+        // Stale pin (node removed from the subscription) → main proxy group.
+        let mut stale = set;
+        stale.node_id = Some("gone".into());
+        let (_, routes, _) = build_grouped_rule_sets(&[stale], &nodes, &tags);
+        assert_eq!(routes[0]["outbound"], "proxy");
+    }
+
+    #[test]
+    fn remote_filter_set_routes_whole_set_through_keyword_pool_selector() {
+        let nodes = vec![sample_ss()];
+        let tags = node_tags(&nodes);
+        let mut set = RuleSet::new_remote(
+            "过滤集",
+            "https://example.com/filter.json",
+            RuleTarget::Smart,
+        );
+        set.strategy = RuleSetStrategy::Filter;
+        set.smart_include = vec!["HK".into()];
+        set.remote.as_mut().unwrap().local_path = Some(
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        let group = set.smart_set_outbound_tag();
+        let tag = set.id.clone();
+        let (_, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
+        assert_eq!(
+            routes[0],
+            json!({ "rule_set": [tag], "action": "route", "outbound": group })
+        );
+
+        let selectors = build_filter_set_selectors(&[set.clone()], &nodes, &tags, true);
+        assert_eq!(selectors.len(), 1);
+        assert_eq!(selectors[0]["tag"], group);
+        assert_eq!(selectors[0]["outbounds"], json!(tags));
+        assert_eq!(selectors[0]["default"], tags[0]);
+
+        // Empty keyword pool (nothing matches) → fall back to the proxy group
+        // and emit no dead selector.
+        let mut empty = set;
+        empty.smart_include = vec![" nonexistent ".into()];
+        let (_, routes, _) = build_grouped_rule_sets(&[empty.clone()], &nodes, &tags);
+        assert_eq!(routes[0]["outbound"], "proxy");
+        assert!(build_filter_set_selectors(&[empty], &nodes, &tags, true).is_empty());
+    }
+
+    #[test]
+    fn local_node_set_clamps_every_rule_to_set_level_pin() {
+        let nodes = vec![sample_ss()];
+        let tags = node_tags(&nodes);
+        let mut set = RuleSet::new_user(
+            "本地指定",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "node.com".into(),
+                    RuleTarget::Node,
+                    10,
+                ),
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "smart.com".into(),
+                    RuleTarget::Smart,
+                    20,
+                ),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Node;
+        set.node_id = Some(nodes[0].id.clone());
+        set.node_name = Some(nodes[0].name.clone());
+
+        // Uniform group keeps the classic parent-tag shape, routed to the pin.
+        let tag = set.id.clone();
+        let (_, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["rule_set"], json!([tag]));
+        assert_eq!(routes[0]["outbound"], tags[0]);
+
+        // Stale pin → whole set falls back to the proxy group.
+        let mut stale = set;
+        stale.node_id = Some("gone".into());
+        let (_, routes, _) = build_grouped_rule_sets(&[stale], &nodes, &tags);
+        assert_eq!(routes[0]["outbound"], "proxy");
+    }
+
+    #[test]
+    fn local_filter_set_routes_through_one_whole_set_selector() {
+        let nodes = vec![sample_ss()];
+        let tags = node_tags(&nodes);
+        let mut set = RuleSet::new_user(
+            "本地过滤",
+            vec![
+                Rule::new(
+                    RuleType::DomainSuffix,
+                    "a.com".into(),
+                    RuleTarget::Smart,
+                    10,
+                ),
+                Rule::new(RuleType::DomainSuffix, "b.com".into(), RuleTarget::Node, 20),
+            ],
+        );
+        set.strategy = RuleSetStrategy::Filter;
+        set.smart_include = vec!["HK".into()];
+
+        // One group for every pool rule (node pins clamp into the pool too):
+        // the parent tag carries the route, referencing the whole-set selector.
+        let group = set.smart_set_outbound_tag();
+        let tag = set.id.clone();
+        let (definitions, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
+        assert_eq!(definitions.len(), 1, "no child rule-sets for uniform pool");
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0]["rule_set"], json!([tag]));
+        assert_eq!(routes[0]["outbound"], group);
+
+        // Selector is emitted exactly once, and per-rule smart selectors stay
+        // out (effective_route_rules skips Filter sets entirely).
+        assert_eq!(
+            build_filter_set_selectors(&[set], &nodes, &tags, true).len(),
+            1
+        );
+        let effective = effective_route_rules(&[RuleSet::new_user("本地过滤", vec![])], &[]);
+        assert!(effective.is_empty());
+    }
+
     #[test]
     fn smart_set_partitions_only_effective_rules() {
         let mut set = RuleSet::new_user(
@@ -1909,6 +2207,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2020,6 +2319,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2063,6 +2363,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -2109,6 +2410,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            tun_interface_name: None,
         };
         let built = build_singbox_config(&nodes, &options).unwrap();
         assert_eq!(built.outbound_tags.len(), 1);
@@ -2223,6 +2525,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2262,6 +2565,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2358,6 +2662,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2421,6 +2726,7 @@ mod tests {
             tun_ipv6: ipv6,
             block_quic: false,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2465,6 +2771,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2499,6 +2806,7 @@ mod tests {
             tun_ipv6: false,
             block_quic,
             bypass_lan: false,
+            tun_interface_name: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2563,6 +2871,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan,
+            tun_interface_name: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -2673,6 +2982,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap_err();
@@ -2705,6 +3015,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2738,6 +3049,7 @@ mod tests {
                     tun_ipv6: false,
                     block_quic: false,
                     bypass_lan: false,
+                    tun_interface_name: None,
                 },
             )
             .unwrap();
@@ -2777,6 +3089,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2822,6 +3135,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2868,6 +3182,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();
@@ -2918,6 +3233,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                tun_interface_name: None,
             },
         )
         .unwrap();

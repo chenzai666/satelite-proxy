@@ -1,14 +1,16 @@
 //! Orchestrates core + system proxy.
 
-use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals};
+use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    apply_udp_node_compatibility, build_singbox_config_with_connection_policy, generate_api_secret,
-    inspect_singbox_config, outbound_tag, subscription_proxy_port, write_active_config,
-    write_custom_config, BuildOptions,
+    apply_udp_node_compatibility, build_mihomo_config, build_singbox_config_with_connection_policy,
+    build_xray_config, generate_api_secret, inspect_singbox_config, outbound_tag,
+    subscription_proxy_port, write_active_config, write_active_yaml_config, write_custom_config,
+    BuildOptions,
 };
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
+use crate::core::CoreKind;
 use crate::domain::{RuntimeSource, SubscriptionSource};
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
@@ -67,6 +69,9 @@ pub struct ProxyStatus {
     /// Resident memory (bytes) of the core process, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub core_memory_bytes: Option<u64>,
+    /// Which core is active: `singbox` (default) | `xray`.
+    #[serde(default)]
+    pub core_type: String,
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -114,6 +119,8 @@ pub struct Runtime {
     pub system_proxy_on: bool,
     pub proxy_snapshot: Option<SystemProxySnapshot>,
     pub api: Option<ClashApi>,
+    /// Xray metrics client (no Clash API exists under Xray).
+    pub xray_metrics: Option<XrayMetrics>,
     pub last_config_path: Option<PathBuf>,
     pub last_binary_path: Option<PathBuf>,
     system_proxy: Box<dyn SystemProxy>,
@@ -122,6 +129,10 @@ pub struct Runtime {
     /// Live connections (last poll)
     live_connections: Vec<ConnectionInfo>,
     live_revision: u64,
+    /// Bumped only when the live id SET changes (adds/removes), not on plain
+    /// traffic-counter updates — lets `live_connection_batch` skip the O(N)
+    /// `order_ids` payload for pure-update deltas.
+    live_order_revision: u64,
     live_item_revisions: HashMap<String, u64>,
     live_removals: VecDeque<(u64, String)>,
     live_diff_floor: u64,
@@ -151,6 +162,7 @@ impl Runtime {
             system_proxy_on: false,
             proxy_snapshot: None,
             api: None,
+            xray_metrics: None,
             last_config_path: None,
             last_binary_path: None,
             system_proxy: create_system_proxy(),
@@ -158,6 +170,7 @@ impl Runtime {
             traffic_speed: (0, 0),
             live_connections: Vec::new(),
             live_revision: 0,
+            live_order_revision: 0,
             live_item_revisions: HashMap::new(),
             live_removals: VecDeque::new(),
             live_diff_floor: 0,
@@ -176,6 +189,11 @@ impl Runtime {
     /// Clone of current Clash API client (for journal I/O outside the lock).
     pub fn api_clone(&self) -> Option<ClashApi> {
         self.api.clone()
+    }
+
+    /// Clone of the Xray metrics client for the journal poller.
+    pub fn xray_metrics_clone(&self) -> Option<XrayMetrics> {
+        self.xray_metrics.clone()
     }
 
     pub fn status(&mut self, store: &AppStore) -> ProxyStatus {
@@ -249,6 +267,13 @@ impl Runtime {
             custom_has_tun: self.custom_has_tun,
             custom_inbound_port: self.custom_inbound_port,
             core_memory_bytes,
+            // Report the ACTUAL running kind: custom sing-box profiles always
+            // run the sing-box binary even when settings.core_type is xray.
+            core_type: if self.core.is_running() {
+                self.core.kind().as_str().to_string()
+            } else {
+                store.settings.core_type.clone()
+            },
         }
     }
 
@@ -431,17 +456,26 @@ impl Runtime {
                 .iter()
                 .map(|connection| (connection_history_key(connection), connection))
                 .collect();
+            let mut membership_changed = false;
             for connection in &connections {
                 let id = connection_history_key(connection);
+                let is_new = previous.get(&id).is_none();
                 if previous.get(&id).is_none_or(|old| *old != connection) {
                     self.live_item_revisions.insert(id, revision);
+                    if is_new {
+                        membership_changed = true;
+                    }
                 }
             }
             for id in previous.keys() {
                 if !seen.contains(id) {
+                    membership_changed = true;
                     self.live_item_revisions.remove(id);
                     self.live_removals.push_back((revision, id.clone()));
                 }
+            }
+            if membership_changed {
+                self.live_order_revision = self.live_order_revision.saturating_add(1);
             }
             while self.live_removals.len() > MAX_LIVE_REMOVAL_HISTORY {
                 if let Some((removed_revision, _)) = self.live_removals.pop_front() {
@@ -465,13 +499,15 @@ impl Runtime {
         &mut self,
         store: &AppStore,
         since_revision: Option<u64>,
+        last_order_revision: Option<u64>,
     ) -> LiveConnectionBatch {
         self.core.poll();
         if since_revision == Some(self.live_revision) {
             return LiveConnectionBatch {
                 rows: Vec::new(),
                 removed_ids: Vec::new(),
-                order_ids: Vec::new(),
+                order_ids: None,
+                order_revision: self.live_order_revision,
                 revision: self.live_revision,
                 unchanged: true,
                 full: false,
@@ -480,6 +516,19 @@ impl Runtime {
         let full = since_revision.is_none_or(|since| since < self.live_diff_floor);
         let since = since_revision.unwrap_or(0);
         let tag_info = node_tag_info_map(store);
+        // Order payload is O(N); skip it when the client's order revision is
+        // current — pure traffic-counter deltas then merge in place on the
+        // client without rebuilding the whole array.
+        let order_ids = if full || last_order_revision != Some(self.live_order_revision) {
+            Some(
+                self.live_connections
+                    .iter()
+                    .map(connection_history_key)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
         LiveConnectionBatch {
             rows: self
                 .live_connections
@@ -501,11 +550,8 @@ impl Runtime {
                     .map(|(_, id)| id.clone())
                     .collect()
             },
-            order_ids: self
-                .live_connections
-                .iter()
-                .map(connection_history_key)
-                .collect(),
+            order_ids,
+            order_revision: self.live_order_revision,
             revision: self.live_revision,
             unchanged: false,
             full,
@@ -610,7 +656,7 @@ impl Runtime {
         self.api_clone()
     }
 
-    /// Generate config, start sing-box, optionally enable system proxy.
+    /// Generate config, start the active core, optionally enable system proxy.
     pub fn start_proxy(
         &mut self,
         app_data_dir: &Path,
@@ -637,6 +683,26 @@ impl Runtime {
             RuntimeSource::Generated => {}
         }
 
+        match CoreKind::parse(&store.settings.core_type) {
+            CoreKind::Xray => {
+                return self.start_xray_proxy(
+                    app_data_dir,
+                    resource_dir,
+                    store,
+                    enable_system_proxy,
+                )
+            }
+            CoreKind::Mihomo => {
+                return self.start_mihomo_proxy(
+                    app_data_dir,
+                    resource_dir,
+                    store,
+                    enable_system_proxy,
+                )
+            }
+            CoreKind::SingBox => {}
+        }
+
         self.custom_inbound_port = None;
         self.custom_has_clash_api = false;
         self.custom_has_tun = false;
@@ -660,7 +726,7 @@ impl Runtime {
         );
         ensure_listen_port_available(subscription_port, "Subscription proxy")?;
 
-        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
         // Reuse the persisted clash_api secret so it survives restarts; only
@@ -674,28 +740,7 @@ impl Runtime {
         apply_udp_node_compatibility(&mut nodes, store.settings.udp_tls_compat);
         let built = build_singbox_config_with_connection_policy(
             &nodes,
-            &BuildOptions {
-                mixed_port: store.settings.mixed_port,
-                allow_lan: store.settings.allow_lan,
-                api_port: store.settings.api_port,
-                extra_inbounds: store.settings.extra_inbounds.clone(),
-                api_secret: secret.clone(),
-                current_node_id: store.settings.current_node_id.clone(),
-                log_level: "info".into(),
-                rules: store.enabled_rules_sorted(),
-                rule_sets: store.enabled_rule_sets(),
-                tun_enabled: store.settings.tun_enabled,
-                tun_stack: store.settings.tun_stack.clone(),
-                dns: store.dns.clone(),
-                outbound_mode: store.settings.outbound_mode,
-                route_final: store.settings.route_final.clone(),
-                auto_select: store.settings.auto_select,
-                probe_url: store.settings.probe_url.clone(),
-                find_process: store.settings.find_process,
-                tun_ipv6: store.settings.tun_ipv6_enabled,
-                block_quic: store.settings.block_quic,
-                bypass_lan: store.settings.bypass_lan,
-            },
+            &build_options(store, secret.clone()),
             store.settings.close_connections_on_switch,
         )?;
         let config_path = write_active_config(app_data_dir, &built)?;
@@ -713,6 +758,7 @@ impl Runtime {
         let mut auxiliary_ports = vec![subscription_port];
         auxiliary_ports.extend(store.settings.extra_inbounds.iter().map(|inb| inb.port));
         self.core.start_with_ports(
+            CoreKind::SingBox,
             &bin,
             &config_path,
             &log_dir,
@@ -813,6 +859,355 @@ impl Runtime {
         Ok(self.status(store))
     }
 
+    /// Generate an Xray config and start the Xray core. Mirrors the sing-box
+    /// generated path; readiness is process-alive + mixed port (no Clash API
+    /// to health-check), and traffic monitoring switches to `XrayMetrics`.
+    fn start_xray_proxy(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        self.custom_inbound_port = None;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = false;
+
+        let nodes = store.enabled_nodes();
+        if nodes.is_empty() {
+            return Err(AppError::Core(
+                "no nodes; import a subscription first".into(),
+            ));
+        }
+        // Xray cannot serve every protocol. Mixed subscriptions are fine —
+        // build_xray_config skips incompatible nodes with a warning — but a
+        // subscription with zero compatible nodes cannot run at all.
+        let supported_count = nodes
+            .iter()
+            .filter(|n| CoreKind::Xray.supports(n.protocol))
+            .count();
+        if supported_count == 0 {
+            return Err(AppError::Config(
+                "当前启用的节点均不被 Xray 内核支持（仅支持 vmess/vless/shadowsocks/trojan/hysteria2(无 obfs)/socks5/http/wireguard）。请导入兼容订阅或切回 sing-box 内核".into(),
+            ));
+        }
+        let unsupported: Vec<&str> = {
+            let mut kinds: Vec<&str> = nodes
+                .iter()
+                .filter(|n| !CoreKind::Xray.supports(n.protocol))
+                .map(|n| n.protocol.as_str())
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            kinds
+        };
+        if !unsupported.is_empty() {
+            let skipped = nodes.len() - supported_count;
+            crate::app_log::warn(
+                "xray_config",
+                format!(
+                    "Xray 内核跳过 {skipped} 个不支持协议（{}）的节点",
+                    unsupported.join("/")
+                ),
+            );
+        }
+
+        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available(store.settings.api_port, "Metrics")?;
+        for inb in &store.settings.extra_inbounds {
+            ensure_listen_port_available(inb.port, "Inbound")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Xray);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("Xray binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // geosite:/geoip: matchers (and the tun adapter on Windows) resolve
+        // through asset files next to the binary.
+        crate::core::ensure_geodata(app_data_dir, resource_dir, None)?;
+        #[cfg(target_os = "windows")]
+        if store.settings.tun_enabled {
+            crate::core::ensure_wintun(app_data_dir, resource_dir, None)?;
+        }
+
+        let mut xray_opts = build_options(store, String::new());
+        #[cfg(target_os = "macos")]
+        if store.settings.tun_enabled {
+            xray_opts.tun_interface_name = Some(pick_free_darwin_utun_name());
+        }
+        let built = build_xray_config(&nodes, &xray_opts)?;
+        let config_path = write_active_config(app_data_dir, &built)?;
+        // The generator falls back to the first supported node when the
+        // persisted pick is incompatible (or absent) — mirror that here so
+        // the UI's current node matches what the config actually routes
+        // through, and node switching stays on a usable node.
+        let needs_pick = store
+            .settings
+            .current_node_id
+            .as_deref()
+            .map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .is_some_and(|n| !CoreKind::Xray.supports(n.protocol))
+            })
+            .unwrap_or(true);
+        if needs_pick {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Xray.supports(n.protocol)) {
+                store.settings.current_node_id = Some(first.id.clone());
+            }
+        }
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = store.settings.tun_enabled;
+        self.core.start_with_ports(
+            CoreKind::Xray,
+            &bin,
+            &config_path,
+            &log_dir,
+            store.settings.mixed_port,
+            Some(store.settings.api_port),
+            &store
+                .settings
+                .extra_inbounds
+                .iter()
+                .map(|inb| inb.port)
+                .collect::<Vec<_>>(),
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+        self.api = None;
+        let metrics = XrayMetrics::new("127.0.0.1", store.settings.api_port);
+        // Confirm the metrics module is serving; a miss doesn't fail the
+        // start (proxying works without stats) but gets logged for diagnosis.
+        let wait_started = Instant::now();
+        let mut metrics_ok = false;
+        while wait_started.elapsed() < Duration::from_secs(3) {
+            if metrics.health_ok() {
+                metrics_ok = true;
+                break;
+            }
+            self.core.poll();
+            if !self.core.is_running() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        if !metrics_ok {
+            crate::app_log::warn(
+                "xray_metrics",
+                format!(
+                    "metrics not responding at 127.0.0.1:{} (traffic stats may be blank)",
+                    store.settings.api_port
+                ),
+            );
+        }
+        self.xray_metrics = Some(metrics);
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            let _ = self.set_system_proxy(store, true);
+        }
+
+        Ok(self.status(store))
+    }
+
+    /// Generate a Clash YAML config and start the mihomo core. Mirrors the
+    /// sing-box generated path — mihomo serves a Clash-compatible API, so the
+    /// same ClashApi health-check / hot-switch / conn-journal machinery is
+    /// reused unchanged.
+    fn start_mihomo_proxy(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        self.custom_inbound_port = None;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = false;
+
+        let nodes = store.enabled_nodes();
+        if nodes.is_empty() {
+            return Err(AppError::Core(
+                "no nodes; import a subscription first".into(),
+            ));
+        }
+        // A core may not serve every protocol. Mixed subscriptions are fine —
+        // build_mihomo_config skips incompatible nodes (and vmess non-tcp/ws
+        // transports) with a warning — but zero compatible nodes cannot run.
+        let supported_count = nodes
+            .iter()
+            .filter(|n| CoreKind::Mihomo.supports_node(n))
+            .count();
+        if supported_count == 0 {
+            return Err(AppError::Config(
+                "当前启用的节点均不被 mihomo 内核支持（支持 ss/vmess/vless/trojan/hysteria(2)/tuic/wireguard/anytls/snell/socks5/http/ssh）。请导入兼容订阅或切换内核".into(),
+            ));
+        }
+        let unsupported: Vec<&str> = {
+            let mut kinds: Vec<&str> = nodes
+                .iter()
+                .filter(|n| !CoreKind::Mihomo.supports_node(n))
+                .map(|n| n.protocol.as_str())
+                .collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            kinds
+        };
+        if !unsupported.is_empty() {
+            let skipped = nodes.len() - supported_count;
+            crate::app_log::warn(
+                "mihomo_config",
+                format!(
+                    "mihomo 内核跳过 {skipped} 个不支持协议（{}）的节点",
+                    unsupported.join("/")
+                ),
+            );
+        }
+
+        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available(store.settings.api_port, "Clash API")?;
+        for inb in &store.settings.extra_inbounds {
+            ensure_listen_port_available(inb.port, "Inbound")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Mihomo);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("mihomo binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // GEOSITE/GEOIP rules hard-fail the core when the geodata files are
+        // missing (mihomo's own auto-download dials through the not-yet-started
+        // proxies) — ensure them first: staged → bundled → direct download.
+        crate::core::ensure_mihomo_geodata(app_data_dir, resource_dir, None)?;
+
+        // Reuse the persisted clash_api secret (same policy as sing-box).
+        let secret = store
+            .settings
+            .clash_api_secret
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(generate_api_secret);
+        let built = build_mihomo_config(&nodes, &build_options(store, secret.clone()))?;
+        let config_path = write_active_yaml_config(app_data_dir, &built.yaml)?;
+        store.settings.clash_api_secret = Some(secret.clone());
+        // Mirror the selected node onto the store when the persisted pick is
+        // absent or incompatible (the generator falls back likewise), so the
+        // UI and config agree and switching stays on a usable node.
+        let needs_pick = store
+            .settings
+            .current_node_id
+            .as_deref()
+            .map(|id| {
+                nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .is_some_and(|n| !CoreKind::Mihomo.supports_node(n))
+            })
+            .unwrap_or(true);
+        if needs_pick {
+            if let Some(first) = nodes.iter().find(|n| CoreKind::Mihomo.supports_node(n)) {
+                store.settings.current_node_id = Some(first.id.clone());
+            }
+        }
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = store.settings.tun_enabled;
+        self.core.start_with_ports(
+            CoreKind::Mihomo,
+            &bin,
+            &config_path,
+            &log_dir,
+            store.settings.mixed_port,
+            Some(store.settings.api_port),
+            &store
+                .settings
+                .extra_inbounds
+                .iter()
+                .map(|inb| inb.port)
+                .collect::<Vec<_>>(),
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+
+        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
+        let max_wait = if elevated {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(6)
+        };
+        let wait_started = Instant::now();
+        let mut ok = false;
+        while wait_started.elapsed() < max_wait {
+            if api.health_ok() {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            self.core.poll();
+            if !self.core.is_running() {
+                break;
+            }
+        }
+        if !ok {
+            let log_hint = self
+                .core
+                .last_error()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    self.core
+                        .log_path()
+                        .and_then(|log| std::fs::read(log).ok())
+                        .and_then(|b| {
+                            let s = String::from_utf8_lossy(&b);
+                            let tail: String = s
+                                .chars()
+                                .rev()
+                                .take(1200)
+                                .collect::<String>()
+                                .chars()
+                                .rev()
+                                .collect();
+                            let cleaned = tail.replace('\0', "");
+                            if cleaned.trim().is_empty() {
+                                None
+                            } else {
+                                Some(cleaned)
+                            }
+                        })
+                })
+                .unwrap_or_default();
+            let _ = self.core.stop();
+            let detail = if log_hint.is_empty() {
+                format!(
+                    "mihomo started but clash api not responding at 127.0.0.1:{}",
+                    store.settings.api_port
+                )
+            } else {
+                format!(
+                    "mihomo started but clash api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
+                    store.settings.api_port
+                )
+            };
+            return Err(AppError::Core(detail));
+        }
+        self.api = Some(api);
+        self.xray_metrics = None;
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            let _ = self.set_system_proxy(store, true);
+        }
+
+        Ok(self.status(store))
+    }
+
     fn start_custom_proxy(
         &mut self,
         app_data_dir: &Path,
@@ -843,12 +1238,13 @@ impl Runtime {
             ensure_listen_port_available(port, "Clash API")?;
         }
 
-        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir);
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
         let log_dir = app_data_dir.join("logs");
         let elevated = insight.has_tun;
         self.core.start_with_ports(
+            CoreKind::SingBox,
             &bin,
             &config_path,
             &log_dir,
@@ -1004,11 +1400,22 @@ impl Runtime {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
+        if let Some(metrics) = self.xray_metrics.take() {
+            metrics.deactivate();
+        }
         self.core.stop()?;
         // `CoreManager::stop` waits for the process we actually own. Never
         // force-kill arbitrary listeners here: an empty/test runtime has no
         // ownership proof and could otherwise terminate another running app
         // instance (or an unrelated process using the configured ports).
+        //
+        // Process-exited and socket-released are not the same instant, so
+        // also wait for the ports it held to actually clear. Without this,
+        // `restart_core` immediately re-launching the (possibly different)
+        // core can lose a bind race against the outgoing process's still-
+        // draining listener — the new core then fails with "address already
+        // in use" even though the old one just stopped cleanly.
+        self.core.await_owned_ports_released();
         self.core_started_at = None;
         self.clear_live_connections();
         Ok(())
@@ -1064,6 +1471,9 @@ impl Runtime {
         if let Some(api) = self.api.take() {
             api.deactivate();
         }
+        if let Some(metrics) = self.xray_metrics.take() {
+            metrics.deactivate();
+        }
         self.core.force_shutdown();
         self.clear_live_connections();
         self.traffic_prev = None;
@@ -1085,6 +1495,55 @@ fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
         )));
     }
     Ok(())
+}
+
+/// Shared BuildOptions for both generators (sing-box and Xray). The api
+/// secret is only consumed by the sing-box clash_api; Xray ignores it.
+fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
+    BuildOptions {
+        mixed_port: store.settings.mixed_port,
+        allow_lan: store.settings.allow_lan,
+        api_port: store.settings.api_port,
+        extra_inbounds: store.settings.extra_inbounds.clone(),
+        api_secret,
+        current_node_id: store.settings.current_node_id.clone(),
+        log_level: "info".into(),
+        rules: store.enabled_rules_sorted(),
+        rule_sets: store.enabled_rule_sets(),
+        tun_enabled: store.settings.tun_enabled,
+        tun_stack: store.settings.tun_stack.clone(),
+        dns: store.dns.clone(),
+        outbound_mode: store.settings.outbound_mode,
+        route_final: store.settings.route_final.clone(),
+        auto_select: store.settings.auto_select,
+        probe_url: store.settings.probe_url.clone(),
+        find_process: store.settings.find_process,
+        tun_ipv6: store.settings.tun_ipv6_enabled,
+        block_quic: store.settings.block_quic,
+        bypass_lan: store.settings.bypass_lan,
+        tun_interface_name: None,
+    }
+}
+
+/// macOS-only: find a `utunN` index with no existing interface, for Xray's
+/// TUN inbound (see `BuildOptions::tun_interface_name`). Falls back to
+/// `utun9` (matching the error message's own example) if `ifconfig` itself
+/// is unavailable — Xray still fails clearly if that happens to collide.
+#[cfg(target_os = "macos")]
+fn pick_free_darwin_utun_name() -> String {
+    let existing: std::collections::HashSet<u32> = std::process::Command::new("ifconfig")
+        .arg("-l")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|name| name.strip_prefix("utun"))
+        .filter_map(|n| n.parse().ok())
+        .collect();
+    (0..1000)
+        .find(|n| !existing.contains(n))
+        .map(|n| format!("utun{n}"))
+        .unwrap_or_else(|| "utun9".into())
 }
 
 fn now_unix_ms() -> i64 {
@@ -1184,7 +1643,12 @@ pub struct ConnectionView {
 pub struct LiveConnectionBatch {
     pub rows: Vec<ConnectionView>,
     pub removed_ids: Vec<String>,
-    pub order_ids: Vec<String>,
+    /// Full id order. Omitted (`None`) when the id set is unchanged since the
+    /// client's `order_revision` — clients then merge `rows` in place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_ids: Option<Vec<String>>,
+    /// Bumps only on membership changes; pass it back on the next poll.
+    pub order_revision: u64,
     pub revision: u64,
     pub unchanged: bool,
     pub full: bool,
@@ -1460,5 +1924,72 @@ mod tests {
 
         assert!(restart_allowed, "stop must allow an immediate restart");
         assert!(!api.is_active(), "stop must cancel Clash API clients");
+    }
+}
+
+/// Cross-platform protocol tests (the `tests` module above is macOS-only
+/// because of the /usr/bin/nc listener).
+#[cfg(test)]
+mod live_batch_tests {
+    use super::*;
+
+    #[test]
+    fn live_batch_skips_order_ids_until_membership_changes() {
+        let conn = |id: &str, up: u64| ConnectionInfo {
+            id: id.into(),
+            destination: format!("{id}.example:443"),
+            host: format!("{id}.example"),
+            destination_ip: "1.2.3.4".into(),
+            destination_port: "443".into(),
+            network: "tcp".into(),
+            conn_type: String::new(),
+            source: "127.0.0.1:1".into(),
+            process: String::new(),
+            chains: vec![],
+            node: String::new(),
+            rule: String::new(),
+            rule_payload: String::new(),
+            upload: up,
+            download: 0,
+            start: String::new(),
+        };
+
+        let mut runtime = Runtime::new();
+        let store = AppStore::default();
+        runtime.ingest_connections(vec![conn("a", 1), conn("b", 1)]);
+
+        let first = runtime.live_connection_batch(&store, None, None);
+        assert!(first.full && first.order_ids.is_some());
+        assert_eq!(first.order_ids.as_ref().map(Vec::len), Some(2));
+
+        // Pure counter update — membership unchanged: order_ids omitted.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
+        let delta =
+            runtime.live_connection_batch(&store, Some(first.revision), Some(first.order_revision));
+        assert!(!delta.unchanged && !delta.full);
+        assert!(
+            delta.order_ids.is_none(),
+            "no membership change → skip order_ids"
+        );
+        assert_eq!(delta.rows.len(), 2);
+
+        // New id → membership changed → order_ids return and revision bumps.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5), conn("c", 1)]);
+        let delta2 =
+            runtime.live_connection_batch(&store, Some(delta.revision), Some(delta.order_revision));
+        assert!(delta2.order_ids.is_some());
+        assert_eq!(delta2.order_ids.as_ref().map(Vec::len), Some(3));
+        assert!(delta2.order_revision > delta.order_revision);
+
+        // Removal also counts as a membership change.
+        runtime.ingest_connections(vec![conn("a", 5), conn("b", 5)]);
+        let delta3 = runtime.live_connection_batch(
+            &store,
+            Some(delta2.revision),
+            Some(delta2.order_revision),
+        );
+        assert!(delta3.order_ids.is_some());
+        assert_eq!(delta3.order_ids.as_ref().map(Vec::len), Some(2));
+        assert!(!delta3.removed_ids.is_empty());
     }
 }

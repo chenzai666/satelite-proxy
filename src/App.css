@@ -51,6 +51,7 @@
   --on-primary: #0c1210;
   --success: #55c89a;
   --success-muted: rgba(85, 200, 154, 0.14);
+  --success-border: rgba(85, 200, 154, 0.35);
   --warning: #c6a25f;
   --warning-muted: rgba(198, 162, 95, 0.16);
   --danger: #d68b58;
@@ -79,7 +80,12 @@
   --nav-bg: rgba(20, 24, 32, 0.72);
   --nav-item-active-bg: rgba(255, 255, 255, 0.92);
   --nav-item-active-fg: #12151c;
-  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(85, 200, 154, 0.12), transparent 70%);
+  /* Background halo tint (top-bar atmosphere + hero glow); overridden at
+     runtime with the glow color setting (see theme/accents.ts). --glow-deep
+     is the luminance-normalized variant driving the big app-shell wash. */
+  --glow-rgb: 85, 200, 154;
+  --glow-deep-rgb: 28, 65, 50;
+  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.12), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(101, 151, 219, 0.08), transparent 55%);
   /* Opaque panels for modals / menus / native selects (not frosted --surface) */
   --panel-solid: #161a22;
@@ -122,6 +128,7 @@
   --on-primary: #ffffff;
   --success: #1f9a72;
   --success-muted: rgba(31, 154, 114, 0.12);
+  --success-border: rgba(31, 154, 114, 0.35);
   --warning: #a67c2a;
   --warning-muted: rgba(166, 124, 42, 0.12);
   --danger: #c45a32;
@@ -150,10 +157,22 @@
   --nav-bg: rgba(255, 255, 255, 0.78);
   --nav-item-active-bg: #1a1d24;
   --nav-item-active-fg: #f5f6f8;
-  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(31, 154, 114, 0.1), transparent 70%);
+  --glow-rgb: 31, 154, 114;
+  --glow-deep-rgb: 48, 155, 119;
+  --hero-glow: radial-gradient(ellipse 70% 55% at 50% 40%, rgba(var(--glow-rgb), 0.1), transparent 70%);
   --page-glow: radial-gradient(ellipse 90% 60% at 50% -10%, rgba(61, 111, 176, 0.08), transparent 55%);
   --panel-solid: #ffffff;
   --panel-elevated: #f3f4f7;
+  /* Menu/option row hover. --panel-elevated (#f3f4f7) over the pure-white
+     popup is near-invisible in daylight; this clearly readable cool gray
+     keeps hover feedback legible without reading warm/yellowish. */
+  --menu-hover: #e8ebf2;
+  /* Form-control fill. Inputs paint WHITE with a crisper border in daylight:
+     the flat --panel-elevated gray fill read as a dingy patch on the
+     pure-white modal cards, while frosted page cards expect bright controls
+     (same white as .glass-seg-indicator / switch thumbs). */
+  --input-bg: #ffffff;
+  --input-border: rgba(0, 0, 0, 0.14);
 }
 
 * {
@@ -224,6 +243,22 @@ body,
   overscroll-behavior-x: none;
 }
 
+/* —— Viewport scale (maximize magnification) —— */
+/* useViewportScale sets `zoom` on <html> when the OS window exceeds the
+   design size (Windows maximize): the whole tree — root, body portals,
+   modals — magnifies at design proportions. Zoom is animatable, so
+   maximize/restore eases instead of snapping. */
+html {
+  transition: zoom 0.18s ease;
+}
+
+/* The simple strip is a fixed-width design: when magnified, pin it to the
+   design width and center instead of stretching wide. */
+html[data-ui-mode="simple"][data-ui-scaled] #root {
+  width: 420px; /* = SIMPLE_WINDOW design width */
+  margin-inline: auto;
+}
+
 button,
 input,
 select,
@@ -235,8 +270,8 @@ textarea {
 input,
 select,
 textarea {
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--input-bg, var(--panel-elevated));
+  border: 1px solid var(--input-border, var(--border));
   color: var(--text);
   border-radius: var(--radius);
 }
@@ -271,9 +306,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(24, 92, 72, 0.32) 0%,
-      rgba(18, 62, 52, 0.2) 34%,
-      rgba(13, 30, 28, 0.08) 58%,
+      rgba(var(--glow-deep-rgb), 0.32) 0%,
+      rgba(var(--glow-deep-rgb), 0.2) 34%,
+      rgba(var(--glow-deep-rgb), 0.08) 58%,
       transparent 76%
     ),
     var(--page-glow),
@@ -292,9 +327,9 @@ button {
   background:
     radial-gradient(
       ellipse 105% 68% at 50% 18%,
-      rgba(48, 155, 119, 0.26) 0%,
-      rgba(77, 158, 132, 0.16) 36%,
-      rgba(112, 164, 148, 0.07) 60%,
+      rgba(var(--glow-deep-rgb), 0.26) 0%,
+      rgba(var(--glow-deep-rgb), 0.16) 36%,
+      rgba(var(--glow-deep-rgb), 0.07) 60%,
       transparent 77%
     ),
     var(--page-glow),
@@ -794,8 +829,8 @@ button {
 
 .banner.ok {
   background: var(--success-muted);
-  color: var(--primary);
-  border: 1px solid var(--primary-border);
+  color: var(--success);
+  border: 1px solid var(--success-border);
   border-radius: var(--radius);
   padding: 0.5rem 0.7rem;
   margin-bottom: 0.65rem;
@@ -820,7 +855,7 @@ button {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background: var(--success-muted);
+  background: var(--primary-muted);
   color: var(--primary);
   border: 1px solid var(--primary-border);
   border-radius: var(--radius);
@@ -882,7 +917,7 @@ button {
 }
 
 .search {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: var(--radius);
   padding: 0.38rem 0.6rem;
   min-width: 200px;
@@ -973,14 +1008,7 @@ button {
   margin: 0;
 }
 
-.path-text {
-  display: block;
-  margin-top: 0.45rem;
-  word-break: break-all;
-  font-size: 0.85rem;
-}
-
-/* Config preview: a large, near-fullscreen dialog (copy + line filter live
+/* Config preview: a large, near-fullscreen dialog (copy + find-and-jump live
    in .preview-toolbar; the <pre> itself fills the remaining height). */
 .preview-modal {
   width: min(1080px, 96vw);
@@ -1029,6 +1057,12 @@ button {
   display: flex;
   gap: 0.75rem;
   /* span (not div): <pre> only allows phrasing content. */
+}
+
+/* Find-and-jump current hit — the line the view auto-scrolled to. */
+.preview-line.current {
+  background: var(--primary-muted);
+  border-radius: 4px;
 }
 
 .preview-line-no {
@@ -1174,8 +1208,8 @@ tr.row-active {
   padding: 0.45rem 0.6rem;
   font-size: 0.88rem;
   border-radius: var(--radius);
-  background: var(--panel-elevated);
-  border: 1px solid var(--border);
+  background: var(--input-bg, var(--panel-elevated));
+  border: 1px solid var(--input-border, var(--border));
   color: var(--text);
 }
 
@@ -1197,44 +1231,45 @@ tr.row-active {
   margin: 0;
 }
 
-.settings-app-prefs {
+/* App tab: one two-column table — general/behavior rows in the left column,
+   appearance rows (theme / accent / glow / hero / controls / tray) in the
+   right. Columns split by meaning, not by row-major source order. */
+.settings-app-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
-.settings-app-prefs .settings-app-pref {
-  border-bottom: none;
+.settings-app-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
-.settings-app-prefs .settings-app-pref + .settings-app-pref {
+.settings-app-col + .settings-app-col {
   border-left: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
 }
 
-.settings-app-pref.settings-hero-row,
-.settings-app-pref.settings-accent-row {
-  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+/* Compact table rows: tighter vertical padding + one-line clamped
+   descriptions keep the app tab inside the fixed 720px window without a
+   scrollbar (8 rows on the left column drive the card height). */
+.settings-app-cols .settings-app-row {
+  padding: 0.42rem 1rem;
 }
 
-.settings-app-toggles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0;
+.settings-app-cols .settings-app-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.settings-app-toggles .settings-app-row {
+/* Rows share the column height so both sides end flush like a table. */
+.settings-app-col .settings-app-row {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  flex: 1 0 auto;
 }
 
-.settings-app-toggles .settings-app-row:nth-last-child(-n + 2) {
+.settings-app-col .settings-app-row:last-child {
   border-bottom: none;
-}
-
-/* Odd last item alone on final row: keep bottom edge clean */
-.settings-app-toggles .settings-app-row:last-child:nth-child(odd) {
-  border-bottom: none;
-  grid-column: 1 / -1;
 }
 
 .settings-app-row {
@@ -1252,23 +1287,18 @@ tr.row-active {
 }
 
 @media (max-width: 640px) {
-  .settings-app-prefs,
-  .settings-app-toggles {
+  .settings-app-cols {
     grid-template-columns: 1fr;
   }
 
-  .settings-app-prefs .settings-app-pref + .settings-app-pref {
+  .settings-app-col + .settings-app-col {
     border-left: none;
     border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
   }
 
-  .settings-app-toggles .settings-app-row:nth-last-child(-n + 2) {
-    border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
-  }
-
-  .settings-app-toggles .settings-app-row:last-child {
-    border-bottom: none;
-    grid-column: auto;
+  /* Stacked single column: rows go back to natural height. */
+  .settings-app-col .settings-app-row {
+    flex: 0 0 auto;
   }
 }
 
@@ -1328,10 +1358,97 @@ tr.row-active {
   cursor: default;
 }
 
-.settings-tray-icon-row {
-  grid-column: 1 / -1;
-  border-left: none !important;
-  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+/* —— Custom accent picker modal ——
+   Saturation/value square + hue strip + hex field. The SV square and hue
+   strip backgrounds are CSS-gradient compositions (inline hue layer set from
+   React); the dots are absolutely positioned, pointer-events: none — the
+   parent handles the pointer capture drag. */
+.accent-picker-modal {
+  width: min(360px, 100%);
+}
+
+.accent-sv {
+  position: relative;
+  height: 11rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.accent-sv-dot {
+  position: absolute;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.accent-hue-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.accent-hue {
+  position: relative;
+  flex: 1;
+  height: 0.9rem;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(
+    to right,
+    #f00,
+    #ff0,
+    #0f0,
+    #0ff,
+    #00f,
+    #f0f,
+    #f00
+  );
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.accent-hue-thumb {
+  position: absolute;
+  top: 50%;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.accent-preview {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.accent-hex-field input {
+  font-family: var(--mono);
+}
+
+/* Tray icon + control style share one two-column row: label left, control
+   right on a single line (the row's default flex). The text block shrinks
+   so the tray picker fits the half column; descriptions clamp to one line. */
+.settings-app-pref.settings-duo-col .settings-app-text {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.settings-app-pref.settings-duo-col .settings-app-desc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .settings-tray-icon-row .settings-app-text {
@@ -1361,73 +1478,453 @@ tr.row-active {
   font-weight: 500;
 }
 
+/* Section titles inside the Settings version tab: the app's own version
+   card below the kernel rows. */
+.version-block-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  margin: 0.55rem 0 0.05rem;
+  padding: 0 0.15rem;
+}
+
+/* Version tab: two panels side by side — the kernel list on the left, the
+   app's own version card on the right. Grid rows stretch by default, so the
+   cards in both columns share the taller one's height. */
+.settings-panel.version-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.85rem;
+}
+
+.version-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+/* Equal-height pairing: the card fills whatever height its column got, so
+   the shorter (app) card always matches the kernel side. */
+.version-col > .core-card {
+  flex: 1 1 auto;
+}
+
+.version-split .version-block-title {
+  margin: 0.1rem 0 0;
+}
+
+.version-split .core-card {
+  max-width: none;
+}
+
+/* Default app window is 960px — keep the pair side by side below that and
+   only stack on genuinely narrow windows. */
+@media (max-width: 760px) {
+  .settings-panel.version-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Active kernel row inside the shared list card: the selected radio gets a
+   subtle accent tint (rounded, so it reads as one highlighted slot). */
+.kernel-row.core-active {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  border-radius: 10px;
+}
+
+/* —— Version tab: one kernel card, two compact rows ——
+   Both cores live in a single list card. Each row is one tight block: an
+   identity line (mark / name / enable radio / pills / platform / current
+   version), a meta line (bundled · latest plus the check/download actions),
+   and a quiet foot line (running dot + truncated path + copy). */
+.kernel-list {
+  padding: 0.4rem 0.5rem;
+}
+
+.kernel-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  padding: 0.6rem 0.65rem;
+}
+
+/* Hairline between the two cores; the active row's tint stays inset. */
+.kernel-row + .kernel-row {
+  margin-top: 0.3rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.kernel-row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+/* Core monogram tile — CoreMark SVG glyph (cube / bolt / cat head) inherits
+   the muted mark color through currentColor. */
+.ver-mark.kernel-mark {
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 0.55rem;
+}
+
+.ver-mark.kernel-mark svg {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* Fixed name slot: "sing-box" and "Xray" differ in length — a shared basis
+   keeps the radio / hint / pill / platform columns aligned across rows. */
+.kernel-name {
+  flex: 0 0 4.3rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* Small click-to-switch hint beside the radio; fixed slot so the empty
+   (active-core) row keeps the same column geometry. */
+.kernel-switch-hint {
+  flex: 0 0 3rem;
+  min-width: 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Radio-style enable button beside the kernel name: filled accent dot =
+   active core; clicking a hollow one switches (and restarts) the core. */
+.core-radio {
+  flex: 0 0 auto;
+  width: 1.05rem;
+  height: 1.05rem;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--text) 32%, transparent);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.core-radio:hover:not(:disabled) {
+  border-color: var(--primary);
+}
+
+.core-radio-dot {
+  width: 0.52rem;
+  height: 0.52rem;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--primary) 60%, transparent);
+  transform: scale(0);
+  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+
+.core-radio.on {
+  border-color: var(--primary);
+}
+
+.core-radio.on .core-radio-dot {
+  transform: scale(1);
+}
+
+.kernel-platform {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kernel-version {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1.02rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.kernel-row-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.kernel-meta-item {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.kernel-meta-sep {
+  opacity: 0.7;
+}
+
+.kernel-row-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.kernel-row-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.kernel-run {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  font-size: 0.72rem;
+  color: var(--success);
+}
+
+.kernel-run-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--success) 45%, transparent);
+}
+
+.kernel-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+  /* One line only — the full path is on the title tooltip, ⧉ copies it. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kernel-copy-btn {
+  flex-shrink: 0;
+}
+
 .core-card {
   padding: 1rem 1.05rem;
   width: 100%;
   max-width: 48rem;
 }
 
-.core-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
-  margin-bottom: 0.85rem;
-}
+/* —— Version tab: app card hero row + update strip ——
+   Only the app card keeps the .ver-hero / .ver-grid anatomy (kernel cores
+   are compact .kernel-row lists): a mark tile with the name/tagline on the
+   left, the big current version on the right, then a stats/actions grid and
+   the quiet project/sponsor links along the bottom hairline. */
 
-.core-actions {
+.ver-hero {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.55rem;
-  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-bottom: 0.65rem;
 }
 
-.core-status {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  margin-top: 0.25rem;
-}
-
-.core-meta {
+.ver-mark {
+  flex: 0 0 auto;
+  width: 2.35rem;
+  height: 2.35rem;
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
+  place-items: center;
+  font-size: 1.02rem;
+  line-height: 1;
+  color: var(--muted);
+  border-radius: 0.72rem;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text) 7%, transparent),
+    color-mix(in srgb, var(--text) 2.5%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
 }
 
-.core-path {
-  margin-bottom: 0.5rem;
+/* Brand diamond gets the primary tint + a soft glow, echoing the navbar. */
+.ver-mark.app-mark {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 9%, transparent),
+    0 0 18px color-mix(in srgb, var(--primary) 22%, transparent);
 }
 
-.core-download-route {
+.ver-name {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  margin: 0.7rem 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.ver-sub {
+  font-size: 0.68rem;
+  margin-top: 0.18rem;
+  letter-spacing: 0.03em;
+}
+
+.ver-side {
+  margin-left: auto;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.ver-side .stat-label {
+  margin-bottom: 0.2rem;
+}
+
+.ver-ver {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  font-size: 1.16rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stats + actions row. Flex-wrap (not a fixed grid): the version cards sit
+   side by side, so this row must adapt to card width, not viewport width. */
+.ver-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1.1rem;
+  align-items: center;
+  margin-bottom: 0.65rem;
+  font-size: 0.9rem;
+}
+
+.ver-grid > div:not(.ver-grid-actions) {
+  min-width: 7.2rem;
+}
+
+.ver-grid-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.ver-stat {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Quiet link row along the card's bottom hairline. margin-top:auto anchors
+   it to the card bottom: when equal-height stretching gives the app card
+   extra room, the slack lands above this row instead of trailing space. */
+.ver-links {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+  margin-top: auto;
+  padding-top: 0.7rem;
+  border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+/* Equal-height stretching hands the app card slack. Split it in half: one
+   auto margin above the path row, one above the link row — two modest gaps
+   read as breathing room instead of one dead block. */
+.app-card .kernel-row-foot {
+  margin-top: auto;
+}
+
+/* App card info rows (last check / platform / stack): quiet inset panel
+   that fills the stretched card with real content. Labels echo the
+   .stat-label look (mono uppercase); values are right-aligned mono. */
+.app-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.app-info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.app-info-label {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
   color: var(--muted);
-  font-size: 0.78rem;
 }
 
-.core-route-dot {
-  width: 0.48rem;
-  height: 0.48rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--warning);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--warning) 45%, transparent);
+.app-info-value {
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.core-download-route.via-proxy .core-route-dot {
-  background: var(--success);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--success) 45%, transparent);
+.ver-links .corner-link {
+  padding: 4px 0;
 }
 
+.ver-links .corner-link:hover {
+  color: var(--text);
+}
+
+/* Both links sit together in the card's bottom-right corner. */
+.ver-links .project-link {
+  margin-left: auto;
+}
+
+/* Sponsor easter-egg popup: portaled to <body> and fixed above the trigger
+   button (inline position passed from the button's bounding rect at click
+   time), so opening it never reflows the version cards. */
+
+@media (max-width: 720px) {
+  .ver-grid-actions {
+    /* Own line, aligned with the stats when the viewport gets tight. */
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+}
+
+/* Transient download progress inside a compact kernel row: replaces the
+   usual breathing room only while a download is in flight. */
 .core-download-progress {
-  margin: 0.75rem 0;
-  padding: 0.72rem 0.78rem;
+  margin: 0.15rem 0;
+  padding: 0.6rem 0.7rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--surface-2) 82%, transparent);
@@ -1442,7 +1939,7 @@ tr.row-active {
 
 .core-download-percent {
   margin-left: auto;
-  color: var(--primary);
+  color: var(--muted);
 }
 
 .core-progress-track {
@@ -1829,12 +2326,6 @@ button.node-card:disabled,
   animation: lat-spin 0.7s linear infinite;
 }
 
-@keyframes pulse-dot {
-  50% {
-    opacity: 0.55;
-  }
-}
-
 .sys-proxy-row,
 .via-proxy-row {
   display: flex;
@@ -1924,9 +2415,13 @@ button.node-card:disabled,
   opacity: 0.5;
 }
 
-.pill.target-proxy {
-  background: var(--primary-muted);
-  color: var(--primary);
+/* Outbound pills use FIXED semantic hues (blue = proxied family, green =
+   direct, red = block) so rule routing stays readable regardless of the
+   accent preset — mirrors the traffic page / spark arc color language. */
+.pill.target-proxy,
+.pill.target-filter {
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
 }
 
 .pill.target-direct {
@@ -1965,10 +2460,12 @@ button.node-card:disabled,
   border-radius: 2px;
 }
 
+/* Factory-shipped sets read as neutral metadata — same gray family as the
+   user-set label (text distinguishes them), never accent-tinted. */
 .ruleset-builtin-label {
-  color: var(--primary);
-  background: var(--primary-muted);
-  border: 1px solid var(--primary-border);
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
 }
 
 .ruleset-user-label {
@@ -1989,8 +2486,16 @@ button.node-card:disabled,
   color: var(--danger);
 }
 
+.ruleset-strategy-label.strategy-node {
+  color: var(--accent-blue);
+}
+
+.ruleset-strategy-label.strategy-filter {
+  color: var(--accent-blue);
+}
+
 .ruleset-origin-label.origin-remote {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .ruleset-origin-label.origin-local {
@@ -1999,8 +2504,8 @@ button.node-card:disabled,
 }
 
 .pill.target-node {
-  background: var(--primary-muted);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
   max-width: 14rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2010,8 +2515,8 @@ button.node-card:disabled,
 }
 
 .pill.target-smart {
-  background: var(--primary-muted);
-  color: var(--primary);
+  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  color: var(--accent-blue);
   max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2066,6 +2571,13 @@ button.node-card:disabled,
    shows via the native title tooltip on hover. */
 .conn-table td {
   vertical-align: middle;
+}
+
+/* Fixed row height — the tables virtualize past 200 rows and the windowing
+   math needs an exact per-row size (all cells are single-line by rule above,
+   so the natural height never exceeds this). */
+.conn-table tbody tr {
+  height: 35px;
 }
 
 /* Fixed column widths (≈ page width, no overflow). destination absorbs the
@@ -2157,33 +2669,36 @@ button.node-card:disabled,
 
 .ruleset-final {
   display: flex;
-  flex-direction: column;
-  gap: 0.28rem;
-  padding: 0.15rem 0 0.15rem;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
 }
 
 .ruleset-final-label {
   font-size: 0.7rem;
   line-height: 1.2;
-  padding: 0 0.15rem;
+  padding: 0 0 0.15rem;
 }
 
+/* Content-sized seg shares the row with the label instead of stretching. */
 .ruleset-final .glass-seg {
-  display: flex;
-  width: 100%;
-  padding: 0.09rem;
+  flex: 0 0 auto;
+  width: 9.2rem;
+  padding: 0.12rem;
 }
 
 .ruleset-final .glass-seg-indicator {
-  top: 0.09rem;
-  bottom: 0.09rem;
-  left: 0.09rem;
-  width: calc((100% - 0.18rem) / var(--count, 3));
+  top: 0.12rem;
+  bottom: 0.12rem;
+  left: 0.12rem;
+  width: calc((100% - 0.24rem) / var(--count, 3));
 }
 
 .ruleset-final .glass-seg-btn {
-  padding: 0.12rem 0.16rem !important;
-  font-size: 0.58rem !important;
+  padding: 0.22rem 0.3rem !important;
+  font-size: 0.72rem !important;
 }
 
 .ruleset-list-title {
@@ -2487,6 +3002,26 @@ tr.rule-row:hover {
 
 .rules-table .rule-type code {
   font-size: 0.72em;
+  font-weight: 600;
+}
+
+/* Rule-type chips (域名 / 域名后缀 / 域名关键字 …): neutral black-family
+   tags, immune to the accent preset — the global `code` chip elsewhere keeps
+   its accent tint. Day theme is the literal ask: black text on a light-black
+   wash; on the dark theme the box stays black with light text so it stays
+   legible on dark glass. */
+.rules-table .rule-type code,
+.remote-rules-table .rule-type code {
+  background: rgba(0, 0, 0, 0.4);
+  color: rgba(255, 255, 255, 0.78);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="day"] .rules-table .rule-type code,
+[data-theme="day"] .remote-rules-table .rule-type code {
+  background: rgba(0, 0, 0, 0.08);
+  color: #10151a;
+  border-color: rgba(0, 0, 0, 0.22);
 }
 
 .rule-payload {
@@ -2538,6 +3073,7 @@ tr.rule-row:hover {
 
 .remote-rules-table .rule-type code {
   font-size: 0.72em;
+  font-weight: 600;
 }
 
 .remote-rule-details summary {
@@ -2735,16 +3271,16 @@ tr.rule-row:hover {
 }
 
 .modal-body select {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
   padding: 0.5rem 0.65rem;
-  background: var(--panel-elevated);
+  background: var(--input-bg, var(--panel-elevated));
   color: var(--text);
   color-scheme: inherit;
 }
 
-/* buttons — exclude nav/seg/icon/node cards/switch/menu from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link) {
+/* buttons — exclude nav/seg/icon/node cards/switch/menu/radio from primary */
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.sponsor-link):not(.core-radio) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -2757,7 +3293,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-card):not(.simple-glass-bar):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.sponsor-link):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.sponsor-link):not(.core-radio):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -3145,6 +3681,15 @@ code {
   place-items: center;
   z-index: 50;
   padding: 1rem;
+}
+
+/* Day: the dim veil shows the page's green glows through, and that tint reads
+   differently per monitor calibration (gray on one screen, warm yellow on
+   another). Desaturating + soft blur neutralizes the veil so the modal scene
+   stays consistent across screens. Dark theme keeps the plain veil. */
+[data-theme="day"] .modal-backdrop {
+  backdrop-filter: blur(10px) saturate(0.55);
+  -webkit-backdrop-filter: blur(10px) saturate(0.55);
 }
 
 .modal {
@@ -3777,9 +4322,9 @@ button.check.on {
   width: 100%;
   min-width: 0;
   padding: 0.45rem 0.6rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
-  background: var(--panel-elevated);
+  background: var(--input-bg, var(--panel-elevated));
   color: var(--text);
   font-size: 0.85rem;
 }
@@ -4004,6 +4549,21 @@ button.check.on {
   min-height: 0;
 }
 
+/* Rule-form modals (create/edit set, add/edit rule, batch targets) grow
+   tall once the 指定/过滤 strategy config expands — same cap-and-scroll
+   pattern as config-add-modal. All SolidSelects inside use inline `list`
+   mode, so no popover is clipped by the scrolling body. */
+.modal.rules-form-modal {
+  max-height: min(92vh, 860px);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.rules-form-modal .modal-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: 1fr 7.5rem;
@@ -4061,7 +4621,7 @@ button.check.on {
 }
 
 .field input {
-  border: 1px solid var(--border);
+  border: 1px solid var(--input-border, var(--border));
   border-radius: 8px;
   padding: 0.5rem 0.65rem;
   outline: none;
@@ -4147,6 +4707,37 @@ button.check.on {
 .system-proxy-restart-body p {
   margin: 0;
   line-height: 1.65;
+}
+
+/* ErrorModal — standard surface for exception reports (invoke/core/load
+   failures). Backdrop sits above ordinary form modals (z-50) so errors raised
+   while a dialog is open still paint on top. */
+.error-modal-backdrop {
+  z-index: 60;
+}
+
+.error-modal {
+  width: min(560px, 100%);
+}
+
+.error-modal .modal-footer {
+  padding: 0 1rem 0.9rem;
+}
+
+.error-modal-text {
+  margin: 0;
+  max-height: min(50vh, 420px);
+  overflow: auto;
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.8rem;
+  font-size: 0.78rem;
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
 }
 
 /* ═══════════════════════════════════════════
@@ -4286,12 +4877,18 @@ button.check.on {
   min-width: 4.2rem;
 }
 
+/* Probing state: tinted chip (bg + text + border from one hue), not floating
+   accent text on glass — keeps the accent reading as surface, not ink. */
 .dash-inline-label.dash-smart-probing {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   min-width: 0;
   color: var(--primary);
+  background: var(--primary-muted);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-pill);
+  padding: 0.12rem 0.5rem;
 }
 
 .dash-smart-spinner {
@@ -4415,23 +5012,35 @@ button.check.on {
   color: var(--accent) !important;
 }
 
+/* Xray mode: custom sing-box profiles can't run under that core — grey the
+   entry (and dim the selected accent) while keeping the tooltip readable. */
+.dash-more-submenu button.is-disabled,
+.dash-more-submenu button.is-disabled.is-selected {
+  color: var(--muted) !important;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .dash-more-check {
   width: 0.85rem;
   flex: 0 0 auto;
   font-size: 0.65rem;
 }
 
-.dash-hero .particle-orbit {
+.dash-hero .particle-orbit,
+.dash-hero .face-orbit {
   filter: saturate(1) brightness(1);
   transition: filter 1.25s ease;
 }
 
-.dash-hero.is-stopped .particle-orbit {
+.dash-hero.is-stopped .particle-orbit,
+.dash-hero.is-stopped .face-orbit {
   filter: saturate(0.55) brightness(0.88);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dash-hero .particle-orbit {
+  .dash-hero .particle-orbit,
+  .dash-hero .face-orbit {
     transition: none;
   }
 }
@@ -4459,7 +5068,9 @@ button.check.on {
 }
 
 .dash-hero.is-switching .particle-orbit::before,
-.orbit.pulse .particle-orbit::before {
+.orbit.pulse .particle-orbit::before,
+.dash-hero.is-switching .face-orbit::before,
+.orbit.pulse .face-orbit::before {
   animation: orbit-pulse 1.1s ease-in-out infinite;
 }
 
@@ -4643,6 +5254,34 @@ button.check.on {
   z-index: 0;
 }
 
+/* Face ID smiley hero visual — same ambient glow bed as the particle orbit. */
+.face-orbit {
+  isolation: isolate;
+  overflow: visible;
+  z-index: 3;
+}
+
+.face-orbit::before {
+  content: "";
+  position: absolute;
+  inset: 18%;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--primary-glow), transparent 72%);
+  filter: blur(10px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.face-mark {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .particle-sphere,
 .particle-sphere-fallback {
   position: absolute;
@@ -4785,7 +5424,8 @@ button.check.on {
   vertical-align: -1px;
 }
 
-.dash-hero.is-live .particle-orbit::before {
+.dash-hero.is-live .particle-orbit::before,
+.dash-hero.is-live .face-orbit::before {
   inset: 22%;
   opacity: 0.7;
 }
@@ -4979,6 +5619,11 @@ button.check.on {
 }
 
 .instrument.accent-green .instrument-label {
+  /* Carries the core name suffix ("核心状态 · sing-box") — keep it on one
+     line, ellipsize rather than wrap into the readout below. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--accent-green);
 }
 .instrument.accent-blue .instrument-label {
@@ -5222,8 +5867,11 @@ button.check.on {
 }
 
 /* —— Glass segmented control (reusable switch, mirrors navbar material) ——
-   A frosted capsule that slides between options. Same look as the active nav
-   pill: vertical gradient body, top lit edge, bottom shade, upper-left glow. */
+   A solid capsule that slides between options — same shape language as the
+   active nav pill (lit edge, bottom shade), but no backdrop blur: these
+   repeat dozens per screen and every backdrop-filter layer costs GPU memory
+   (see docs/webview2-memory-optimization-plan.md). Frosted depth now comes
+   from the blurred card behind; the chip itself stays crisp. */
 .glass-seg {
   position: relative;
   display: inline-flex;
@@ -5231,13 +5879,31 @@ button.check.on {
   gap: 0;
   padding: 0.18rem;
   border-radius: var(--radius-pill);
-  background: rgba(16, 24, 26, 0.36);
+  background: #232a37;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
-  backdrop-filter: blur(18px) saturate(1.35);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
     0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* Opt-in frosted look (settings → control style). Re-adds the backdrop blur
+   on the repeated controls for users who prefer it — each blurred control
+   is a GPU compositing pass (docs/webview2-memory-optimization-plan.md).
+   background-color (not background) so .glass-btn keeps its gradient. */
+[data-glass-frost] .glass-seg {
+  background-color: rgba(16, 24, 26, 0.36);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+[data-glass-frost] .glass-btn {
+  background-color: rgba(16, 24, 26, 0.36);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  backdrop-filter: blur(18px) saturate(1.35);
+}
+[data-glass-frost] .glass-switch-track {
+  background-color: rgba(16, 24, 26, 0.5);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  backdrop-filter: blur(14px) saturate(1.3);
 }
 
 .glass-seg-indicator {
@@ -5330,10 +5996,10 @@ button.check.on {
   gap: 0.4rem;
   padding: 0.34rem 0.85rem;
   border-radius: var(--radius-pill);
-  background: rgba(16, 24, 26, 0.36);
+  /* Solid fill, no backdrop blur — repeated controls × blur layers is the
+     top GPU-memory driver (docs/webview2-memory-optimization-plan.md). */
+  background: #232a37;
   border: 1px solid rgba(255, 255, 255, 0.07);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
-  backdrop-filter: blur(18px) saturate(1.35);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.055),
     0 8px 24px rgba(0, 0, 0, 0.18);
@@ -5462,19 +6128,18 @@ button.check.on {
   color: inherit;
 }
 
-/* Frosted capsule track. Sizes via the `.sm` modifier (small variant ≈ 80%
+/* Capsule track. Sizes via the `.sm` modifier (small variant ≈ 80%
    of the default md). No transform/scaling — explicit dimensions keep the
-   layout honest next to the capsule label. */
+   layout honest next to the capsule label. Solid fill, no backdrop blur —
+   the settings page mounts a dozen of these at once. */
 .glass-switch-track {
   position: relative;
   flex-shrink: 0;
   width: 40px;
   height: 22px;
   border-radius: 999px;
-  background: rgba(16, 24, 26, 0.5);
+  background: #262d3a;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3);
-  backdrop-filter: blur(14px) saturate(1.3);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
@@ -5552,7 +6217,7 @@ button.check.on {
 }
 
 /* Day theme tweaks for the glass controls. */
-[data-theme="day"] .glass-btn {
+[data-theme="day"] .glass-btn:not(.primary):not(.danger) {
   background: rgba(0, 0, 0, 0.05);
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow:
@@ -5565,12 +6230,37 @@ button.check.on {
   );
   color: var(--text);
 }
-[data-theme="day"] .glass-btn:hover:not(:disabled) {
+[data-theme="day"] .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
   background-image: linear-gradient(
     180deg,
     rgba(255, 255, 255, 1) 0%,
     rgba(255, 255, 255, 0.6) 100%
   );
+}
+/* Day accent variants: the plain-button day override used to clobber these
+   (equal specificity, later in file), so primary/danger pills lost their
+   tint in daylight. Give them explicit light-theme treatments instead:
+   accent-tinted fill + accent text, matching the seg/option active style. */
+[data-theme="day"] .glass-btn.primary {
+  background: var(--primary-muted);
+  background-image: none;
+  border-color: var(--primary-border);
+  color: var(--primary);
+  box-shadow: none;
+}
+[data-theme="day"] .glass-btn.primary:hover:not(:disabled) {
+  background: var(--primary-glow);
+  border-color: var(--primary-border-strong);
+}
+[data-theme="day"] .glass-btn.danger {
+  background: var(--danger-bg);
+  background-image: none;
+  border-color: var(--danger-border);
+  color: var(--danger);
+  box-shadow: none;
+}
+[data-theme="day"] .glass-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger-hover);
 }
 [data-theme="day"] .glass-switch-track {
   background: rgba(0, 0, 0, 0.08);
@@ -5594,6 +6284,62 @@ button.check.on {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* —— Glass controls inside modals go opaque ——
+   Frosted glass needs a varied backdrop to read as glass; laid over the flat
+   opaque modal it turns into a milky smear, translucent layers lose subpixel
+   text smoothing (fuzzy unselected seg labels), and the translucent tint is
+   exactly what shifts between differently calibrated monitors. Inside modals:
+   solid fills, no backdrop blur — same crisp treatment as the white inputs.
+   Primary/danger variants keep their accent tint layered on the opaque base. */
+.modal .glass-seg {
+  background: #232a37;
+  border-color: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.modal .glass-switch-track {
+  background: #262d3a;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.modal .glass-btn:not(.primary):not(.danger) {
+  background-color: #232a37;
+  background-image: none;
+  border-color: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.modal .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
+  background-color: #2a3242;
+}
+
+[data-theme="day"] .modal .glass-seg {
+  background: #e9edf3;
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: none;
+}
+
+[data-theme="day"] .modal .glass-switch-track {
+  background: #e9edf3;
+}
+
+[data-theme="day"] .modal .glass-btn:not(.primary):not(.danger) {
+  background-color: #ffffff;
+  background-image: none;
+  border-color: rgba(0, 0, 0, 0.14);
+  box-shadow: none;
+}
+
+[data-theme="day"] .modal .glass-btn:not(.primary):not(.danger):hover:not(:disabled) {
+  background-color: #f3f4f7;
+  border-color: rgba(0, 0, 0, 0.2);
 }
 
 [data-theme="day"] .segmented.compact .seg.active {
@@ -5785,9 +6531,9 @@ select:not([size]),
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0 0.7rem;
-  border: 1px solid var(--border) !important;
+  border: 1px solid var(--input-border, var(--border)) !important;
   border-radius: 8px !important;
-  background: var(--panel-elevated) !important;
+  background: var(--input-bg, var(--panel-elevated)) !important;
   color: var(--text) !important;
   font-size: 0.85rem !important;
   font-weight: 500 !important;
@@ -5894,7 +6640,7 @@ select:not([size]),
 }
 
 .solid-select-option:hover:not(:disabled) {
-  background: var(--panel-elevated) !important;
+  background: var(--menu-hover, var(--panel-elevated)) !important;
   box-shadow: none !important;
 }
 
@@ -5941,6 +6687,9 @@ select:not([size]):disabled {
   padding: 0.2rem 0.25rem;
   border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 55%, transparent);
   align-items: baseline;
+  /* Fixed height — the log list virtualizes past 200 lines (single-line
+     messages, full text via the title tooltip). */
+  height: 25px;
 }
 
 .log-line:last-child {
@@ -5983,8 +6732,34 @@ select:not([size]):disabled {
 }
 
 .log-msg {
-  word-break: break-word;
-  white-space: pre-wrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— Traffic page core-log tab (Xray mode) ——
+   Reuses the Logs page toolbar/panel anatomy. Core lines carry no separate
+   timestamp/target columns (both live inside the message text), so the row
+   grid drops to level + message. */
+.core-log-tab {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.core-log-tab .logs-panel {
+  flex: 1 1 auto;
+}
+
+.log-line.core-log-line {
+  grid-template-columns: 52px 1fr;
+}
+
+.core-log-count {
+  flex: none;
+  font-size: 12px;
 }
 
 button.active-soft {
@@ -6278,14 +7053,17 @@ button.active-soft {
   font-size: 0.72rem;
 }
 
-.simple-shell .settings-app-prefs,
-.simple-shell .settings-app-toggles {
+.simple-shell .settings-app-cols {
   grid-template-columns: 1fr;
 }
 
-.simple-shell .settings-app-prefs .settings-app-pref + .settings-app-pref {
+.simple-shell .settings-app-col + .settings-app-col {
   border-left: none;
   border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.simple-shell .settings-app-col .settings-app-row {
+  flex: 0 0 auto;
 }
 
 /* Connect page fills the strip; keep it one screen, no scrollbar. */
@@ -6863,13 +7641,15 @@ button.active-soft {
 }
 
 .simple-orbit-btn:hover:not(:disabled) .particle-orbit::before,
+.simple-orbit-btn:hover:not(:disabled) .face-orbit::before,
 .simple-orbit-btn:hover:not(:disabled) .orbit-core {
   box-shadow:
     0 0 48px var(--primary-glow),
     inset 0 0 20px rgba(0, 0, 0, 0.3);
 }
 
-.simple-orbit-btn:hover:not(:disabled) .particle-orbit::before {
+.simple-orbit-btn:hover:not(:disabled) .particle-orbit::before,
+.simple-orbit-btn:hover:not(:disabled) .face-orbit::before {
   inset: 12%;
 }
 
@@ -6950,23 +7730,9 @@ button.active-soft {
 }
 
 .simple-status-label.on {
-  color: var(--primary);
+  color: var(--success);
 }
 
-.simple-card {
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 0.6rem 0.8rem;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  isolation: isolate;
-}
-
-button.simple-card,
 button.simple-node-item,
 button.simple-node-card,
 button.simple-link-row {
@@ -6978,7 +7744,6 @@ button.simple-link-row {
 
 /* Higher specificity so disabled beats the `cursor: pointer` above.
    Plain arrow — disabled rows read as inert content, not "forbidden". */
-button.simple-card:disabled,
 button.simple-node-item:disabled,
 button.simple-node-card:disabled,
 button.simple-link-row:disabled,
@@ -6986,7 +7751,6 @@ button.node-card:disabled {
   cursor: default;
 }
 
-button.simple-card:hover:not(:disabled),
 button.simple-node-item:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface-2) !important;
@@ -7028,103 +7792,6 @@ button.simple-node-item:hover:not(:disabled) {
 .simple-node-card .simple-node-top .lat {
   font-size: 0.85rem;
   font-weight: 600;
-}
-
-.simple-card-hint {
-  font-size: 0.72rem;
-}
-
-/* Liquid-glass info bars — reuse the navbar's glass recipe (nav-bg + blur +
-   inner highlights) so the homepage cards read as the same material. */
-.simple-glass-bar {
-  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  padding: 0.55rem 0.85rem;
-  border-radius: var(--radius);
-  background: var(--topnav-liquid);
-  border: 1px solid var(--border);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.025),
-    0 8px 22px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(24px) saturate(1.35);
-  -webkit-backdrop-filter: blur(24px) saturate(1.35);
-  font-size: 0.78rem;
-}
-
-button.simple-glass-bar {
-  appearance: none;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-button.simple-glass-bar:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: color-mix(in srgb, var(--nav-bg) 68%, var(--surface-2));
-}
-
-.simple-info-protocol {
-  font-family: var(--mono);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--primary);
-  flex-shrink: 0;
-}
-
-.simple-info-name {
-  font-weight: 600;
-  font-size: 0.82rem;
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.simple-info-latency {
-  flex-shrink: 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.simple-info-traffic {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 0.5rem;
-}
-
-.simple-info-traffic-cell {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 0.3rem;
-  font-size: 0.76rem;
-}
-
-.simple-info-traffic-cell strong {
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.simple-kv-card {
-  display: flex;
-  flex-direction: column;
-  gap: 0.55rem;
-}
-
-.simple-kv-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.85rem;
 }
 
 .simple-traffic-card {
@@ -7310,6 +7977,10 @@ button.simple-glass-bar:hover:not(:disabled) {
   align-items: center;
   gap: 0.35rem;
   color: var(--primary);
+  background: var(--primary-muted);
+  border: 1px solid var(--primary-border);
+  border-radius: var(--radius-pill);
+  padding: 0.12rem 0.5rem;
 }
 
 .simple-setting-desc {
@@ -7409,21 +8080,10 @@ button.simple-glass-bar:hover:not(:disabled) {
 button.ui-mode-menu-trigger,
 button.ui-mode-menu-item,
 button.simple-orbit-btn,
-button.simple-card,
 button.simple-node-item,
 button.simple-node-card,
 button.simple-link-row {
   text-transform: none;
-}
-.global-apply-error {
-  position: fixed;
-  z-index: 10000;
-  top: 12px;
-  left: 50%;
-  width: min(680px, calc(100vw - 32px));
-  transform: translateX(-50%);
-  cursor: pointer;
-  text-align: left;
 }
 
 /* DecryptReveal — scramble grid that dissolves into the content beneath.
@@ -7441,13 +8101,12 @@ button.simple-link-row {
   pointer-events: none;
 }
 
-/* Sponsor QR — corner link + panel.
- * The link is plain text only: no background/border in any state. */
-.sponsor-link {
-  position: fixed;
-  right: 18px;
-  bottom: 14px;
-  z-index: 90;
+/* Bottom-right corner links on the settings page (project home + sponsor).
+ * Cluster container is the fixed anchor; individual links are plain text
+ * only: no background/border in any state. */
+/* Corner-link base styles — the links now live in the version tab's
+   .ver-links row; .corner-link is kept as the shared quiet-button look. */
+.corner-link {
   /* appearance is what actually kills the native Aqua capsule on WKWebView —
    * background/border alone leave it visible. */
   appearance: none;
@@ -7464,13 +8123,13 @@ button.simple-link-row {
   opacity: 0.8;
   transition: opacity 0.15s ease;
 }
-.sponsor-link:hover,
-.sponsor-link:active,
-.sponsor-link:focus-visible {
+.corner-link:hover,
+.corner-link:active,
+.corner-link:focus-visible {
   background: none;
   box-shadow: none;
 }
-.sponsor-link:hover {
+.corner-link:hover {
   opacity: 1;
 }
 .sponsor-panel {
@@ -7539,4 +8198,11 @@ button.simple-link-row {
   .sponsor-cursor {
     animation: none;
   }
+}
+
+/* —— Virtualization spacers (tables & log list) —— */
+tr.virt-pad > td,
+li.virt-pad {
+  padding: 0;
+  border: none;
 }

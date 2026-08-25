@@ -9,6 +9,7 @@ import {
 import { getDnsSettings, readSystemHosts, updateDnsSettings } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
+import { ErrorModal } from "../components/ErrorModal";
 import { useRulesetDragSort } from "../hooks/useRulesetDragSort";
 import type { DnsRuleSet, DnsSettings, HostsEntry } from "../types";
 import { useI18n } from "../i18n";
@@ -355,7 +356,9 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <div className={embedded ? "settings-embed dns-page" : "page dns-page"}>
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
       <div className="rules-layout">
         <aside className="card ruleset-list dns-ruleset-nav">
           <GlassButton

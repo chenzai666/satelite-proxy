@@ -249,7 +249,9 @@ fn parse_shadow_tls_opts(opts: Option<&str>) -> Result<ShadowTlsOpts, String> {
         }
     }
     if !(1..=3).contains(&version) {
-        return Err(format!("ss: shadow-tls version must be 1, 2, or 3 (got {version})"));
+        return Err(format!(
+            "ss: shadow-tls version must be 1, 2, or 3 (got {version})"
+        ));
     }
     Ok(ShadowTlsOpts {
         host: host.ok_or("ss: shadow-tls missing host")?,
@@ -448,8 +450,10 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
             if let Some(st) = shadow_tls {
                 // Mirror the structured opts back into the SIP003-style
                 // strings the form edits; build_config parses them out again.
-                let mut opts =
-                    format!("host={};password={};version={}", st.host, st.password, st.version);
+                let mut opts = format!(
+                    "host={};password={};version={}",
+                    st.host, st.password, st.version
+                );
                 if let Some(fp) = &st.fingerprint {
                     opts.push_str(&format!(";fingerprint={fp}"));
                 }
@@ -613,7 +617,9 @@ mod tests {
             method: Some("aes-256-gcm".into()),
             password: Some("secret".into()),
             plugin: Some("shadow-tls".into()),
-            plugin_opts: Some("host=www.bing.com;password=tls-pass;version=3;fingerprint=chrome".into()),
+            plugin_opts: Some(
+                "host=www.bing.com;password=tls-pass;version=3;fingerprint=chrome".into(),
+            ),
             ..Default::default()
         };
         let node = draft_to_node(&draft, None).unwrap();

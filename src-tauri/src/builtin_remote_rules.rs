@@ -114,7 +114,11 @@ const FORMER_FACTORY_NAMES: [&str; 6] = [
 /// User-touched fields (name, target, enabled, update interval) and entries
 /// pointing at a healthy downloaded file are never modified. Insertion of
 /// the entries themselves is migration-only (`migrate_builtin_remote_rule_sets`).
-pub fn seed(app_data_dir: &Path, resource_dir: Option<&Path>, store: &mut crate::storage::AppStore) {
+pub fn seed(
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+    store: &mut crate::storage::AppStore,
+) {
     for spec in BUILTIN_REMOTE_RULE_SETS.iter() {
         let Some(set) = store.rule_sets.iter_mut().find(|s| s.id == spec.id) else {
             continue;
@@ -197,10 +201,10 @@ mod tests {
     // Minimal valid binary rule-set produced by `sing-box rule-set compile`
     // (one domain rule); the same blob is used in `remote_rule_auto` tests.
     const VALID_SRS: &[u8] = &[
-        0x53, 0x52, 0x53, 0x02, 0x78, 0xda, 0x62, 0x64, 0x60, 0x62, 0x60, 0x64, 0x00, 0x03,
-        0x01, 0x08, 0x83, 0x71, 0xd5, 0xaa, 0x55, 0x3c, 0xb9, 0xf9, 0xc9, 0x7a, 0xa9, 0x39,
-        0x05, 0xb9, 0x89, 0x15, 0xa9, 0x5c, 0xff, 0x19, 0x00, 0x01, 0x00, 0x00, 0xff, 0xff,
-        0x4d, 0xcc, 0x07, 0x83,
+        0x53, 0x52, 0x53, 0x02, 0x78, 0xda, 0x62, 0x64, 0x60, 0x62, 0x60, 0x64, 0x00, 0x03, 0x01,
+        0x08, 0x83, 0x71, 0xd5, 0xaa, 0x55, 0x3c, 0xb9, 0xf9, 0xc9, 0x7a, 0xa9, 0x39, 0x05, 0xb9,
+        0x89, 0x15, 0xa9, 0x5c, 0xff, 0x19, 0x00, 0x01, 0x00, 0x00, 0xff, 0xff, 0x4d, 0xcc, 0x07,
+        0x83,
     ];
 
     struct Sandbox {
@@ -243,7 +247,11 @@ mod tests {
         let mut store = crate::storage::AppStore::default();
         store.rule_sets.push(build_builtin_remote_set(spec));
 
-        seed(&sandbox.app_data, Some(sandbox.resources.parent().unwrap()), &mut store);
+        seed(
+            &sandbox.app_data,
+            Some(sandbox.resources.parent().unwrap()),
+            &mut store,
+        );
 
         let set = store.rule_sets.iter().find(|s| s.id == spec.id).unwrap();
         let remote = set.remote.as_ref().unwrap();
@@ -268,7 +276,11 @@ mod tests {
         sandbox.bundle(spec, VALID_SRS);
         let mut store = crate::storage::AppStore::default();
         // Deleted: no entry at all → nothing copied.
-        seed(&sandbox.app_data, Some(sandbox.resources.parent().unwrap()), &mut store);
+        seed(
+            &sandbox.app_data,
+            Some(sandbox.resources.parent().unwrap()),
+            &mut store,
+        );
         assert!(!stable_cache_path(&sandbox.app_data, spec).is_file());
         assert!(store.rule_sets.is_empty());
 
@@ -277,10 +289,13 @@ mod tests {
         std::fs::create_dir_all(downloaded.parent().unwrap()).unwrap();
         std::fs::write(&downloaded, VALID_SRS).unwrap();
         let mut set = build_builtin_remote_set(spec);
-        set.remote.as_mut().unwrap().local_path =
-            Some(downloaded.to_string_lossy().to_string());
+        set.remote.as_mut().unwrap().local_path = Some(downloaded.to_string_lossy().to_string());
         store.rule_sets.push(set);
-        seed(&sandbox.app_data, Some(sandbox.resources.parent().unwrap()), &mut store);
+        seed(
+            &sandbox.app_data,
+            Some(sandbox.resources.parent().unwrap()),
+            &mut store,
+        );
         let remote = store.rule_sets[0].remote.as_ref().unwrap();
         assert_eq!(
             remote.local_path.as_deref(),
@@ -299,7 +314,11 @@ mod tests {
         let mut store = crate::storage::AppStore::default();
         store.rule_sets.push(build_builtin_remote_set(spec));
 
-        seed(&sandbox.app_data, Some(sandbox.resources.parent().unwrap()), &mut store);
+        seed(
+            &sandbox.app_data,
+            Some(sandbox.resources.parent().unwrap()),
+            &mut store,
+        );
 
         assert!(!stable_cache_path(&sandbox.app_data, spec).is_file());
         let remote = store.rule_sets[0].remote.as_ref().unwrap();
@@ -339,8 +358,11 @@ mod tests {
         std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
         std::fs::write(&stable, b"stale").unwrap();
 
-        let copied =
-            copy_bundled_to_cache(&sandbox.app_data, Some(sandbox.resources.parent().unwrap()), spec);
+        let copied = copy_bundled_to_cache(
+            &sandbox.app_data,
+            Some(sandbox.resources.parent().unwrap()),
+            spec,
+        );
         assert_eq!(copied.as_deref(), Some(stable.as_path()));
         assert_eq!(std::fs::read(&stable).unwrap(), VALID_SRS);
 

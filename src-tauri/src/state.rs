@@ -48,6 +48,7 @@ struct QueryViewCache {
 struct TrafficViewCache {
     live: Vec<ConnectionView>,
     live_revision: u64,
+    live_order_revision: u64,
     requests: QueryViewCache,
     failures: QueryViewCache,
 }
@@ -593,13 +594,62 @@ impl AppState {
         }
     }
 
+    /// Xray-mode counterpart of `try_clash_api_clone` for the journal poller.
+    pub fn try_xray_metrics_clone(&self) -> Option<crate::api::XrayMetrics> {
+        if self.is_core_transitioning() {
+            return None;
+        }
+        match self.runtime.try_lock() {
+            Ok(runtime) => runtime.xray_metrics_clone(),
+            Err(TryLockError::WouldBlock) => None,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner().xray_metrics_clone()
+            }
+        }
+    }
+
+    /// Apply an Xray metrics sample from the currently active core session.
+    /// Traffic totals only — no per-connection data exists under Xray.
+    pub fn try_apply_metrics_snapshot(
+        &self,
+        metrics: &crate::api::XrayMetrics,
+        totals: crate::api::TrafficTotals,
+    ) -> bool {
+        if self.is_core_transitioning() || !metrics.is_active() {
+            return false;
+        }
+        let mut runtime = match self.runtime.try_lock() {
+            Ok(runtime) => runtime,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if self.is_core_transitioning()
+            || !metrics.is_active()
+            || !runtime
+                .xray_metrics_clone()
+                .is_some_and(|current| current.same_session(metrics))
+        {
+            return false;
+        }
+        runtime.apply_snapshot(crate::api::ConnectionsSnapshot {
+            upload_total: totals.upload_total,
+            download_total: totals.download_total,
+            connections: Vec::new(),
+        });
+        true
+    }
+
     /// Apply only a snapshot from the currently active core session. If the
     /// runtime is busy, dropping one frame is safer than delaying a restart or
     /// applying stale data after it completes.
     pub fn try_apply_connection_snapshot(
         &self,
         api: &crate::api::ClashApi,
-        snapshot: crate::api::ConnectionsSnapshot,
+        mut snapshot: crate::api::ConnectionsSnapshot,
     ) -> bool {
         if self.is_core_transitioning() || !api.is_active() {
             return false;
@@ -620,8 +670,44 @@ impl AppState {
         {
             return false;
         }
+        // Some Clash derivatives report only the matched target in `chains` (["proxy"], not
+        // ["node-x", "proxy"] like sing-box/mihomo), so every main-group
+        // connection would display as "proxy". Resolve it to the persisted
+        // current node — accurate in manual mode (the select's pick) and in
+        // kernel mode (the url-test `now` synced by
+        // schedule_kernel_selection_sync). Custom sing-box profiles keep
+        // whatever their own config reports.
+        if let Some(name) = self.generated_current_node_name() {
+            for conn in &mut snapshot.connections {
+                if conn.node == "proxy" {
+                    conn.node = name.clone();
+                }
+            }
+        }
         runtime.apply_snapshot(snapshot);
         true
+    }
+
+    /// Display name (alias applied) of the persisted current node for a
+    /// generated runtime; `None` for custom sing-box profiles.
+    fn generated_current_node_name(&self) -> Option<String> {
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "store lock was poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+        if store.settings.runtime_source().is_custom() {
+            return None;
+        }
+        store
+            .settings
+            .current_node_id
+            .as_deref()
+            .and_then(|id| store.find_node(id))
+            .map(|n| n.name.clone())
     }
 
     fn begin_core_transition(&self) -> AppResult<CoreTransitionGuard<'_>> {
@@ -852,14 +938,19 @@ impl AppState {
         rows
     }
 
-    pub fn live_connection_batch(&self, since_revision: Option<u64>) -> LiveConnectionBatch {
+    pub fn live_connection_batch(
+        &self,
+        since_revision: Option<u64>,
+        last_order_revision: Option<u64>,
+    ) -> LiveConnectionBatch {
         let cached = || {
             let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             if since_revision == Some(cache.live_revision) {
                 LiveConnectionBatch {
                     rows: Vec::new(),
                     removed_ids: Vec::new(),
-                    order_ids: Vec::new(),
+                    order_ids: None,
+                    order_revision: cache.live_order_revision,
                     revision: cache.live_revision,
                     unchanged: true,
                     full: false,
@@ -868,7 +959,8 @@ impl AppState {
                 LiveConnectionBatch {
                     rows: cache.live.clone(),
                     removed_ids: Vec::new(),
-                    order_ids: cache.live.iter().map(|row| row.id.clone()).collect(),
+                    order_ids: Some(cache.live.iter().map(|row| row.id.clone()).collect()),
+                    order_revision: cache.live_order_revision,
                     revision: cache.live_revision,
                     unchanged: false,
                     full: true,
@@ -888,7 +980,7 @@ impl AppState {
             Err(TryLockError::WouldBlock) => return cached(),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
-        let batch = runtime.live_connection_batch(&store, since_revision);
+        let batch = runtime.live_connection_batch(&store, since_revision, last_order_revision);
         if !batch.unchanged {
             let mut cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             if batch.full {
@@ -896,22 +988,37 @@ impl AppState {
             } else {
                 let removed: std::collections::HashSet<&str> =
                     batch.removed_ids.iter().map(String::as_str).collect();
-                let mut by_id: std::collections::HashMap<String, ConnectionView> = cache
-                    .live
-                    .drain(..)
-                    .filter(|row| !removed.contains(row.id.as_str()))
-                    .map(|row| (row.id.clone(), row))
-                    .collect();
-                for row in &batch.rows {
-                    by_id.insert(row.id.clone(), row.clone());
+                match &batch.order_ids {
+                    Some(order) => {
+                        let mut by_id: std::collections::HashMap<String, ConnectionView> = cache
+                            .live
+                            .drain(..)
+                            .filter(|row| !removed.contains(row.id.as_str()))
+                            .map(|row| (row.id.clone(), row))
+                            .collect();
+                        for row in &batch.rows {
+                            by_id.insert(row.id.clone(), row.clone());
+                        }
+                        cache.live = order.iter().filter_map(|id| by_id.remove(id)).collect();
+                    }
+                    None => {
+                        // Membership unchanged — overlay updates in place.
+                        let updates: std::collections::HashMap<String, &ConnectionView> =
+                            batch.rows.iter().map(|row| (row.id.clone(), row)).collect();
+                        cache.live = cache
+                            .live
+                            .drain(..)
+                            .filter(|row| !removed.contains(row.id.as_str()))
+                            .map(|row| match updates.get(&row.id) {
+                                Some(updated) => (*updated).clone(),
+                                None => row,
+                            })
+                            .collect();
+                    }
                 }
-                cache.live = batch
-                    .order_ids
-                    .iter()
-                    .filter_map(|id| by_id.remove(id))
-                    .collect();
             }
             cache.live_revision = batch.revision;
+            cache.live_order_revision = batch.order_revision;
         }
         batch
     }
@@ -1038,12 +1145,23 @@ impl AppState {
     /// Select the main proxy node and persist it under the same operation
     /// guard, so a manual click and a smart-switch apply cannot overwrite one
     /// another mid-flight.
+    ///
+    /// Returns `(settings, restart_needed, switched_live)`. Under Xray there
+    /// is no live selection API — the pick is persisted and the caller must
+    /// restart the core (`restart_needed = true`).
     pub fn select_current_node_serialized(
         &self,
         node_id: &str,
         manual: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
+        let core_kind = {
+            let kind = crate::core::CoreKind::parse(
+                self.with_store(|store| Ok(store.settings.core_type.clone()))?
+                    .as_str(),
+            );
+            kind
+        };
         let (tag, kernel_auto) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
@@ -1056,6 +1174,16 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
+            // Node-level compatibility (protocol / per-core node-shape
+            // transport limits) lives in CoreKind::supports_node — the same
+            // predicate that filters listings and generation, so a pick can
+            // never desync from what the config actually contains.
+            if !core_kind.supports_node(node) {
+                return Err(crate::error::AppError::Core(format!(
+                    "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
+                    core_kind.display_name()
+                )));
+            }
             Ok((
                 crate::config::outbound_tag(node),
                 manual && store.settings.auto_select.is_kernel(),
@@ -1067,7 +1195,9 @@ impl AppState {
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
-        let selected_live = if kernel_auto {
+        // Xray has no selection API at all — same restart path. mihomo (like
+        // sing-box) selects live through its Clash-compatible API.
+        let selected_live = if core_kind == crate::core::CoreKind::Xray || kernel_auto {
             false
         } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
@@ -1082,7 +1212,9 @@ impl AppState {
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             Ok((store.settings.clone(), was_kernel))
         })?;
-        Ok((settings, was_kernel, selected_live))
+        let restart_needed =
+            was_kernel || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
+        Ok((settings, restart_needed, selected_live))
     }
 
     /// When auto_select=kernel, read Clash API group `now` and persist as current_node_id.
@@ -1126,19 +1258,28 @@ impl AppState {
             return;
         }
 
-        let api = {
+        let (api, metrics) = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
             if !runtime.core.is_running() {
                 return;
             }
-            runtime.api_clone()
+            (runtime.api_clone(), runtime.xray_metrics_clone())
         };
-        let Some(api) = api else { return };
-        let now_tag = match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT)
-        {
-            Ok(tag) => tag,
-            Err(_) => return,
+        // sing-box / mihomo: read the urltest group's `now` directly.
+        // Xray: no selection API exists — infer the balancer's live pick from
+        // the per-outbound stats counters (the picked outbound is the one
+        // whose counters grow between polls; idle polls keep the last pick).
+        // XrayMetrics only exists in Xray mode, so its presence is the check.
+        let now_tag = if let Some(api) = api {
+            match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT) {
+                Ok(tag) => tag,
+                Err(_) => return,
+            }
+        } else if let Some(metrics) = metrics {
+            metrics.dominant_outbound_tag()
+        } else {
+            return;
         };
         let Some(tag) = now_tag else {
             return;
@@ -1432,5 +1573,147 @@ impl AppState {
         self.cache_status(&status);
 
         Ok(store.settings.clone())
+    }
+
+    /// Last observed core state from the status cache; `is_core_running`
+    /// refreshes it as a side effect (and reaps a dead child first).
+    pub fn cached_core_state(&self) -> CoreState {
+        self.cached_status().core_state
+    }
+}
+
+// —— core watchdog ——————————————————————————————————————————————
+
+/// A core that flips running → error without a user-initiated stop is
+/// auto-restarted through the regular debounced apply-and-restart path.
+/// Motivated by a field incident of a core exiting silently (code 1,
+/// no log line) minutes after start; generic across cores. An attempt
+/// budget inside a rolling window keeps a config-error death-loop from
+/// spinning forever — after the budget is spent the core stays down and
+/// the error surfaces in the UI as before.
+const WATCHDOG_POLL_MS: u64 = 2000;
+const WATCHDOG_MAX_ATTEMPTS: usize = 3;
+const WATCHDOG_WINDOW: Duration = Duration::from_secs(600);
+
+/// Pure decision core (unit-tested): restart only on the running→not-running
+/// edge, only for the `Error` state (a deliberate stop lands on `Stopped`),
+/// never during a core transition, and only within the attempt budget.
+fn watchdog_should_restart(
+    was_running: bool,
+    now_running: bool,
+    transitioning: bool,
+    core_state: CoreState,
+    attempts_in_window: usize,
+) -> bool {
+    !now_running
+        && was_running
+        && !transitioning
+        && core_state == CoreState::Error
+        && attempts_in_window < WATCHDOG_MAX_ATTEMPTS
+}
+
+pub fn spawn_core_watchdog(app: tauri::AppHandle) {
+    use tauri::Manager;
+    std::thread::Builder::new()
+        .name("core-watchdog".into())
+        .spawn(move || {
+            let mut was_running = false;
+            let mut attempts: Vec<Instant> = Vec::new();
+            loop {
+                std::thread::sleep(Duration::from_millis(WATCHDOG_POLL_MS));
+                let Some(state) = app.try_state::<AppState>() else {
+                    continue;
+                };
+                // is_core_running also reaps a dead child, flipping the
+                // cached state to error before we read it.
+                let now_running = state.is_core_running();
+                let transitioning = state.is_core_transitioning();
+                let core_state = state.cached_core_state();
+                let now = Instant::now();
+                attempts.retain(|t| now.duration_since(*t) < WATCHDOG_WINDOW);
+                if watchdog_should_restart(
+                    was_running,
+                    now_running,
+                    transitioning,
+                    core_state,
+                    attempts.len(),
+                ) {
+                    attempts.push(now);
+                    app_log::warn(
+                        "core",
+                        format!(
+                            "core died unexpectedly (state {core_state:?}) — auto-restarting (attempt {}/{WATCHDOG_MAX_ATTEMPTS} in {}s)",
+                            attempts.len(),
+                            WATCHDOG_WINDOW.as_secs()
+                        ),
+                    );
+                    crate::rule_apply::request_restart(app.clone(), Vec::new());
+                }
+                was_running = now_running;
+            }
+        })
+        .ok();
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+
+    #[test]
+    fn restarts_only_on_error_edge() {
+        // running → error, no transition, budget left → restart.
+        assert!(watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            0
+        ));
+        // Deliberate stop lands on "stopped" → never auto-restart.
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Stopped,
+            0
+        ));
+        // No edge (was already down) or mid-transition → skip.
+        assert!(!watchdog_should_restart(
+            false,
+            false,
+            false,
+            CoreState::Error,
+            0
+        ));
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            true,
+            CoreState::Error,
+            0
+        ));
+        // Budget exhausted inside the window → skip.
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            WATCHDOG_MAX_ATTEMPTS
+        ));
+        assert!(!watchdog_should_restart(
+            true,
+            false,
+            false,
+            CoreState::Error,
+            WATCHDOG_MAX_ATTEMPTS + 2
+        ));
+        // Still running → nothing to do.
+        assert!(!watchdog_should_restart(
+            true,
+            true,
+            false,
+            CoreState::Running,
+            0
+        ));
     }
 }

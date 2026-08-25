@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getProxyStatus, listConnectionChanges } from "../../api";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
+import { ErrorModal } from "../../components/ErrorModal";
 import type { ConnectionView } from "../../types";
 import { applyConnectionChanges } from "../../connectionChanges";
 
@@ -18,15 +19,17 @@ export function SimpleTrafficPage() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const revisionRef = useRef<number | null>(null);
+  const orderRevRef = useRef<number | null>(null);
 
   const reload = useCallback(async () => {
     try {
       const [status, batch] = await Promise.all([
         getProxyStatus().catch(() => null),
-        listConnectionChanges(revisionRef.current),
+        listConnectionChanges(revisionRef.current, orderRevRef.current),
       ]);
       setRunning(!!status?.running);
       revisionRef.current = batch.revision;
+      orderRevRef.current = batch.order_revision;
       if (!batch.unchanged) setRows((current) => applyConnectionChanges(current, batch));
       setError(null);
     } catch (e) {
@@ -78,7 +81,9 @@ export function SimpleTrafficPage() {
         placeholder={t("conn.filter")}
       />
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {!running ? (
         <div className="empty card muted">{t("conn.needStart")}</div>

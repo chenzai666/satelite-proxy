@@ -1,25 +1,49 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getProxyStatus, restartProxy } from "../api";
+import {
+  getProxyStatus,
+  peekProxyStatus,
+  restartProxy,
+  setCoreType,
+} from "../api";
+import type { CoreKind } from "../types";
 import { useUiMode, type UiMode } from "./UiModeContext";
 
+function coreOf(raw: string | null | undefined): CoreKind {
+  if (raw === "xray") return "xray";
+  if (raw === "mihomo") return "mihomo";
+  return "singbox";
+}
+
+function coreLabel(kind: CoreKind): string {
+  return kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box";
+}
+
 /**
- * Top-bar ⋯ quick menu: switch runtime UI mode, restart core, and copy the
- * proxy env snippet — reachable from any tab. Single ⋯ keeps the navbar tidy
- * (no duplicate capsule switches next to the theme picker).
+ * Top-bar ⋯ quick menu: switch runtime UI mode, switch core
+ * (sing-box/Xray/mihomo), restart core, and copy the proxy env snippet —
+ * reachable from any tab. Single ⋯ keeps the navbar tidy (no duplicate
+ * capsule switches next to the theme picker).
  */
 export function UiModeMenu() {
   const { mode, setMode } = useUiMode();
   const [open, setOpen] = useState(false);
   const [mixedPort, setMixedPort] = useState<number | null>(null);
+  const [coreType, setCoreTypeState] = useState<CoreKind>(
+    () => coreOf(peekProxyStatus()?.core_type),
+  );
+  const [switchingCore, setSwitchingCore] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Refresh mixed_port so "Copy env" works without a Dashboard mount.
+  // Refresh mixed_port / core type so actions work without a Dashboard mount.
   const refreshPort = useCallback(async () => {
     const s = await getProxyStatus().catch(() => null);
     if (s?.mixed_port) setMixedPort(s.mixed_port);
+    if (s?.core_type) {
+      setCoreTypeState(coreOf(s.core_type));
+    }
   }, []);
 
   useEffect(() => {
@@ -62,6 +86,22 @@ export function UiModeMenu() {
   function pick(next: UiMode) {
     setMode(next);
     setOpen(false);
+  }
+
+  /** Switch the active core; the backend restarts a running core onto the
+   *  new binary (debounced), so a spinner covers the transition. */
+  async function onPickCore(kind: CoreKind) {
+    if (kind === coreType || switchingCore) return;
+    setSwitchingCore(true);
+    try {
+      await setCoreType(kind);
+      setCoreTypeState(kind);
+      flash(`已切换到 ${coreLabel(kind)}`);
+    } catch (e) {
+      flash(typeof e === "string" ? e : "切换失败");
+    } finally {
+      setSwitchingCore(false);
+    }
   }
 
   async function onRestart() {
@@ -137,6 +177,32 @@ export function UiModeMenu() {
             </span>
             完整模式
           </button>
+
+          <div className="ui-mode-menu-sep" aria-hidden />
+
+          <div className="ui-mode-menu-label">切换内核</div>
+          {(["singbox", "xray", "mihomo"] as const).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              role="menuitemradio"
+              aria-checked={coreType === kind}
+              className={`ui-mode-menu-item ${coreType === kind ? "active" : ""}`}
+              disabled={switchingCore}
+              onClick={() => void onPickCore(kind)}
+            >
+              <span className="ui-mode-radio" aria-hidden>
+                {switchingCore && coreType !== kind ? (
+                  <span className="lat-spinner ui-mode-restart-spinner" />
+                ) : coreType === kind ? (
+                  "●"
+                ) : (
+                  "○"
+                )}
+              </span>
+              {coreLabel(kind)}
+            </button>
+          ))}
 
           <div className="ui-mode-menu-sep" aria-hidden />
 

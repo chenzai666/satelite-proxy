@@ -25,6 +25,7 @@ import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { useImportIntent } from "../ImportIntentContext";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import type {
   SubscriptionTraffic,
   SubscriptionUrlEntry,
@@ -764,7 +765,12 @@ export function ConfigPage() {
         </div>
       </header>
 
-      {listError && <div className="banner error">{listError}</div>}
+      {listError && (
+        <ErrorModal
+          message={listError}
+          onClose={() => setListError(null)}
+        />
+      )}
 
       {loading ? (
         <div className="empty">{t("common.loading")}</div>
@@ -806,6 +812,7 @@ export function ConfigPage() {
         open={modalOpen}
         busy={importing}
         error={importError}
+        onDismissError={() => setImportError(null)}
         isEdit={!!editId}
         initial={editInitial}
         existingUrls={existingUrls

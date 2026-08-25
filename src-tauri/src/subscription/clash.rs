@@ -161,7 +161,8 @@ fn parse_ss(
     let plugin_opts = if shadow_tls.is_some() {
         None
     } else {
-        get_map(map, &["plugin-opts", "plugin_opts"]).map(|m| build_plugin_opts(plugin.as_deref(), m))
+        get_map(map, &["plugin-opts", "plugin_opts"])
+            .map(|m| build_plugin_opts(plugin.as_deref(), m))
     };
 
     Ok((
@@ -1076,7 +1077,9 @@ proxies:
         let result = parse_clash_yaml(yaml).unwrap();
         match &result.nodes[0].config {
             ProtocolConfig::Shadowsocks {
-                plugin, plugin_opts, ..
+                plugin,
+                plugin_opts,
+                ..
             } => {
                 assert_eq!(plugin.as_deref(), Some("obfs-local"));
                 // obfs-local reads "obfs" (not "mode") and "obfs-host" (not
@@ -1358,7 +1361,10 @@ proxies:
         let result = parse_clash_yaml(yaml).unwrap();
         match &result.nodes[0].config {
             ProtocolConfig::WireGuard { local_address, .. } => {
-                assert_eq!(local_address, &["10.0.0.2/32".to_string(), "fd00::2/128".to_string()]);
+                assert_eq!(
+                    local_address,
+                    &["10.0.0.2/32".to_string(), "fd00::2/128".to_string()]
+                );
             }
             _ => panic!("expected wireguard config"),
         }
