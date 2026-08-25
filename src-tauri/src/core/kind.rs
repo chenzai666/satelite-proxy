@@ -192,6 +192,7 @@ impl CoreKind {
 
     /// Infer the kind from a binary path's file stem (e.g. the Windows
     /// elevated-helper entry point receives only the binary path).
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn from_binary_path(path: &std::path::Path) -> Self {
         match path
             .file_stem()
