@@ -2190,6 +2190,92 @@ button.node-card:disabled,
   font-size: 0.68rem;
 }
 
+.node-editor-modal {
+  width: min(980px, calc(100vw - 2rem));
+  max-height: min(90vh, 900px);
+}
+
+.node-editor-profile,
+.node-editor-hint {
+  margin: 0.25rem 0 0;
+}
+
+.node-editor-body {
+  min-height: 0;
+}
+
+.node-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.8fr) minmax(340px, 1.8fr);
+  gap: 1rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.node-editor-list,
+.node-editor-form {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.node-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.node-editor-item {
+  width: 100%;
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.node-editor-item:hover,
+.node-editor-item.active {
+  border-color: var(--primary-border);
+  background: var(--primary-muted);
+}
+
+.node-editor-item strong,
+.node-editor-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-editor-item span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.node-editor-form {
+  padding: 0.1rem 0.6rem 0.4rem 0.1rem;
+}
+
+.node-editor-saved {
+  color: var(--success);
+  font-size: 0.82rem;
+}
+
+@media (max-width: 720px) {
+  .node-editor-layout {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .node-editor-list {
+    max-height: 180px;
+  }
+}
+
 .node-card-top {
   display: flex;
   justify-content: space-between;

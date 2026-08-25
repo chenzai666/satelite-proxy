@@ -3,10 +3,10 @@ use crate::config::{
     build_singbox_config_with_connection_policy, build_xray_config, generate_api_secret,
     write_active_config, write_active_yaml_config, BuildOptions,
 };
-use crate::domain::{AppSettings, ProxyNode, RuntimeSource, SubscriptionSource};
+use crate::domain::{AppSettings, ManualNodeDraft, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::subscription::parse_singbox_json;
+use crate::subscription::{draft_to_node, node_to_draft, parse_singbox_json};
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager, State};
@@ -371,6 +371,54 @@ pub fn rename_node(
     state
         .with_store_mut(|store| store.rename_node(&id, name))
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNodeDraft, String> {
+    state
+        .with_store(|store| {
+            store
+                .find_node(&id)
+                .map(node_to_draft)
+                .ok_or_else(|| AppError::NotFound(id.clone()))
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_node(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    draft: ManualNodeDraft,
+) -> Result<ProxyNode, String> {
+    let edited = draft_to_node(&draft, None).map_err(|reason| {
+        AppError::InvalidProxy {
+            name: draft.name.clone().unwrap_or_else(|| id.clone()),
+            reason,
+        }
+        .to_string()
+    })?;
+    let (node, enabled) = state
+        .with_store_mut(|store| {
+            let enabled = store.nodes.iter().any(|entry| {
+                entry.node.id == id
+                    && store
+                        .subscriptions
+                        .iter()
+                        .any(|sub| sub.id == entry.subscription_id && sub.enabled)
+            });
+            Ok((store.update_node(&id, edited)?, enabled))
+        })
+        .map_err(|e| e.to_string())?;
+    if enabled && state.is_core_running() {
+        crate::app_log::info(
+            "subscription",
+            format!("{}: node edited; queued core rebuild", node.name),
+        );
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(node)
 }
 
 #[tauri::command]

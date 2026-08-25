@@ -42,6 +42,11 @@ pub struct AppStore {
     /// User-assigned node names, keyed by `identity|parsed-name`.
     #[serde(default)]
     pub node_aliases: std::collections::BTreeMap<String, String>,
+    /// User-edited node definitions, keyed by `subscription-id|source-node-id`.
+    /// The source id stays stable across ordinary subscription refreshes, so
+    /// local edits can be reapplied without modifying the remote subscription.
+    #[serde(default)]
+    pub node_overrides: std::collections::BTreeMap<String, ProxyNode>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -696,7 +701,20 @@ impl AppStore {
             self.subscriptions.push(sub);
         }
         for mut node in nodes {
+            let source_id = node.id.clone();
             self.apply_node_alias(&mut node);
+            if let Some(edited) = self
+                .node_overrides
+                .get(&Self::node_override_key(&id, &source_id))
+            {
+                let mut edited = edited.clone();
+                // Routing, selections and rule pins refer to the source id.
+                // Never let a local field edit silently create a new node id.
+                edited.id = source_id;
+                edited.latency_ms = None;
+                edited.latency_at = None;
+                node = edited;
+            }
             self.nodes.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
@@ -712,6 +730,7 @@ impl AppStore {
             return Err(AppError::NotFound(id.to_string()));
         }
         self.nodes.retain(|n| n.subscription_id != id);
+        self.clear_node_overrides_for_subscription(id);
         if self.settings.runtime_source().singbox_id() == Some(id) {
             self.settings
                 .set_runtime_source(crate::domain::RuntimeSource::Generated);
@@ -944,6 +963,36 @@ impl AppStore {
         node.instance_key()
     }
 
+    fn node_override_key(subscription_id: &str, node_id: &str) -> String {
+        format!("{subscription_id}|{node_id}")
+    }
+
+    pub fn clear_node_overrides_for_subscription(&mut self, subscription_id: &str) {
+        let prefix = format!("{subscription_id}|");
+        self.node_overrides
+            .retain(|key, _| !key.starts_with(&prefix));
+    }
+
+    pub fn update_node(&mut self, id: &str, mut edited: ProxyNode) -> AppResult<ProxyNode> {
+        let stored = self
+            .nodes
+            .iter_mut()
+            .find(|entry| entry.node.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        let subscription_id = stored.subscription_id.clone();
+        let source = stored.node.source.clone();
+        edited.id = stored.node.id.clone();
+        edited.source = source;
+        edited.latency_ms = None;
+        edited.latency_at = None;
+        stored.node = edited.clone();
+        self.node_overrides.insert(
+            Self::node_override_key(&subscription_id, id),
+            edited.clone(),
+        );
+        Ok(edited)
+    }
+
     fn apply_node_alias(&self, node: &mut ProxyNode) {
         if let Some(alias) = self.node_aliases.get(&Self::node_alias_key(node)) {
             let alias = alias.trim();
@@ -982,8 +1031,14 @@ impl AppStore {
             })
             .unwrap_or(parsed_key);
         node.node.name = name.clone();
+        let subscription_id = node.subscription_id.clone();
+        let edited = node.node.clone();
         self.node_aliases.insert(source_key, name);
-        Ok(node.node.clone())
+        self.node_overrides.insert(
+            Self::node_override_key(&subscription_id, id),
+            edited.clone(),
+        );
+        Ok(edited)
     }
 
     pub fn update_node_latency(
@@ -2872,6 +2927,37 @@ mod tests {
             .unwrap();
         assert_eq!(store.find_node("a").unwrap().name, "Hong Kong");
         assert_eq!(store.find_node("b").unwrap().name, "HK-02");
+    }
+
+    #[test]
+    fn edited_node_survives_refresh_and_is_removed_with_subscription() {
+        let mut store = AppStore::default();
+        let source = sample_hy2("source-id", "HK-01");
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![source.clone()])
+            .unwrap();
+
+        let mut edited = source.clone();
+        edited.name = "自定义香港".into();
+        edited.server = "edited.example.com".into();
+        store.update_node("source-id", edited).unwrap();
+        assert_eq!(
+            store.find_node("source-id").unwrap().server,
+            "edited.example.com"
+        );
+
+        // A normal refresh produces the original source node again. The local
+        // override is reapplied while the stable source id is preserved.
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![source])
+            .unwrap();
+        let refreshed = store.find_node("source-id").unwrap();
+        assert_eq!(refreshed.id, "source-id");
+        assert_eq!(refreshed.name, "自定义香港");
+        assert_eq!(refreshed.server, "edited.example.com");
+
+        store.remove_subscription("s").unwrap();
+        assert!(store.node_overrides.is_empty());
     }
 
     #[test]

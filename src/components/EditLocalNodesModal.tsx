@@ -1,15 +1,20 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { listSubscriptionNodes, renameNode } from "../api";
-import { GlassButton } from "./GlassButton";
-import { ErrorModal } from "./ErrorModal";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { getNodeDraft, listSubscriptionNodes, updateNode } from "../api";
 import { useI18n } from "../i18n";
-import type { ProxyNode } from "../types";
+import type { ManualNodeDraft, ProxyNode } from "../types";
+import { ErrorModal } from "./ErrorModal";
+import { GlassButton } from "./GlassButton";
+import { NodeDraftFields, nodeDraftReady } from "./NodeDraftFields";
 
 interface Props {
   open: boolean;
   profileId: string | null;
   profileName: string;
   onClose: () => void;
+}
+
+function errorText(error: unknown) {
+  return typeof error === "string" ? error : String(error);
 }
 
 export function EditLocalNodesModal({
@@ -20,26 +25,40 @@ export function EditLocalNodesModal({
 }: Props) {
   const { t } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ManualNodeDraft | null>(null);
+  const [baseline, setBaseline] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingDraft, setLoadingDraft] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const serializedDraft = useMemo(() => JSON.stringify(draft), [draft]);
+  const dirty = !!draft && baseline !== "" && serializedDraft !== baseline;
 
   useEffect(() => {
     if (!open || !profileId) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setSaved(false);
+    setDraft(null);
+    setBaseline("");
     void listSubscriptionNodes(profileId)
-      .then((list) => {
+      .then(async (list) => {
         if (cancelled) return;
         setNodes(list);
-        const next: Record<string, string> = {};
-        for (const n of list) next[n.id] = n.name;
-        setDrafts(next);
+        const first = list[0];
+        setSelectedId(first?.id ?? null);
+        if (!first) return;
+        const next = await getNodeDraft(first.id);
+        if (cancelled) return;
+        setDraft(next);
+        setBaseline(JSON.stringify(next));
       })
       .catch((e) => {
-        if (!cancelled) setError(typeof e === "string" ? e : String(e));
+        if (!cancelled) setError(errorText(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -51,29 +70,51 @@ export function EditLocalNodesModal({
 
   if (!open) return null;
 
-  const changed = nodes.filter((n) => (drafts[n.id] ?? "").trim() !== n.name);
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (busy || changed.length === 0) {
-      onClose();
-      return;
-    }
-    setBusy(true);
+  async function selectNode(id: string) {
+    if (id === selectedId || busy || loadingDraft) return;
+    if (dirty && !window.confirm(t("nodes.unsavedConfirm"))) return;
+    setSelectedId(id);
+    setLoadingDraft(true);
+    setSaved(false);
     setError(null);
     try {
-      for (const n of changed) {
-        const name = (drafts[n.id] ?? "").trim();
-        if (!name) {
-          setError(t("nodes.renamePlaceholder"));
-          setBusy(false);
-          return;
-        }
-        await renameNode(n.id, name);
-      }
-      onClose();
-    } catch (err) {
-      setError(typeof err === "string" ? err : String(err));
+      const next = await getNodeDraft(id);
+      setDraft(next);
+      setBaseline(JSON.stringify(next));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setLoadingDraft(false);
+    }
+  }
+
+  function closeModal() {
+    if (dirty && !window.confirm(t("nodes.unsavedConfirm"))) return;
+    onClose();
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedId || !draft || busy) return;
+    const name = (draft.name ?? "").trim();
+    if (!name || !nodeDraftReady(draft)) {
+      setError(t("nodes.invalidDraft"));
+      return;
+    }
+    const nextDraft = { ...draft, name };
+    setBusy(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const updated = await updateNode(selectedId, nextDraft);
+      setNodes((current) =>
+        current.map((node) => (node.id === selectedId ? updated : node)),
+      );
+      setDraft(nextDraft);
+      setBaseline(JSON.stringify(nextDraft));
+      setSaved(true);
+    } catch (e) {
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -82,64 +123,99 @@ export function EditLocalNodesModal({
   return (
     <div className="modal-backdrop">
       <div
-        className="modal config-add-modal"
+        className="modal node-editor-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="edit-local-nodes-title"
       >
         <header className="modal-header">
-          <h2 id="edit-local-nodes-title">{t("nodes.renameTitle")}</h2>
+          <div>
+            <h2 id="edit-local-nodes-title">{t("nodes.renameTitle")}</h2>
+            <p className="hint node-editor-profile">{profileName}</p>
+          </div>
           <button
             type="button"
             className="icon-btn"
-            onClick={onClose}
+            onClick={closeModal}
             disabled={busy}
             aria-label={t("common.close")}
           >
             ×
           </button>
         </header>
-        <form className="modal-body" onSubmit={(e) => void handleSubmit(e)}>
-          <p className="hint" style={{ margin: 0 }}>
-            {profileName}
-          </p>
+        <form
+          className="modal-body node-editor-body"
+          onSubmit={(event) => void handleSubmit(event)}
+        >
+          <p className="hint node-editor-hint">{t("nodes.localOverrideHint")}</p>
           {loading ? (
             <div className="muted">{t("common.loading")}</div>
           ) : nodes.length === 0 ? (
             <div className="muted">{t("nodes.empty")}</div>
           ) : (
-            <div className="rename-node-list">
-              {nodes.map((n) => (
-                <label key={n.id} className="field">
-                  <span className="rename-node-meta">
-                    <code>{n.protocol}</code> {n.server}:{n.port}
-                  </span>
-                  <input
-                    autoCapitalize="off"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    value={drafts[n.id] ?? ""}
-                    onChange={(e) =>
-                      setDrafts((prev) => ({ ...prev, [n.id]: e.target.value }))
-                    }
-                    placeholder={t("nodes.renamePlaceholder")}
-                    disabled={busy}
-                  />
-                </label>
-              ))}
+            <div className="node-editor-layout">
+              <div className="node-editor-list" role="listbox">
+                {nodes.map((node) => (
+                  <button
+                    key={node.id}
+                    type="button"
+                    role="option"
+                    aria-selected={node.id === selectedId}
+                    className={`node-editor-item${node.id === selectedId ? " active" : ""}`}
+                    onClick={() => void selectNode(node.id)}
+                    disabled={busy || loadingDraft}
+                  >
+                    <strong>{node.name}</strong>
+                    <span>
+                      {node.protocol} · {node.server}:{node.port}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="node-editor-form">
+                {loadingDraft || !draft ? (
+                  <div className="muted">{t("common.loading")}</div>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>{t("nodes.renamePlaceholder")}</span>
+                      <input
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        value={draft.name ?? ""}
+                        onChange={(event) => {
+                          setSaved(false);
+                          setDraft({ ...draft, name: event.target.value });
+                        }}
+                        disabled={busy}
+                      />
+                    </label>
+                    <NodeDraftFields
+                      value={draft}
+                      disabled={busy}
+                      onChange={(next) => {
+                        setSaved(false);
+                        setDraft(next);
+                      }}
+                    />
+                  </>
+                )}
+              </div>
             </div>
           )}
-          {error && (
-            <ErrorModal message={error} onClose={() => setError(null)} />
+          {saved && (
+            <div className="node-editor-saved">{t("nodes.saveSuccess")}</div>
           )}
+          {error && <ErrorModal message={error} onClose={() => setError(null)} />}
           <footer className="modal-footer">
-            <GlassButton onClick={onClose} disabled={busy}>
-              {t("common.cancel")}
+            <GlassButton onClick={closeModal} disabled={busy}>
+              {t("common.close")}
             </GlassButton>
             <GlassButton
               type="submit"
               variant="primary"
-              disabled={busy || loading || nodes.length === 0}
+              disabled={busy || loading || loadingDraft || !draft || !dirty}
             >
               {busy ? t("common.saving") : t("nodes.renameSave")}
             </GlassButton>

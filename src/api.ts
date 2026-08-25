@@ -186,6 +186,14 @@ export function renameNode(id: string, name: string) {
   return invoke<ProxyNode>("rename_node", { id, name });
 }
 
+export function getNodeDraft(id: string) {
+  return invoke<import("./types").ManualNodeDraft>("get_node_draft", { id });
+}
+
+export function updateNode(id: string, draft: import("./types").ManualNodeDraft) {
+  return invoke<ProxyNode>("update_node", { id, draft });
+}
+
 /**
  * Cross-mount snapshots of the latest resolved settings / proxy status.
  * Tab switches remount pages (key={nav} page-enter animation), so control

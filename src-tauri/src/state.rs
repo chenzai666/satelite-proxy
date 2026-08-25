@@ -1126,6 +1126,11 @@ impl AppState {
     /// endpoint between cloning the handle and applying the selection.
     pub fn select_group_live_serialized(&self, group: &str, node_tag: &str) -> AppResult<bool> {
         let _operation = self.begin_core_transition()?;
+        let close_after_switch = self.with_store(|store| {
+            Ok(crate::core::CoreKind::parse(&store.settings.core_type)
+                == crate::core::CoreKind::Mihomo
+                && store.settings.close_connections_on_switch)
+        })?;
         let api = {
             let runtime = self.lock_runtime();
             runtime.clash_api_clone()
@@ -1135,6 +1140,20 @@ impl AppState {
         };
 
         api.select_proxy(group, node_tag)?;
+        if close_after_switch {
+            match api.close_all_connections() {
+                Ok(()) => app_log::info(
+                    "connections",
+                    format!("selector {group} switched; stale mihomo connections closed"),
+                ),
+                Err(error) => app_log::warn(
+                    "connections",
+                    format!(
+                        "selector {group} switched but closing mihomo connections failed: {error}"
+                    ),
+                ),
+            }
+        }
         app_log::info(
             "connections",
             format!("selector {group} switched to {node_tag}"),
@@ -1162,7 +1181,7 @@ impl AppState {
             );
             kind
         };
-        let (tag, kernel_auto) = self.with_store(|store| {
+        let (tag, kernel_auto, close_after_switch) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
                     "自写配置模式下无法切换节点".into(),
@@ -1187,6 +1206,8 @@ impl AppState {
             Ok((
                 crate::config::outbound_tag(node),
                 manual && store.settings.auto_select.is_kernel(),
+                core_kind == crate::core::CoreKind::Mihomo
+                    && store.settings.close_connections_on_switch,
             ))
         })?;
         let api = {
@@ -1201,6 +1222,20 @@ impl AppState {
             false
         } else if let Some(api) = api {
             api.select_proxy("proxy", &tag)?;
+            if close_after_switch {
+                match api.close_all_connections() {
+                    Ok(()) => app_log::info(
+                        "connections",
+                        "main selector switched; stale mihomo connections closed",
+                    ),
+                    Err(error) => app_log::warn(
+                        "connections",
+                        format!(
+                            "main selector switched but closing mihomo connections failed: {error}"
+                        ),
+                    ),
+                }
+            }
             app_log::info("connections", format!("main selector switched to {tag}"));
             true
         } else {

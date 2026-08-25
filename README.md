@@ -44,7 +44,7 @@
 
 ## 它能做什么
 
-- **订阅与配置**：Clash 订阅、sing-box JSON、节点分享链接；链接 / 文件 / 浏览器深链导入；订阅可定时更新。也可以把一份完整 sing-box 配置直接当运行时。
+- **订阅与配置**：Clash 订阅、V2rayN Base64、sing-box JSON、节点分享链接；链接 / 文件 / 浏览器深链导入；订阅可定时更新。解析后的订阅节点可逐项编辑，刷新时会继续套用本地修改。也可以把一份完整 sing-box 配置直接当运行时。
 - **协议**：SS、VMess、VLESS、Trojan、Hysteria2、TUIC、AnyTLS、SOCKS5 等，一键测速，秒切节点
 - **智能选路**：手动 · 应用智能避障 · 内核 urltest，按场景选，不绑死一种策略
 - **规则分流**：多规则集（本地 / 远程 sing-box JSON、`.srs`、Clash `.list`），拖拽优先级；内置国内站点 / 国内 IP / 海外规则；兜底出口代理 / 直连 / 屏蔽。规则 / 全局 / 直连一键切换
@@ -53,7 +53,8 @@
 - **端口**：mixed / Clash API、多监听、允许局域网
 - **连接与流量**：活跃连接、已关闭、失败请求、流量走向，自动解析进程名；切换节点可自动中断旧连接，流量页也可手动关闭全部连接
 - **托盘常驻**：关窗进托盘，开机启动、静默启动、可选托盘图标；内核在后台，窗口可消失
-- **内核自管**：自动拉取并更新 sing-box，不用自己找二进制、对版本
+- **多内核**：支持 sing-box、Mihomo 与 Xray；可在设置中切换，并按所选内核过滤不兼容节点
+- **内核自管**：自动拉取并更新内核，不用自己找二进制、对版本
 - **中英双语文案**，浅色 / 深色，多种主题色
 
 <p align="center">
@@ -78,7 +79,7 @@
 
 ## 🛠 技术栈
 
-- **内核**：[sing-box](https://github.com/SagerNet/sing-box)
+- **代理内核**：[sing-box](https://github.com/SagerNet/sing-box)、[Mihomo](https://github.com/MetaCubeX/mihomo)、[Xray](https://github.com/XTLS/Xray-core)
 - **桌面框架**：[Tauri 2](https://tauri.app/)
 - **前端**：React + TypeScript + Vite
 - **后端**：Rust
@@ -152,6 +153,10 @@ Windows 系统代理会同时更新注册表、当前 LAN 连接以及已有拨�
 规则模式下，`cliproxy.yu8.lat`（兼容旧地址 `cpa.yu8.lat`）使用“直连优先、代理回退”：内核每分钟通过直连和当前代理组探测反代首页，直连可用时保持直连，直连失败时自动切换到当前手动节点。OpenAI 与 ChatGPT 官方域名仍按 AI 规则走代理。该机制同时适用于系统代理和 TUN，不需要把整个应用切到全局模式。
 
 远程规则集可直接填写 sing-box source JSON、二进制 `.srs` 或 Clash classical `.list` / `payload:` YAML；Clash 列表会在本地转换为 sing-box source JSON。列表里的第三列策略不会被信任，实际出口仍以 Satelite 中该规则集选择的“代理 / 直连 / 屏蔽”为准。
+
+### 编辑订阅节点
+
+在“配置”页面打开订阅卡片右上角菜单，选择“编辑节点”，即可修改解析后的节点名称、服务器、端口、协议、认证、TLS / REALITY 与传输参数。修改只保存在本机，不会写回远程订阅；普通刷新时，只要远程订阅中仍存在同一源节点，本地修改就会自动重新套用。若服务商删除或替换了该节点，对应本地修改也会自然失效，避免错误覆盖新节点。
 
 ### UDP 节点兼容模式
 

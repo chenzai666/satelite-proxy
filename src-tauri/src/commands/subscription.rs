@@ -693,6 +693,7 @@ fn persist_import_replacing(
                     .subscriptions
                     .retain(|subscription| subscription.id != remove_id);
                 store.nodes.retain(|node| node.subscription_id != remove_id);
+                store.clear_node_overrides_for_subscription(remove_id);
             }
             let is_new = !store
                 .subscriptions

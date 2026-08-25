@@ -656,8 +656,7 @@ export function ConfigPage() {
                         {t("config.menuUpdate")}
                       </button>
                     )}
-                    {item.source_kind !== "url" &&
-                      item.source_kind !== "singbox" && (
+                    {item.node_count > 0 && (
                         <button
                           type="button"
                           role="menuitem"
