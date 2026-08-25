@@ -2956,7 +2956,7 @@ mod tests {
         assert_eq!(refreshed.name, "自定义香港");
         assert_eq!(refreshed.server, "edited.example.com");
 
-        store.remove_subscription("s").unwrap();
+        store.remove_subscription("id-s").unwrap();
         assert!(store.node_overrides.is_empty());
     }
 
