@@ -27,6 +27,7 @@ import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
+import { ErrorModal } from "../../components/ErrorModal";
 import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
 import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
@@ -323,7 +324,9 @@ export function SimpleServersPage() {
         </div>
       </header>
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {switching && (
         <div className="banner busy" role="status">
@@ -417,6 +420,7 @@ export function SimpleServersPage() {
         open={modalOpen}
         busy={modalBusy}
         error={modalError}
+        onDismissError={() => setModalError(null)}
         isEdit={false}
         initial={modalInitial}
         onClose={() => {

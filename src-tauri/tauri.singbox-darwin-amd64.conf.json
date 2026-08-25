@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": [
+      "resources/bin/darwin-amd64/sing-box",
+      "resources/bin/darwin-amd64/version.txt",
+      "resources/rule-sets",
+      "resources/dns"
+    ]
+  }
+}

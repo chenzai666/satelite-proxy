@@ -57,8 +57,7 @@ fn read_rss(pid: u32) -> Option<u64> {
             let base = buf.as_ptr().cast::<u8>();
             let mut offset = 0usize;
             loop {
-                let entry =
-                    unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
+                let entry = unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
                 if entry.UniqueProcessId.0 as u32 == pid {
                     return Some(entry.WorkingSetSize as u64);
                 }

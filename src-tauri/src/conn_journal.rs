@@ -61,9 +61,23 @@ fn journal_loop(app: AppHandle) {
         let api = state.try_clash_api_clone();
 
         let Some(api) = api else {
-            thread::sleep(Duration::from_millis(IDLE_MS));
+            // Xray mode: no Clash API — poll the metrics module for traffic
+            // totals instead. Per-connection data does not exist.
+            if let Some(metrics) = state.try_xray_metrics_clone() {
+                poll_xray_metrics(&state, &metrics);
+            } else {
+                thread::sleep(Duration::from_millis(IDLE_MS));
+            }
             continue;
         };
+
+        // A spontaneously dead core (crash / external kill) leaves the stale
+        // ClashApi handle behind — retrying WS against its corpse spams
+        // connection-refused logs forever. Park until it is (re)started.
+        if !state.is_core_running() {
+            thread::sleep(Duration::from_millis(IDLE_MS));
+            continue;
+        }
 
         let interval = journal_interval_ms(&state);
 
@@ -104,6 +118,27 @@ fn journal_loop(app: AppHandle) {
                 }
                 thread::sleep(Duration::from_millis(RECONNECT_MS));
             }
+        }
+    }
+}
+
+/// Xray metrics polling loop: sample `/debug/vars` traffic totals until the
+/// session goes away or a core transition starts. 1s cadence — the counters
+/// are cumulative, so faster polling buys nothing.
+fn poll_xray_metrics(state: &AppState, metrics: &crate::api::XrayMetrics) {
+    const XRAY_POLL_MS: u64 = 1000;
+    while metrics.is_active() && !state.is_core_transitioning() {
+        match metrics.traffic_totals() {
+            Some(totals) => {
+                state.try_apply_metrics_snapshot(metrics, totals);
+            }
+            None => break,
+        }
+        for _ in 0..(XRAY_POLL_MS / 50) {
+            if !metrics.is_active() || state.is_core_transitioning() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
         }
     }
 }

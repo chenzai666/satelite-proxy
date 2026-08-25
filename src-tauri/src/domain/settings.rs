@@ -244,8 +244,10 @@ pub struct AppSettings {
     /// Start proxy core automatically after app launch.
     #[serde(default)]
     pub auto_start_proxy: bool,
-    /// Close all connections after switching node.
-    #[serde(default = "default_true")]
+    /// Close all connections after switching node — manual mode only
+    /// (kernel auto-select and smart switching never interrupt existing
+    /// connections). Default off: smooth handover.
+    #[serde(default)]
     pub close_connections_on_switch: bool,
     /// UI language: `zh` | `en` (sidebar labels stay English).
     #[serde(default = "default_locale")]
@@ -293,10 +295,19 @@ pub struct AppSettings {
     /// Which config the kernel should run: `generated` or `singbox:<profile_id>`.
     #[serde(default = "default_runtime_source")]
     pub runtime_source: String,
+    /// Which core binary generates config and runs: `singbox` (default) | `xray`.
+    /// Switching goes through the dedicated `set_core_type` command (restarts
+    /// a running core); plain `update_settings` never touches it.
+    #[serde(default = "default_core_type")]
+    pub core_type: String,
 }
 
 fn default_runtime_source() -> String {
     "generated".into()
+}
+
+fn default_core_type() -> String {
+    "singbox".into()
 }
 
 /// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
@@ -408,7 +419,7 @@ impl Default for AppSettings {
             launch_at_login: false,
             silent_start: false,
             auto_start_proxy: false,
-            close_connections_on_switch: true,
+            close_connections_on_switch: false,
             locale: default_locale(),
             theme: default_theme(),
             accent: default_accent(),
@@ -421,6 +432,7 @@ impl Default for AppSettings {
             find_process: true,
             smart_switch: false,
             runtime_source: default_runtime_source(),
+            core_type: default_core_type(),
         }
     }
 }
@@ -496,7 +508,10 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("legacy"), Some(TrayIconStyle::Mark));
         assert_eq!(TrayIconStyle::parse("laoyou"), Some(TrayIconStyle::Buddy));
         assert_eq!(TrayIconStyle::parse("warning"), Some(TrayIconStyle::Danger));
-        assert_eq!(TrayIconStyle::parse("danger2"), Some(TrayIconStyle::Danger2));
+        assert_eq!(
+            TrayIconStyle::parse("danger2"),
+            Some(TrayIconStyle::Danger2)
+        );
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
         assert_eq!(TrayIconStyle::parse("nope"), None);

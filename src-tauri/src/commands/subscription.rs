@@ -589,10 +589,7 @@ async fn import_singbox_blocking(
     .map_err(|error| format!("subscription singbox task: {error}"))?
 }
 
-async fn load_inline_body(
-    content: Option<String>,
-    path: Option<String>,
-) -> Result<String, String> {
+async fn load_inline_body(content: Option<String>, path: Option<String>) -> Result<String, String> {
     if let Some(content) = content.filter(|s| !s.trim().is_empty()) {
         return Ok(content);
     }
@@ -611,11 +608,17 @@ async fn load_inline_body(
 }
 
 #[tauri::command]
-pub fn remove_subscription(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub fn remove_subscription(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let before = enabled_flags(&state);
     state
         .with_store_mut(|store| store.remove_subscription(&id))
         .map_err(|e| e.to_string())?;
     crate::config::remove_custom_config(&state.app_data_dir, &id);
+    queue_rebuild_if_enabled_set_changed(&app, &state, &before, "remove");
     Ok(())
 }
 
@@ -651,12 +654,8 @@ fn persist_import_replacing(
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
     if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
-        crate::config::write_custom_config(
-            &state.app_data_dir,
-            &outcome.subscription.id,
-            content,
-        )
-        .map_err(|e| e.to_string())?;
+        crate::config::write_custom_config(&state.app_data_dir, &outcome.subscription.id, content)
+            .map_err(|e| e.to_string())?;
     }
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
@@ -749,32 +748,76 @@ pub async fn set_runtime_source(
         .map_err(|e| e.to_string())
 }
 
+/// Queue a debounced core rebuild when a mutation changed the enabled
+/// subscription set and the core is running. Without this, switching
+/// subscriptions keeps the OLD node set live in the kernel while the UI
+/// shows the new one — and through-kernel latency probes then fail
+/// instantly for every node missing from the stale config.
+fn queue_rebuild_if_enabled_set_changed(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    before: &[bool],
+    reason: &str,
+) {
+    let changed = state
+        .with_store(|store| {
+            Ok(store
+                .subscriptions
+                .iter()
+                .map(|s| s.enabled)
+                .zip(before.iter().copied())
+                .any(|(now, was)| now != was))
+        })
+        .unwrap_or(true);
+    if changed && state.is_core_running() {
+        crate::app_log::info(
+            "subscription",
+            format!("{reason}: enabled node set changed; queued core rebuild"),
+        );
+        crate::rule_apply::request_restart(app.clone(), Vec::new());
+    }
+}
+
+fn enabled_flags(state: &AppState) -> Vec<bool> {
+    state
+        .with_store(|store| Ok(store.subscriptions.iter().map(|s| s.enabled).collect()))
+        .unwrap_or_default()
+}
+
 /// Click a config card: exclusive enable (default) or Mix toggle.
 #[tauri::command]
 pub fn activate_subscription(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<SubscriptionView>, String> {
-    state
+    let before = enabled_flags(&state);
+    let views = state
         .with_store_mut(|store| {
             store.activate_subscription(&id)?;
             Ok(store.subscriptions.iter().map(|s| s.to_view()).collect())
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    queue_rebuild_if_enabled_set_changed(&app, &state, &before, &id);
+    Ok(views)
 }
 
 /// Toggle Mix mode (multi-subscription enable). Turning off keeps first enabled only.
 #[tauri::command]
 pub fn set_mix_mode(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     mix: bool,
 ) -> Result<crate::domain::AppSettings, String> {
-    state
+    let before = enabled_flags(&state);
+    let settings = state
         .with_store_mut(|store| {
             store.set_mix_mode(mix)?;
             Ok(store.settings.clone())
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    queue_rebuild_if_enabled_set_changed(&app, &state, &before, "mix-mode");
+    Ok(settings)
 }
 
 #[cfg(test)]

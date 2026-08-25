@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CoreDownloadResult,
   CoreInfo,
+  CoreKind,
   GenerateConfigResult,
   ImportResult,
   LatencyBatchResult,
@@ -393,6 +394,17 @@ export function clearAppLogs() {
   return invoke<void>("clear_app_logs");
 }
 
+export interface CoreLogTail {
+  /** Absolute path of the core's hourly log file, when a session exists. */
+  path: string | null;
+  lines: string[];
+}
+
+/** Tail of the active core's log (Xray-mode traffic page stand-in). */
+export function getCoreLogTail(limit?: number | null) {
+  return invoke<CoreLogTail>("get_core_log_tail", { limit: limit ?? null });
+}
+
 export function generateSingboxConfig() {
   return invoke<GenerateConfigResult>("generate_singbox_config");
 }
@@ -405,9 +417,9 @@ export function getActiveConfigPath() {
   return invoke<string | null>("get_active_config_path");
 }
 
-/** Local only — no network. Use for first paint. */
-export function getCoreInfo() {
-  return invoke<CoreInfo>("get_core_info");
+/** Local only — no network. Use for first paint. `kind` defaults to singbox. */
+export function getCoreInfo(kind?: CoreKind | null) {
+  return invoke<CoreInfo>("get_core_info", { kind: kind ?? null });
 }
 
 /** Machine's LAN IPv4 (default-route interface). Null when offline. */
@@ -415,13 +427,14 @@ export function getLanIp() {
   return invoke<string | null>("get_lan_ip");
 }
 
-export function checkCoreUpdate(localVersion?: string | null) {
+export function checkCoreUpdate(kind: CoreKind | null, localVersion?: string | null) {
   return invoke<{
+    kind: string;
     latest_version: string;
     update_available: boolean;
     asset_name: string;
     size: number;
-  }>("check_core_update", { localVersion: localVersion ?? null });
+  }>("check_core_update", { kind, localVersion: localVersion ?? null });
 }
 
 /** Latest app release tag from GitHub; routes via the running proxy.
@@ -442,18 +455,43 @@ export function getAppInstallPath() {
   return invoke<string>("get_app_install_path");
 }
 
-export function downloadCore(tag?: string | null) {
-  return invoke<CoreDownloadResult>("download_core", { tag: tag ?? null });
+export function downloadCore(kind?: CoreKind | null, tag?: string | null) {
+  return invoke<CoreDownloadResult>("download_core", {
+    kind: kind ?? null,
+    tag: tag ?? null,
+  });
 }
 
-export function fetchCoreLatest() {
+export function fetchCoreLatest(kind?: CoreKind | null) {
   return invoke<{
     version: string;
     asset_name: string;
     download_url: string;
     size: number;
     platform: string;
-  }>("fetch_core_latest");
+  }>("fetch_core_latest", { kind: kind ?? null });
+}
+
+/** Switch the active core (singbox | xray | mihomo). Restarts a running core. */
+export function setCoreType(kind: CoreKind) {
+  return invoke<AppSettings>("set_core_type", { kind });
+}
+
+export interface GeodataFileInfo {
+  present: boolean;
+  bytes: number;
+  modified_at: number | null;
+}
+
+export interface GeodataInfo {
+  geosite: GeodataFileInfo;
+  geoip: GeodataFileInfo;
+}
+
+/** Kernel geodata state; `force` re-downloads first. `kind` selects the
+ * pair: "xray" (Loyalsoldier .dat) or "mihomo" (MetaCubeX mmdb + mrs). */
+export function refreshGeodata(force = false, kind: CoreKind | null = null) {
+  return invoke<GeodataInfo>("refresh_geodata", { force, kind });
 }
 
 export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {

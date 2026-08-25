@@ -56,8 +56,9 @@ pub async fn import_from_url_with_id(
         ));
     }
 
-    // Many panels only attach `subscription-userinfo` when UA looks like Clash.
-    // FlClash default: `{app}/v{ver} clash-verge Platform/{os}` — we mirror that.
+    // Many panels only attach `subscription-userinfo` when UA looks like Clash;
+    // some also substring-whitelist `clash-verge` or `flclash`. See
+    // `subscription_user_agent` for the exact shape.
     let ua = subscription_user_agent();
 
     let mut builder = reqwest::Client::builder()
@@ -146,9 +147,9 @@ pub async fn import_from_url_with_id(
 
 /// UA used when fetching subscriptions (must look like Clash for many panels).
 fn subscription_user_agent() -> String {
-    let os = std::env::consts::OS;
-    // Same shape as FlClash `PackageInfo.ua`: include `clash-verge`.
-    format!("SateliteProxy/0.1 clash-verge Platform/{os}")
+    // FlClash shape plus the verbatim `flclash/1` token: covers panels that
+    // substring-match either `clash-verge` or `flclash` in the UA.
+    "SateliteProxy/0.1 clash-verge flclash/1".to_string()
 }
 
 /// Parse `Content-Disposition` for a display name.
@@ -731,6 +732,7 @@ mod tests {
     fn subscription_ua_contains_clash_verge() {
         let ua = subscription_user_agent();
         assert!(ua.to_ascii_lowercase().contains("clash-verge"), "ua={ua}");
+        assert!(ua.to_ascii_lowercase().contains("flclash"), "ua={ua}");
     }
 
     #[test]
@@ -850,8 +852,7 @@ proxies:
     fn same_hysteria2_with_different_fragments_is_one_node() {
         let a = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%89%A9%E4%BD%99%E6%B5%81%E9%87%8F%EF%BC%9A977.82%20GB";
         let b = "hysteria2://8df42c5a-e1c4-44b8-8806-463573d05ac1@203.10.98.188:443/?insecure=false&sni=www.bing.com#%E5%A5%97%E9%A4%90%E5%88%B0%E6%9C%9F%EF%BC%9A%E9%95%BF%E6%9C%9F%E6%9C%89%E6%95%88";
-        let outcome =
-            import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
+        let outcome = import_from_text(Some("hy2-dup".into()), format!("{a}\n{b}"), None).unwrap();
         assert_eq!(outcome.nodes.len(), 1);
         assert_eq!(outcome.subscription.node_count, 1);
     }

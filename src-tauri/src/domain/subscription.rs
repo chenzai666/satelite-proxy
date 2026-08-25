@@ -7,14 +7,24 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// both the compatible form and the explicit `text`/`node` tags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscriptionSource {
-    Url { url: String },
-    File { path: String },
+    Url {
+        url: String,
+    },
+    File {
+        path: String,
+    },
     /// Pasted config body (sing-box / Clash / URI list).
-    Text { content: String },
+    Text {
+        content: String,
+    },
     /// Single node: share URI and/or a form-built node.
-    Node { uri: Option<String> },
+    Node {
+        uri: Option<String>,
+    },
     /// Complete sing-box JSON, launched as-is (not generated).
-    Singbox { content: String },
+    Singbox {
+        content: String,
+    },
 }
 
 const NODE_SENTINEL: &str = "satelite:node";
@@ -491,10 +501,9 @@ mod source_serde_tests {
 
     #[test]
     fn reads_explicit_node_tag_from_newer_files() {
-        let src: SubscriptionSource = serde_json::from_str(
-            r#"{"kind":"node","uri":"trojan://pwd@host.example:443"}"#,
-        )
-        .unwrap();
+        let src: SubscriptionSource =
+            serde_json::from_str(r#"{"kind":"node","uri":"trojan://pwd@host.example:443"}"#)
+                .unwrap();
         assert_eq!(
             src,
             SubscriptionSource::Node {
@@ -529,8 +538,7 @@ mod source_serde_tests {
 
     #[test]
     fn unknown_source_kind_is_an_error_not_a_file() {
-        let err = serde_json::from_str::<SubscriptionSource>(r#"{"kind":"quantum"}"#)
-            .unwrap_err();
+        let err = serde_json::from_str::<SubscriptionSource>(r#"{"kind":"quantum"}"#).unwrap_err();
         assert!(err.to_string().contains("unknown subscription source kind"));
     }
 }

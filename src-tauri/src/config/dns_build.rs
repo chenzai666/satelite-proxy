@@ -213,7 +213,12 @@ fn hosts_layer(hosts: &HostsConfig) -> Option<(Value, Value)> {
 
 /// Global DNS baseline. Unified rule-set DNS rules are prepended later by the
 /// top-level builder and therefore override FakeIP and the unmatched default.
-fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str, tun_enabled: bool) -> BuiltDns {
+fn build_default(
+    settings: &DnsSettings,
+    hijack: bool,
+    final_tag: &str,
+    tun_enabled: bool,
+) -> BuiltDns {
     let mut servers = builtin_servers(&settings.fake_ip);
     let mut rules: Vec<Value> = Vec::new();
 
@@ -248,7 +253,11 @@ fn build_default(settings: &DnsSettings, hijack: bool, final_tag: &str, tun_enab
         // interface via auto_detect_interface, so it always bypasses the
         // tunnel. Without TUN the system resolver remains the fastest and
         // most environment-faithful choice.
-        default_resolver: if tun_enabled { TAG_CN.into() } else { TAG_LOCAL.into() },
+        default_resolver: if tun_enabled {
+            TAG_CN.into()
+        } else {
+            TAG_LOCAL.into()
+        },
         want_hijack: hijack,
     }
 }

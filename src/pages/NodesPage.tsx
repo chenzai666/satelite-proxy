@@ -11,6 +11,7 @@ import {
   testNodesLatency,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
+import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
@@ -320,7 +321,9 @@ export function NodesPage() {
         </div>
       </header>
 
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {switching && (
         <div className="banner busy" role="status">

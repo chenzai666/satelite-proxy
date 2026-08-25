@@ -1,13 +1,14 @@
 # Build the frontend + Tauri app and package it as a Windows installer.
 # Usage:
-#   pwsh scripts/build-windows.ps1                 # NSIS (.exe) setup, default
+#   pwsh scripts/build-windows.ps1                 # NSIS (.exe) setup, sing-box core only (default)
 #   pwsh scripts/build-windows.ps1 -Bundle msi     # MSI installer
-#   pwsh scripts/build-windows.ps1 -Bundle nsis    # NSIS explicitly
+#   pwsh scripts/build-windows.ps1 -AllCores       # also bundle the Xray + mihomo cores
 #   pwsh scripts/build-windows.ps1 -Proxy http://127.0.0.1:7890
 [CmdletBinding()]
 param(
   [ValidateSet("nsis", "msi")]
   [string]$Bundle = "nsis",
+  [switch]$AllCores,
   [string]$Proxy  = $env:HTTPS_PROXY,
   [string]$CoreVersion = "1.13.15"
 )
@@ -54,7 +55,28 @@ if (-not (Test-Path $CoreExe)) {
   & (Join-Path $PSScriptRoot "fetch-bundled-core-windows-amd64.ps1") -Version $CoreVersion -Proxy $Proxy
 }
 
-# --- 2b. Stage built-in remote rule sets -------------------------------------
+# --- 2b. Extra cores (Xray + mihomo) or the sing-box-only config overlay -----
+$TauriConfigArgs = @()
+if ($AllCores) {
+  Write-Host "AllCores: bundling Xray + mihomo alongside sing-box..."
+  $XrayExe = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64\xray.exe"
+  if (-not (Test-Path $XrayExe)) {
+    Write-Host "xray core missing, fetching..."
+    & (Join-Path $PSScriptRoot "fetch-bundled-xray-windows-amd64.ps1") -Proxy $Proxy
+  }
+  $MihomoExe = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64\mihomo.exe"
+  if (-not (Test-Path $MihomoExe)) {
+    Write-Host "mihomo core missing, fetching..."
+    & (Join-Path $PSScriptRoot "fetch-bundled-mihomo-windows-amd64.ps1") -Proxy $Proxy
+  }
+} else {
+  # The base config lists the Xray/mihomo resources too — a missing file
+  # fails the bundler, so switch to the sing-box-only overlay instead.
+  Write-Host "Bundling sing-box only (pass -AllCores to include Xray + mihomo)."
+  $TauriConfigArgs = @("--config", (Join-Path $ROOT "src-tauri\tauri.singbox-windows.conf.json"))
+}
+
+# --- 2c. Stage built-in remote rule sets -------------------------------------
 # Keep in sync with BUILTIN_REMOTE_RULE_SETS in src-tauri/src/domain/rule.rs.
 $RuleSets = @(
   @{ Name = "system-geolocation-not-cn.srs"; Url = "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs" },
@@ -84,7 +106,8 @@ pnpm install --frozen-lockfile
 
 # --- 4. Build + bundle -------------------------------------------------------
 Write-Host "Building app and packaging $Bundle installer..."
-pnpm tauri build --bundles $Bundle
+$BuildArgs = @("--bundles", $Bundle) + $TauriConfigArgs
+pnpm tauri build @BuildArgs
 
 # --- 5. Locate artifact ------------------------------------------------------
 $OutDir = Join-Path $ROOT "src-tauri\target\release\bundle\$Bundle"

@@ -1,5 +1,6 @@
-//! sing-box process lifecycle.
+//! Core process lifecycle (sing-box / Xray).
 
+use crate::core::kind::CoreKind;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
@@ -52,6 +53,12 @@ pub struct CoreManager {
     binary_path: Option<PathBuf>,
     log_path: Option<PathBuf>,
     log_dir: Option<PathBuf>,
+    /// Which core the current/last session runs (log prefix, CLI args).
+    kind: CoreKind,
+    /// Ports the current/last session bound (mixed + api + extras). `stop()`
+    /// waits for these to actually release before returning, so a restart
+    /// immediately after never races the outgoing process for the socket.
+    owned_ports: Vec<u16>,
 }
 
 impl Default for CoreManager {
@@ -66,6 +73,8 @@ impl Default for CoreManager {
             binary_path: None,
             log_path: None,
             log_dir: None,
+            kind: CoreKind::SingBox,
+            owned_ports: Vec::new(),
         }
     }
 }
@@ -86,13 +95,27 @@ impl CoreManager {
     fn latest_log_path(&self) -> Option<PathBuf> {
         self.log_dir
             .as_ref()
-            .map(|dir| crate::log_retention::hourly_path(dir, "sing-box"))
+            .map(|dir| crate::log_retention::hourly_path(dir, self.kind.log_prefix()))
             .filter(|path| path.exists())
             .or_else(|| self.log_path.clone())
     }
 
+    /// Tail of the current/last core session's log — surfaced by the
+    /// `get_core_log_tail` command (Xray-mode traffic page).
+    pub fn core_log_tail(&self, limit: usize) -> Option<(PathBuf, Vec<String>)> {
+        let path = self.latest_log_path()?;
+        Some((path.clone(), read_file_tail_lines(&path, limit)))
+    }
+
     pub fn is_running(&self) -> bool {
         matches!(self.state, CoreState::Running)
+    }
+
+    /// Kind of the current/last session — set by `start_with_ports`. Callers
+    /// wanting the *actual* running core (e.g. custom sing-box profiles keep
+    /// running sing-box even when `settings.core_type` is xray) read this.
+    pub fn kind(&self) -> CoreKind {
+        self.kind
     }
 
     /// PID of the running core process, however it's owned (sidecar child or elevated).
@@ -119,7 +142,16 @@ impl CoreManager {
                         .as_ref()
                         .and_then(|p| read_log_tail(p, 4000))
                         .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| format!("elevated sing-box (pid {pid}) exited"));
+                        .unwrap_or_else(|| {
+                            format!("elevated {} (pid {pid}) exited", self.kind.display_name())
+                        });
+                    crate::app_log::warn(
+                        "core",
+                        format!(
+                            "{} exited unexpectedly (elevated pid {pid})",
+                            self.kind.display_name()
+                        ),
+                    );
                     self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
                 }
             }
@@ -135,12 +167,21 @@ impl CoreManager {
                         self.state = CoreState::Stopped;
                     } else {
                         self.state = CoreState::Error;
+                        crate::app_log::warn(
+                            "core",
+                            format!(
+                                "{} exited unexpectedly ({status})",
+                                self.kind.display_name()
+                            ),
+                        );
                         let detail = self
                             .latest_log_path()
                             .as_ref()
                             .and_then(|p| read_log_tail(p, 4000))
                             .filter(|s| !s.trim().is_empty())
-                            .unwrap_or_else(|| format!("sing-box exited: {status}"));
+                            .unwrap_or_else(|| {
+                                format!("{} exited: {status}", self.kind.display_name())
+                            });
                         self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
                     }
                 }
@@ -155,9 +196,9 @@ impl CoreManager {
         }
     }
 
-    pub fn check_config(binary: &Path, config: &Path) -> AppResult<()> {
+    pub fn check_config(kind: CoreKind, binary: &Path, config: &Path) -> AppResult<()> {
         let mut cmd = Command::new(binary);
-        cmd.args(["check", "-c"]).arg(config);
+        cmd.args(kind.check_command_args(config));
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
         let out = cmd
@@ -191,11 +232,11 @@ impl CoreManager {
                     "进程被系统强制结束 (SIGKILL)，通常不是配置/DNS 语法错误。\n\
                      常见原因：\n\
                      1) 路径未加引号：Application Support 含空格，须写成\n\
-                        sing-box check -c \"/Users/…/Application Support/…/active.json\"\n\
+                        core check -c \"/Users/…/Application Support/…/active.json\"\n\
                      2) 从 target/debug/resources 直接跑内置内核可能被 macOS 杀掉\n\
                         （应用会复制到 Application Support/…/bin/ 再执行）\n\
                      3) 内存不足 / 安全软件拦截\n\
-                     请用:  \"…/bin/sing-box\" check -c \"…/active.json\""
+                     请用:  \"…/bin/core\" check -c \"…/active.json\""
                         .into()
                 } else {
                     format!("exit status {status_s}")
@@ -207,7 +248,8 @@ impl CoreManager {
             }
 
             return Err(AppError::Core(format!(
-                "sing-box check failed ({status_s})\nconfig: {}\nbinary: {}\n{detail}",
+                "{} check failed ({status_s})\nconfig: {}\nbinary: {}\n{detail}",
+                kind.display_name(),
                 config.display(),
                 binary.display(),
             )));
@@ -264,8 +306,9 @@ impl CoreManager {
         } else {
             format!("sudo lsof -iTCP:{port} -sTCP:LISTEN")
         };
+        let snapshot = port_socket_snapshot(port);
         Err(AppError::Core(format!(
-            "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}"
+            "端口 {port} 仍被占用（已尝试结束监听进程: {killed}）。可手动: {manual}\n当前端口状态: {snapshot}"
         )))
     }
 
@@ -284,11 +327,12 @@ impl CoreManager {
     /// Start core.
     ///
     /// When `elevated` is true (TUN):
-    /// - **macOS**: one-time setuid on sing-box (`chown root:admin` + `chmod +sx`),
+    /// - **macOS**: one-time setuid on the core binary (`chown root:admin` + `chmod +sx`),
     ///   then normal sidecar spawn (euid root, ruid user — parent can kill).
-    /// - **Windows**: UAC-elevate sing-box directly.
+    /// - **Windows**: UAC-elevate the core directly.
     pub fn start_with_ports(
         &mut self,
+        kind: CoreKind,
         binary: &Path,
         config: &Path,
         log_dir: &Path,
@@ -322,6 +366,7 @@ impl CoreManager {
         if !ports.is_empty() {
             Self::ensure_ports_free(&ports)?;
         }
+        self.owned_ports = ports.clone();
 
         #[cfg(target_os = "macos")]
         if elevated {
@@ -331,9 +376,33 @@ impl CoreManager {
                 self.last_error = Some(msg.clone());
                 return Err(AppError::Core(msg));
             }
+        } else if let Some(prev) = self.binary_path.as_deref() {
+            // Switching away from a core that was setuid-elevated for TUN (its
+            // binary is still root-owned setuid): a non-elevated bind on the
+            // just-vacated ports can race that root socket's teardown even
+            // after the process and its listener are gone. Elevating the new
+            // core too clears that race — mirrors what happens whenever the
+            // new core is later toggled into TUN itself.
+            if prev != binary && super::macos_auth::core_has_setuid(prev) {
+                if let Err(e) = super::macos_auth::ensure_core_setuid(binary) {
+                    crate::app_log::warn(
+                        "core",
+                        format!("setuid carry-over for {} failed: {e}", kind.display_name()),
+                    );
+                }
+            }
         }
 
-        Self::check_config(binary, config)?;
+        // sing-box `check -c` is pure JSON validation, but Xray's
+        // `run -test -c` actually creates the tun adapter for tun configs —
+        // which needs admin. Running it unelevated fails with access-denied
+        // before the elevated start path is ever reached, so elevated Xray
+        // sessions skip the pre-check; the elevated run surfaces config
+        // errors through the log tail instead.
+        let skip_check = elevated && kind == CoreKind::Xray;
+        if !skip_check {
+            Self::check_config(kind, binary, config)?;
+        }
         // Light re-check only (first ensure_ports_free already waited if needed).
         for &p in &ports {
             if !Self::is_port_free(p) && port_has_listener(p) {
@@ -344,7 +413,7 @@ impl CoreManager {
         fs::create_dir_all(log_dir).map_err(|e| AppError::Core(format!("create log dir: {e}")))?;
         // One file per wall-clock hour. Core restarts within that hour append,
         // preserving the sequence around TUN and capture-mode transitions.
-        let log_path = crate::log_retention::hourly_path(log_dir, "sing-box");
+        let log_path = crate::log_retention::hourly_path(log_dir, kind.log_prefix());
         crate::log_retention::cleanup_current_hour(log_dir)
             .map_err(|e| AppError::Core(format!("clean logs: {e}")))?;
         let _ = OpenOptions::new()
@@ -359,23 +428,27 @@ impl CoreManager {
         self.log_dir = Some(log_dir.to_path_buf());
         self.config_path = Some(config.to_path_buf());
         self.binary_path = Some(binary.to_path_buf());
+        self.kind = kind;
         self.elevated_pid = None;
         self.child = None;
         self.run_mode = RunMode::None;
 
         #[cfg(target_os = "windows")]
         if elevated {
-            return self.start_elevated_windows(binary, config, &log_path, mixed_port);
+            return self.start_elevated_windows(kind, binary, config, &log_path, mixed_port);
         }
 
         let mut cmd = Command::new(binary);
-        cmd.args(["run", "-c"]).arg(config);
+        cmd.args(kind.run_command_args(config));
         // sing-box writes cache.db (fakeip/rule-set cache) relative to its cwd.
         // GUI apps launched from Finder/Dock inherit cwd "/" (read-only), which
         // makes cache_file init FATAL as soon as it's enabled. Anchor cwd to the
         // config's own directory (always writable — active.json lives there).
         if let Some(dir) = config.parent() {
             cmd.current_dir(dir);
+        }
+        if let Some(bin_dir) = binary.parent() {
+            cmd.envs(kind.spawn_env(bin_dir));
         }
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -386,7 +459,7 @@ impl CoreManager {
             .map_err(|e| {
                 self.state = CoreState::Error;
                 self.last_error = Some(e.to_string());
-                AppError::Core(format!("spawn sing-box failed: {e}"))
+                AppError::Core(format!("spawn {} failed: {e}", kind.display_name()))
             })?;
 
         // Tie the child to the parent's lifetime via a Job Object: if this
@@ -416,6 +489,7 @@ impl CoreManager {
         let mut child = child;
         let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(
             log_dir.to_path_buf(),
+            kind.log_prefix(),
         )));
         if let Some(stdout) = child.stdout.take() {
             spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
@@ -429,11 +503,14 @@ impl CoreManager {
         self.wait_until_ready(mixed_port)
     }
 
-    /// Start sing-box elevated via UAC (Windows). Needed for TUN to create the
+    /// Start the core elevated via UAC (Windows). Needed for TUN to create the
     /// virtual adapter. stdout/stderr are appended to `log_path` directly.
+    /// The kind is re-derived inside the elevated helper from the binary path,
+    /// so it is not forwarded again here.
     #[cfg(target_os = "windows")]
     fn start_elevated_windows(
         &mut self,
+        _kind: CoreKind,
         binary: &Path,
         config: &Path,
         _log_path: &Path,
@@ -582,6 +659,25 @@ impl CoreManager {
         Ok(())
     }
 
+    /// Wait for the ports the just-stopped session owned to actually clear
+    /// (process-exited and socket-released are not the same instant — the OS
+    /// can lag a moment after `wait()`/`try_wait()` returns). Bounded so a
+    /// stuck/leaked port never hangs a restart; the next start's own
+    /// `ensure_ports_free` sweep is the final backstop either way.
+    ///
+    /// Callers opt in explicitly (rather than this running inside `stop()`
+    /// itself) because it spawns `lsof`/`netstat` to probe each port, which
+    /// `force_shutdown` must never do during app-exit shutdown (see there).
+    pub fn await_owned_ports_released(&mut self) {
+        let ports = std::mem::take(&mut self.owned_ports);
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        for port in ports {
+            while Self::has_port_listener(port) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
     /// Hard-stop the managed core process during application exit.
     ///
     /// Do not run the port-orphan sweep here. On Windows, the OS rejects new
@@ -604,9 +700,9 @@ fn escape_windows_arg(path: &Path) -> String {
     path.to_string_lossy().replace('"', "\\\"")
 }
 
-/// Elevated helper entry point. It owns the real sing-box child, captures both
+/// Elevated helper entry point. It owns the real core child, captures both
 /// output streams through the same hourly writer, and binds the child to a Job
-/// Object so killing the helper also kills sing-box.
+/// Object so killing the helper also kills the core.
 #[cfg(target_os = "windows")]
 pub fn try_run_elevated_log_helper() -> Option<i32> {
     let args: Vec<_> = std::env::args_os().collect();
@@ -619,13 +715,13 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     let binary = PathBuf::from(&args[marker + 1]);
     let config = PathBuf::from(&args[marker + 2]);
     let log_dir = PathBuf::from(&args[marker + 3]);
+    let kind = CoreKind::from_binary_path(&binary);
     if fs::create_dir_all(&log_dir).is_err() {
         return Some(3);
     }
-    let mut command = Command::new(binary);
+    let mut command = Command::new(&binary);
     command
-        .args(["run", "-c"])
-        .arg(&config)
+        .args(kind.run_command_args(&config))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
@@ -633,6 +729,9 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
     // writable, predictable location regardless of the launcher's own cwd.
     if let Some(dir) = config.parent() {
         command.current_dir(dir);
+    }
+    if let Some(bin_dir) = binary.parent() {
+        command.envs(kind.spawn_env(bin_dir));
     }
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -643,7 +742,10 @@ pub fn try_run_elevated_log_helper() -> Option<i32> {
         let _ = child.wait();
         return Some(5);
     }
-    let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(log_dir)));
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(RotatingCoreWriter::new(
+        log_dir,
+        kind.log_prefix(),
+    )));
     if let Some(stdout) = child.stdout.take() {
         spawn_rotating_log_copy(stdout, std::sync::Arc::clone(&writer));
     }
@@ -731,9 +833,13 @@ fn map_tun_permission_hint(err: &str) -> String {
         || lower.contains("configure tun")
         || lower.contains("permission denied")
         || lower.contains("access is denied")
+        // Chinese Windows error text / wintun HRESULT, e.g. from Xray's tun
+        // adapter creation ("拒绝访问。 (Code 0x00000005)").
+        || err.contains("拒绝访问")
+        || err.contains("0x00000005")
     {
         let platform_hint = if cfg!(target_os = "windows") {
-            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行 sing-box。\n\
+            "TUN 模式需要管理员权限以创建虚拟网卡。开启 TUN 时应用会弹出 UAC 授权框并以管理员身份运行内核。\n\
              请在 UAC 弹窗中点「是」；若点了「否」，请关闭 TUN 开关后重试，或以管理员身份运行本程序。"
         } else {
             "TUN 需要更高权限才能创建虚拟网卡 (utun)。\n\
@@ -748,6 +854,56 @@ fn map_tun_permission_hint(err: &str) -> String {
 
 fn port_has_listener(port: u16) -> bool {
     !listener_pids_on_port(port).is_empty()
+}
+
+/// Snapshot of every socket on `port` (any TCP state, any owner) for diagnostics
+/// when `force_free_port` gives up. Unlike `listener_pids_on_port`, this is not
+/// filtered to LISTEN, so it also surfaces TIME_WAIT/CLOSE_WAIT stragglers and
+/// the owning user, to tell "not really free" apart from "kernel still cooling
+/// the port down" without asking the user to re-run `lsof` by hand.
+fn port_socket_snapshot(port: u16) -> String {
+    #[cfg(unix)]
+    {
+        let out = Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}")])
+            .output();
+        match out {
+            Ok(out) if !out.stdout.is_empty() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let lines: Vec<&str> = text.lines().collect();
+                if lines.len() <= 1 {
+                    "无 lsof 记录".into()
+                } else {
+                    lines.join(" | ")
+                }
+            }
+            Ok(_) => "无 lsof 记录".into(),
+            Err(e) => format!("lsof 不可用: {e}"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut cmd = Command::new("netstat");
+        cmd.args(["-ano"]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let needle = format!(":{port}");
+        match cmd.output() {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let matches: Vec<&str> = text
+                    .lines()
+                    .filter(|l| l.contains(&needle))
+                    .collect();
+                if matches.is_empty() {
+                    "无 netstat 记录".into()
+                } else {
+                    matches.join(" | ")
+                }
+            }
+            Err(e) => format!("netstat 不可用: {e}"),
+        }
+    }
 }
 
 fn listener_pids_on_port(port: u16) -> Vec<u32> {
@@ -861,6 +1017,36 @@ fn kill_listeners_on_port(port: u16) -> String {
     }
 }
 
+/// Last `limit` lines of a log file, read efficiently from the end (a 256 KB
+/// window covers ~2000 typical core log lines). The first line is dropped
+/// when the window sliced mid-line; invalid UTF-8 bytes become U+FFFD.
+fn read_file_tail_lines(path: &Path, limit: usize) -> Vec<String> {
+    let Ok(mut f) = File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
+    const WINDOW: u64 = 256 * 1024;
+    let window = len.min(WINDOW);
+    if std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(len - window)).is_err() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity(window as usize);
+    if std::io::Read::read_to_end(&mut f, &mut bytes).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if window < len && !lines.is_empty() {
+        lines.remove(0); // possibly sliced mid-line
+    }
+    if lines.len() > limit {
+        lines.drain(..lines.len() - limit);
+    }
+    lines
+}
+
 fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
     let mut f = File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
@@ -884,6 +1070,7 @@ fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
 
 struct RotatingCoreWriter {
     log_dir: PathBuf,
+    log_prefix: &'static str,
     file_hour: Option<u64>,
     file: Option<File>,
     file_bytes: u64,
@@ -891,9 +1078,10 @@ struct RotatingCoreWriter {
 }
 
 impl RotatingCoreWriter {
-    fn new(log_dir: PathBuf) -> Self {
+    fn new(log_dir: PathBuf, log_prefix: &'static str) -> Self {
         Self {
             log_dir,
+            log_prefix,
             file_hour: None,
             file: None,
             file_bytes: 0,
@@ -904,7 +1092,7 @@ impl RotatingCoreWriter {
     fn write(&mut self, bytes: &[u8]) {
         let hour = crate::log_retention::current_hour();
         if self.file_hour != Some(hour) || self.file.is_none() {
-            let path = crate::log_retention::hourly_path_for(&self.log_dir, "sing-box", hour);
+            let path = crate::log_retention::hourly_path_for(&self.log_dir, self.log_prefix, hour);
             match OpenOptions::new().create(true).append(true).open(&path) {
                 Ok(opened) => {
                     self.file_bytes = opened.metadata().map(|m| m.len()).unwrap_or(0);

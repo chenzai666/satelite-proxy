@@ -79,6 +79,38 @@ impl Protocol {
     pub fn is_udp_only(self) -> bool {
         matches!(self, Self::Hysteria2 | Self::Hysteria | Self::Tuic)
     }
+
+    /// Whether the Xray core can serve this protocol as an outbound. Used to
+    /// hide unusable nodes from listings while Xray is the active core
+    /// (single source of truth — `CoreKind::supports` delegates here).
+    ///
+    /// Hysteria2 is protocol-level supported (Xray's `hysteria` transport,
+    /// forced to `version: 2`), but nodes using salamander obfs are rejected
+    /// per-node in `config/xray.rs` — Xray has no field for it.
+    pub fn xray_supported(self) -> bool {
+        matches!(
+            self,
+            Self::Shadowsocks
+                | Self::Vmess
+                | Self::Vless
+                | Self::Trojan
+                | Self::Hysteria2
+                | Self::Socks5
+                | Self::Http
+                | Self::WireGuard
+        )
+    }
+
+    /// Whether the mihomo (Clash Meta) core can serve this protocol as an
+    /// outbound. mihomo is the canonical Clash kernel — full coverage:
+    /// SS(+plugins) / VMess / VLESS (incl. REALITY + Vision) / Trojan /
+    /// Hysteria(1|2) / TUIC / WireGuard / AnyTLS / Snell / SOCKS5 / HTTP /
+    /// SSH. Only Naive and Tor (external-executable shapes) are missing,
+    /// plus a standalone ShadowTLS proxy type (ss+shadow-tls plugin would
+    /// need its own field mapping).
+    pub fn mihomo_supported(self) -> bool {
+        !matches!(self, Self::Naive | Self::Tor | Self::ShadowTls)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -360,7 +392,9 @@ impl ProxyNode {
 
 fn config_identity(config: &ProtocolConfig) -> String {
     match config {
-        ProtocolConfig::Shadowsocks { password, method, .. } => {
+        ProtocolConfig::Shadowsocks {
+            password, method, ..
+        } => {
             format!("{method}|{password}")
         }
         ProtocolConfig::Vmess { uuid, .. } | ProtocolConfig::Vless { uuid, .. } => uuid.clone(),
@@ -371,9 +405,7 @@ fn config_identity(config: &ProtocolConfig) -> String {
         ProtocolConfig::Tuic { uuid, password, .. } => format!("{uuid}|{password}"),
         ProtocolConfig::Socks5 { username, password }
         | ProtocolConfig::Http {
-            username,
-            password,
-            ..
+            username, password, ..
         } => format!(
             "{}|{}",
             username.clone().unwrap_or_default(),
@@ -392,11 +424,11 @@ fn config_identity(config: &ProtocolConfig) -> String {
             private_key.clone().unwrap_or_default()
         ),
         ProtocolConfig::Naive {
-            username,
-            password,
-            ..
+            username, password, ..
         } => format!("{username}|{password}"),
-        ProtocolConfig::Tor { executable_path, .. } => executable_path.clone(),
+        ProtocolConfig::Tor {
+            executable_path, ..
+        } => executable_path.clone(),
         ProtocolConfig::WireGuard {
             private_key,
             peer_public_key,

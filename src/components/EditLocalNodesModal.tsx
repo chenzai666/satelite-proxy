@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { listSubscriptionNodes, renameNode } from "../api";
 import { GlassButton } from "./GlassButton";
+import { ErrorModal } from "./ErrorModal";
 import { useI18n } from "../i18n";
 import type { ProxyNode } from "../types";
 
@@ -128,7 +129,9 @@ export function EditLocalNodesModal({
               ))}
             </div>
           )}
-          {error && <div className="form-error">{error}</div>}
+          {error && (
+            <ErrorModal message={error} onClose={() => setError(null)} />
+          )}
           <footer className="modal-footer">
             <GlassButton onClick={onClose} disabled={busy}>
               {t("common.cancel")}

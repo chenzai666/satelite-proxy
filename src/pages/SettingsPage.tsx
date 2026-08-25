@@ -14,14 +14,17 @@ import {
   getSettings,
   regenerateApiSecret,
   restartProxy,
+  setCoreType,
   updateSettings,
 } from "../api";
 import { GlassButton } from "../components/GlassButton";
 import { SolidSelect } from "../components/SolidSelect";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
+import { ErrorModal } from "../components/ErrorModal";
 import { TrayIconPicker } from "../components/TrayIconPicker";
 import { DecryptReveal } from "../components/DecryptReveal";
+import { CoreMark } from "../components/CoreMark";
 import buymecoffeeUrl from "../assets/buymecoffee.png";
 import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
@@ -31,6 +34,7 @@ import type {
   AppSettings,
   CoreDownloadProgress,
   CoreInfo,
+  CoreKind,
   DiagnosticIssue,
   ExtraInbound,
   HeroStyle,
@@ -140,9 +144,14 @@ export function SettingsPage() {
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
 
-  const [core, setCore] = useState<CoreInfo | null>(null);
-  const [coreBusy, setCoreBusy] = useState(false);
-  const [coreChecking, setCoreChecking] = useState(false);
+  /** Per-core status (sing-box + Xray + mihomo). */
+  const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
+    singbox: null,
+    xray: null,
+    mihomo: null,
+  });
+  const [coreBusyKind, setCoreBusyKind] = useState<CoreKind | null>(null);
+  const [coreCheckingKind, setCoreCheckingKind] = useState<CoreKind | null>(null);
   const [coreError, setCoreError] = useState<string | null>(null);
   const [coreProxyAvailable, setCoreProxyAvailable] = useState(false);
   const [coreProgress, setCoreProgress] =
@@ -202,26 +211,29 @@ export function SettingsPage() {
   );
 
   const runCoreUpdateCheck = useCallback(
-    async (localVersion: string | null, reportError: boolean) => {
-      setCoreChecking(true);
+    async (kind: CoreKind, localVersion: string | null, reportError: boolean) => {
+      setCoreCheckingKind(kind);
       if (reportError) setCoreError(null);
       try {
-        const update = await checkCoreUpdate(localVersion);
-        setCore((prev) =>
-          prev
-            ? {
-                ...prev,
-                latest_version: update.latest_version,
-                update_available: update.update_available,
-              }
-            : prev,
-        );
+        const update = await checkCoreUpdate(kind, localVersion);
+        setCores((prev) => {
+          const info = prev[kind];
+          if (!info) return prev;
+          return {
+            ...prev,
+            [kind]: {
+              ...info,
+              latest_version: update.latest_version,
+              update_available: update.update_available,
+            },
+          };
+        });
       } catch (e) {
         if (reportError) {
           setCoreError(typeof e === "string" ? e : String(e));
         }
       } finally {
-        setCoreChecking(false);
+        setCoreCheckingKind(null);
       }
     },
     [],
@@ -230,9 +242,16 @@ export function SettingsPage() {
   const reloadCore = useCallback(async () => {
     setCoreError(null);
     try {
-      const local = await getCoreInfo();
-      setCore(local);
-      void runCoreUpdateCheck(local.version ?? null, false);
+      const results = await Promise.all([
+        getCoreInfo("singbox"),
+        getCoreInfo("xray"),
+        getCoreInfo("mihomo"),
+      ]);
+      const [singbox, xray, mihomo] = results;
+      setCores({ singbox, xray, mihomo });
+      void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
+      void runCoreUpdateCheck("xray", xray.version ?? null, false);
+      void runCoreUpdateCheck("mihomo", mihomo.version ?? null, false);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
@@ -501,6 +520,30 @@ export function SettingsPage() {
     }
   }
 
+  /** Copy-feedback for the truncated path lines (kernel rows + app card). */
+  const [copiedPath, setCopiedPath] = useState<string | null>(null);
+  async function onCopyPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopiedPath(path);
+      window.setTimeout(() => setCopiedPath(null), 1500);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** Relative time for the app card's "last check" row (backend stores unix
+   *  seconds). */
+  function formatCheckedAt(ts: number | null | undefined): string {
+    if (!ts) return "—";
+    const minutes = Math.floor((Date.now() / 1000 - ts) / 60);
+    if (minutes < 1) return t("settings.relJustNow");
+    if (minutes < 60) return t("settings.relMinAgo", { n: minutes });
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return t("settings.relHourAgo", { n: hours });
+    return t("settings.relDayAgo", { n: Math.floor(hours / 24) });
+  }
+
   /** User-triggered secret rotation; backend restarts a running core so the
    * new secret is live immediately. */
   async function onRegenerateSecret() {
@@ -516,13 +559,14 @@ export function SettingsPage() {
     }
   }
 
-  async function onDownloadCore() {
-    setCoreBusy(true);
+  async function onDownloadCore(kind: CoreKind) {
+    setCoreBusyKind(kind);
     setCoreError(null);
     const status = await getProxyStatus().catch(() => null);
     const viaProxy = !!status?.running;
     setCoreProxyAvailable(viaProxy);
     setCoreProgress({
+      kind,
       stage: "preparing",
       downloaded: 0,
       total: null,
@@ -530,17 +574,206 @@ export function SettingsPage() {
       via_proxy: viaProxy,
     });
     try {
-      await downloadCore(null);
+      await downloadCore(kind, null);
       await reloadCore();
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     } finally {
-      setCoreBusy(false);
+      setCoreBusyKind(null);
+      setCoreProgress(null);
     }
   }
 
-  async function onCheckCoreUpdate() {
-    await runCoreUpdateCheck(core?.version ?? null, true);
+  async function onCheckCoreUpdate(kind: CoreKind) {
+    await runCoreUpdateCheck(kind, cores[kind]?.version ?? null, true);
+  }
+
+  /** Switch the active core; a running core restarts onto the new binary. */
+  async function onSwitchCore(kind: CoreKind) {
+    if (settings?.core_type === kind) return;
+    setCoreError(null);
+    try {
+      const s = await setCoreType(kind);
+      setSettings(s);
+    } catch (e) {
+      setCoreError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  /** One compact version row per core (sing-box / Xray / mihomo): identity
+   *  line, bundled/latest meta + actions, then a quiet path foot line. */
+  function renderCoreRow(kind: CoreKind) {
+    const info = cores[kind];
+    const busy = coreBusyKind === kind;
+    const checking = coreCheckingKind === kind;
+    const active = (settings?.core_type ?? "singbox") === kind;
+    // Progress events carry the core kind; each row shows only its own.
+    const progress =
+      coreProgress && (coreProgress.kind ?? "singbox") === kind
+        ? coreProgress
+        : null;
+    return (
+      <div
+        className={`kernel-row${active ? " core-active" : ""}`}
+        key={kind}
+        title={
+          kind === "xray"
+            ? t("settings.coreHintXray")
+            : kind === "mihomo"
+              ? t("settings.coreHintMihomo")
+              : t("settings.coreHint")
+        }
+      >
+        <div className="kernel-row-main">
+          {/* Monogram tile: cube = sing-box, bolt = Xray, cat head = mihomo. */}
+          <div className="ver-mark kernel-mark" aria-hidden>
+            <CoreMark kind={kind} />
+          </div>
+          <span className="kernel-name">
+            {info?.name ?? (kind === "xray" ? "Xray" : kind === "mihomo" ? "mihomo" : "sing-box")}
+          </span>
+          {/* Radio-style enable: clicking switches the active core (a
+             running core restarts onto the new binary). */}
+          <button
+            type="button"
+            className={`core-radio${active ? " on" : ""}`}
+            aria-pressed={active}
+            aria-label={t("settings.coreUse")}
+            title={t("settings.coreUse")}
+            disabled={coreBusyKind != null}
+            onClick={() => void onSwitchCore(kind)}
+          >
+            <span className="core-radio-dot" aria-hidden />
+          </button>
+          {/* Fixed-width slot on BOTH rows (empty when active) so the pill /
+             platform columns line up between the two cores. */}
+          <span className="kernel-switch-hint muted">
+            {active ? "" : t("settings.coreSwitchHint")}
+          </span>
+          {info?.installed ? (
+            !active && (
+              <span className={`pill ${info.source === "bundled" ? "ok" : ""}`}>
+                {info.source === "bundled"
+                  ? t("settings.coreBundled")
+                  : t("settings.coreInstalled")}
+              </span>
+            )
+          ) : (
+            <span className="pill warn">{t("settings.coreMissing")}</span>
+          )}
+          <span className="kernel-platform muted mono">
+            {info?.platform ?? "…"}
+          </span>
+          <span className="kernel-version mono">
+            {info?.version ?? "—"}
+            {info?.source === "downloaded" ? (
+              <span className="pill">{t("settings.coreUser")}</span>
+            ) : null}
+          </span>
+        </div>
+
+        <div className="kernel-row-meta">
+          <span className="kernel-meta-item mono">
+            {t("settings.coreBundledShort")} {info?.bundled_version ?? "—"}
+          </span>
+          <span className="kernel-meta-sep" aria-hidden>
+            ·
+          </span>
+          <span className="kernel-meta-item mono">
+            {t("settings.coreLatestShort")} {info?.latest_version ?? "—"}
+          </span>
+          {info?.update_available ? (
+            <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+          ) : null}
+          <div className="kernel-row-actions">
+            <GlassButton
+              icon="↻"
+              disabled={busy || checking || !info}
+              onClick={() => void onCheckCoreUpdate(kind)}
+            >
+              {checking
+                ? t("settings.coreChecking")
+                : t("settings.coreCheck")}
+            </GlassButton>
+            <GlassButton
+              variant="primary"
+              icon="⤓"
+              disabled={busy || checking}
+              onClick={() => void onDownloadCore(kind)}
+            >
+              {busy
+                ? t("settings.coreDownloading")
+                : info?.source === "downloaded"
+                  ? info.update_available
+                    ? t("settings.coreUpdate")
+                    : t("settings.coreRedownload")
+                  : t("settings.coreDownload")}
+            </GlassButton>
+          </div>
+        </div>
+
+        {busy && progress && (
+          <div className="core-download-progress" aria-live="polite">
+            <div className="core-download-progress-head">
+              <span className="lat-spinner" aria-hidden />
+              <span>
+                {progress.stage === "preparing"
+                  ? t("settings.corePreparing")
+                  : progress.stage === "installing"
+                    ? t("settings.coreInstalling")
+                    : t("settings.coreDownloading")}
+              </span>
+              <span className="mono core-download-percent">
+                {progress.percent != null
+                  ? `${progress.percent}%`
+                  : "…"}
+              </span>
+            </div>
+            <div
+              className={`core-progress-track${progress.percent == null ? " indeterminate" : ""}`}
+            >
+              <span
+                style={{
+                  width: `${progress.percent ?? 24}%`,
+                }}
+              />
+            </div>
+            {progress.downloaded > 0 && (
+              <div className="muted mono core-download-bytes">
+                {fmtCoreBytes(progress.downloaded)}
+                {progress.total
+                  ? ` / ${fmtCoreBytes(progress.total)}`
+                  : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="kernel-row-foot">
+          {active && coreProxyAvailable && (
+            <span className="kernel-run">
+              <span className="kernel-run-dot" aria-hidden />
+              {t("dashboard.coreRunning")}
+            </span>
+          )}
+          {info?.path && (
+            <>
+              <code className="kernel-path mono" title={info.path}>
+                {info.path}
+              </code>
+              <GlassButton
+                iconOnly
+                icon={copiedPath === info.path ? "✓" : "⧉"}
+                className="kernel-copy-btn"
+                title={copiedPath === info.path ? t("common.copied") : t("common.copy")}
+                aria-label={t("common.copy")}
+                onClick={() => void onCopyPath(info.path!)}
+              />
+            </>
+          )}
+        </div>
+      </div>
+    );
   }
 
   async function patchApp(partial: Parameters<typeof updateSettings>[0]) {
@@ -646,7 +879,7 @@ export function SettingsPage() {
         visibleTab !== "rules" &&
         visibleTab !== "dns" &&
         visibleTab !== "hosts" && (
-        <div className="banner error">{error}</div>
+        <ErrorModal message={error} onClose={() => setError(null)} />
       )}
 
       {/* key={tab} remounts on tab switch → triggers the page-enter fade/slide. */}
@@ -731,7 +964,7 @@ export function SettingsPage() {
               <AppToggle
                 title={t("settings.closeOnSwitch")}
                 desc={t("settings.closeOnSwitchDesc")}
-                checked={settings?.close_connections_on_switch !== false}
+                checked={!!settings?.close_connections_on_switch}
                 disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                 onChange={(v) => void patchApp({ closeConnectionsOnSwitch: v })}
               />
@@ -1206,150 +1439,29 @@ export function SettingsPage() {
 
       {visibleTab === "core" && (
         <section className="settings-panel version-split" aria-label="Version">
-          {coreError && <div className="banner error">{coreError}</div>}
+          {coreError && (
+            <ErrorModal
+              message={coreError}
+              onClose={() => setCoreError(null)}
+            />
+          )}
 
           <div className="version-col">
-          <div className="version-block-title">
-            {t("settings.coreVersionTitle")}
-          </div>
-          <div className="card core-card kernel-card">
-            <div className="ver-hero">
-              <div className="ver-mark" aria-hidden>
-                ⬢
-              </div>
-              <div className="ver-id">
-                <div className="ver-name">
-                  sing-box
-                  {core?.installed ? (
-                    <span className={`pill ${core.source === "bundled" ? "ok" : ""}`}>
-                      {core.source === "bundled"
-                        ? t("settings.coreBundled")
-                        : t("settings.coreInstalled")}
-                    </span>
-                  ) : (
-                    <span className="pill warn">{t("settings.coreMissing")}</span>
-                  )}
-                </div>
-                <div className="ver-sub muted mono">{core?.platform ?? "…"}</div>
-              </div>
-              <div className="ver-side">
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="ver-ver mono">
-                  {core?.version ?? "—"}
-                  {core?.source === "downloaded" ? (
-                    <span className="pill">{t("settings.coreUser")}</span>
-                  ) : null}
-                </div>
-              </div>
+            <div className="version-block-title">
+              {t("settings.coreVersionTitle")}
             </div>
-
-            <div className="ver-grid">
-              <div>
-                <span className="stat-label">{t("settings.coreBundledLabel")}</span>
-                <div className="mono ver-stat">{core?.bundled_version ?? "—"}</div>
-              </div>
-              <div>
-                <span className="stat-label">{t("settings.coreLatestLabel")}</span>
-                <div className="mono ver-stat">
-                  {core?.latest_version ?? "—"}
-                  {core?.update_available ? (
-                    <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
-                  ) : null}
-                </div>
-              </div>
-              <div className="ver-grid-actions">
-                <GlassButton
-                  icon="↻"
-                  disabled={coreBusy || coreChecking || !core}
-                  onClick={() => void onCheckCoreUpdate()}
-                >
-                  {coreChecking
-                    ? t("settings.coreChecking")
-                    : t("settings.coreCheck")}
-                </GlassButton>
-                <GlassButton
-                  variant="primary"
-                  icon="⤓"
-                  disabled={coreBusy || coreChecking}
-                  onClick={() => void onDownloadCore()}
-                >
-                  {coreBusy
-                    ? t("settings.coreDownloading")
-                    : core?.source === "downloaded"
-                      ? core.update_available
-                        ? t("settings.coreUpdate")
-                        : t("settings.coreRedownload")
-                      : t("settings.coreDownload")}
-                </GlassButton>
-              </div>
+            <div className="card core-card kernel-list">
+              {renderCoreRow("singbox")}
+              {renderCoreRow("xray")}
+              {renderCoreRow("mihomo")}
             </div>
-
-            {core?.path && (
-              <div className="core-path">
-                <span className="stat-label">{t("settings.corePath")}</span>
-                <code className="path-text mono" title={core.path}>
-                  {core.path}
-                </code>
-              </div>
-            )}
-
-            <div
-              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
-            >
-              <span className="core-route-dot" aria-hidden />
-              <span>
-                {coreProxyAvailable
-                  ? t("settings.coreProxyRoute")
-                  : t("settings.coreDirectRoute")}
-              </span>
-            </div>
-
-            {coreBusy && coreProgress && (
-              <div className="core-download-progress" aria-live="polite">
-                <div className="core-download-progress-head">
-                  <span className="lat-spinner" aria-hidden />
-                  <span>
-                    {coreProgress.stage === "preparing"
-                      ? t("settings.corePreparing")
-                      : coreProgress.stage === "installing"
-                        ? t("settings.coreInstalling")
-                        : t("settings.coreDownloading")}
-                  </span>
-                  <span className="mono core-download-percent">
-                    {coreProgress.percent != null
-                      ? `${coreProgress.percent}%`
-                      : "…"}
-                  </span>
-                </div>
-                <div
-                  className={`core-progress-track${coreProgress.percent == null ? " indeterminate" : ""}`}
-                >
-                  <span
-                    style={{
-                      width: `${coreProgress.percent ?? 24}%`,
-                    }}
-                  />
-                </div>
-                {coreProgress.downloaded > 0 && (
-                  <div className="muted mono core-download-bytes">
-                    {fmtCoreBytes(coreProgress.downloaded)}
-                    {coreProgress.total
-                      ? ` / ${fmtCoreBytes(coreProgress.total)}`
-                      : ""}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <p className="hint">{t("settings.coreHint")}</p>
-          </div>
           </div>
 
           <div className="version-col">
-          <div className="version-block-title">
-            {t("settings.appVersionTitle")}
-          </div>
-          <div className="card core-card app-card">
+            <div className="version-block-title">
+              {t("settings.appVersionTitle")}
+            </div>
+            <div className="card core-card app-card">
             <div className="ver-hero">
               <div className="ver-mark app-mark" aria-hidden>
                 ◈
@@ -1365,10 +1477,6 @@ export function SettingsPage() {
             </div>
 
             <div className="ver-grid">
-              <div>
-                <span className="stat-label">{t("settings.coreCurrent")}</span>
-                <div className="mono ver-stat">{appVersion ?? "—"}</div>
-              </div>
               <div>
                 <span className="stat-label">{t("settings.appLatest")}</span>
                 <div className="mono ver-stat">
@@ -1406,25 +1514,56 @@ export function SettingsPage() {
               </div>
             </div>
 
-            {appError && <div className="banner error">{appError}</div>}
+            {appError && (
+              <ErrorModal
+                message={appError}
+                onClose={() => setAppError(null)}
+              />
+            )}
 
-            <div className="core-path">
-              <span className="stat-label">{t("settings.corePath")}</span>
-              <code className="path-text mono" title={appPath ?? undefined}>
-                {appPath ?? "—"}
-              </code>
+            {/* Quiet key/value rows filling the equal-height card: last
+               update check, host platform (the core binary targets it),
+               build stack. */}
+            <div className="app-info-list">
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appCheckedLabel")}
+                </span>
+                <span className="app-info-value">
+                  {appChecking ? "…" : formatCheckedAt(appUpdate?.checked_at)}
+                </span>
+              </div>
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appPlatformLabel")}
+                </span>
+                <span className="app-info-value">
+                  {cores.singbox?.platform ?? cores.xray?.platform ?? cores.mihomo?.platform ?? "—"}
+                </span>
+              </div>
+              <div className="app-info-row">
+                <span className="app-info-label">
+                  {t("settings.appStackLabel")}
+                </span>
+                <span className="app-info-value">Tauri · React · Rust</span>
+              </div>
             </div>
 
-            <div
-              className={`core-download-route ${coreProxyAvailable ? "via-proxy" : "direct"}`}
-            >
-              <span className="core-route-dot" aria-hidden />
-              <span>
-                {coreProxyAvailable
-                  ? t("settings.appProxyRoute")
-                  : t("settings.appDirectRoute")}
-              </span>
-            </div>
+            {appPath && (
+              <div className="kernel-row-foot">
+                <code className="kernel-path mono" title={appPath}>
+                  {appPath}
+                </code>
+                <GlassButton
+                  iconOnly
+                  icon={copiedPath === appPath ? "✓" : "⧉"}
+                  className="kernel-copy-btn"
+                  title={copiedPath === appPath ? t("common.copied") : t("common.copy")}
+                  aria-label={t("common.copy")}
+                  onClick={() => void onCopyPath(appPath)}
+                />
+              </div>
+            )}
 
             <div className="ver-links">
               <button

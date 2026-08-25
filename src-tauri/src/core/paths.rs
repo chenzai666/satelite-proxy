@@ -1,3 +1,4 @@
+use crate::core::kind::CoreKind;
 use crate::error::{AppError, AppResult};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,9 +11,25 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CorePlatform {
-    /// e.g. darwin-arm64, windows-amd64
+    /// sing-box release asset suffix, e.g. darwin-arm64, windows-amd64
     pub asset_suffix: &'static str,
+    /// Xray release asset suffix, e.g. macos-arm64-v8a, windows-64
+    pub xray_asset_suffix: &'static str,
+    /// mihomo release asset suffix — same short form as sing-box (e.g.
+    /// darwin-arm64, windows-amd64), not a Rust target triple.
+    pub mihomo_asset_suffix: &'static str,
     pub is_windows: bool,
+}
+
+impl CorePlatform {
+    /// Asset suffix for a core kind's release naming scheme.
+    pub fn asset_suffix_for(self, kind: CoreKind) -> &'static str {
+        match kind {
+            CoreKind::SingBox => self.asset_suffix,
+            CoreKind::Xray => self.xray_asset_suffix,
+            CoreKind::Mihomo => self.mihomo_asset_suffix,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -28,48 +45,54 @@ pub enum CoreSource {
 pub fn detect_platform() -> AppResult<CorePlatform> {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let (suffix, is_windows) = match (os, arch) {
-        ("macos", "aarch64") => ("darwin-arm64", false),
-        ("macos", "x86_64") => ("darwin-amd64", false),
-        ("linux", "aarch64") => ("linux-arm64", false),
-        ("linux", "x86_64") => ("linux-amd64", false),
-        ("windows", "x86_64") => ("windows-amd64", true),
-        ("windows", "aarch64") => ("windows-arm64", true),
+    let (suffix, xray_suffix, is_windows) = match (os, arch) {
+        ("macos", "aarch64") => ("darwin-arm64", "macos-arm64-v8a", false),
+        ("macos", "x86_64") => ("darwin-amd64", "macos-64", false),
+        ("linux", "aarch64") => ("linux-arm64", "linux-arm64-v8a", false),
+        ("linux", "x86_64") => ("linux-amd64", "linux-64", false),
+        ("windows", "x86_64") => ("windows-amd64", "windows-64", true),
+        ("windows", "aarch64") => ("windows-arm64", "windows-arm64-v8a", true),
         _ => {
             return Err(AppError::Core(format!("unsupported platform: {os}/{arch}")));
         }
     };
     Ok(CorePlatform {
         asset_suffix: suffix,
+        xray_asset_suffix: xray_suffix,
+        // mihomo release assets use the same short suffix as sing-box.
+        mihomo_asset_suffix: suffix,
         is_windows,
     })
-}
-
-pub fn binary_name() -> &'static str {
-    if cfg!(windows) {
-        "sing-box.exe"
-    } else {
-        "sing-box"
-    }
 }
 
 pub fn core_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("bin")
 }
 
-/// User-managed binary path (download / update target).
-pub fn core_bin_path(app_data_dir: &Path) -> PathBuf {
-    core_dir(app_data_dir).join(binary_name())
+/// mihomo home directory (`-d`): hosts its `Country.mmdb` + `geosite.dat`
+/// geodata. Kept separate from `bin/` because mihomo's `geosite.dat` is
+/// MetaCubeX .mrs format and would collide with Xray's v2ray-format
+/// `bin/geosite.dat` of the same name.
+pub fn mihomo_home_dir(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("mihomo")
 }
 
-pub fn version_file_path(app_data_dir: &Path) -> PathBuf {
-    core_dir(app_data_dir).join("version.txt")
+/// User-managed binary path (download / update target).
+pub fn core_bin_path(app_data_dir: &Path, kind: CoreKind) -> PathBuf {
+    core_dir(app_data_dir).join(kind.binary_name())
+}
+
+pub fn version_file_path(app_data_dir: &Path, kind: CoreKind) -> PathBuf {
+    core_dir(app_data_dir).join(kind.version_file_name())
 }
 
 /// Absolute path candidates for the built-in binary (dev + packaging).
-pub fn bundled_core_candidates(resource_dir: Option<&Path>) -> Vec<PathBuf> {
+/// The local layout uses one platform directory per OS/arch (the sing-box
+/// asset naming, e.g. `windows-amd64`) shared by both cores — the per-kind
+/// `asset_suffix_for` naming only applies to GitHub release assets.
+pub fn bundled_core_candidates(resource_dir: Option<&Path>, kind: CoreKind) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let bin = binary_name();
+    let bin = kind.binary_name();
     let plat = detect_platform()
         .map(|p| p.asset_suffix)
         .unwrap_or("darwin-arm64");
@@ -106,8 +129,8 @@ fn is_cargo_target_path(p: &Path) -> bool {
     false
 }
 
-pub fn find_bundled_core(resource_dir: Option<&Path>) -> Option<PathBuf> {
-    let cands: Vec<PathBuf> = bundled_core_candidates(resource_dir)
+pub fn find_bundled_core(resource_dir: Option<&Path>, kind: CoreKind) -> Option<PathBuf> {
+    let cands: Vec<PathBuf> = bundled_core_candidates(resource_dir, kind)
         .into_iter()
         .filter(|p| p.is_file())
         .collect();
@@ -120,8 +143,8 @@ pub fn find_bundled_core(resource_dir: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Copy bundled core into app data `bin/` so we always execute from a stable path.
-fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf> {
-    let dest = core_bin_path(app_data_dir);
+fn stage_bundled_core(app_data_dir: &Path, bundled: &Path, kind: CoreKind) -> AppResult<PathBuf> {
+    let dest = core_bin_path(app_data_dir, kind);
     if dest.is_file() {
         // Same size → assume OK; re-copy if source is newer/different size.
         // Preserve setuid binaries (TUN auth) when content length matches.
@@ -137,14 +160,19 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
         #[cfg(target_os = "macos")]
         {
             if let Err(e) = super::macos_auth::remove_setuid_core_if_needed(&dest) {
-                crate::app_log::warn("core", format!("could not replace setuid sing-box: {e}"));
+                crate::app_log::warn("core", format!("could not replace setuid core: {e}"));
             }
         }
     }
     let dir = core_dir(app_data_dir);
     std::fs::create_dir_all(&dir)?;
-    std::fs::copy(bundled, &dest)
-        .map_err(|e| AppError::Core(format!("copy sing-box to {}: {e}", dest.display())))?;
+    std::fs::copy(bundled, &dest).map_err(|e| {
+        AppError::Core(format!(
+            "copy {} to {}: {e}",
+            kind.display_name(),
+            dest.display()
+        ))
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -157,13 +185,45 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
     {
         let _ = Command::new("xattr").args(["-cr"]).arg(&dest).output();
     }
-    // Keep version.txt next to staged binary when available
+    // Keep version file next to staged binary when available
     if let Some(parent) = bundled.parent() {
-        let vf = parent.join("version.txt");
+        let vf = parent.join(kind.version_file_name());
         if vf.is_file() {
             if let Ok(v) = std::fs::read_to_string(&vf) {
-                let _ = write_version_file(app_data_dir, v.trim());
+                let _ = write_version_file(app_data_dir, kind, v.trim());
             }
+        }
+    }
+    // Xray: stage geosite/geoip data files shipped alongside the binary so
+    // geosite:/geoip: routing works from the app-data asset location, plus
+    // wintun.dll (Windows tun adapter driver, not in the Xray release zip).
+    if kind == CoreKind::Xray {
+        #[cfg(target_os = "windows")]
+        let extra_files: [&str; 3] = ["geosite.dat", "geoip.dat", "wintun.dll"];
+        #[cfg(not(target_os = "windows"))]
+        let extra_files: [&str; 2] = ["geosite.dat", "geoip.dat"];
+        if let Some(parent) = bundled.parent() {
+            for file in extra_files {
+                let src = parent.join(file);
+                if src.is_file() {
+                    let target = core_dir(app_data_dir).join(file);
+                    if !target.is_file() {
+                        let _ = std::fs::copy(&src, &target);
+                    }
+                }
+            }
+        }
+    }
+    // mihomo: stage the bundled geodata pair
+    // (`mihomo-geodata/Country.mmdb` + `geosite.dat`) into the mihomo home
+    // dir. wintun.dll (Windows tun) is shared with the Xray staging —
+    // mihomo looks it up next to its exe in `bin/`.
+    if kind == CoreKind::Mihomo {
+        if let Some(parent) = bundled.parent() {
+            let _ = super::assets::stage_bundled_mihomo_geodata_from(
+                app_data_dir,
+                &parent.join("mihomo-geodata"),
+            );
         }
     }
     Ok(dest)
@@ -173,13 +233,14 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path) -> AppResult<PathBuf>
 pub fn resolve_core_bin(
     app_data_dir: &Path,
     resource_dir: Option<&Path>,
+    kind: CoreKind,
 ) -> (Option<PathBuf>, CoreSource) {
-    let downloaded = core_bin_path(app_data_dir);
+    let downloaded = core_bin_path(app_data_dir, kind);
     if downloaded.is_file() {
         return (Some(downloaded), CoreSource::Downloaded);
     }
-    if let Some(bundled) = find_bundled_core(resource_dir) {
-        match stage_bundled_core(app_data_dir, &bundled) {
+    if let Some(bundled) = find_bundled_core(resource_dir, kind) {
+        match stage_bundled_core(app_data_dir, &bundled, kind) {
             Ok(staged) => return (Some(staged), CoreSource::Bundled),
             Err(_) => {
                 // Fall back to direct path if not under cargo target
@@ -198,19 +259,20 @@ pub fn resolve_core_bin(
 pub fn inspect_core_bin(
     app_data_dir: &Path,
     resource_dir: Option<&Path>,
+    kind: CoreKind,
 ) -> (Option<PathBuf>, CoreSource) {
-    let downloaded = core_bin_path(app_data_dir);
+    let downloaded = core_bin_path(app_data_dir, kind);
     if downloaded.is_file() {
         return (Some(downloaded), CoreSource::Downloaded);
     }
-    match find_bundled_core(resource_dir) {
+    match find_bundled_core(resource_dir, kind) {
         Some(bundled) => (Some(bundled), CoreSource::Bundled),
         None => (None, CoreSource::Missing),
     }
 }
 
-pub fn installed_core_version(app_data_dir: &Path) -> Option<String> {
-    let vf = version_file_path(app_data_dir);
+pub fn installed_core_version(app_data_dir: &Path, kind: CoreKind) -> Option<String> {
+    let vf = version_file_path(app_data_dir, kind);
     if let Ok(s) = std::fs::read_to_string(vf) {
         let t = s.trim().to_string();
         if !t.is_empty() {
@@ -220,12 +282,13 @@ pub fn installed_core_version(app_data_dir: &Path) -> Option<String> {
     None
 }
 
-/// Read bundled version from `version.txt` only (no process spawn — keeps UI instant).
-pub fn bundled_core_version(resource_dir: Option<&Path>) -> Option<String> {
-    if let Some(bin) = find_bundled_core(resource_dir) {
+/// Read bundled version from the kind's version file only (no process spawn —
+/// keeps UI instant).
+pub fn bundled_core_version(resource_dir: Option<&Path>, kind: CoreKind) -> Option<String> {
+    if let Some(bin) = find_bundled_core(resource_dir, kind) {
         if let Some(parent) = bin.parent() {
-            let vf = parent.join("version.txt");
-            if let Ok(s) = std::fs::read_to_string(vf) {
+            let vf = parent.join(kind.version_file_name());
+            if let Ok(s) = std::fs::read_to_string(&vf) {
                 let t = s.trim().to_string();
                 if !t.is_empty() {
                     return Some(normalize_version(&t));
@@ -234,10 +297,10 @@ pub fn bundled_core_version(resource_dir: Option<&Path>) -> Option<String> {
         }
     }
     // Also try fixed relative layout next to candidates (dev)
-    for cand in bundled_core_candidates(resource_dir) {
+    for cand in bundled_core_candidates(resource_dir, kind) {
         if let Some(parent) = cand.parent() {
-            let vf = parent.join("version.txt");
-            if let Ok(s) = std::fs::read_to_string(vf) {
+            let vf = parent.join(kind.version_file_name());
+            if let Ok(s) = std::fs::read_to_string(&vf) {
                 let t = s.trim().to_string();
                 if !t.is_empty() {
                     return Some(normalize_version(&t));
@@ -248,22 +311,29 @@ pub fn bundled_core_version(resource_dir: Option<&Path>) -> Option<String> {
     None
 }
 
-/// Resolve version for whatever core is active (file metadata only; no `sing-box version`).
-pub fn active_core_version(app_data_dir: &Path, resource_dir: Option<&Path>) -> Option<String> {
-    let (_path, source) = inspect_core_bin(app_data_dir, resource_dir);
+/// Resolve version for whatever core is active (file metadata only; no spawn).
+pub fn active_core_version(
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+    kind: CoreKind,
+) -> Option<String> {
+    let (_path, source) = inspect_core_bin(app_data_dir, resource_dir, kind);
     match source {
-        CoreSource::Downloaded => installed_core_version(app_data_dir),
-        CoreSource::Bundled => bundled_core_version(resource_dir),
+        CoreSource::Downloaded => installed_core_version(app_data_dir, kind),
+        CoreSource::Bundled => bundled_core_version(resource_dir, kind),
         CoreSource::Missing => None,
     }
 }
 
-pub fn read_version_of_binary(bin: &Path) -> AppResult<String> {
+pub fn read_version_of_binary(kind: CoreKind, bin: &Path) -> AppResult<String> {
     if !bin.exists() {
-        return Err(AppError::Core("sing-box binary not found".into()));
+        return Err(AppError::Core(format!(
+            "{} binary not found",
+            kind.display_name()
+        )));
     }
     let mut cmd = Command::new(bin);
-    cmd.arg("version");
+    cmd.args(kind.version_args());
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
     let out = cmd
@@ -277,23 +347,10 @@ pub fn read_version_of_binary(bin: &Path) -> AppResult<String> {
         )));
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("sing-box version ") {
-            return Ok(normalize_version(rest.trim()));
-        }
-        if let Some(v) = line
-            .split_whitespace()
-            .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
-        {
-            return Ok(normalize_version(v));
-        }
-        return Ok(normalize_version(line));
-    }
-    Err(AppError::Core("empty version output".into()))
+    let version = kind
+        .parse_version_output(&text)
+        .ok_or_else(|| AppError::Core("empty version output".into()))?;
+    Ok(normalize_version(&version))
 }
 
 pub fn normalize_version(v: &str) -> String {
@@ -305,10 +362,13 @@ pub fn normalize_version(v: &str) -> String {
     }
 }
 
-pub fn write_version_file(app_data_dir: &Path, version: &str) -> AppResult<()> {
+pub fn write_version_file(app_data_dir: &Path, kind: CoreKind, version: &str) -> AppResult<()> {
     let dir = core_dir(app_data_dir);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(version_file_path(app_data_dir), normalize_version(version))?;
+    std::fs::write(
+        version_file_path(app_data_dir, kind),
+        normalize_version(version),
+    )?;
     Ok(())
 }
 
@@ -330,19 +390,39 @@ mod tests {
         let app_data = root.join("app-data");
         let resources = root.join("resources-root");
         let platform = detect_platform().expect("supported test platform");
-        let bundled_dir = resources.join("bin").join(platform.asset_suffix);
-        std::fs::create_dir_all(&bundled_dir).expect("create fake resource directory");
-        std::fs::write(bundled_dir.join(binary_name()), b"fake-core")
-            .expect("write fake bundled core");
-        std::fs::write(bundled_dir.join("version.txt"), b"v-test").expect("write fake version");
+        for kind in [CoreKind::SingBox, CoreKind::Xray, CoreKind::Mihomo] {
+            // Bundled layout uses the shared sing-box-style platform directory
+            // for every core kind (`bundled_core_candidates`); the per-kind
+            // `asset_suffix_for` naming only applies to GitHub release assets.
+            let bundled_dir = resources.join("bin").join(platform.asset_suffix);
+            std::fs::create_dir_all(&bundled_dir).expect("create fake resource directory");
+            std::fs::write(bundled_dir.join(kind.binary_name()), b"fake-core")
+                .expect("write fake bundled core");
+            std::fs::write(bundled_dir.join(kind.version_file_name()), b"v-test")
+                .expect("write fake version");
 
-        let (path, source) = inspect_core_bin(&app_data, Some(&resources));
-        assert!(path.is_some());
-        assert_eq!(source, CoreSource::Bundled);
-        assert!(!core_bin_path(&app_data).exists());
+            let (path, source) = inspect_core_bin(&app_data, Some(&resources), kind);
+            assert!(path.is_some());
+            assert_eq!(source, CoreSource::Bundled);
+            assert!(!core_bin_path(&app_data, kind).exists());
 
-        let _ = active_core_version(&app_data, Some(&resources));
-        assert!(!core_bin_path(&app_data).exists());
+            let _ = active_core_version(&app_data, Some(&resources), kind);
+            assert!(!core_bin_path(&app_data, kind).exists());
+        }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn xray_platform_suffixes_differ_from_singbox() {
+        let p = detect_platform().expect("platform");
+        assert_ne!(
+            p.asset_suffix_for(CoreKind::SingBox),
+            p.asset_suffix_for(CoreKind::Xray)
+        );
+        assert!(
+            p.asset_suffix_for(CoreKind::Xray).starts_with("windows")
+                || p.asset_suffix_for(CoreKind::Xray).starts_with("macos")
+                || p.asset_suffix_for(CoreKind::Xray).starts_with("linux")
+        );
     }
 }

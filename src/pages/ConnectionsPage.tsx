@@ -4,6 +4,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { useI18n } from "../i18n";
+import { ErrorModal } from "../components/ErrorModal";
 import type { ConnectionView } from "../types";
 import { scopeFilter, type TrafficScope } from "../trafficFilter";
 import { applyConnectionChanges } from "../connectionChanges";
@@ -142,7 +143,9 @@ export function ConnectionsPage({ embedded = false }: Props) {
 
   const body = (
     <>
-      {error && <div className="banner error">{error}</div>}
+      {error && (
+        <ErrorModal message={error} onClose={() => setError(null)} />
+      )}
 
       {!running ? (
         <div className="empty card muted">{t("conn.needStart")}</div>
