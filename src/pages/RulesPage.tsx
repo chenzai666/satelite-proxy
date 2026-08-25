@@ -41,6 +41,7 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { extractDomainSuffix } from "./FailuresPage";
+import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import type {
   ProxyNode,
   Rule,
@@ -113,6 +114,26 @@ interface Props {
 }
 
 export function RulesPage({ embedded = false }: Props) {
+  const [coreType, setCoreType] = useState(() => peekSettings()?.core_type ?? "singbox");
+  useEffect(() => {
+    let disposed = false;
+    void getSettings()
+      .then((settings) => {
+        if (!disposed) setCoreType(settings.core_type ?? "singbox");
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+    };
+  }, []);
+  return coreType === "mihomo" ? (
+    <MihomoGroupsPage embedded={embedded} />
+  ) : (
+    <SingboxRulesPage embedded={embedded} />
+  );
+}
+
+function SingboxRulesPage({ embedded = false }: Props) {
   const { t } = useI18n();
   const [sets, setSets] = useState<RuleSetSummary[]>([]);
   const [viewSetId, setViewSetId] = useState<string | null>(null);

@@ -435,6 +435,15 @@ export interface ProxyStatus {
   core_type?: CoreKind | string;
 }
 
+export interface MihomoProxyGroup {
+  name: string;
+  group_type: string;
+  now: string;
+  all: string[];
+  alive?: boolean | null;
+  labels?: Record<string, string>;
+}
+
 export type RuleType =
   | "domain"
   | "domain_suffix"

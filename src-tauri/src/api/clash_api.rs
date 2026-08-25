@@ -62,6 +62,17 @@ pub struct ClashApi {
     active: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClashProxyGroup {
+    pub name: String,
+    pub group_type: String,
+    pub now: String,
+    pub all: Vec<String>,
+    pub alive: Option<bool>,
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
 fn shared_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -139,8 +150,9 @@ impl ClashApi {
     /// Switch selector/urltest group `proxy` to outbound `name` (tag).
     pub fn select_proxy(&self, group: &str, name: &str) -> AppResult<()> {
         let body = serde_json::json!({ "name": name });
+        let encoded = urlencoding::encode(group);
         let resp = shared_agent()
-            .put(&format!("{}/proxies/{group}", self.base))
+            .put(&format!("{}/proxies/{encoded}", self.base))
             .set("Authorization", &auth(&self.secret))
             .timeout(Duration::from_secs(3))
             .send_json(body)
@@ -182,6 +194,71 @@ impl ClashApi {
             .into_json()
             .map_err(|e| AppError::Core(format!("proxy now json: {e}")))?;
         Ok(body.now.filter(|s| !s.is_empty()))
+    }
+
+    /// Live Clash policy groups (`GET /proxies`). Plain node adapters and
+    /// DIRECT/REJECT are omitted; only switchable/automatic group adapters
+    /// with a non-empty member list are returned.
+    pub fn list_proxy_groups(&self) -> AppResult<Vec<ClashProxyGroup>> {
+        let resp = shared_agent()
+            .get(&format!("{}/proxies", self.base))
+            .set("Authorization", &auth(&self.secret))
+            .timeout(Duration::from_secs(3))
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&resp.status()) {
+            return Err(AppError::Core(format!(
+                "clash_api proxies status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .into_json()
+            .map_err(|error| AppError::Core(format!("clash_api proxies json: {error}")))?;
+        let proxies = body
+            .get("proxies")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| AppError::Core("clash_api proxies map missing".into()))?;
+        let mut groups = proxies
+            .iter()
+            .filter_map(|(name, value)| {
+                let members = value.get("all")?.as_array()?;
+                if members.is_empty() {
+                    return None;
+                }
+                Some(ClashProxyGroup {
+                    name: name.clone(),
+                    group_type: value
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                    now: value
+                        .get("now")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    all: members
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect(),
+                    alive: value.get("alive").and_then(serde_json::Value::as_bool),
+                    labels: std::collections::BTreeMap::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        groups.sort_by(|left, right| {
+            let rank = |name: &str| match name {
+                "proxy" => 0,
+                "auto" => 1,
+                _ => 2,
+            };
+            rank(&left.name)
+                .cmp(&rank(&right.name))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(groups)
     }
 
     pub fn delay(&self, proxy: &str, url: &str, timeout_ms: u64) -> AppResult<u32> {
@@ -546,6 +623,36 @@ mod parse_tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
 
+    fn read_http_request(socket: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = socket.read(&mut chunk).expect("read HTTP request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end + 4]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.split_once(':').and_then(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("HTTP request text")
+    }
+
     #[test]
     fn close_all_connections_uses_authenticated_delete() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake clash api");
@@ -579,6 +686,63 @@ mod parse_tests {
         ClashApi::new("127.0.0.1", port, "test-secret")
             .close_all_connections()
             .expect("close all connections");
+        server.join().expect("fake clash api server");
+    }
+
+    #[test]
+    fn lists_only_policy_groups_in_clash_order() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake clash api");
+        let port = listener.local_addr().expect("fake api address").port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept proxies request");
+            let request = read_http_request(&mut socket);
+            assert!(request.starts_with("GET /proxies HTTP/1.1\r\n"));
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-secret\r\n"));
+            let body = r#"{"proxies":{"node-a":{"type":"VLESS","alive":true},"搜索引擎":{"type":"Selector","now":"proxy","all":["proxy","DIRECT"]},"auto":{"type":"URLTest","now":"node-a","all":["node-a"]},"proxy":{"type":"Selector","now":"auto","all":["auto","node-a"]}}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .expect("write proxies response");
+        });
+
+        let groups = ClashApi::new("127.0.0.1", port, "test-secret")
+            .list_proxy_groups()
+            .expect("list policy groups");
+        server.join().expect("fake clash api server");
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].name, "proxy");
+        assert_eq!(groups[1].name, "auto");
+        assert_eq!(groups[2].name, "搜索引擎");
+        assert_eq!(groups[0].now, "auto");
+        assert_eq!(groups[2].all, ["proxy", "DIRECT"]);
+    }
+
+    #[test]
+    fn selects_unicode_group_with_encoded_path() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake clash api");
+        let port = listener.local_addr().expect("fake api address").port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept select request");
+            let request = read_http_request(&mut socket);
+            assert!(request
+                .starts_with("PUT /proxies/%E6%90%9C%E7%B4%A2%E5%BC%95%E6%93%8E HTTP/1.1\r\n"));
+            assert!(request.contains(r#"{"name":"DIRECT"}"#));
+            socket
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write select response");
+        });
+
+        ClashApi::new("127.0.0.1", port, "test-secret")
+            .select_proxy("搜索引擎", "DIRECT")
+            .expect("select policy member");
         server.join().expect("fake clash api server");
     }
 

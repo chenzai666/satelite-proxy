@@ -45,6 +45,40 @@ pub async fn close_all_connections(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn list_mihomo_proxy_groups(
+    app: AppHandle,
+) -> Result<Vec<crate::api::ClashProxyGroup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .list_mihomo_proxy_groups_serialized()
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("list mihomo proxy groups task: {error}"))?
+}
+
+#[tauri::command]
+pub async fn select_mihomo_proxy_group(
+    app: AppHandle,
+    group: String,
+    member: String,
+) -> Result<Vec<crate::api::ClashProxyGroup>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .select_mihomo_proxy_group_serialized(&group, &member)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("select mihomo proxy group task: {error}"))?
+}
+
+#[tauri::command]
 pub async fn list_requests(
     app: AppHandle,
     query: Option<String>,

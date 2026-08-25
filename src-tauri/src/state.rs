@@ -1121,6 +1121,113 @@ impl AppState {
         Ok(())
     }
 
+    /// Read Mihomo's live Clash policy groups. The generated YAML is not the
+    /// UI source of truth: `now` can change inside the kernel at any time.
+    pub fn list_mihomo_proxy_groups_serialized(
+        &self,
+    ) -> AppResult<Vec<crate::api::ClashProxyGroup>> {
+        let _operation = self.begin_core_transition()?;
+        let is_mihomo = self.with_store(|store| {
+            Ok(crate::core::CoreKind::parse(&store.settings.core_type)
+                == crate::core::CoreKind::Mihomo)
+        })?;
+        if !is_mihomo {
+            return Err(crate::error::AppError::Core(
+                "策略组仅在 Mihomo 内核下可用".into(),
+            ));
+        }
+        let api = self
+            .lock_runtime()
+            .clash_api_clone()
+            .ok_or_else(|| crate::error::AppError::Core("Mihomo 内核尚未启动".into()))?;
+        let mut groups = api.list_proxy_groups()?;
+        self.attach_mihomo_group_labels(&mut groups)?;
+        Ok(groups)
+    }
+
+    /// Switch one live Mihomo selector after validating the requested member
+    /// against the kernel's own `/proxies` response.
+    pub fn select_mihomo_proxy_group_serialized(
+        &self,
+        group: &str,
+        member: &str,
+    ) -> AppResult<Vec<crate::api::ClashProxyGroup>> {
+        let _operation = self.begin_core_transition()?;
+        let (is_mihomo, close_after_switch) = self.with_store(|store| {
+            Ok((
+                crate::core::CoreKind::parse(&store.settings.core_type)
+                    == crate::core::CoreKind::Mihomo,
+                store.settings.close_connections_on_switch,
+            ))
+        })?;
+        if !is_mihomo {
+            return Err(crate::error::AppError::Core(
+                "策略组仅在 Mihomo 内核下可用".into(),
+            ));
+        }
+        let api = self
+            .lock_runtime()
+            .clash_api_clone()
+            .ok_or_else(|| crate::error::AppError::Core("Mihomo 内核尚未启动".into()))?;
+        let groups = api.list_proxy_groups()?;
+        let target = groups
+            .iter()
+            .find(|item| item.name == group)
+            .ok_or_else(|| crate::error::AppError::NotFound(group.to_string()))?;
+        if !target.group_type.eq_ignore_ascii_case("selector") {
+            return Err(crate::error::AppError::Core(format!(
+                "{} 是自动策略组，不能手动切换",
+                target.name
+            )));
+        }
+        if !target.all.iter().any(|candidate| candidate == member) {
+            return Err(crate::error::AppError::Core(
+                "目标不属于该策略组，已拒绝切换".into(),
+            ));
+        }
+        api.select_proxy(group, member)?;
+        if close_after_switch {
+            if let Err(error) = api.close_all_connections() {
+                app_log::warn(
+                    "connections",
+                    format!("policy group switched but closing connections failed: {error}"),
+                );
+            }
+        }
+        app_log::info(
+            "connections",
+            format!("mihomo policy group {group} switched to {member}"),
+        );
+        let mut groups = api.list_proxy_groups()?;
+        self.attach_mihomo_group_labels(&mut groups)?;
+        Ok(groups)
+    }
+
+    fn attach_mihomo_group_labels(
+        &self,
+        groups: &mut [crate::api::ClashProxyGroup],
+    ) -> AppResult<()> {
+        let labels = self.with_store(|store| {
+            let mut labels = std::collections::BTreeMap::from([
+                ("proxy".to_string(), "🚀 节点选择".to_string()),
+                ("auto".to_string(), "📈 自动选择".to_string()),
+                ("DIRECT".to_string(), "DIRECT · 直连".to_string()),
+                ("REJECT".to_string(), "REJECT · 拦截".to_string()),
+            ]);
+            for stored in &store.nodes {
+                labels.insert(
+                    crate::config::outbound_tag(&stored.node),
+                    stored.node.name.clone(),
+                );
+            }
+            Ok(labels)
+        })?;
+        for group in groups {
+            group.labels = labels.clone();
+        }
+        Ok(())
+    }
+
     /// Run a Clash selector update without holding `runtime` across HTTP I/O.
     /// The transition guard prevents a core restart from replacing the API
     /// endpoint between cloning the handle and applying the selection.
@@ -1308,6 +1415,10 @@ impl AppState {
         // XrayMetrics only exists in Xray mode, so its presence is the check.
         let now_tag = if let Some(api) = api {
             match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT) {
+                Ok(Some(group)) if group == "auto" => api
+                    .proxy_group_now_with_timeout("auto", KERNEL_SELECTION_HTTP_TIMEOUT)
+                    .ok()
+                    .flatten(),
                 Ok(tag) => tag,
                 Err(_) => return,
             }

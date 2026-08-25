@@ -10,6 +10,7 @@ import type {
   ConnectionView,
   ProxyNode,
   ProxyStatus,
+  MihomoProxyGroup,
   Rule,
   RuleSet,
   RuleSetStrategy,
@@ -774,6 +775,17 @@ export function listConnectionChanges(
 
 export function closeAllConnections() {
   return invoke<void>("close_all_connections");
+}
+
+export function listMihomoProxyGroups() {
+  return invoke<MihomoProxyGroup[]>("list_mihomo_proxy_groups");
+}
+
+export function selectMihomoProxyGroup(group: string, member: string) {
+  return invoke<MihomoProxyGroup[]>("select_mihomo_proxy_group", {
+    group,
+    member,
+  });
 }
 
 export interface RequestBatch {

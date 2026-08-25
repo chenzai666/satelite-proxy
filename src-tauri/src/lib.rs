@@ -451,6 +451,8 @@ pub fn run() {
             commands::list_connections,
             commands::list_connection_changes,
             commands::close_all_connections,
+            commands::list_mihomo_proxy_groups,
+            commands::select_mihomo_proxy_group,
             commands::list_requests,
             commands::list_request_failures,
             commands::clear_request_history,

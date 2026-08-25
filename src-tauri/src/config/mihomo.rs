@@ -6,22 +6,18 @@
 //! `PUT /proxies/proxy`; a url-test group in kernel auto-select mode reports
 //! its current best through `now`, which the kernel-selection sync reads).
 //!
-//! Semantics mirrored from the sing-box/Xray generators (see
-//! `builder.rs`/`xray.rs`): whole-set Node pins clamp onto each rule,
-//! Filter sets route through a keyword-filtered pool group, per-rule Smart
-//! pools get their own url-test group, and the three builtin remote sets map
-//! onto GEOSITE/GEOIP matchers (MetaCubeX `.mrs`/mmdb geodata lives in the
-//! mihomo home dir — see `core::assets`).
+//! Mihomo intentionally uses a Clash-native policy model instead of compiling
+//! Satelite's local sing-box rule editor. Every enabled remote category gets a
+//! live `select` policy group, and its rule-provider / geodata matcher targets
+//! that group. The three system sets map onto GEOSITE/GEOIP matchers
+//! (MetaCubeX `.mrs`/mmdb geodata lives in the mihomo home dir).
 
-use crate::config::builder::{
-    clamp_rule_pin_to_set, effective_route_rules, filter_pool_tags, outbound_tag,
-    resolve_selected_tag, rule_set_is_empty_for_config, smart_pool_tags, BuildOptions,
-};
+use crate::config::builder::{outbound_tag, resolve_selected_tag, BuildOptions};
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
 use crate::domain::{
-    DnsAction, DomainMatcher, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet,
-    RuleSetDnsStrategy, RuleSetStrategy, RuleTarget, RuleType, Transport,
+    DnsAction, DomainMatcher, OutboundMode, Protocol, ProtocolConfig, ProxyNode, RuleSet,
+    RuleSetDnsStrategy, RuleSetStrategy, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_yaml::{Mapping, Value as Yaml};
@@ -29,6 +25,9 @@ use serde_yaml::{Mapping, Value as Yaml};
 /// Main group tag — must match the sing-box contract (`state.rs` selects
 /// this group over the Clash API and the kernel-selection sync reads `now`).
 const MAIN_GROUP: &str = "proxy";
+/// Dedicated kernel latency group. The main selector can point to this group
+/// while still remaining manually switchable through the Clash API.
+const AUTO_GROUP: &str = "auto";
 /// Built-in remote DoH pool (Clash queries the entries concurrently,
 /// fastest answer wins). Every entry egresses through the main proxy group
 /// — direct DoH is unreachable on censored networks (see build_dns).
@@ -84,92 +83,34 @@ pub fn build_mihomo_config(
 
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
-    let (remote_providers, remote_provider_tags) = if opts.outbound_mode == OutboundMode::Rule {
-        build_remote_rule_providers(&opts.rule_sets)
-    } else {
-        (Mapping::new(), std::collections::HashMap::new())
-    };
+    // Keep providers/groups present in Global and Direct modes too, so users
+    // can configure policy selections before returning to Rule mode.
+    let (remote_providers, remote_provider_tags) = build_remote_rule_providers(&opts.rule_sets);
 
     // —— proxy-groups ——
-    // Kernel auto-select: the main group IS a url-test group over all nodes
-    // (sing-box's exact shape — `proxy_group_now_with_timeout("proxy")`
-    // reads its `now` to sync the dashboard's current node; PUT /proxies on
-    // a url-test 400s, so manual picks take the restart path like sing-box
-    // kernel mode). Otherwise a select group ordered with the current node
-    // first so mihomo's initial `now` matches our persisted selection.
+    // Mihomo is exposed as a Clash-native policy engine: the main selector is
+    // always manually switchable, with a separate url-test member for kernel
+    // auto-selection. Category selectors below can choose the main group,
+    // automatic selection, DIRECT/REJECT, or any concrete node.
     let mut groups: Vec<Mapping> = Vec::new();
     let probe_url = probe_url_or_default(opts);
-    if opts.auto_select.is_kernel() {
-        groups.push(url_test_group(MAIN_GROUP, tags.clone(), &probe_url));
+    let mut main_members = vec![AUTO_GROUP.to_string()];
+    main_members.extend(tags.clone());
+    main_members.push("DIRECT".into());
+    let main_default = if opts.auto_select.is_kernel() {
+        AUTO_GROUP
     } else {
-        groups.push(select_group(MAIN_GROUP, tags.clone(), Some(&selected_tag)));
-    }
+        selected_tag.as_str()
+    };
+    groups.push(select_group(MAIN_GROUP, main_members, Some(main_default)));
+    groups.push(url_test_group(AUTO_GROUP, tags.clone(), &probe_url));
 
-    // Filter-strategy sets: whole set routes through a keyword-filtered
-    // url-test pool (same semantics as the Xray filter balancer).
-    let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
-    let mut filter_group_tags: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for set in opts.rule_sets.iter().filter(|s| {
-        s.enabled
-            && s.strategy == RuleSetStrategy::Filter
-            && (s.remote.is_none() || remote_provider_tags.contains_key(&s.id))
-    }) {
-        if rule_set_is_empty_for_config(set) {
-            continue;
-        }
-        let pool = filter_pool_tags(&set.smart_include, &set.smart_exclude, &supported, &tags);
-        if pool.is_empty() {
-            continue;
-        }
-        // Same shape as sing-box's filter-set selectors (`smart-<set id>`
-        // via RuleSet::smart_set_outbound_tag): the app-side smart switch
-        // maintains these pools by PUT (a stand-in rule per Filter set),
-        // so they must be select groups under that exact tag.
-        let group_tag = set.smart_set_outbound_tag();
-        groups.push(select_group(
-            &group_tag,
-            pool.clone(),
-            pool.first().map(String::as_str),
-        ));
-        filter_group_tags.insert(set.id.clone(), group_tag);
-    }
-
-    // Per-RULE smart pools (target=Smart with keywords): select group per
-    // rule, like sing-box's smart selectors — the app-side smart switch
-    // PUTs its evaluated pick into them (`select_group_live_serialized`),
-    // and a url-test group would 400 every PUT (kernel racing and app-side
-    // evaluation would also fight). Default = the pool's best-latency
-    // member (smart_pool_tags orders by historical latency).
-    let mut smart_group_tags: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for rule in effective_rules
-        .iter()
-        .filter(|r| r.enabled && r.target == RuleTarget::Smart && !r.payload.trim().is_empty())
-    {
-        let pool = smart_pool_tags(rule, &supported, &tags);
-        if pool.is_empty() {
-            continue;
-        }
-        let group_tag = rule.smart_outbound_tag();
-        groups.push(select_group(
-            &group_tag,
-            pool.clone(),
-            pool.first().map(String::as_str),
-        ));
-        smart_group_tags.insert(rule.id.clone(), group_tag);
-    }
+    let (policy_groups, remote_policy_group_tags) =
+        build_remote_policy_groups(&opts.rule_sets, &remote_provider_tags, &supported, &tags);
+    groups.extend(policy_groups);
 
     // —— rules ——
-    let rules = build_rules(
-        opts,
-        &supported,
-        &tags,
-        &effective_rules,
-        &filter_group_tags,
-        &smart_group_tags,
-        &remote_provider_tags,
-    );
+    let rules = build_rules(opts, &remote_provider_tags, &remote_policy_group_tags);
 
     // —— document ——
     let mut root = Mapping::new();
@@ -184,6 +125,12 @@ pub fn build_mihomo_config(
     // the MATCH final expresses directly.
     root.insert(str_yaml("mode"), str_yaml("rule"));
     root.insert(str_yaml("log-level"), str_yaml("info"));
+    // Keep Clash selector choices across Mihomo restarts. The file contains
+    // group names and selected members only; credentials remain in active.yaml.
+    let mut profile = Mapping::new();
+    profile.insert(str_yaml("store-selected"), Yaml::Bool(true));
+    profile.insert(str_yaml("store-fake-ip"), Yaml::Bool(true));
+    root.insert(str_yaml("profile"), Yaml::Mapping(profile));
     // mihomo honors this switch (unlike some derivatives): `strict` resolves
     // the process only when a rule needs it, `off` disables PROCESS rules.
     root.insert(
@@ -200,7 +147,7 @@ pub fn build_mihomo_config(
     }
     root.insert(
         str_yaml("dns"),
-        Yaml::Mapping(build_dns(opts, &opts.rule_sets, &effective_rules)),
+        Yaml::Mapping(build_dns(opts, &opts.rule_sets)),
     );
     if !opts.extra_inbounds.is_empty() {
         root.insert(str_yaml("listeners"), listeners_block(opts));
@@ -329,80 +276,122 @@ fn listeners_block(opts: &BuildOptions) -> Yaml {
 
 // —— rules ——
 
+/// Build one Clash selector for every enabled remote rule category that can
+/// contribute a matcher. Local RuleSet rows belong to the sing-box editor and
+/// are intentionally absent in mihomo mode.
+fn build_remote_policy_groups(
+    sets: &[RuleSet],
+    provider_tags: &std::collections::HashMap<String, String>,
+    nodes: &[ProxyNode],
+    node_tags: &[String],
+) -> (Vec<Mapping>, std::collections::HashMap<String, String>) {
+    let mut groups = Vec::new();
+    let mut tags = std::collections::HashMap::new();
+    let mut used = std::collections::HashSet::from([
+        MAIN_GROUP.to_string(),
+        AUTO_GROUP.to_string(),
+        "DIRECT".to_string(),
+        "REJECT".to_string(),
+        "GLOBAL".to_string(),
+    ]);
+    // Clash requires proxy and group names to share one namespace.
+    used.extend(node_tags.iter().cloned());
+
+    for (index, set) in sets
+        .iter()
+        .filter(|set| set.enabled && set.remote.is_some())
+        .enumerate()
+    {
+        let builtin = matches!(
+            set.id.as_str(),
+            "system-geosite-cn" | "system-geoip-cn" | "system-geolocation-not-cn"
+        );
+        if !builtin && !provider_tags.contains_key(&set.id) {
+            continue;
+        }
+        let name = unique_policy_group_name(&set.name, index, &mut used);
+        let mut members = vec![
+            MAIN_GROUP.to_string(),
+            AUTO_GROUP.to_string(),
+            "DIRECT".into(),
+            "REJECT".into(),
+        ];
+        members.extend(node_tags.iter().cloned());
+        let default = remote_policy_default(set, nodes, node_tags);
+        groups.push(select_group(&name, members, Some(&default)));
+        tags.insert(set.id.clone(), name);
+    }
+    (groups, tags)
+}
+
+fn unique_policy_group_name(
+    raw: &str,
+    index: usize,
+    used: &mut std::collections::HashSet<String>,
+) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|character| {
+            if character == ',' || character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let base = cleaned.trim();
+    let base = if base.is_empty() {
+        format!("规则组 {}", index + 1)
+    } else {
+        base.to_string()
+    };
+    let mut candidate = base.clone();
+    let mut suffix = 2usize;
+    while used.contains(&candidate) {
+        candidate = format!("{base} ({suffix})");
+        suffix += 1;
+    }
+    used.insert(candidate.clone());
+    candidate
+}
+
+fn remote_policy_default(set: &RuleSet, nodes: &[ProxyNode], tags: &[String]) -> String {
+    match set.strategy {
+        RuleSetStrategy::Direct => "DIRECT".into(),
+        RuleSetStrategy::Block => "REJECT".into(),
+        RuleSetStrategy::Node => set
+            .node_id
+            .as_deref()
+            .and_then(|id| nodes.iter().find(|node| node.id == id))
+            .map(outbound_tag)
+            .filter(|tag| tags.iter().any(|candidate| candidate == tag))
+            .unwrap_or_else(|| MAIN_GROUP.into()),
+        _ => MAIN_GROUP.into(),
+    }
+}
+
 /// Build the ordered Clash rule list (strings "TYPE,payload,target").
-#[allow(clippy::too_many_arguments)]
 fn build_rules(
     opts: &BuildOptions,
-    nodes: &[ProxyNode],
-    tags: &[String],
-    effective_rules: &[Rule],
-    filter_group_tags: &std::collections::HashMap<String, String>,
-    smart_group_tags: &std::collections::HashMap<String, String>,
     remote_provider_tags: &std::collections::HashMap<String, String>,
+    remote_policy_group_tags: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
     let mut rules = Vec::new();
-    // Rule mode compiles user rule sets; Global/Direct ignore them (the
-    // MATCH final decides — mirroring the other two generators).
+    // Mihomo rule mode is Clash-native: only remote providers/geodata enter
+    // routing. Satelite's local sing-box RuleSet rows are not compiled here.
     if opts.outbound_mode == OutboundMode::Rule {
-        if opts.rule_sets.is_empty() {
-            for rule in effective_rules {
-                if let Some(s) = rule_to_mihomo(rule, nodes, tags, MAIN_GROUP, smart_group_tags) {
-                    rules.push(s);
-                }
-            }
-        } else {
-            for set in opts.rule_sets.iter().filter(|s| s.enabled) {
-                if set.remote.is_some() {
-                    match builtin_remote_mihomo_rule(set, MAIN_GROUP) {
-                        Some(s) => rules.push(s),
-                        None => {
-                            if let Some(provider) = remote_provider_tags.get(&set.id) {
-                                let target = remote_set_mihomo_target(
-                                    set,
-                                    nodes,
-                                    tags,
-                                    MAIN_GROUP,
-                                    filter_group_tags,
-                                );
-                                rules.push(format!("RULE-SET,{provider},{target}"));
-                            }
-                        }
-                    }
-                    continue;
-                }
-                // Local set: per rule, with the same whole-set clamping the
-                // sing-box path applies (Node pin / Filter pool / plain).
-                let mut sorted: Vec<Rule> = set
-                    .rules
-                    .iter()
-                    .filter(|r| r.enabled && !r.payload.trim().is_empty())
-                    .cloned()
-                    .collect();
-                sorted.sort_by_key(|r| r.ord);
-                let filter_group = if set.strategy == RuleSetStrategy::Filter {
-                    filter_group_tags.get(&set.id).map(String::as_str)
-                } else {
-                    None
-                };
-                for mut rule in sorted {
-                    if let Some(target) = set.strategy.route_target() {
-                        rule.target = target;
-                        rule.node_id = None;
-                        rule.node_name = None;
-                        rule.smart_include.clear();
-                        rule.smart_exclude.clear();
-                    } else {
-                        clamp_rule_pin_to_set(set, &mut rule);
-                    }
-                    if let Some(s) =
-                        rule_to_mihomo(&rule, nodes, tags, MAIN_GROUP, smart_group_tags)
-                    {
-                        rules.push(match filter_group {
-                            Some(group) => retarget_rule(&s, group),
-                            None => s,
-                        });
-                    }
-                }
+        for set in opts
+            .rule_sets
+            .iter()
+            .filter(|set| set.enabled && set.remote.is_some())
+        {
+            let Some(target) = remote_policy_group_tags.get(&set.id) else {
+                continue;
+            };
+            if let Some(rule) = builtin_remote_mihomo_rule(set, target) {
+                rules.push(rule);
+            } else if let Some(provider) = remote_provider_tags.get(&set.id) {
+                rules.push(format!("RULE-SET,{provider},{target}"));
             }
         }
         if opts.bypass_lan {
@@ -735,102 +724,13 @@ fn port_text(value: &serde_json::Value) -> Option<String> {
     Some(normalized)
 }
 
-fn remote_set_mihomo_target(
-    set: &RuleSet,
-    nodes: &[ProxyNode],
-    tags: &[String],
-    main_target: &str,
-    filter_group_tags: &std::collections::HashMap<String, String>,
-) -> String {
-    match set.strategy {
-        RuleSetStrategy::Direct => "DIRECT".into(),
-        RuleSetStrategy::Block => "REJECT".into(),
-        RuleSetStrategy::Node => set
-            .node_id
-            .as_deref()
-            .and_then(|id| nodes.iter().find(|node| node.id == id))
-            .map(outbound_tag)
-            .filter(|tag| tags.iter().any(|candidate| candidate == tag))
-            .unwrap_or_else(|| main_target.to_string()),
-        RuleSetStrategy::Filter => filter_group_tags
-            .get(&set.id)
-            .cloned()
-            .unwrap_or_else(|| main_target.to_string()),
-        _ => main_target.to_string(),
-    }
-}
-
-/// Swap the target of a rendered "TYPE,payload,target" rule string.
-fn retarget_rule(rule: &str, target: &str) -> String {
-    let mut parts: Vec<&str> = rule.split(',').collect();
-    if parts.len() >= 3 {
-        let last = parts.len() - 1;
-        parts[last] = target;
-        parts.join(",")
-    } else {
-        rule.to_string()
-    }
-}
-
-/// Map one rule to a Clash rule string. `main_target` substitutes for the
-/// sing-box `proxy` selector group.
-fn rule_to_mihomo(
-    rule: &Rule,
-    nodes: &[ProxyNode],
-    tags: &[String],
-    main_target: &str,
-    smart_group_tags: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    let payload = rule.payload.trim();
-    if payload.is_empty() || matches!(rule.rule_type, RuleType::Geoip) {
-        return None;
-    }
-    let matcher = match rule.rule_type {
-        RuleType::Domain => format!("DOMAIN,{}", to_ascii_domain(payload)),
-        RuleType::DomainSuffix => format!("DOMAIN-SUFFIX,{}", to_ascii_domain(payload)),
-        RuleType::DomainKeyword => format!("DOMAIN-KEYWORD,{payload}"),
-        RuleType::IpCidr => format!("IP-CIDR,{payload}"),
-        RuleType::Process => format!("PROCESS-NAME,{payload}"),
-        RuleType::Geoip => return None,
-    };
-    let Rule {
-        target, node_id, ..
-    } = rule;
-    // Node pins point straight at the node proxy; Smart rules with a
-    // non-empty keyword pool route through their per-rule url-test group;
-    // empty pools (and plain Proxy) fall back to the main group.
-    let target = match target {
-        RuleTarget::Direct => "DIRECT".to_string(),
-        RuleTarget::Block => "REJECT".to_string(),
-        RuleTarget::Proxy => main_target.to_string(),
-        RuleTarget::Smart => smart_group_tags
-            .get(&rule.id)
-            .cloned()
-            .unwrap_or_else(|| main_target.to_string()),
-        RuleTarget::Node => node_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .and_then(|id| nodes.iter().find(|n| n.id == id))
-            .filter(|n| tags.iter().any(|t| t == &outbound_tag(n)))
-            .map(outbound_tag)
-            .unwrap_or_else(|| main_target.to_string()),
-    };
-    Some(format!("{matcher},{target}"))
-}
-
 /// Whole-set rule for a builtin remote set expressed via geodata matchers.
-fn builtin_remote_mihomo_rule(set: &RuleSet, main_target: &str) -> Option<String> {
+fn builtin_remote_mihomo_rule(set: &RuleSet, target: &str) -> Option<String> {
     let matcher = match set.id.as_str() {
         "system-geosite-cn" => "GEOSITE,cn",
         "system-geoip-cn" => "GEOIP,cn",
         "system-geolocation-not-cn" => "GEOSITE,geolocation-!cn",
         _ => return None,
-    };
-    let target = match set.strategy {
-        RuleSetStrategy::Direct => "DIRECT",
-        RuleSetStrategy::Block => "REJECT",
-        _ => main_target,
     };
     Some(format!("{matcher},{target}"))
 }
@@ -873,7 +773,7 @@ fn bypass_lan_rules() -> Vec<String> {
 /// rule-set dns strategies), `hosts`, and fake-ip when enabled — forced when
 /// tun is on (mihomo requires it; the user's stored DNS settings are not
 /// written back, so turning tun off restores them).
-fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) -> Mapping {
+fn build_dns(opts: &BuildOptions, sets: &[RuleSet]) -> Mapping {
     let mut policy_remote: Vec<String> = Vec::new();
     let mut policy_domestic: Vec<String> = Vec::new();
     let mut policy_local: Vec<String> = Vec::new();
@@ -894,44 +794,24 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet], effective_rules: &[Rule]) ->
         }
     }
 
-    // Rule-set level DNS strategy (local sets classify their domain rules;
-    // builtin remote sets map onto the equivalent geosite category).
-    let effective_ids: std::collections::HashSet<&str> =
-        effective_rules.iter().map(|r| r.id.as_str()).collect();
-    for set in sets.iter().filter(|s| s.enabled) {
+    // Mihomo does not consume the local sing-box rule editor. Only system
+    // geodata categories contribute resolver classification here.
+    for set in sets
+        .iter()
+        .filter(|set| set.enabled && set.remote.is_some())
+    {
         let mut classify = |pat: String, strategy: RuleSetDnsStrategy| match strategy {
             RuleSetDnsStrategy::Domestic => policy_domestic.push(pat),
             RuleSetDnsStrategy::Local => policy_local.push(pat),
             RuleSetDnsStrategy::Remote => policy_remote.push(pat),
         };
-        if set.remote.is_some() {
-            let geosite = match set.id.as_str() {
-                "system-geosite-cn" => Some("geosite:cn"),
-                "system-geolocation-not-cn" => Some("geosite:geolocation-!cn"),
-                _ => None, // ip-only set: no DNS classification
-            };
-            if let Some(geosite) = geosite {
-                classify(geosite.to_string(), set.dns_strategy);
-            }
-            continue;
-        }
-        for rule in set.rules.iter().filter(|r| r.enabled) {
-            if set.strategy != RuleSetStrategy::Filter && !effective_ids.contains(rule.id.as_str())
-            {
-                continue;
-            }
-            let payload = rule.payload.trim();
-            if payload.is_empty() {
-                continue;
-            }
-            let pat = match rule.rule_type {
-                RuleType::Domain => to_ascii_domain(payload),
-                RuleType::DomainSuffix => format!("+.{}", to_ascii_domain(payload)),
-                // nameserver-policy has no keyword form — the domain still
-                // routes correctly; only its resolver choice falls back.
-                _ => continue,
-            };
-            classify(pat, set.dns_strategy);
+        let geosite = match set.id.as_str() {
+            "system-geosite-cn" => Some("geosite:cn"),
+            "system-geolocation-not-cn" => Some("geosite:geolocation-!cn"),
+            _ => None, // ip-only / ordinary provider: no DNS classification
+        };
+        if let Some(geosite) = geosite {
+            classify(geosite.to_string(), set.dns_strategy);
         }
     }
 
@@ -1420,7 +1300,7 @@ fn apply_transport(m: &mut Mapping, node: &ProxyNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{AutoSelectMode, DnsSettings, TlsConfig};
+    use crate::domain::{AutoSelectMode, DnsSettings, Rule, RuleTarget, RuleType, TlsConfig};
 
     fn vless_node(name: &str, flow: Option<&str>) -> ProxyNode {
         ProxyNode {
@@ -1542,9 +1422,10 @@ mod tests {
         let doc = parse(&built);
         assert_eq!(doc["mixed-port"].as_u64(), Some(2080));
         assert_eq!(doc["mode"].as_str(), Some("rule"));
+        assert_eq!(doc["profile"]["store-selected"].as_bool(), Some(true));
         assert_eq!(doc["external-controller"].as_str(), Some("127.0.0.1:19090"));
-        // Main group keeps the sing-box contract: select named "proxy", the
-        // selected node listed first.
+        // Clash-native main selector keeps the selected node first and a
+        // dedicated automatic url-test group as another member.
         let groups = groups_of(&doc);
         assert_eq!(groups[0]["name"].as_str(), Some("proxy"));
         assert_eq!(groups[0]["type"].as_str(), Some("select"));
@@ -1552,6 +1433,8 @@ mod tests {
             groups[0]["proxies"][0].as_str(),
             Some(built.selected_tag.as_str())
         );
+        assert_eq!(groups[1]["name"].as_str(), Some("auto"));
+        assert_eq!(groups[1]["type"].as_str(), Some("url-test"));
         // Proxy shape.
         assert_eq!(doc["proxies"][0]["type"].as_str(), Some("ss"));
         assert_eq!(doc["proxies"][0]["cipher"].as_str(), Some("aes-256-gcm"));
@@ -1788,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn kernel_autoselect_uses_urltest_group() {
+    fn kernel_autoselect_uses_dedicated_urltest_member() {
         let a = plain_node("a");
         let b = plain_node("b");
         let mut opts = default_opts();
@@ -1796,177 +1679,38 @@ mod tests {
         let built = build_mihomo_config(&[a, b], &opts).expect("build");
         let doc = parse(&built);
         let groups = groups_of(&doc);
-        // Main group IS the url-test over all nodes (sing-box's exact
-        // shape) — its `now` feeds the kernel-selection sync.
+        // Main stays a switchable selector and defaults to the dedicated
+        // automatic group.
         assert_eq!(groups[0]["name"].as_str(), Some("proxy"));
-        assert_eq!(groups[0]["type"].as_str(), Some("url-test"));
-        assert_eq!(groups[0]["proxies"].as_sequence().map(|p| p.len()), Some(2));
-        assert!(groups[0]["url"].as_str().is_some_and(|u| !u.is_empty()));
-        assert!(
-            !groups.iter().any(|g| g["name"].as_str() == Some("auto")),
-            "no select/auto wrapper in kernel mode"
-        );
+        assert_eq!(groups[0]["type"].as_str(), Some("select"));
+        assert_eq!(groups[0]["proxies"][0].as_str(), Some("auto"));
+        assert_eq!(groups[1]["name"].as_str(), Some("auto"));
+        assert_eq!(groups[1]["type"].as_str(), Some("url-test"));
+        assert_eq!(groups[1]["proxies"].as_sequence().map(|p| p.len()), Some(2));
+        assert!(groups[1]["url"].as_str().is_some_and(|u| !u.is_empty()));
         // Final still points at the main group.
         let rules = rules_of(&doc);
         assert_eq!(rules.last().unwrap(), "MATCH,proxy");
     }
 
     #[test]
-    fn per_rule_node_pin_routes_to_that_node() {
-        let a = plain_node("nodeA");
-        let b = plain_node("nodeB");
-        let mut rule = Rule::new(
-            RuleType::DomainSuffix,
-            "aa.com".into(),
-            RuleTarget::Node,
-            10,
-        );
-        rule.node_id = Some(a.id.clone());
-        let mut set = RuleSet::new_user("custom", vec![rule]);
-        set.strategy = RuleSetStrategy::Smart; // per-rule decisions preserved
-        let mut opts = default_opts();
-        opts.rule_sets = vec![set];
-        let built = build_mihomo_config(&[a.clone(), b], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert!(
-            rules.contains(&format!("DOMAIN-SUFFIX,aa.com,{}", node_tag_of(&a))),
-            "expected aa.com pinned to nodeA; rules: {rules:?}"
-        );
-    }
-
-    #[test]
-    fn whole_set_node_strategy_pins_all_rules() {
-        let a = plain_node("nodeA");
-        let b = plain_node("nodeB");
-        let mut rule = Rule::new(
-            RuleType::DomainSuffix,
-            "aa.com".into(),
-            RuleTarget::Node,
-            10,
-        );
-        rule.node_id = Some(b.id.clone());
-        let mut set = RuleSet::new_user("pinned", vec![rule]);
-        set.strategy = RuleSetStrategy::Node;
-        set.node_id = Some(b.id.clone());
-        let mut opts = default_opts();
-        opts.rule_sets = vec![set];
-        let built = build_mihomo_config(&[a, b.clone()], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert!(
-            rules.contains(&format!("DOMAIN-SUFFIX,aa.com,{}", node_tag_of(&b))),
-            "expected aa.com pinned to the set's node (B); rules: {rules:?}"
-        );
-    }
-
-    #[test]
-    fn filter_set_routes_through_keyword_pool_group() {
-        let a = plain_node("香港-01");
-        let b = plain_node("美国-01");
-        let rule = Rule::new(
-            RuleType::DomainSuffix,
-            "stream.tv".into(),
-            RuleTarget::Smart,
-            10,
-        );
-        let mut set = RuleSet::new_user("filter", vec![rule]);
-        set.strategy = RuleSetStrategy::Filter;
-        set.smart_include = vec!["香港".into()];
-        let mut opts = default_opts();
-        opts.rule_sets = vec![set];
-        let built = build_mihomo_config(&[a, b], &opts).expect("build");
-        let doc = parse(&built);
-
-        // The rule targets the filter pool group — `smart-<set id>` select
-        // (sing-box parity: the app-side smart switch maintains these pools
-        // by PUT through a stand-in rule per Filter set).
-        let rules = rules_of(&doc);
-        let stream_rule = rules
-            .iter()
-            .find(|r| r.contains("stream.tv"))
-            .expect("stream.tv rule");
-        let group_name = stream_rule.rsplit(',').next().unwrap().to_string();
-        assert!(group_name.starts_with("smart-"), "rule was {stream_rule}");
-        let group = groups_of(&doc)
-            .into_iter()
-            .find(|g| g["name"].as_str() == Some(group_name.as_str()))
-            .expect("filter pool group");
-        assert_eq!(group["type"].as_str(), Some("select"));
-        let members = group["proxies"].as_sequence().unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].as_str(), Some(built.outbound_tags[0].as_str()));
-    }
-
-    #[test]
-    fn per_rule_smart_pool_routes_through_own_group() {
-        let a = plain_node("香港-01");
-        let b = plain_node("美国-01");
-        let mut rule = Rule::new(
-            RuleType::DomainKeyword,
-            "github".into(),
-            RuleTarget::Smart,
-            10,
-        );
-        rule.smart_include = vec!["香港".into()];
-        let mut set = RuleSet::new_user("smart", vec![rule]);
-        set.strategy = RuleSetStrategy::Smart;
-        let mut opts = default_opts();
-        opts.rule_sets = vec![set];
-        let built = build_mihomo_config(&[a, b], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        let rule_line = rules
-            .iter()
-            .find(|r| r.starts_with("DOMAIN-KEYWORD,github,"))
-            .expect("github rule");
-        let group_name = rule_line.rsplit(',').next().unwrap();
-        assert!(group_name.starts_with("smart-"), "rule was {rule_line}");
-        let doc = parse(&built);
-        let group = groups_of(&doc)
-            .into_iter()
-            .find(|g| g["name"].as_str() == Some(group_name))
-            .expect("smart pool group");
-        // Select group (app smart switch PUTs into it — url-test 400s),
-        // defaulting to the pool's first (best-latency) member.
-        assert_eq!(group["type"].as_str(), Some("select"));
-        let members = group["proxies"].as_sequence().unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(
-            members[0].as_str(),
-            Some(built.outbound_tags[0].as_str()),
-            "default member = best-latency pool member"
-        );
-    }
-
-    #[test]
-    fn rule_type_matchers_and_targets() {
+    fn local_singbox_rules_are_disabled_in_mihomo() {
         let node = plain_node("n1");
-        let mut set = RuleSet::new_user(
-            "multi",
-            vec![
-                Rule::new(RuleType::Domain, "exact.com".into(), RuleTarget::Direct, 10),
-                Rule::new(
-                    RuleType::DomainSuffix,
-                    "suffix.com".into(),
-                    RuleTarget::Block,
-                    20,
-                ),
-                Rule::new(RuleType::IpCidr, "10.0.0.0/8".into(), RuleTarget::Proxy, 30),
-                Rule::new(
-                    RuleType::Process,
-                    "chrome.exe".into(),
-                    RuleTarget::Proxy,
-                    40,
-                ),
-            ],
+        let set = RuleSet::new_user(
+            "sing-box local rules",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "must-not-compile.example".into(),
+                RuleTarget::Block,
+                10,
+            )],
         );
-        set.strategy = RuleSetStrategy::Smart;
         let mut opts = default_opts();
+        opts.rules = set.rules.clone();
         opts.rule_sets = vec![set];
         let built = build_mihomo_config(&[node], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert!(rules.contains(&"DOMAIN,exact.com,DIRECT".to_string()));
-        assert!(rules.contains(&"DOMAIN-SUFFIX,suffix.com,REJECT".to_string()));
-        assert!(rules.contains(&"IP-CIDR,10.0.0.0/8,proxy".to_string()));
-        assert!(rules.contains(&"PROCESS-NAME,chrome.exe,proxy".to_string()));
+        assert!(!built.yaml.contains("must-not-compile.example"));
+        assert_eq!(groups_of(&parse(&built)).len(), 2);
     }
 
     #[test]
@@ -1990,10 +1734,21 @@ mod tests {
         let mut opts = default_opts();
         opts.rule_sets = sets;
         let built = build_mihomo_config(&[node], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert!(rules.contains(&"GEOSITE,cn,DIRECT".to_string()));
-        assert!(rules.contains(&"GEOIP,cn,proxy".to_string()));
-        assert!(rules.contains(&"GEOSITE,geolocation-!cn,proxy".to_string()));
+        let doc = parse(&built);
+        let rules = rules_of(&doc);
+        assert!(rules.iter().any(|rule| rule.starts_with("GEOSITE,cn,")));
+        assert!(rules.iter().any(|rule| rule.starts_with("GEOIP,cn,")));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.starts_with("GEOSITE,geolocation-!cn,")));
+        let groups = groups_of(&doc);
+        assert_eq!(groups.len(), 5, "main + auto + three category selectors");
+        for group in groups.iter().skip(2) {
+            assert_eq!(group["type"].as_str(), Some("select"));
+            assert!(group["proxies"].as_sequence().is_some_and(|members| members
+                .iter()
+                .any(|member| member.as_str() == Some("DIRECT"))));
+        }
     }
 
     #[test]
@@ -2048,7 +1803,13 @@ mod tests {
         assert!(logical.contains("IP-CIDR6,2001:db8::/32,no-resolve"));
         assert!(logical.contains("(PROCESS-NAME,client.exe)"));
         let rules = rules_of(&doc);
-        assert!(rules.contains(&"RULE-SET,satelite-remote-0,REJECT".to_string()));
+        assert!(rules.contains(&"RULE-SET,satelite-remote-0,remote".to_string()));
+        let policy = groups_of(&doc)
+            .into_iter()
+            .find(|group| group["name"].as_str() == Some("remote"))
+            .expect("remote policy group");
+        assert_eq!(policy["type"].as_str(), Some("select"));
+        assert_eq!(policy["proxies"][0].as_str(), Some("REJECT"));
         assert!(!built.yaml.contains("bad,id"));
     }
 
@@ -2186,11 +1947,12 @@ mod tests {
             dns["proxy-server-nameserver"][0].as_str(),
             Some("223.5.5.5")
         );
-        let policy = dns["nameserver-policy"]["+.cn-site.com"]
-            .as_sequence()
-            .unwrap();
-        assert_eq!(policy[0].as_str(), Some("223.5.5.5"));
-        assert_eq!(policy.len(), 2);
+        assert!(
+            dns["nameserver-policy"]["+.cn-site.com"]
+                .as_sequence()
+                .is_none(),
+            "local sing-box rule sets must not leak into mihomo DNS policy"
+        );
         assert_eq!(dns["hosts"]["example.test"].as_str(), Some("1.2.3.4"));
 
         // Direct outbound mode egresses everything direct — remote DoH

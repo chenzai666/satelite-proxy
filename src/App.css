@@ -3059,6 +3059,104 @@ body.ruleset-dragging .ruleset-item:not(.selected):hover {
   z-index: 60;
 }
 
+/* Mihomo replaces the sing-box rule editor with live Clash policy groups. */
+.mihomo-groups-header h1 {
+  margin: 0;
+}
+
+.mihomo-groups-header p {
+  margin: 0.25rem 0 0;
+}
+
+.mihomo-groups-note {
+  margin-bottom: 0.7rem;
+  padding: 0.75rem 0.9rem;
+  border-color: color-mix(in srgb, var(--accent) 32%, transparent);
+  font-size: 0.78rem;
+}
+
+.mihomo-groups-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.65rem 0.75rem;
+  margin-bottom: 0.7rem;
+}
+
+.mihomo-groups-tools .rules-filter {
+  flex: 1 1 16rem;
+  min-width: 8rem;
+}
+
+.mihomo-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.48rem;
+}
+
+.mihomo-group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, 42%);
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.72rem 0.85rem;
+}
+
+.mihomo-group-summary {
+  min-width: 0;
+}
+
+.mihomo-group-title-line,
+.mihomo-group-control {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.mihomo-group-title-line strong,
+.mihomo-group-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mihomo-group-current {
+  margin-top: 0.22rem;
+  font-size: 0.7rem;
+}
+
+.mihomo-group-control {
+  justify-content: flex-end;
+}
+
+.mihomo-group-control select {
+  width: min(100%, 22rem);
+  min-width: 0;
+  padding: 0.42rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  color: var(--text);
+  background: var(--panel-solid);
+}
+
+.mihomo-group-auto {
+  font-size: 0.72rem;
+}
+
+@media (max-width: 760px) {
+  .mihomo-group-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mihomo-group-control {
+    justify-content: flex-start;
+  }
+
+  .mihomo-group-control select {
+    width: 100%;
+  }
+}
+
 tr.rule-row {
   cursor: pointer;
 }

@@ -490,6 +490,18 @@ const en = {
 
   // rules
   "rules.title": "Rules",
+  "mihomoGroups.title": "Mihomo policy groups",
+  "mihomoGroups.subtitle": "Live Clash groups reported by the active Mihomo core.",
+  "mihomoGroups.mode": "Outbound mode",
+  "mihomoGroups.singboxDisabled": "Local sing-box rules are disabled in Mihomo mode. Remote categories are routed through the policy groups below.",
+  "mihomoGroups.search": "Search groups or nodes…",
+  "mihomoGroups.notRunning": "Start the Mihomo proxy to read and switch its live policy groups.",
+  "mihomoGroups.noGroups": "No matching policy groups.",
+  "mihomoGroups.current": "Current",
+  "mihomoGroups.switch": "switch",
+  "mihomoGroups.automatic": "Automatic latency selection",
+  "mihomoGroups.closeConnections": "Close all connections",
+  "mihomoGroups.closing": "Closing…",
   "rules.desc":
     "Multiple rule sets · drag left list for priority (top first) · auto-restart when running",
   "rules.final": "Fallback",
@@ -1251,6 +1263,18 @@ const zh: Record<MessageKey, string> = {
   "fails.needSet": "请选择或新建规则集",
 
   "rules.title": "规则",
+  "mihomoGroups.title": "Mihomo 策略组",
+  "mihomoGroups.subtitle": "直接读取当前 Mihomo 内核返回的 Clash 策略组。",
+  "mihomoGroups.mode": "出站模式",
+  "mihomoGroups.singboxDisabled": "Mihomo 模式已停用本地 sing-box 规则；远程分类规则全部路由到下方可切换的策略组。",
+  "mihomoGroups.search": "搜索策略组或节点…",
+  "mihomoGroups.notRunning": "请先启动 Mihomo 代理，再读取和切换实时策略组。",
+  "mihomoGroups.noGroups": "没有符合条件的策略组。",
+  "mihomoGroups.current": "当前",
+  "mihomoGroups.switch": "切换",
+  "mihomoGroups.automatic": "自动测速选择",
+  "mihomoGroups.closeConnections": "关闭所有连接",
+  "mihomoGroups.closing": "正在关闭…",
   "rules.desc":
     "可同时启用多个规则集 · 左侧拖拽优先级（越上越先）· 运行中自动重启",
   "rules.final": "兜底策略",
