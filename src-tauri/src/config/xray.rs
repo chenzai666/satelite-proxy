@@ -824,8 +824,7 @@ fn remote_xray_text(value: &Value) -> Result<&str, String> {
 fn remote_xray_texts(value: &Value) -> Result<Vec<String>, String> {
     remote_rule_values(value)?
         .into_iter()
-        .map(remote_xray_text)
-        .map(str::to_string)
+        .map(|value| remote_xray_text(value).map(str::to_string))
         .collect()
 }
 
