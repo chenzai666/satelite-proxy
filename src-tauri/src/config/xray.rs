@@ -858,25 +858,56 @@ fn remote_xray_ips(value: &Value) -> Result<Vec<String>, String> {
         .into_iter()
         .map(|value| {
             let raw = remote_xray_text(value)?;
-            if raw.parse::<std::net::IpAddr>().is_ok() {
-                return Ok(raw.to_string());
-            }
-            let (address, prefix) = raw
-                .split_once('/')
-                .ok_or_else(|| "IP matcher must be an IP or CIDR".to_string())?;
+            let (address, prefix) = match raw.split_once('/') {
+                Some((address, prefix)) => (address, Some(prefix)),
+                None => (raw, None),
+            };
             let address = address
                 .parse::<std::net::IpAddr>()
                 .map_err(|_| "invalid IP address".to_string())?;
             let prefix = prefix
-                .parse::<u8>()
-                .map_err(|_| "invalid CIDR prefix".to_string())?;
-            let valid = match address {
-                std::net::IpAddr::V4(_) => prefix <= 32,
-                std::net::IpAddr::V6(_) => prefix <= 128,
-            };
-            valid
-                .then_some(raw.to_string())
-                .ok_or_else(|| "CIDR prefix out of range".to_string())
+                .map(|prefix| {
+                    prefix
+                        .parse::<u8>()
+                        .map_err(|_| "invalid CIDR prefix".to_string())
+                })
+                .transpose()?;
+
+            match address {
+                std::net::IpAddr::V4(_) => {
+                    if prefix.is_some_and(|prefix| prefix > 32) {
+                        return Err("CIDR prefix out of range".into());
+                    }
+                    Ok(raw.to_string())
+                }
+                std::net::IpAddr::V6(address) => {
+                    // Xray supports regular IPv6 CIDRs in route rules. Its
+                    // parser, however, treats IPv4-mapped addresses as IPv4
+                    // and rejects their IPv6 /128-style prefix. The SRS/JSON
+                    // source format may legitimately contain these mapped
+                    // values, so canonicalize them without changing the
+                    // matched address range (for example /128 becomes /32).
+                    let octets = address.octets();
+                    if octets[..10] == [0; 10] && octets[10] == 0xff && octets[11] == 0xff {
+                        let ipv4 =
+                            std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+                        let prefix = match prefix {
+                            Some(prefix @ 96..=128) => prefix - 96,
+                            Some(_) => {
+                                return Err(
+                                    "IPv4-mapped IPv6 CIDR prefix must be at least 96".into()
+                                )
+                            }
+                            None => return Ok(ipv4.to_string()),
+                        };
+                        return Ok(format!("{ipv4}/{prefix}"));
+                    }
+                    if prefix.is_some_and(|prefix| prefix > 128) {
+                        return Err("CIDR prefix out of range".into());
+                    }
+                    Ok(raw.to_string())
+                }
+            }
         })
         .collect()
 }
@@ -1824,6 +1855,32 @@ mod tests {
             "process_path": ["C:/Program Files/client.exe"]
         });
         assert!(source_rule_to_xray(&source, "direct").is_err());
+    }
+
+    #[test]
+    fn mapped_ipv4_cidrs_are_normalized_for_xray() {
+        let ips = remote_xray_ips(&json!([
+            "::ffff:113.248.172.245/128",
+            "::ffff:113.248.0.0/112",
+            "10.0.0.0/8",
+            "2001:db8::/32"
+        ]))
+        .expect("convert IP matchers");
+
+        assert_eq!(
+            ips,
+            vec![
+                "113.248.172.245/32",
+                "113.248.0.0/16",
+                "10.0.0.0/8",
+                "2001:db8::/32"
+            ]
+        );
+    }
+
+    #[test]
+    fn mapped_ipv4_cidrs_wider_than_the_mapped_range_are_rejected() {
+        assert!(remote_xray_ips(&json!(["::ffff:113.248.0.0/95"])).is_err());
     }
 
     #[test]
