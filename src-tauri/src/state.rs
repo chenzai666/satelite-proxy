@@ -1288,7 +1288,7 @@ impl AppState {
             );
             kind
         };
-        let (tag, kernel_auto, close_after_switch) = self.with_store(|store| {
+        let (tag, kernel_auto, close_after_switch, fallback_core) = self.with_store(|store| {
             if store.settings.runtime_source().is_custom() {
                 return Err(crate::error::AppError::Core(
                     "自写配置模式下无法切换节点".into(),
@@ -1300,11 +1300,17 @@ impl AppState {
             let node = store
                 .find_node(node_id)
                 .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
-            // Node-level compatibility (protocol / per-core node-shape
-            // transport limits) lives in CoreKind::supports_node — the same
-            // predicate that filters listings and generation, so a pick can
-            // never desync from what the config actually contains.
-            if !core_kind.supports_node(node) {
+            // v2rayN-style compatibility handoff: Xray does not serve
+            // AnyTLS/TUIC (or a few incompatible transport shapes), but the
+            // bundled sing-box generated-config path does. A *manual* user
+            // selection may therefore switch cores; background smart
+            // selection remains constrained to the currently chosen core.
+            let fallback_core = if manual {
+                core_kind.manual_node_fallback(node)
+            } else {
+                None
+            };
+            if !core_kind.supports_node(node) && fallback_core.is_none() {
                 return Err(crate::error::AppError::Core(format!(
                     "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
                     core_kind.display_name()
@@ -1312,9 +1318,11 @@ impl AppState {
             }
             Ok((
                 crate::config::outbound_tag(node),
-                manual && store.settings.auto_select.is_kernel(),
-                core_kind == crate::core::CoreKind::Mihomo
+                fallback_core.is_none() && manual && store.settings.auto_select.is_kernel(),
+                fallback_core.is_none()
+                    && core_kind == crate::core::CoreKind::Mihomo
                     && store.settings.close_connections_on_switch,
+                fallback_core,
             ))
         })?;
         let api = {
@@ -1325,37 +1333,51 @@ impl AppState {
         // manual pick; the caller rebuilds a selector group via core restart.
         // Xray has no selection API at all — same restart path. mihomo (like
         // sing-box) selects live through its Clash-compatible API.
-        let selected_live = if core_kind == crate::core::CoreKind::Xray || kernel_auto {
-            false
-        } else if let Some(api) = api {
-            api.select_proxy("proxy", &tag)?;
-            if close_after_switch {
-                match api.close_all_connections() {
-                    Ok(()) => app_log::info(
-                        "connections",
-                        "main selector switched; stale mihomo connections closed",
-                    ),
-                    Err(error) => app_log::warn(
-                        "connections",
-                        format!(
+        let selected_live =
+            if fallback_core.is_some() || core_kind == crate::core::CoreKind::Xray || kernel_auto {
+                false
+            } else if let Some(api) = api {
+                api.select_proxy("proxy", &tag)?;
+                if close_after_switch {
+                    match api.close_all_connections() {
+                        Ok(()) => app_log::info(
+                            "connections",
+                            "main selector switched; stale mihomo connections closed",
+                        ),
+                        Err(error) => app_log::warn(
+                            "connections",
+                            format!(
                             "main selector switched but closing mihomo connections failed: {error}"
                         ),
-                    ),
+                        ),
+                    }
                 }
-            }
-            app_log::info("connections", format!("main selector switched to {tag}"));
-            true
-        } else {
-            false
-        };
+                app_log::info("connections", format!("main selector switched to {tag}"));
+                true
+            } else {
+                false
+            };
 
         let node_id = node_id.to_string();
         let (settings, was_kernel) = self.with_store_mut(|store| {
+            if let Some(fallback) = fallback_core {
+                store.settings.core_type = fallback.as_str().to_string();
+            }
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             Ok((store.settings.clone(), was_kernel))
         })?;
-        let restart_needed =
-            was_kernel || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
+        if let Some(fallback) = fallback_core {
+            app_log::info(
+                "core",
+                format!(
+                    "selected node is not Xray-compatible; active core automatically switched to {}",
+                    fallback.display_name()
+                ),
+            );
+        }
+        let restart_needed = was_kernel
+            || fallback_core.is_some()
+            || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
         Ok((settings, restart_needed, selected_live))
     }
 

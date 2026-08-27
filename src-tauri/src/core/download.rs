@@ -33,13 +33,24 @@ fn github_tag_url(kind: CoreKind) -> String {
     )
 }
 
-#[derive(Debug, Deserialize)]
+fn github_releases_url(kind: CoreKind) -> String {
+    format!(
+        "https://api.github.com/repos/{}/releases?per_page=20",
+        kind.repo()
+    )
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct GhRelease {
     tag_name: String,
     assets: Vec<GhAsset>,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GhAsset {
     name: String,
     browser_download_url: String,
@@ -95,6 +106,32 @@ pub async fn fetch_latest_release_with_proxy(
     }
 }
 
+/// The newest installable **pre-release** for a core. This is deliberately
+/// separate from `releases/latest`: GitHub defines that endpoint as the latest
+/// stable release. Xray currently publishes its newer builds as pre-releases,
+/// so treating those as the default would silently move stable users onto a
+/// test channel.
+///
+/// Only Xray exposes this channel in Satelite at present. Other cores return
+/// `None` rather than accidentally making their preview builds the default.
+pub async fn fetch_latest_prerelease_with_proxy(
+    kind: CoreKind,
+    proxy_url: Option<&str>,
+) -> AppResult<Option<LatestReleaseInfo>> {
+    if kind != CoreKind::Xray {
+        return Ok(None);
+    }
+    let platform = detect_platform()?;
+    let releases = fetch_release_list_json(&github_releases_url(kind), proxy_url).await?;
+    let Some(release) = releases
+        .into_iter()
+        .find(|release| release.prerelease && !release.draft)
+    else {
+        return Ok(None);
+    };
+    pick_asset(kind, release, platform).map(Some)
+}
+
 async fn fetch_release_by_tag_with_proxy(
     kind: CoreKind,
     tag: &str,
@@ -129,6 +166,28 @@ async fn fetch_release_json(url: &str, proxy_url: Option<&str>) -> AppResult<GhR
     resp.json::<GhRelease>()
         .await
         .map_err(|e| AppError::Core(format!("parse github release: {e}")))
+}
+
+async fn fetch_release_list_json(url: &str, proxy_url: Option<&str>) -> AppResult<Vec<GhRelease>> {
+    let client = http_client(proxy_url)?;
+    let resp = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .send()
+        .await
+        .map_err(|e| AppError::Core(format!("github api: {e}")))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(AppError::Core(format!(
+            "github api status {status} for {url}: {}",
+            body.chars().take(200).collect::<String>()
+        )));
+    }
+    resp.json::<Vec<GhRelease>>()
+        .await
+        .map_err(|e| AppError::Core(format!("parse github release list: {e}")))
 }
 
 /// Latest release tag of the app itself (chenzai666/satelite-proxy), used by the
@@ -792,5 +851,28 @@ mod tests {
         );
         assert!(info.asset_name.starts_with("Xray-"));
         assert!(info.asset_name.ends_with(".zip"));
+    }
+
+    #[test]
+    fn newest_xray_prerelease_is_not_confused_with_stable() {
+        let releases = vec![
+            GhRelease {
+                tag_name: "v26.3.27".into(),
+                assets: Vec::new(),
+                prerelease: false,
+                draft: false,
+            },
+            GhRelease {
+                tag_name: "v26.7.28".into(),
+                assets: Vec::new(),
+                prerelease: true,
+                draft: false,
+            },
+        ];
+        let newest = releases
+            .into_iter()
+            .find(|release| release.prerelease && !release.draft)
+            .expect("preview release");
+        assert_eq!(newest.tag_name, "v26.7.28");
     }
 }

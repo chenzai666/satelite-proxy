@@ -460,14 +460,14 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                 .filter(|s| s.enabled)
                 .map(|s| s.id.as_str())
                 .collect();
-            // Under a core that cannot serve a protocol, such nodes are
-            // hidden from listings entirely (they reappear after switching).
-            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
+            // Keep every enabled subscription node visible. If a user
+            // selects an AnyTLS/TUIC node while Xray is active,
+            // select_current_node_serialized performs the safe sing-box
+            // handoff instead of making the node disappear from the UI.
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports_node(&n.node))
                 .map(|n| ListedNode {
                     node: n.node.clone(),
                     subscription_id: n.subscription_id.clone(),
@@ -504,13 +504,10 @@ pub fn list_nodes_page(
                 .map(|s| s.id.as_str())
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
-            // Hide protocols the active core cannot serve (see list_all_nodes).
-            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)
@@ -576,13 +573,10 @@ pub fn list_node_ids(
                 .map(|s| (s.id.as_str(), s.name.as_str()))
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
-            // Hide protocols the active core cannot serve (see list_all_nodes).
-            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
             Ok(store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
-                .filter(|n| core_kind.supports_node(&n.node))
                 .filter(|n| {
                     query.is_empty()
                         || n.node.name.to_lowercase().contains(&query)

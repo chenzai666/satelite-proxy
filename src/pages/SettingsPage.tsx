@@ -196,7 +196,9 @@ export function SettingsPage() {
             [kind]: {
               ...info,
               latest_version: update.latest_version,
+              latest_prerelease_version: update.latest_prerelease_version ?? null,
               update_available: update.update_available,
+              prerelease_update_available: !!update.prerelease_update_available,
             },
           };
         });
@@ -534,7 +536,7 @@ export function SettingsPage() {
     }
   }
 
-  async function onDownloadCore(kind: CoreKind) {
+  async function onDownloadCore(kind: CoreKind, tag: string | null = null) {
     setCoreBusyKind(kind);
     setCoreError(null);
     const status = await getProxyStatus().catch(() => null);
@@ -549,7 +551,7 @@ export function SettingsPage() {
       via_proxy: viaProxy,
     });
     try {
-      await downloadCore(kind, null);
+      await downloadCore(kind, tag);
       await reloadCore();
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
@@ -663,10 +665,17 @@ export function SettingsPage() {
             ·
           </span>
           <span className="kernel-meta-item mono">
-            {t("settings.coreLatestShort")} {info?.latest_version ?? "—"}
+            {kind === "xray"
+              ? `${t("settings.coreStableShort")} ${info?.latest_version ?? "—"}`
+              : `${t("settings.coreLatestShort")} ${info?.latest_version ?? "—"}`}
           </span>
           {info?.update_available ? (
             <span className="pill warn">{t("settings.coreUpdateAvail")}</span>
+          ) : null}
+          {kind === "xray" && info?.latest_prerelease_version ? (
+            <span className="kernel-meta-item mono kernel-preview-version">
+              {t("settings.corePreviewShort")} {info.latest_prerelease_version}
+            </span>
           ) : null}
           <div className="kernel-row-actions">
             <GlassButton
@@ -678,6 +687,17 @@ export function SettingsPage() {
                 ? t("settings.coreChecking")
                 : t("settings.coreCheck")}
             </GlassButton>
+            {kind === "xray" && info?.latest_prerelease_version ? (
+              <GlassButton
+                variant="primary"
+                icon="⚠"
+                disabled={busy || checking}
+                title={t("settings.corePreviewHint")}
+                onClick={() => void onDownloadCore(kind, info.latest_prerelease_version ?? null)}
+              >
+                {t("settings.coreDownloadPreview")}
+              </GlassButton>
+            ) : null}
             <GlassButton
               variant="primary"
               icon="⤓"

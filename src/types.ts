@@ -354,7 +354,10 @@ export interface CoreInfo {
   path?: string | null;
   platform: string;
   latest_version?: string | null;
+  /** Newest opt-in preview release (currently Xray only). */
+  latest_prerelease_version?: string | null;
   update_available: boolean;
+  prerelease_update_available?: boolean;
   /** bundled | downloaded | missing */
   source: string;
   bundled_version?: string | null;

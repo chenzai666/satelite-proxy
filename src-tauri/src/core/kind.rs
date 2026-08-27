@@ -298,6 +298,17 @@ impl CoreKind {
         }
         true
     }
+
+    /// A user-selected node must remain usable even when the active Xray
+    /// core cannot represent it. satelite ships sing-box as the universal
+    /// generated-config fallback, so manual selection of AnyTLS/TUIC (or an
+    /// otherwise Xray-incompatible node shape) moves the runtime there.
+    ///
+    /// This deliberately does not apply to background smart selection: an
+    /// automatic policy must not silently change the user's active core.
+    pub fn manual_node_fallback(self, node: &crate::domain::ProxyNode) -> Option<Self> {
+        (self == Self::Xray && !self.supports_node(node)).then_some(Self::SingBox)
+    }
 }
 
 /// `-d <home>` argument pair for mihomo. The home dir is derived from the
@@ -585,6 +596,14 @@ mod tests {
         // sing-box accepts everything.
         assert!(CoreKind::SingBox.supports_node(&ss_stls));
         assert!(CoreKind::SingBox.supports_node(&vision));
+        // Manual selection of an Xray-incompatible node falls back to the
+        // bundled universal core instead of omitting the node.
+        assert_eq!(
+            CoreKind::Xray.manual_node_fallback(&reality_ws),
+            Some(CoreKind::SingBox)
+        );
+        assert_eq!(CoreKind::Xray.manual_node_fallback(&vision), None);
+        assert_eq!(CoreKind::Mihomo.manual_node_fallback(&vision), None);
     }
 
     #[test]

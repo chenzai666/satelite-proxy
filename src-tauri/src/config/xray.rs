@@ -11,7 +11,8 @@
 //!   `leastPing` strategy plus a top-level `observatory` (v2rayN scheme).
 //! - Builtin remote rule sets are expressed as `geosite:` / `geoip:`
 //!   matchers (requires geosite.dat / geoip.dat via XRAY_LOCATION_ASSET).
-//!   User-added remote `.srs` sets are sing-box-only and skipped here.
+//!   Other remote source/SRS caches are structurally converted into Xray
+//!   field rules when every matcher can be represented exactly.
 //! - Per-connection observability does not exist; traffic totals come from
 //!   the `metrics` module (`/debug/vars`) configured below.
 
@@ -505,13 +506,48 @@ fn build_routing(
                         if let Some(rule) = builtin_remote_xray_rule(set, main_target) {
                             route_rules.push(rule);
                         } else {
-                            crate::app_log::warn(
-                                "xray_config",
-                                format!(
-                                    "remote rule set '{}' uses the sing-box .srs format and is skipped under Xray",
-                                    set.name
+                            match remote_rule_set_to_xray_rules(
+                                set,
+                                nodes,
+                                tags,
+                                main_target,
+                            ) {
+                                Ok((mut converted, unsupported)) if !converted.is_empty() => {
+                                    let loaded = converted.len();
+                                    route_rules.append(&mut converted);
+                                    if unsupported > 0 {
+                                        crate::app_log::warn(
+                                            "xray_config",
+                                            format!(
+                                                "remote rule set '{}' loaded {loaded} Xray rules; {unsupported} unsupported entries skipped",
+                                                set.name
+                                            ),
+                                        );
+                                    } else {
+                                        crate::app_log::info(
+                                            "xray_config",
+                                            format!(
+                                                "remote rule set '{}' loaded {loaded} Xray rules",
+                                                set.name
+                                            ),
+                                        );
+                                    }
+                                }
+                                Ok((_, unsupported)) => crate::app_log::warn(
+                                    "xray_config",
+                                    format!(
+                                        "remote rule set '{}' has no Xray-compatible entries ({unsupported} skipped)",
+                                        set.name
+                                    ),
                                 ),
-                            );
+                                Err(error) => crate::app_log::warn(
+                                    "xray_config",
+                                    format!(
+                                        "remote rule set '{}' is unavailable under Xray: {error}",
+                                        set.name
+                                    ),
+                                ),
+                            }
                         }
                     } else {
                         // Local set: route per rule (same clamping the sing-box
@@ -598,6 +634,300 @@ fn build_routing(
         },
     }));
     (route_rules, dns_egress)
+}
+
+/// Translate one non-builtin remote rule cache into Xray field rules.
+///
+/// A remote source rule already has the same boolean model as an Xray field
+/// rule: values inside one matcher are ORed, while distinct matcher fields
+/// are ANDed. We retain that shape and skip the whole input row if any field
+/// cannot be represented; partially dropping a condition would broaden a
+/// rule and could send traffic to an unintended outbound.
+fn remote_rule_set_to_xray_rules(
+    set: &RuleSet,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    main_target: &str,
+) -> Result<(Vec<Value>, usize), String> {
+    let source_rules = load_remote_source_rules(set)?;
+    let outbound = remote_xray_target(set, nodes, tags, main_target);
+    let mut converted = Vec::new();
+    let mut unsupported = 0usize;
+    for rule in &source_rules {
+        match source_rule_to_xray(rule, &outbound) {
+            Ok(rule) => converted.push(rule),
+            Err(_) => unsupported += 1,
+        }
+    }
+    Ok((converted, unsupported))
+}
+
+fn remote_xray_target(
+    set: &RuleSet,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    main_target: &str,
+) -> String {
+    match set.strategy {
+        RuleSetStrategy::Direct => "direct".into(),
+        RuleSetStrategy::Block => "block".into(),
+        RuleSetStrategy::Node => set
+            .node_id
+            .as_deref()
+            .and_then(|id| nodes.iter().find(|node| node.id == id))
+            .map(outbound_tag)
+            .filter(|tag| tags.iter().any(|candidate| candidate == tag))
+            .unwrap_or_else(|| main_target.to_string()),
+        // Xray has no live selector policy groups. Remote Filter/Smart sets
+        // therefore keep their existing main-route behavior rather than
+        // pretending that a selector can be emitted.
+        _ => main_target.to_string(),
+    }
+}
+
+fn load_remote_source_rules(set: &RuleSet) -> Result<Vec<Value>, String> {
+    let remote = set
+        .remote
+        .as_ref()
+        .ok_or_else(|| "missing remote definition".to_string())?;
+    let path = remote
+        .local_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "cache is not downloaded".to_string())?;
+    let bytes = std::fs::read(path).map_err(|error| format!("read cache: {error}"))?;
+    if remote.format.eq_ignore_ascii_case("binary") {
+        return crate::srs::parse_with_rules(&bytes)?
+            .rules
+            .ok_or_else(|| "binary cache contains no readable rules".to_string());
+    }
+    let source: Value =
+        serde_json::from_slice(&bytes).map_err(|error| format!("parse cache: {error}"))?;
+    source
+        .get("rules")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| "source cache has no rules array".to_string())
+}
+
+fn source_rule_to_xray(source: &Value, outbound: &str) -> Result<Value, String> {
+    let object = source
+        .as_object()
+        .ok_or_else(|| "rule is not an object".to_string())?;
+    if object.contains_key("type")
+        || object
+            .get("invert")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Err("logical or inverted rules cannot be represented exactly".into());
+    }
+
+    let mut rule = Map::new();
+    let mut domains = Vec::new();
+    let mut ports = Vec::new();
+    let mut source_ports = Vec::new();
+    let mut fields = 0usize;
+    for (field, value) in object {
+        match field.as_str() {
+            "domain" => {
+                domains.extend(remote_xray_domains(value, "full", false)?);
+                fields += 1;
+            }
+            "domain_suffix" => {
+                domains.extend(remote_xray_domains(value, "domain", true)?);
+                fields += 1;
+            }
+            "domain_keyword" => {
+                domains.extend(remote_xray_domains(value, "keyword", false)?);
+                fields += 1;
+            }
+            "domain_regex" => {
+                domains.extend(remote_xray_domains(value, "regexp", false)?);
+                fields += 1;
+            }
+            "ip_cidr" => {
+                rule.insert("ip".into(), json!(remote_xray_ips(value)?));
+                fields += 1;
+            }
+            "source_ip_cidr" => {
+                rule.insert("source".into(), json!(remote_xray_ips(value)?));
+                fields += 1;
+            }
+            "port" | "port_range" => {
+                ports.extend(remote_xray_ports(value)?);
+                fields += 1;
+            }
+            "source_port" | "source_port_range" => {
+                source_ports.extend(remote_xray_ports(value)?);
+                fields += 1;
+            }
+            "network" => {
+                rule.insert("network".into(), json!(remote_xray_network(value)?));
+                fields += 1;
+            }
+            "process_name" => {
+                rule.insert("process".into(), json!(remote_xray_texts(value)?));
+                fields += 1;
+            }
+            // `process_path` and mobile/network-interface matchers have no
+            // documented equivalent in Xray's client routing API. Rejecting
+            // the whole source row preserves least-privilege semantics.
+            _ => return Err(format!("unsupported matcher {field}")),
+        }
+    }
+    if fields == 0 {
+        return Err("empty rule".into());
+    }
+    if !domains.is_empty() {
+        domains.sort();
+        domains.dedup();
+        rule.insert("domain".into(), json!(domains));
+    }
+    if !ports.is_empty() {
+        ports.sort();
+        ports.dedup();
+        rule.insert("port".into(), json!(ports.join(",")));
+    }
+    if !source_ports.is_empty() {
+        source_ports.sort();
+        source_ports.dedup();
+        rule.insert("sourcePort".into(), json!(source_ports.join(",")));
+    }
+    rule.insert("type".into(), json!("field"));
+    rule.insert("outboundTag".into(), json!(outbound));
+    Ok(Value::Object(rule))
+}
+
+fn remote_rule_values(value: &Value) -> Result<Vec<&Value>, String> {
+    let values = value
+        .as_array()
+        .map(|items| items.iter().collect())
+        .unwrap_or_else(|| vec![value]);
+    if values.is_empty() {
+        Err("empty matcher value list".into())
+    } else {
+        Ok(values)
+    }
+}
+
+fn remote_xray_text(value: &Value) -> Result<&str, String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|value| !value.chars().any(char::is_control))
+        .ok_or_else(|| "expected non-empty text".into())
+}
+
+fn remote_xray_texts(value: &Value) -> Result<Vec<String>, String> {
+    remote_rule_values(value)?
+        .into_iter()
+        .map(remote_xray_text)
+        .map(str::to_string)
+        .collect()
+}
+
+fn remote_xray_domains(value: &Value, prefix: &str, suffix: bool) -> Result<Vec<String>, String> {
+    remote_rule_values(value)?
+        .into_iter()
+        .map(|value| {
+            let raw = remote_xray_text(value)?;
+            let body = if suffix {
+                raw.trim_start_matches(['*', '.'])
+            } else {
+                raw
+            };
+            if body.is_empty() {
+                return Err("empty domain".into());
+            }
+            let body = match prefix {
+                "full" | "domain" => to_ascii_domain(body),
+                _ => body.to_string(),
+            };
+            if body.is_empty() {
+                return Err("invalid domain".into());
+            }
+            Ok(format!("{prefix}:{body}"))
+        })
+        .collect()
+}
+
+fn remote_xray_ips(value: &Value) -> Result<Vec<String>, String> {
+    remote_rule_values(value)?
+        .into_iter()
+        .map(|value| {
+            let raw = remote_xray_text(value)?;
+            if raw.parse::<std::net::IpAddr>().is_ok() {
+                return Ok(raw.to_string());
+            }
+            let (address, prefix) = raw
+                .split_once('/')
+                .ok_or_else(|| "IP matcher must be an IP or CIDR".to_string())?;
+            let address = address
+                .parse::<std::net::IpAddr>()
+                .map_err(|_| "invalid IP address".to_string())?;
+            let prefix = prefix
+                .parse::<u8>()
+                .map_err(|_| "invalid CIDR prefix".to_string())?;
+            let valid = match address {
+                std::net::IpAddr::V4(_) => prefix <= 32,
+                std::net::IpAddr::V6(_) => prefix <= 128,
+            };
+            valid
+                .then_some(raw.to_string())
+                .ok_or_else(|| "CIDR prefix out of range".to_string())
+        })
+        .collect()
+}
+
+fn remote_xray_ports(value: &Value) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    for value in remote_rule_values(value)? {
+        let raw = value
+            .as_u64()
+            .map(|number| number.to_string())
+            .or_else(|| remote_xray_text(value).ok().map(str::to_string))
+            .ok_or_else(|| "invalid port".to_string())?;
+        for segment in raw.split(',') {
+            let normalized = segment.trim().replace(':', "-");
+            let numbers = normalized
+                .split('-')
+                .map(str::parse::<u16>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "invalid port".to_string())?;
+            if numbers.is_empty()
+                || numbers.len() > 2
+                || numbers.iter().any(|port| *port == 0)
+                || (numbers.len() == 2 && numbers[0] > numbers[1])
+            {
+                return Err("invalid port range".into());
+            }
+            parts.push(normalized);
+        }
+    }
+    if parts.is_empty() {
+        Err("empty port list".into())
+    } else {
+        Ok(parts)
+    }
+}
+
+fn remote_xray_network(value: &Value) -> Result<String, String> {
+    let mut values = remote_xray_texts(value)?;
+    values
+        .iter_mut()
+        .for_each(|value| *value = value.to_ascii_lowercase());
+    values.sort();
+    values.dedup();
+    if values
+        .iter()
+        .any(|value| !matches!(value.as_str(), "tcp" | "udp"))
+    {
+        return Err("unsupported network".into());
+    }
+    Ok(values.join(","))
 }
 
 fn dns_domain_entry(matcher: DomainMatcher, payload: &str) -> Option<String> {
@@ -1427,6 +1757,74 @@ mod tests {
         assert_eq!(kw["outboundTag"], "block");
         let process = find("chrome.exe");
         assert_eq!(process["process"], json!(["chrome.exe"]));
+    }
+
+    #[test]
+    fn source_remote_rules_convert_without_broadening_matchers() {
+        let cache = std::env::temp_dir().join(format!(
+            "satelite-xray-source-rule-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &cache,
+            br#"{
+                "rules": [
+                    {
+                        "domain": ["exact.example"],
+                        "domain_suffix": [".suffix.example"],
+                        "domain_keyword": ["needle"],
+                        "ip_cidr": ["10.0.0.0/8"],
+                        "port": [443],
+                        "port_range": ["8443:8444"],
+                        "process_name": ["client.exe"]
+                    }
+                ]
+            }"#,
+        )
+        .expect("write source rule cache");
+
+        let mut set = RuleSet::new_remote(
+            "source",
+            "https://rules.example/source.json",
+            RuleTarget::Direct,
+        );
+        set.remote.as_mut().expect("remote definition").local_path =
+            Some(cache.display().to_string());
+        let mut opts = default_opts();
+        opts.rule_sets = vec![set];
+        let built = build_xray_config(&[vless_node("n", None)], &opts).expect("build");
+        let _ = std::fs::remove_file(&cache);
+
+        let rule = built.value["routing"]["rules"]
+            .as_array()
+            .expect("routing rules")
+            .iter()
+            .find(|rule| rule["process"] == json!(["client.exe"]))
+            .expect("converted remote rule");
+        assert_eq!(
+            rule["domain"],
+            json!([
+                "domain:suffix.example",
+                "full:exact.example",
+                "keyword:needle"
+            ])
+        );
+        assert_eq!(rule["ip"], json!(["10.0.0.0/8"]));
+        assert_eq!(rule["port"], "443,8443-8444");
+        assert_eq!(rule["outboundTag"], "direct");
+    }
+
+    #[test]
+    fn source_remote_rule_with_unknown_matcher_is_rejected_as_a_whole() {
+        let source = json!({
+            "domain_suffix": ["safe.example"],
+            "process_path": ["C:/Program Files/client.exe"]
+        });
+        assert!(source_rule_to_xray(&source, "direct").is_err());
     }
 
     #[test]

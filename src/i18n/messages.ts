@@ -299,11 +299,16 @@ const en = {
   "settings.coreMissing": "missing",
   "settings.coreBundledShort": "bundled",
   "settings.coreLatestShort": "latest",
+  "settings.coreStableShort": "stable",
+  "settings.corePreviewShort": "preview",
   "settings.coreCheck": "Check for updates",
   "settings.coreChecking": "Checking…",
   "settings.coreDownload": "Download to app data",
   "settings.coreUpdate": "Update core",
   "settings.coreRedownload": "Re-download",
+  "settings.coreDownloadPreview": "Install preview",
+  "settings.corePreviewHint":
+    "Installs the newest Xray pre-release. Preview builds are opt-in and may be less stable than the latest stable release.",
   "settings.coreDownloading": "Downloading…",
   "settings.corePreparing": "Preparing download…",
   "settings.coreInstalling": "Installing core…",
@@ -313,7 +318,7 @@ const en = {
   "settings.coreHint":
     "macOS ships a bundled sing-box; a downloaded core takes priority. Switching the active core restarts it.",
   "settings.coreHintXray":
-    "Xray serves vmess/vless/ss/trojan/socks/http/wireguard with XTLS-Reality. Switching the active core restarts it.",
+    "Xray serves vmess/vless/ss/trojan/socks/http/wireguard with XTLS-Reality. AnyTLS and TUIC are not Xray outbounds; use sing-box or mihomo for those nodes. Switching the active core restarts it.",
   "settings.coreHintMihomo":
     "mihomo is the canonical Clash Meta kernel: full protocol coverage (incl. REALITY/Vision/TUIC/WireGuard) with hot node switching. Switching the active core restarts it.",
   "settings.coreUse": "Use this core",
@@ -1082,11 +1087,15 @@ const zh: Record<MessageKey, string> = {
   "settings.coreMissing": "未安装",
   "settings.coreBundledShort": "内置",
   "settings.coreLatestShort": "最新",
+  "settings.coreStableShort": "稳定版",
+  "settings.corePreviewShort": "预发布",
   "settings.coreCheck": "检测更新",
   "settings.coreChecking": "检测中…",
   "settings.coreDownload": "下载到数据目录",
   "settings.coreUpdate": "更新内核",
   "settings.coreRedownload": "重新下载",
+  "settings.coreDownloadPreview": "安装预发布版",
+  "settings.corePreviewHint": "安装最新 Xray 预发布版。预发布版本需要手动选择，稳定性可能低于最新稳定版。",
   "settings.coreDownloading": "下载中…",
   "settings.corePreparing": "正在准备下载…",
   "settings.coreInstalling": "正在安装内核…",
@@ -1095,7 +1104,7 @@ const zh: Record<MessageKey, string> = {
   "settings.coreUpdateAvail": "可更新",
   "settings.coreHint": "macOS 已内置 sing-box，下载的内核优先使用。切换内核会重启。",
   "settings.coreHintXray":
-    "Xray 支持 vmess/vless/ss/trojan/socks/http/wireguard 协议与 XTLS-Reality。切换内核会重启。",
+    "Xray 支持 vmess/vless/ss/trojan/socks/http/wireguard 协议与 XTLS-Reality；AnyTLS、TUIC 不属于 Xray 客户端出站，请使用 sing-box 或 mihomo。切换内核会重启。",
   "settings.coreHintMihomo":
     "mihomo 为标准 Clash Meta 内核：协议全覆盖（含 REALITY/Vision/TUIC/WireGuard），支持节点热切换。切换内核会重启。",
   "settings.coreUse": "启用该内核",

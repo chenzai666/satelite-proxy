@@ -170,17 +170,21 @@ export function NodesPage() {
     setError(null);
     try {
       const leavingKernel = autoSelect === "kernel";
-      await setCurrentNode(id);
+      const before = await getSettings();
+      const selected = await setCurrentNode(id);
+      const coreSwitched = selected.core_type !== before.core_type;
       setCurrentId(id);
       setAutoSelect("off");
-      // Running: Clash API hot-switch — UI selection is enough feedback.
-      // Stopped: write active.json so next start uses the new node.
+      // Running: Clash API hot-switch is immediate. Leaving kernel auto or
+      // selecting an Xray-incompatible node rebuilds/restarts the core; the
+      // latter is automatically handed to bundled sing-box by the backend.
+      // Stopped: write the config for the selected (possibly new) core.
       const status = await getProxyStatus().catch(() => null);
       if (!status?.running) {
         await generateSingboxConfig();
-      } else if (leavingKernel) {
+      } else if (leavingKernel || coreSwitched) {
         // Main group rebuilds urltest → selector: hold the busy feedback
-        // until the core restart finishes.
+        // or wait for the automatic Xray → sing-box handoff to finish.
         setSwitching(true);
         await waitForCoreRestart();
       }

@@ -1,7 +1,8 @@
 use crate::core::{
     active_core_version, bundled_core_version, detect_platform, download_latest_core_with_progress,
-    fetch_latest_app_tag, fetch_latest_app_tag_via_redirect, fetch_latest_release_with_proxy,
-    inspect_core_bin, CoreDownloadProgress, CoreDownloadResult, CoreKind, CoreSource,
+    fetch_latest_app_tag, fetch_latest_app_tag_via_redirect, fetch_latest_prerelease_with_proxy,
+    fetch_latest_release_with_proxy, inspect_core_bin, CoreDownloadProgress, CoreDownloadResult,
+    CoreKind, CoreSource,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -25,7 +26,10 @@ pub struct CoreInfo {
     pub platform: String,
     /// Filled only when check_update=true (network). Otherwise null for instant UI.
     pub latest_version: Option<String>,
+    /// Newest opt-in pre-release, currently surfaced only for Xray.
+    pub latest_prerelease_version: Option<String>,
     pub update_available: bool,
+    pub prerelease_update_available: bool,
     /// `bundled` | `downloaded` | `missing`
     pub source: String,
     pub bundled_version: Option<String>,
@@ -56,7 +60,9 @@ pub fn get_core_info(
         path: path.map(|p| p.display().to_string()),
         platform: platform.asset_suffix_for(kind).to_string(),
         latest_version: None,
+        latest_prerelease_version: None,
         update_available: false,
+        prerelease_update_available: false,
         source: match source {
             CoreSource::Bundled => "bundled".into(),
             CoreSource::Downloaded => "downloaded".into(),
@@ -78,14 +84,40 @@ pub async fn check_core_update(
     let latest = fetch_latest_release_with_proxy(kind, proxy_url.as_deref())
         .await
         .map_err(|e| e.to_string())?;
+    // Xray's newer upstream builds are currently marked `prerelease` by
+    // GitHub. They must remain opt-in, but the UI needs to show them instead
+    // of labelling the stable endpoint as the absolute latest version.
+    // A preview lookup must never hide a successful stable-channel result.
+    // GitHub's release-list endpoint can be rate-limited independently from
+    // `/releases/latest`; stable updates remain usable if the optional
+    // preview channel is temporarily unavailable.
+    let preview = match fetch_latest_prerelease_with_proxy(kind, proxy_url.as_deref()).await {
+        Ok(preview) => preview,
+        Err(error) => {
+            crate::app_log::warn(
+                "core_download",
+                format!("{} preview check unavailable: {error}", kind.display_name()),
+            );
+            None
+        }
+    };
     let update_available = match &local_version {
         Some(local) => is_newer_version(&latest.version, local),
         None => true,
     };
+    let prerelease_update_available =
+        preview
+            .as_ref()
+            .is_some_and(|release| match &local_version {
+                Some(local) => is_newer_version(&release.version, local),
+                None => true,
+            });
     Ok(CoreUpdateInfo {
         kind: kind.as_str().into(),
         latest_version: latest.version,
+        latest_prerelease_version: preview.map(|release| release.version),
         update_available,
+        prerelease_update_available,
         asset_name: latest.asset_name,
         size: latest.size,
     })
@@ -95,7 +127,9 @@ pub async fn check_core_update(
 pub struct CoreUpdateInfo {
     pub kind: String,
     pub latest_version: String,
+    pub latest_prerelease_version: Option<String>,
     pub update_available: bool,
+    pub prerelease_update_available: bool,
     pub asset_name: String,
     pub size: u64,
 }

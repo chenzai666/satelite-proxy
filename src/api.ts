@@ -448,7 +448,9 @@ export function checkCoreUpdate(kind: CoreKind | null, localVersion?: string | n
   return invoke<{
     kind: string;
     latest_version: string;
+    latest_prerelease_version?: string | null;
     update_available: boolean;
+    prerelease_update_available?: boolean;
     asset_name: string;
     size: number;
   }>("check_core_update", { kind, localVersion: localVersion ?? null });
