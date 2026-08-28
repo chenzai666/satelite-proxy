@@ -97,9 +97,10 @@ impl DirectIpStrategy {
         }
     }
 
-    /// `domain_strategy` is omitted for System so sing-box uses its native
-    /// behavior instead of a second app-level policy.
-    pub fn singbox_domain_strategy(self) -> Option<&'static str> {
+    /// The resolver strategy is omitted for System so sing-box uses its
+    /// native behavior instead of a second app-level policy. This maps to
+    /// the supported `domain_resolver.strategy`, not legacy dial fields.
+    pub fn singbox_domain_resolver_strategy(self) -> Option<&'static str> {
         match self {
             Self::PreferIpv4 => Some("prefer_ipv4"),
             Self::Ipv4Only => Some("ipv4_only"),
@@ -574,7 +575,10 @@ mod tests {
             DirectIpStrategy::parse("system"),
             Some(DirectIpStrategy::System)
         );
-        assert_eq!(DirectIpStrategy::System.singbox_domain_strategy(), None);
+        assert_eq!(
+            DirectIpStrategy::System.singbox_domain_resolver_strategy(),
+            None
+        );
     }
 
     #[test]

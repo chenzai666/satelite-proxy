@@ -217,6 +217,10 @@ pub fn build_singbox_config_with_connection_policy(
 
     let selected_tag = resolve_selected_tag(nodes, &tags, opts.current_node_id.as_deref());
     let effective_rules = effective_route_rules(&opts.rule_sets, &opts.rules);
+    // Build this before outbounds: direct's modern domain resolver shares the
+    // same safe resolver choice. Under TUN that is dns-cn, not the local
+    // resolver which would be hijacked back into the tunnel.
+    let mut built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &effective_rules);
 
     let mut outbounds = Vec::new();
     // Main group: selector (manual / app smart) vs urltest (kernel auto).
@@ -282,8 +286,11 @@ pub fn build_singbox_config_with_connection_policy(
     ));
     outbounds.extend(node_outbounds);
     let mut direct_outbound = json!({ "type": "direct", "tag": "direct" });
-    if let Some(domain_strategy) = opts.direct_ip_strategy.singbox_domain_strategy() {
-        direct_outbound["domain_strategy"] = json!(domain_strategy);
+    if let Some(strategy) = opts.direct_ip_strategy.singbox_domain_resolver_strategy() {
+        direct_outbound["domain_resolver"] = json!({
+            "server": built_dns.default_resolver.clone(),
+            "strategy": strategy,
+        });
     }
     outbounds.push(direct_outbound);
     outbounds.push(json!({ "type": "block", "tag": "block" }));
@@ -300,7 +307,6 @@ pub fn build_singbox_config_with_connection_policy(
 
     // DNS `final` is configured independently on the DNS page (local/domestic/
     // remote) and no longer follows the routing `final`.
-    let mut built_dns = build_dns_section(&opts.dns, opts.tun_enabled, &effective_rules);
     let (rule_set_defs, grouped_route_rules, grouped_dns_rules) =
         build_grouped_rule_sets(&opts.rule_sets, nodes, &tags);
     if let Some(dns_rules) = built_dns.dns.get_mut("rules").and_then(Value::as_array_mut) {
@@ -2910,7 +2916,8 @@ mod tests {
             .iter()
             .find(|outbound| outbound["tag"] == json!("direct"))
             .expect("direct outbound present");
-        assert_eq!(direct["domain_strategy"], json!("prefer_ipv4"));
+        assert_eq!(direct["domain_resolver"]["server"], json!("dns-local"));
+        assert_eq!(direct["domain_resolver"]["strategy"], json!("prefer_ipv4"));
 
         let mut ipv4_only = base(false);
         ipv4_only.direct_ip_strategy = DirectIpStrategy::Ipv4Only;
@@ -2921,7 +2928,8 @@ mod tests {
             .iter()
             .find(|outbound| outbound["tag"] == json!("direct"))
             .expect("direct outbound present");
-        assert_eq!(direct["domain_strategy"], json!("ipv4_only"));
+        assert_eq!(direct["domain_resolver"]["server"], json!("dns-local"));
+        assert_eq!(direct["domain_resolver"]["strategy"], json!("ipv4_only"));
 
         let mut system = base(false);
         system.direct_ip_strategy = DirectIpStrategy::System;
@@ -2932,7 +2940,19 @@ mod tests {
             .iter()
             .find(|outbound| outbound["tag"] == json!("direct"))
             .expect("direct outbound present");
-        assert!(direct.get("domain_strategy").is_none());
+        assert!(direct.get("domain_resolver").is_none());
+
+        let mut tun = base(false);
+        tun.tun_enabled = true;
+        let built = build_singbox_config(&nodes, &tun).unwrap();
+        let direct = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == json!("direct"))
+            .expect("direct outbound present");
+        assert_eq!(direct["domain_resolver"]["server"], json!("dns-cn"));
+        assert_eq!(direct["domain_resolver"]["strategy"], json!("prefer_ipv4"));
 
         let on = build_singbox_config(&nodes, &base(true)).unwrap();
         let rules = on.value["route"]["rules"].as_array().unwrap();
