@@ -1,6 +1,6 @@
 use crate::app_log;
 use crate::core::manager::CoreState;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::runtime::{ConnectionView, LiveConnectionBatch, ProxyStatus, RequestBatch, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
@@ -10,6 +10,80 @@ use std::time::{Duration, Instant};
 
 const KERNEL_SELECTION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const KERNEL_SELECTION_HTTP_TIMEOUT: Duration = Duration::from_millis(800);
+const MAIN_PROXY_GROUP: &str = "proxy";
+
+/// Synchronize the generated main selector with the application's persisted
+/// node choice. sing-box persists a selector's last `now` in cache.db, which
+/// takes precedence over the generated selector `default` on the next start.
+/// Always confirm the API result so the UI cannot claim a node is active while
+/// the running core still routes through an older cached selection.
+fn sync_main_selector(
+    api: &crate::api::ClashApi,
+    node_tag: &str,
+    close_connections: bool,
+    context: &str,
+) -> AppResult<bool> {
+    let before =
+        api.proxy_group_now_with_timeout(MAIN_PROXY_GROUP, KERNEL_SELECTION_HTTP_TIMEOUT)?;
+    if before.as_deref() == Some(node_tag) {
+        app_log::info(
+            "selector",
+            format!("{context}: main selector already uses {node_tag}"),
+        );
+        return Ok(false);
+    }
+
+    api.select_proxy(MAIN_PROXY_GROUP, node_tag)?;
+    let after =
+        api.proxy_group_now_with_timeout(MAIN_PROXY_GROUP, KERNEL_SELECTION_HTTP_TIMEOUT)?;
+    if after.as_deref() != Some(node_tag) {
+        return Err(AppError::Core(format!(
+            "{context}: main selector confirmation failed (expected {node_tag}, got {})",
+            after.as_deref().unwrap_or("<empty>")
+        )));
+    }
+
+    if close_connections {
+        match api.close_all_connections() {
+            Ok(()) => app_log::info(
+                "connections",
+                format!("{context}: selector changed; stale connections closed"),
+            ),
+            Err(error) => app_log::warn(
+                "connections",
+                format!("{context}: selector changed but closing connections failed: {error}"),
+            ),
+        }
+    }
+    app_log::info(
+        "selector",
+        format!("{context}: main selector synchronized to {node_tag}"),
+    );
+    Ok(true)
+}
+
+/// Build the one post-start selector operation required for a generated
+/// sing-box profile. Kernel auto-select owns `proxy` as a urltest group, so it
+/// must keep its own selection and is intentionally excluded.
+fn generated_singbox_selector_sync_plan(
+    store: &AppStore,
+    api: Option<crate::api::ClashApi>,
+) -> Option<(crate::api::ClashApi, String, bool)> {
+    if crate::core::CoreKind::parse(&store.settings.core_type) != crate::core::CoreKind::SingBox
+        || store.settings.runtime_source().is_custom()
+        || store.settings.auto_select.is_kernel()
+    {
+        return None;
+    }
+    let api = api?;
+    let node_id = store.settings.current_node_id.as_deref()?;
+    let node = store.find_node(node_id)?;
+    Some((
+        api,
+        crate::config::outbound_tag(node),
+        store.settings.close_connections_on_switch,
+    ))
+}
 
 fn log_proxy_status(action: &str, status: &ProxyStatus) {
     app_log::info(
@@ -90,9 +164,34 @@ impl KernelSelectionPoll {
 mod kernel_selection_poll_tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::mpsc;
     use std::sync::Arc;
+
+    fn read_complete_request(socket: &mut TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let read = socket.read(&mut chunk).expect("read request");
+            assert!(read > 0, "request closed before its body completed");
+            request.extend_from_slice(&chunk[..read]);
+
+            let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let body_start = header_end + 4;
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if request.len() >= body_start + content_length {
+                return String::from_utf8(request).expect("request must be utf-8");
+            }
+        }
+    }
 
     #[test]
     fn suppresses_concurrent_and_recent_status_polls() {
@@ -143,6 +242,51 @@ mod kernel_selection_poll_tests {
             crate::domain::CaptureMode::Tun,
             true,
         ));
+    }
+
+    #[test]
+    fn selector_sync_overrides_cached_outbound_and_closes_stale_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake selector api");
+        let port = listener.local_addr().expect("fake api address").port();
+        let server = std::thread::spawn(move || {
+            let requests = [
+                (
+                    "GET /proxies/proxy HTTP/1.1",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\nConnection: close\r\n\r\n{\"now\":\"node-old\"}",
+                ),
+                (
+                    "PUT /proxies/proxy HTTP/1.1",
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                ),
+                (
+                    "GET /proxies/proxy HTTP/1.1",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\nConnection: close\r\n\r\n{\"now\":\"node-new\"}",
+                ),
+                (
+                    "DELETE /connections HTTP/1.1",
+                    "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                ),
+            ];
+            for (index, (expected, response)) in requests.into_iter().enumerate() {
+                let (mut socket, _) = listener.accept().expect("accept selector request");
+                let request = read_complete_request(&mut socket);
+                assert!(
+                    request.starts_with(expected),
+                    "unexpected request: {request}"
+                );
+                if index == 1 {
+                    assert!(request.contains("\"name\":\"node-new\""));
+                }
+                socket
+                    .write_all(response.as_bytes())
+                    .expect("write response");
+                socket.flush().expect("flush response");
+            }
+        });
+
+        let api = crate::api::ClashApi::new("127.0.0.1", port, "test");
+        assert!(sync_main_selector(&api, "node-new", true, "test sync").expect("sync selector"));
+        server.join().expect("fake api server");
     }
 
     #[test]
@@ -337,31 +481,7 @@ mod kernel_selection_poll_tests {
         let (release_tx, release_rx) = mpsc::channel();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accept selector request");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket.read(&mut chunk).expect("read selector request");
-                assert!(
-                    read > 0,
-                    "selector request closed before its body completed"
-                );
-                request.extend_from_slice(&chunk[..read]);
-
-                let Some(header_end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
-                    continue;
-                };
-                let body_start = header_end + 4;
-                let headers = String::from_utf8_lossy(&request[..header_end]);
-                let content_length = headers
-                    .lines()
-                    .filter_map(|line| line.split_once(':'))
-                    .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
-                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                if request.len() >= body_start + content_length {
-                    break;
-                }
-            }
+            let _request = read_complete_request(&mut socket);
             seen_tx.send(()).expect("signal request received");
             release_rx.recv().expect("release fake response");
             socket
@@ -805,8 +925,14 @@ impl AppState {
                 "cleared stale owned proxy while starting core",
             );
         }
+        let selector_sync = generated_singbox_selector_sync_plan(&store, runtime.clash_api_clone());
         store.save(&self.store_path)?;
         self.cache_status(&status);
+        drop(store);
+        drop(runtime);
+        if let Some((api, tag, close_connections)) = selector_sync {
+            sync_main_selector(&api, &tag, close_connections, "proxy start")?;
+        }
         log_proxy_status("proxy started", &status);
         Ok(status)
     }
@@ -856,8 +982,14 @@ impl AppState {
                 "cleared stale owned proxy while restarting core",
             );
         }
+        let selector_sync = generated_singbox_selector_sync_plan(&store, runtime.clash_api_clone());
         store.save(&self.store_path)?;
         self.cache_status(&status);
+        drop(store);
+        drop(runtime);
+        if let Some((api, tag, close_connections)) = selector_sync {
+            sync_main_selector(&api, &tag, close_connections, "proxy restart")?;
+        }
         log_proxy_status("proxy restarted", &status);
         Ok(status)
     }
@@ -1320,39 +1452,28 @@ impl AppState {
                 crate::config::outbound_tag(node),
                 fallback_core.is_none() && manual && store.settings.auto_select.is_kernel(),
                 fallback_core.is_none()
-                    && core_kind == crate::core::CoreKind::Mihomo
+                    && matches!(
+                        core_kind,
+                        crate::core::CoreKind::SingBox | crate::core::CoreKind::Mihomo
+                    )
                     && store.settings.close_connections_on_switch,
                 fallback_core,
             ))
         })?;
-        let api = {
-            let runtime = self.lock_runtime();
-            runtime.clash_api_clone()
+        let (api, core_running) = {
+            let mut runtime = self.lock_runtime();
+            runtime.core.poll();
+            (runtime.clash_api_clone(), runtime.core.is_running())
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
-        // Xray has no selection API at all — same restart path. mihomo (like
-        // sing-box) selects live through its Clash-compatible API.
+        // Xray has no selection API at all — same restart path. sing-box and
+        // Mihomo both select live through the local selector control endpoint.
         let selected_live =
             if fallback_core.is_some() || core_kind == crate::core::CoreKind::Xray || kernel_auto {
                 false
             } else if let Some(api) = api {
-                api.select_proxy("proxy", &tag)?;
-                if close_after_switch {
-                    match api.close_all_connections() {
-                        Ok(()) => app_log::info(
-                            "connections",
-                            "main selector switched; stale mihomo connections closed",
-                        ),
-                        Err(error) => app_log::warn(
-                            "connections",
-                            format!(
-                            "main selector switched but closing mihomo connections failed: {error}"
-                        ),
-                        ),
-                    }
-                }
-                app_log::info("connections", format!("main selector switched to {tag}"));
+                sync_main_selector(&api, &tag, close_after_switch, "manual node selection")?;
                 true
             } else {
                 false
@@ -1375,9 +1496,11 @@ impl AppState {
                 ),
             );
         }
-        let restart_needed = was_kernel
-            || fallback_core.is_some()
-            || (core_kind == crate::core::CoreKind::Xray && self.is_core_running());
+        // If a core is running but the local selector endpoint was unavailable,
+        // restart so the persisted node cannot leave traffic on the old one.
+        // This includes Xray, which has no live selector API.
+        let restart_needed =
+            was_kernel || fallback_core.is_some() || (!selected_live && core_running);
         Ok((settings, restart_needed, selected_live))
     }
 
