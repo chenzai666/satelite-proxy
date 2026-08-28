@@ -68,14 +68,16 @@ impl OutboundMode {
 /// return both A and AAAA records, while the direct outbound still needs a
 /// deterministic dial policy on hosts whose IPv6 stack is unavailable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum DirectIpStrategy {
     /// Keep dual-stack support, but attempt IPv4 before IPv6.
     #[default]
+    #[serde(rename = "prefer_ipv4", alias = "prefer-ipv4", alias = "ipv4_prefer")]
     PreferIpv4,
     /// Never dial an IPv6 address through the direct outbound.
+    #[serde(rename = "ipv4_only", alias = "ipv4-only", alias = "ipv4")]
     Ipv4Only,
     /// Leave the choice to the operating system and sing-box defaults.
+    #[serde(rename = "system", alias = "default", alias = "auto")]
     System,
 }
 
@@ -578,6 +580,14 @@ mod tests {
         assert_eq!(
             DirectIpStrategy::System.singbox_domain_resolver_strategy(),
             None
+        );
+        assert_eq!(
+            serde_json::to_string(&DirectIpStrategy::Ipv4Only).unwrap(),
+            r#""ipv4_only""#
+        );
+        assert_eq!(
+            serde_json::from_str::<DirectIpStrategy>(r#""ipv4_only""#).unwrap(),
+            DirectIpStrategy::Ipv4Only
         );
     }
 
