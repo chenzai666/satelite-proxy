@@ -23,6 +23,10 @@ pub struct BuiltDns {
     pub dns: Value,
     /// Tag for `route.default_domain_resolver`.
     pub default_resolver: String,
+    /// Concrete resolver for direct outbound requests that need an explicit
+    /// IP-family policy. This must not depend on the Windows system resolver:
+    /// a local resolver can return an empty result after filtering to IPv4.
+    pub direct_resolver: String,
     /// Whether route should include `hijack-dns` (TUN or settings.hijack).
     pub want_hijack: bool,
 }
@@ -258,6 +262,11 @@ fn build_default(
         } else {
             TAG_LOCAL.into()
         },
+        // `direct.domain_resolver` bypasses normal DNS route rules. Use the
+        // IP-literal domestic resolver when direct dialing needs a family
+        // strategy: it is reachable without the proxy/TUN and has stable A
+        // answers on Windows, unlike a filtered system `local` resolver.
+        direct_resolver: TAG_CN.into(),
         want_hijack: hijack,
     }
 }
@@ -329,8 +338,10 @@ mod tests {
     fn default_domain_resolver_avoids_system_dns_loop_under_tun() {
         let b = build_dns_section(&DnsSettings::default(), true, &[]);
         assert_eq!(b.default_resolver, TAG_CN);
+        assert_eq!(b.direct_resolver, TAG_CN);
         let b = build_dns_section(&DnsSettings::default(), false, &[]);
         assert_eq!(b.default_resolver, TAG_LOCAL);
+        assert_eq!(b.direct_resolver, TAG_CN);
     }
 
     #[test]

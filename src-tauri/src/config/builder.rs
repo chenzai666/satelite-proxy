@@ -288,7 +288,7 @@ pub fn build_singbox_config_with_connection_policy(
     let mut direct_outbound = json!({ "type": "direct", "tag": "direct" });
     if let Some(strategy) = opts.direct_ip_strategy.singbox_domain_resolver_strategy() {
         direct_outbound["domain_resolver"] = json!({
-            "server": built_dns.default_resolver.clone(),
+            "server": built_dns.direct_resolver.clone(),
             "strategy": strategy,
         });
     }
@@ -2916,7 +2916,7 @@ mod tests {
             .iter()
             .find(|outbound| outbound["tag"] == json!("direct"))
             .expect("direct outbound present");
-        assert_eq!(direct["domain_resolver"]["server"], json!("dns-local"));
+        assert_eq!(direct["domain_resolver"]["server"], json!("dns-cn"));
         assert_eq!(direct["domain_resolver"]["strategy"], json!("prefer_ipv4"));
 
         let mut ipv4_only = base(false);
@@ -2928,7 +2928,7 @@ mod tests {
             .iter()
             .find(|outbound| outbound["tag"] == json!("direct"))
             .expect("direct outbound present");
-        assert_eq!(direct["domain_resolver"]["server"], json!("dns-local"));
+        assert_eq!(direct["domain_resolver"]["server"], json!("dns-cn"));
         assert_eq!(direct["domain_resolver"]["strategy"], json!("ipv4_only"));
 
         let mut system = base(false);
