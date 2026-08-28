@@ -161,8 +161,12 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
         } => {
             let mut query = Vec::new();
             push_tls_query(&mut query, node.tls.as_ref());
-            push_optional_query(&mut query, "upmbps", up_mbps.map(u32::to_string));
-            push_optional_query(&mut query, "downmbps", down_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "upmbps", up_mbps.map(|value| value.to_string()));
+            push_optional_query(
+                &mut query,
+                "downmbps",
+                down_mbps.map(|value| value.to_string()),
+            );
             push_optional_query(&mut query, "obfs", obfs.clone());
             push_optional_query(&mut query, "obfs-password", obfs_password.clone());
             Ok(share_uri(
@@ -243,8 +247,12 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
                 query.push(("auth_base64", "1".into()));
             }
             push_tls_query(&mut query, node.tls.as_ref());
-            push_optional_query(&mut query, "upmbps", up_mbps.map(u32::to_string));
-            push_optional_query(&mut query, "downmbps", down_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "upmbps", up_mbps.map(|value| value.to_string()));
+            push_optional_query(
+                &mut query,
+                "downmbps",
+                down_mbps.map(|value| value.to_string()),
+            );
             push_optional_query(&mut query, "obfs", obfs.clone());
             Ok(share_uri("hysteria", "", Some(&endpoint), query, &fragment))
         }
