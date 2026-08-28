@@ -62,6 +62,52 @@ impl OutboundMode {
     }
 }
 
+/// How the direct outbound resolves a domain before dialing it.
+///
+/// This is intentionally independent from the DNS page. A DNS resolver may
+/// return both A and AAAA records, while the direct outbound still needs a
+/// deterministic dial policy on hosts whose IPv6 stack is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectIpStrategy {
+    /// Keep dual-stack support, but attempt IPv4 before IPv6.
+    #[default]
+    PreferIpv4,
+    /// Never dial an IPv6 address through the direct outbound.
+    Ipv4Only,
+    /// Leave the choice to the operating system and sing-box defaults.
+    System,
+}
+
+impl DirectIpStrategy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PreferIpv4 => "prefer_ipv4",
+            Self::Ipv4Only => "ipv4_only",
+            Self::System => "system",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "prefer_ipv4" | "prefer-ipv4" | "ipv4_prefer" => Some(Self::PreferIpv4),
+            "ipv4_only" | "ipv4-only" | "ipv4" => Some(Self::Ipv4Only),
+            "system" | "default" | "auto" => Some(Self::System),
+            _ => None,
+        }
+    }
+
+    /// `domain_strategy` is omitted for System so sing-box uses its native
+    /// behavior instead of a second app-level policy.
+    pub fn singbox_domain_strategy(self) -> Option<&'static str> {
+        match self {
+            Self::PreferIpv4 => Some("prefer_ipv4"),
+            Self::Ipv4Only => Some("ipv4_only"),
+            Self::System => None,
+        }
+    }
+}
+
 /// How the main `proxy` outbound picks a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -229,6 +275,11 @@ pub struct AppSettings {
     /// Not exposed as a rule set — it is a routing setting only.
     #[serde(default = "default_true")]
     pub bypass_lan: bool,
+    /// Direct-outbound IP family policy. DNS can still resolve both A and
+    /// AAAA records; this governs which resolved address the direct dialer
+    /// uses. Prefer IPv4 by default for hosts without usable IPv6.
+    #[serde(default)]
+    pub direct_ip_strategy: DirectIpStrategy,
     /// Rule / Global / Direct (Clash-style).
     #[serde(default)]
     pub outbound_mode: OutboundMode,
@@ -420,6 +471,7 @@ impl Default for AppSettings {
             block_quic: false,
             udp_tls_compat: false,
             bypass_lan: true,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             outbound_mode: OutboundMode::Rule,
             route_final: default_route_final(),
             close_to_tray: true,
@@ -506,6 +558,23 @@ mod tests {
         settings.migrate_capture_mode();
         assert_eq!(settings.capture_mode, CaptureMode::System);
         assert!(!settings.tun_enabled);
+    }
+
+    #[test]
+    fn direct_ip_strategy_defaults_to_prefer_ipv4_and_parses_all_choices() {
+        assert_eq!(
+            AppSettings::default().direct_ip_strategy,
+            DirectIpStrategy::PreferIpv4
+        );
+        assert_eq!(
+            DirectIpStrategy::parse("ipv4_only"),
+            Some(DirectIpStrategy::Ipv4Only)
+        );
+        assert_eq!(
+            DirectIpStrategy::parse("system"),
+            Some(DirectIpStrategy::System)
+        );
+        assert_eq!(DirectIpStrategy::System.singbox_domain_strategy(), None);
     }
 
     #[test]

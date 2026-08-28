@@ -3,8 +3,9 @@
 use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
 use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
-    AutoSelectMode, DnsSettings, ExtraInbound, OutboundMode, Protocol, ProtocolConfig, ProxyNode,
-    Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType, TlsConfig, Transport,
+    AutoSelectMode, DirectIpStrategy, DnsSettings, ExtraInbound, OutboundMode, Protocol,
+    ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType, TlsConfig,
+    Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -88,6 +89,9 @@ pub struct BuildOptions {
     /// after the rule sets (a safety net ahead of `route.final`). Rule mode
     /// only; Global proxies everything by explicit user choice.
     pub bypass_lan: bool,
+    /// IP family policy while the direct outbound resolves a request domain.
+    /// This is separate from DNS resolver selection.
+    pub direct_ip_strategy: DirectIpStrategy,
     /// macOS-only, Xray-only: the `utunN` device name to bind the TUN
     /// inbound to. Xray's darwin backend rejects any name that does not
     /// parse as `utun<digits>` (unlike sing-box, which lets the OS assign
@@ -277,7 +281,11 @@ pub fn build_singbox_config_with_connection_policy(
         interrupt_exist_connections,
     ));
     outbounds.extend(node_outbounds);
-    outbounds.push(json!({ "type": "direct", "tag": "direct" }));
+    let mut direct_outbound = json!({ "type": "direct", "tag": "direct" });
+    if let Some(domain_strategy) = opts.direct_ip_strategy.singbox_domain_strategy() {
+        direct_outbound["domain_strategy"] = json!(domain_strategy);
+    }
+    outbounds.push(direct_outbound);
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
     // Clash-style modes:
@@ -1719,6 +1727,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2206,6 +2215,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2318,6 +2328,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2362,6 +2373,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         };
 
@@ -2409,6 +2421,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         };
         let built = build_singbox_config(&nodes, &options).unwrap();
@@ -2524,6 +2537,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2564,6 +2578,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2609,6 +2624,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2662,6 +2678,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2726,6 +2743,7 @@ mod tests {
             tun_ipv6: ipv6,
             block_quic: false,
             bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         };
 
@@ -2771,6 +2789,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -2806,6 +2825,7 @@ mod tests {
             tun_ipv6: false,
             block_quic,
             bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         };
 
@@ -2871,6 +2891,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         };
 
@@ -2882,6 +2903,36 @@ mod tests {
                 .any(|r| r.get("ip_is_private") == Some(&json!(true))),
             "bypass_lan off must not add LAN rules"
         );
+
+        let direct = off.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == json!("direct"))
+            .expect("direct outbound present");
+        assert_eq!(direct["domain_strategy"], json!("prefer_ipv4"));
+
+        let mut ipv4_only = base(false);
+        ipv4_only.direct_ip_strategy = DirectIpStrategy::Ipv4Only;
+        let built = build_singbox_config(&nodes, &ipv4_only).unwrap();
+        let direct = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == json!("direct"))
+            .expect("direct outbound present");
+        assert_eq!(direct["domain_strategy"], json!("ipv4_only"));
+
+        let mut system = base(false);
+        system.direct_ip_strategy = DirectIpStrategy::System;
+        let built = build_singbox_config(&nodes, &system).unwrap();
+        let direct = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|outbound| outbound["tag"] == json!("direct"))
+            .expect("direct outbound present");
+        assert!(direct.get("domain_strategy").is_none());
 
         let on = build_singbox_config(&nodes, &base(true)).unwrap();
         let rules = on.value["route"]["rules"].as_array().unwrap();
@@ -2982,6 +3033,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -3015,6 +3067,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -3049,6 +3102,7 @@ mod tests {
                     tun_ipv6: false,
                     block_quic: false,
                     bypass_lan: false,
+                    direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                     tun_interface_name: None,
                 },
             )
@@ -3089,6 +3143,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -3135,6 +3190,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -3182,6 +3238,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )
@@ -3233,6 +3290,7 @@ mod tests {
                 tun_ipv6: false,
                 block_quic: false,
                 bypass_lan: false,
+                direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
             },
         )

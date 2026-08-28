@@ -78,6 +78,7 @@ pub fn update_settings(
     block_quic: Option<bool>,
     udp_tls_compat: Option<bool>,
     bypass_lan: Option<bool>,
+    direct_ip_strategy: Option<String>,
     close_to_tray: Option<bool>,
     launch_at_login: Option<bool>,
     silent_start: Option<bool>,
@@ -104,6 +105,7 @@ pub fn update_settings(
     let mut route_final_changed = false;
     let mut find_process_changed = false;
     let mut bypass_lan_changed = false;
+    let mut direct_ip_strategy_changed = false;
     let mut close_connections_changed = false;
     let settings = state
         .with_store_mut(|store| {
@@ -174,6 +176,18 @@ pub fn update_settings(
                 if store.settings.bypass_lan != v {
                     bypass_lan_changed = true;
                     store.settings.bypass_lan = v;
+                }
+            }
+            if let Some(raw) = direct_ip_strategy {
+                if let Some(strategy) = crate::domain::DirectIpStrategy::parse(&raw) {
+                    if store.settings.direct_ip_strategy != strategy {
+                        direct_ip_strategy_changed = true;
+                        store.settings.direct_ip_strategy = strategy;
+                        crate::app_log::info(
+                            "settings",
+                            format!("direct IP strategy → {}", strategy.as_str()),
+                        );
+                    }
                 }
             }
             if let Some(v) = close_to_tray {
@@ -332,6 +346,7 @@ pub fn update_settings(
     let need_restart = route_final_changed
         || find_process_changed
         || bypass_lan_changed
+        || direct_ip_strategy_changed
         || close_connections_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
@@ -822,6 +837,7 @@ pub async fn generate_singbox_config(
             tun_ipv6: settings.tun_ipv6_enabled,
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
+            direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
@@ -948,6 +964,7 @@ pub async fn preview_singbox_config(
             tun_ipv6: settings.tun_ipv6_enabled,
             block_quic: settings.block_quic,
             bypass_lan: settings.bypass_lan,
+            direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {

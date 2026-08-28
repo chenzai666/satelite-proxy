@@ -279,6 +279,12 @@ const en = {
   "settings.bypassLan": "Bypass localhost and LAN",
   "settings.bypassLanDesc":
     "Built-in direct rules for localhost and private network segments (loopback, 192.168.x / 10.x / 172.16–31.x, link-local), applied after your rule sets. On by default.",
+  "settings.directIpStrategy": "Direct IP strategy",
+  "settings.directIpStrategyDesc":
+    "Controls only rule-matched direct sites. Saving restarts a running core so existing IPv6 dial attempts do not persist.",
+  "settings.directIpPreferIpv4": "Dual-stack · prefer IPv4",
+  "settings.directIpIpv4Only": "IPv4 only",
+  "settings.directIpSystem": "System default",
   "settings.extraInbounds": "Multi-listen ports",
   "settings.extraInboundsEmpty":
     "No extra listeners yet. Add one so sing-box listens on more ports.",
@@ -1084,6 +1090,12 @@ const zh: Record<MessageKey, string> = {
   "settings.bypassLan": "绕过本地和局域网",
   "settings.bypassLanDesc":
     "内置直连规则覆盖 localhost 与局域网段（回环、192.168.x / 10.x / 172.16–31.x、链路本地地址），在规则集之后生效。默认开启。",
+  "settings.directIpStrategy": "直连 IP 策略",
+  "settings.directIpStrategyDesc":
+    "仅影响规则命中直连的网站；保存后会重启运行中的核心，避免旧的 IPv6 拨号继续存在。",
+  "settings.directIpPreferIpv4": "双栈 · 优先 IPv4",
+  "settings.directIpIpv4Only": "仅 IPv4",
+  "settings.directIpSystem": "系统默认",
   "settings.extraInbounds": "多监听端口",
   "settings.extraInboundsEmpty": "暂无额外监听，新增端口可让 sing-box 同时监听多个端口。",
   "settings.extraInboundsDesc":

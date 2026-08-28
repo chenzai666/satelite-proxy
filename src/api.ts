@@ -268,6 +268,8 @@ export interface SettingsUpdatePayload {
   udpTlsCompat?: boolean | null;
   /** Bypass localhost and LAN segments with built-in direct rules. */
   bypassLan?: boolean | null;
+  /** Direct-outbound IP family: prefer IPv4 | IPv4 only | system default. */
+  directIpStrategy?: import("./types").DirectIpStrategy | null;
   closeToTray?: boolean | null;
   launchAtLogin?: boolean | null;
   silentStart?: boolean | null;
@@ -323,6 +325,7 @@ function scheduleSettingsWrite() {
       blockQuic: payload.blockQuic ?? null,
       udpTlsCompat: payload.udpTlsCompat ?? null,
       bypassLan: payload.bypassLan ?? null,
+      directIpStrategy: payload.directIpStrategy ?? null,
       closeToTray: payload.closeToTray ?? null,
       launchAtLogin: payload.launchAtLogin ?? null,
       silentStart: payload.silentStart ?? null,

@@ -32,6 +32,7 @@ import type {
   CoreDownloadProgress,
   CoreInfo,
   CoreKind,
+  DirectIpStrategy,
   DiagnosticIssue,
   ExtraInbound,
   HeroStyle,
@@ -97,6 +98,9 @@ export function SettingsPage() {
   const [udpTlsCompat, setUdpTlsCompat] = useState(false);
   /** Bypass localhost and LAN segments with built-in direct rules. */
   const [bypassLan, setBypassLan] = useState(true);
+  /** IP family used when a Rule-mode direct site resolves a domain. */
+  const [directIpStrategy, setDirectIpStrategy] =
+    useState<DirectIpStrategy>("prefer_ipv4");
   /** Extra inbound drafts — applied on card save (needs core restart). */
   const [extra, setExtra] = useState<ExtraInbound[]>([]);
   // Extra-inbound editor modal (add / edit share one form).
@@ -244,6 +248,7 @@ export function SettingsPage() {
         setBlockQuic(!!s.block_quic);
         setUdpTlsCompat(!!s.udp_tls_compat);
         setBypassLan(s.bypass_lan !== false);
+        setDirectIpStrategy(s.direct_ip_strategy ?? "prefer_ipv4");
         setExtra(s.extra_inbounds ?? []);
       })
       .catch((e) => setError(typeof e === "string" ? e : String(e)));
@@ -363,6 +368,7 @@ export function SettingsPage() {
       !!settings.block_quic !== blockQuic ||
       !!settings.udp_tls_compat !== udpTlsCompat ||
       (settings.bypass_lan !== false) !== bypassLan ||
+      (settings.direct_ip_strategy ?? "prefer_ipv4") !== directIpStrategy ||
       !sameInbounds(settings.extra_inbounds ?? [], extra);
     if (!dirty) return;
     // Invalid drafts (mid-typing or left behind): surface why we can't apply
@@ -400,6 +406,7 @@ export function SettingsPage() {
         blockQuic,
         udpTlsCompat,
         bypassLan,
+        directIpStrategy,
       });
       setSettings(s);
       // These options are consumed when sing-box starts; apply them together.
@@ -415,7 +422,7 @@ export function SettingsPage() {
       // Pick up edits made while we were applying.
       void autoApplyRef.current();
     }
-  }, [allowLan, api, blockQuic, bypassLan, extra, mixed, probe, settings, t, tunIpv6, tunStack, udpTlsCompat]);
+  }, [allowLan, api, blockQuic, bypassLan, directIpStrategy, extra, mixed, probe, settings, t, tunIpv6, tunStack, udpTlsCompat]);
 
   autoApplyRef.current = autoApplyNetwork;
 
@@ -427,7 +434,7 @@ export function SettingsPage() {
     return () => clearTimeout(timer);
     // Fire on any draft change; autoApplyNetwork itself decides if there is
     // anything valid and dirty to commit.
-  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, udpTlsCompat, bypassLan, extra]);
+  }, [settings, mixed, allowLan, api, probe, tunStack, tunIpv6, blockQuic, udpTlsCompat, bypassLan, directIpStrategy, extra]);
 
   // —— Extra inbound listeners (draft rows + modal editor) ——
 
@@ -1329,6 +1336,29 @@ export function SettingsPage() {
                   disabled={busy}
                   onChange={setBypassLan}
                 />
+              </div>
+              <div className="field field-span-2">
+                <span>{t("settings.directIpStrategy")}</span>
+                <SolidSelect
+                  value={directIpStrategy}
+                  onChange={(value) => setDirectIpStrategy(value as DirectIpStrategy)}
+                  aria-label={t("settings.directIpStrategy")}
+                  disabled={busy || customRuntime}
+                  options={[
+                    {
+                      value: "prefer_ipv4",
+                      label: t("settings.directIpPreferIpv4"),
+                    },
+                    {
+                      value: "ipv4_only",
+                      label: t("settings.directIpIpv4Only"),
+                    },
+                    { value: "system", label: t("settings.directIpSystem") },
+                  ]}
+                />
+                <span className="field-hint muted">
+                  {t("settings.directIpStrategyDesc")}
+                </span>
               </div>
               {netDiagnostics.length > 0 && (
                 <div className="field-span-2 diagnostic-banner-list">

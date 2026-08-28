@@ -1521,6 +1521,7 @@ fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
         tun_ipv6: store.settings.tun_ipv6_enabled,
         block_quic: store.settings.block_quic,
         bypass_lan: store.settings.bypass_lan,
+        direct_ip_strategy: store.settings.direct_ip_strategy,
         tun_interface_name: None,
     }
 }

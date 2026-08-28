@@ -239,6 +239,8 @@ export interface ManualNodeDraft {
 
 /** Clash-style routing mode. */
 export type OutboundMode = "rule" | "global" | "direct";
+/** IP family used by the generated direct outbound. */
+export type DirectIpStrategy = "prefer_ipv4" | "ipv4_only" | "system";
 
 /** Extra sing-box inbound listener (settings-managed). */
 export interface ExtraInbound {
@@ -280,6 +282,8 @@ export interface AppSettings {
   /** Bypass localhost and LAN segments with built-in direct rules. On by
    * default; applied in Rule mode only, after the rule sets. */
   bypass_lan?: boolean;
+  /** Direct-outbound domain dialing: prefer IPv4 | IPv4 only | system default. */
+  direct_ip_strategy?: DirectIpStrategy;
   /** rule | global | direct */
   outbound_mode?: OutboundMode;
   /** route.final in Rule mode: proxy | direct | block */

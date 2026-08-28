@@ -28,6 +28,9 @@ const MAIN_GROUP: &str = "proxy";
 /// Dedicated kernel latency group. The main selector can point to this group
 /// while still remaining manually switchable through the Clash API.
 const AUTO_GROUP: &str = "auto";
+/// Explicit Direct proxy so its IP family can follow the shared setting.
+/// Mihomo's magic `DIRECT` target cannot carry `ip-version`.
+const DIRECT_PROXY: &str = "Satelite-DIRECT";
 /// Built-in remote DoH pool (Clash queries the entries concurrently,
 /// fastest answer wins). Every entry egresses through the main proxy group
 /// — direct DoH is unreachable on censored networks (see build_dns).
@@ -96,7 +99,7 @@ pub fn build_mihomo_config(
     let probe_url = probe_url_or_default(opts);
     let mut main_members = vec![AUTO_GROUP.to_string()];
     main_members.extend(tags.clone());
-    main_members.push("DIRECT".into());
+    main_members.push(DIRECT_PROXY.into());
     let main_default = if opts.auto_select.is_kernel() {
         AUTO_GROUP
     } else {
@@ -152,15 +155,12 @@ pub fn build_mihomo_config(
     if !opts.extra_inbounds.is_empty() {
         root.insert(str_yaml("listeners"), listeners_block(opts));
     }
-    root.insert(
-        str_yaml("proxies"),
-        Yaml::Sequence(
-            supported
-                .iter()
-                .map(|n| Yaml::Mapping(node_to_mihomo_proxy(n)))
-                .collect(),
-        ),
-    );
+    let mut proxies: Vec<Yaml> = supported
+        .iter()
+        .map(|node| Yaml::Mapping(node_to_mihomo_proxy(node)))
+        .collect();
+    proxies.push(Yaml::Mapping(direct_proxy(opts)));
+    root.insert(str_yaml("proxies"), Yaml::Sequence(proxies));
     root.insert(
         str_yaml("proxy-groups"),
         Yaml::Sequence(groups.into_iter().map(Yaml::Mapping).collect()),
@@ -291,6 +291,7 @@ fn build_remote_policy_groups(
         MAIN_GROUP.to_string(),
         AUTO_GROUP.to_string(),
         "DIRECT".to_string(),
+        DIRECT_PROXY.to_string(),
         "REJECT".to_string(),
         "GLOBAL".to_string(),
     ]);
@@ -313,7 +314,7 @@ fn build_remote_policy_groups(
         let mut members = vec![
             MAIN_GROUP.to_string(),
             AUTO_GROUP.to_string(),
-            "DIRECT".into(),
+            DIRECT_PROXY.into(),
             "REJECT".into(),
         ];
         members.extend(node_tags.iter().cloned());
@@ -357,7 +358,7 @@ fn unique_policy_group_name(
 
 fn remote_policy_default(set: &RuleSet, nodes: &[ProxyNode], tags: &[String]) -> String {
     match set.strategy {
-        RuleSetStrategy::Direct => "DIRECT".into(),
+        RuleSetStrategy::Direct => DIRECT_PROXY.into(),
         RuleSetStrategy::Block => "REJECT".into(),
         RuleSetStrategy::Node => set
             .node_id
@@ -405,12 +406,12 @@ fn build_rules(
     }
     let final_target = match opts.outbound_mode {
         OutboundMode::Rule => match opts.normalized_route_final() {
-            "direct" => "DIRECT".to_string(),
+            "direct" => DIRECT_PROXY.to_string(),
             "block" => "REJECT".to_string(),
             _ => MAIN_GROUP.to_string(),
         },
         OutboundMode::Global => MAIN_GROUP.to_string(),
-        OutboundMode::Direct => "DIRECT".to_string(),
+        OutboundMode::Direct => DIRECT_PROXY.to_string(),
     };
     rules.push(format!("MATCH,{final_target}"));
     rules
@@ -753,14 +754,14 @@ fn bypass_lan_rules() -> Vec<String> {
     ];
     const V6: [&str; 4] = ["::1/128", "fc00::/7", "fe80::/10", "ff00::/8"];
     let mut rules = vec![
-        "DOMAIN,localhost,DIRECT".to_string(),
-        "DOMAIN-SUFFIX,local,DIRECT".to_string(),
+        format!("DOMAIN,localhost,{DIRECT_PROXY}"),
+        format!("DOMAIN-SUFFIX,local,{DIRECT_PROXY}"),
     ];
     for cidr in V4 {
-        rules.push(format!("IP-CIDR,{cidr},DIRECT,no-resolve"));
+        rules.push(format!("IP-CIDR,{cidr},{DIRECT_PROXY},no-resolve"));
     }
     for cidr in V6 {
-        rules.push(format!("IP-CIDR6,{cidr},DIRECT,no-resolve"));
+        rules.push(format!("IP-CIDR6,{cidr},{DIRECT_PROXY},no-resolve"));
     }
     rules
 }
@@ -924,6 +925,23 @@ fn dns_pattern(matcher: DomainMatcher, payload: &str) -> Option<String> {
 }
 
 // —— proxies ——
+
+/// An explicit direct proxy has the same routing behavior as Mihomo's magic
+/// `DIRECT`, but accepts `ip-version` for actual domain dialing.
+fn direct_proxy(opts: &BuildOptions) -> Mapping {
+    let mut proxy = Mapping::new();
+    proxy.insert(str_yaml("name"), str_yaml(DIRECT_PROXY));
+    proxy.insert(str_yaml("type"), str_yaml("direct"));
+    let ip_version = match opts.direct_ip_strategy {
+        crate::domain::DirectIpStrategy::PreferIpv4 => Some("ipv4-prefer"),
+        crate::domain::DirectIpStrategy::Ipv4Only => Some("ipv4"),
+        crate::domain::DirectIpStrategy::System => None,
+    };
+    if let Some(ip_version) = ip_version {
+        proxy.insert(str_yaml("ip-version"), str_yaml(ip_version));
+    }
+    proxy
+}
 
 /// Map one node to a Clash proxy mapping (field names mirror what our own
 /// `subscription::clash` parser reads — the authoritative inverse).
@@ -1390,6 +1408,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: true,
+            direct_ip_strategy: crate::domain::DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         }
     }
@@ -1439,9 +1458,46 @@ mod tests {
         assert_eq!(doc["proxies"][0]["type"].as_str(), Some("ss"));
         assert_eq!(doc["proxies"][0]["cipher"].as_str(), Some("aes-256-gcm"));
         assert_eq!(doc["proxies"][0]["udp"].as_bool(), Some(true));
+        let direct = doc["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|proxy| proxy["name"].as_str() == Some(DIRECT_PROXY))
+            .expect("configured direct proxy");
+        assert_eq!(direct["type"].as_str(), Some("direct"));
+        assert_eq!(direct["ip-version"].as_str(), Some("ipv4-prefer"));
         // Final rule hits the main group.
         let rules = rules_of(&doc);
         assert_eq!(rules.last().unwrap(), "MATCH,proxy");
+    }
+
+    #[test]
+    fn direct_proxy_honors_ip_strategy() {
+        let node = ss_node("n1");
+
+        let mut ipv4_only = default_opts();
+        ipv4_only.direct_ip_strategy = crate::domain::DirectIpStrategy::Ipv4Only;
+        let built = build_mihomo_config(&[node.clone()], &ipv4_only).expect("build IPv4-only");
+        let doc = parse(&built);
+        let direct = doc["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|proxy| proxy["name"].as_str() == Some(DIRECT_PROXY))
+            .expect("configured direct proxy");
+        assert_eq!(direct["ip-version"].as_str(), Some("ipv4"));
+
+        let mut system = default_opts();
+        system.direct_ip_strategy = crate::domain::DirectIpStrategy::System;
+        let built = build_mihomo_config(&[node], &system).expect("build system-default");
+        let doc = parse(&built);
+        let direct = doc["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|proxy| proxy["name"].as_str() == Some(DIRECT_PROXY))
+            .expect("configured direct proxy");
+        assert!(direct["ip-version"].is_null());
     }
 
     #[test]
@@ -1747,7 +1803,7 @@ mod tests {
             assert_eq!(group["type"].as_str(), Some("select"));
             assert!(group["proxies"].as_sequence().is_some_and(|members| members
                 .iter()
-                .any(|member| member.as_str() == Some("DIRECT"))));
+                .any(|member| member.as_str() == Some(DIRECT_PROXY))));
         }
     }
 
@@ -1833,10 +1889,10 @@ mod tests {
         opts.block_quic = true;
         let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
-        assert!(rules.contains(&"DOMAIN,localhost,DIRECT".to_string()));
-        assert!(rules.contains(&"IP-CIDR,192.168.0.0/16,DIRECT,no-resolve".to_string()));
+        assert!(rules.contains(&format!("DOMAIN,localhost,{DIRECT_PROXY}")));
+        assert!(rules.contains(&format!("IP-CIDR,192.168.0.0/16,{DIRECT_PROXY},no-resolve")));
         assert!(
-            rules.contains(&"IP-CIDR6,fe80::/10,DIRECT,no-resolve".to_string()),
+            rules.contains(&format!("IP-CIDR6,fe80::/10,{DIRECT_PROXY},no-resolve")),
             "v6 private bypass missing: {rules:?}"
         );
         // fake-ip range must NOT be bypassed (mihomo terminates it internally).
@@ -1874,7 +1930,7 @@ mod tests {
         opts.outbound_mode = OutboundMode::Direct;
         let built = build_mihomo_config(&[node], &opts).expect("build");
         let rules = rules_of(&parse(&built));
-        assert_eq!(rules.last().unwrap(), "MATCH,DIRECT");
+        assert_eq!(rules.last().unwrap(), &format!("MATCH,{DIRECT_PROXY}"));
 
         let mut opts = default_opts();
         opts.route_final = "block".into();

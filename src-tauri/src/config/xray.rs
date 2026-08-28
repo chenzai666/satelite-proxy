@@ -149,7 +149,11 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
     let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
     let inbounds = build_inbounds(opts);
 
-    outbounds.push(json!({ "tag": "direct", "protocol": "freedom" }));
+    let mut direct = json!({ "tag": "direct", "protocol": "freedom" });
+    if let Some(domain_strategy) = xray_direct_domain_strategy(opts.direct_ip_strategy) {
+        direct["settings"] = json!({ "domainStrategy": domain_strategy });
+    }
+    outbounds.push(direct);
     outbounds.push(json!({ "tag": "block", "protocol": "blackhole" }));
     if opts.tun_enabled {
         // Hand raw UDP/53 traffic arriving through the tun inbound to the
@@ -282,6 +286,17 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         outbound_tags: tags,
         selected_tag,
     })
+}
+
+/// Map Satelite's portable direct-dial policy onto Xray Freedom. `ForceIPv4`
+/// is deliberate for the IPv4-only choice: Xray's `UseIPv4` may fall back to
+/// the system dialer when a name has no A record, which could reintroduce IPv6.
+fn xray_direct_domain_strategy(strategy: crate::domain::DirectIpStrategy) -> Option<&'static str> {
+    match strategy {
+        crate::domain::DirectIpStrategy::PreferIpv4 => Some("UseIPv4v6"),
+        crate::domain::DirectIpStrategy::Ipv4Only => Some("ForceIPv4"),
+        crate::domain::DirectIpStrategy::System => None,
+    }
 }
 
 fn xray_log_level(level: &str) -> &'static str {
@@ -1549,6 +1564,7 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: true,
+            direct_ip_strategy: crate::domain::DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
         }
     }
@@ -1567,11 +1583,30 @@ mod tests {
         assert_eq!(outbounds.len(), 3); // node + direct + block
         assert_eq!(outbounds[1]["tag"], "direct");
         assert_eq!(outbounds[1]["protocol"], "freedom");
+        assert_eq!(outbounds[1]["settings"]["domainStrategy"], "UseIPv4v6");
         assert_eq!(outbounds[2]["protocol"], "blackhole");
         // final rule routes to the selected node (no selector in Xray)
         let rules = v["routing"]["rules"].as_array().unwrap();
         let last = rules.last().unwrap();
         assert_eq!(last["outboundTag"], built.selected_tag);
+    }
+
+    #[test]
+    fn direct_outbound_honors_ip_strategy() {
+        let nodes = vec![vless_node("n1", None)];
+
+        let mut ipv4_only = default_opts();
+        ipv4_only.direct_ip_strategy = crate::domain::DirectIpStrategy::Ipv4Only;
+        let built = build_xray_config(&nodes, &ipv4_only).expect("build IPv4-only config");
+        assert_eq!(
+            built.value["outbounds"][1]["settings"]["domainStrategy"],
+            "ForceIPv4"
+        );
+
+        let mut system = default_opts();
+        system.direct_ip_strategy = crate::domain::DirectIpStrategy::System;
+        let built = build_xray_config(&nodes, &system).expect("build system-default config");
+        assert!(built.value["outbounds"][1].get("settings").is_none());
     }
 
     #[test]
