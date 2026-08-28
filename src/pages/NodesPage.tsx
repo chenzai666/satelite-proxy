@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  deleteNodes,
   generateSingboxConfig,
+  getNodeShareUri,
   getProxyStatus,
   getSettings,
   listCustomConfigNodes,
@@ -10,13 +12,17 @@ import {
   testCustomNodesLatency,
   testNodesLatency,
 } from "../api";
+import { EditLocalNodesModal } from "../components/EditLocalNodesModal";
 import { GlassButton } from "../components/GlassButton";
+import { NodeContextMenu, type NodeContextMenuState } from "../components/NodeContextMenu";
+import { NodeShareModal } from "../components/NodeShareModal";
 import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { filterCustomNodes, applyCustomLatency, type CustomLatencyMap } from "../customNodes";
+import { copyNodeShareText } from "../nodeShare";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
@@ -97,6 +103,12 @@ export function NodesPage() {
   // core not running) — shown as "start core to test" instead of "timeout".
   const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
   const [columnCount, setColumnCount] = useState(gridColumns);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
+  const [shareNode, setShareNode] = useState<ProxyNode | null>(null);
+  const [editNode, setEditNode] = useState<ProxyNode | null>(null);
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
 
   useEffect(() => {
     const update = () => setColumnCount(gridColumns());
@@ -136,6 +148,7 @@ export function NodesPage() {
 
   useEffect(() => {
     setLoading(true);
+    setSelectedIds(new Set());
     const timer = window.setTimeout(() => void reload(false), 150);
     return () => window.clearTimeout(timer);
     // nodes.length changes as pages append and must not restart the first page.
@@ -165,7 +178,7 @@ export function NodesPage() {
   });
 
   async function onSelect(id: string) {
-    if (busyId || switching) return;
+    if (busyId || switching || batchBusy) return;
     setBusyId(id);
     setError(null);
     try {
@@ -196,14 +209,13 @@ export function NodesPage() {
     }
   }
 
-  async function onTestLatency() {
-    if (testing || displayed.length === 0) return;
+  async function onTestNodes(ids: string[]) {
+    if (testing || ids.length === 0) return;
     setTesting(true);
     setError(null);
     // no top banner / completion message
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
     // loaded list because they are not in the node store.
-    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
     const idSet = new Set(ids);
     setTestingIds(idSet);
 
@@ -256,6 +268,85 @@ export function NodesPage() {
       // re-reading the latency-less extracted list.
       if (!customRuntime) await reload(false);
     }
+  }
+
+  async function onTestLatency() {
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
+    await onTestNodes(ids);
+  }
+
+  function toggleSelected(id: string) {
+    if (customRuntime || batchBusy) return;
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const selectAllMatching = useCallback(async () => {
+    if (customRuntime || batchBusy) return;
+    try {
+      setSelectedIds(new Set(await listNodeIds(query)));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }, [batchBusy, customRuntime, query]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      void selectAllMatching();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectAllMatching]);
+
+  async function deleteSelected(ids: string[]) {
+    if (batchBusy || ids.length === 0) return;
+    const confirmed = window.confirm(
+      ids.length === 1
+        ? t("nodes.deleteConfirm", { name: nodes.find((node) => node.id === ids[0])?.name ?? ids[0] })
+        : t("nodes.deleteSelectedConfirm", { n: ids.length }),
+    );
+    if (!confirmed) return;
+    setBatchBusy(true);
+    setError(null);
+    try {
+      await deleteNodes(ids);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      await reload(false);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function copyShareLink(node: ProxyNode) {
+    try {
+      await copyNodeShareText(await getNodeShareUri(node.id));
+      setShareNotice(t("nodes.shareCopied"));
+      window.setTimeout(() => setShareNotice(null), 2200);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  function openNodeEditor(node: ProxyNode) {
+    if (!node.subscription_id) {
+      setError("节点来源未知，无法编辑");
+      return;
+    }
+    setEditNode(node);
   }
 
   return (
@@ -325,6 +416,30 @@ export function NodesPage() {
         </div>
       </header>
 
+      {!customRuntime && selectedIds.size > 0 && (
+        <div className="node-batch-toolbar" role="status">
+          <span>{t("nodes.selectedCount", { n: selectedIds.size })}</span>
+          <GlassButton
+            disabled={testing || batchBusy}
+            onClick={() => void onTestNodes([...selectedIds])}
+          >
+            {t("nodes.testSelected")}
+          </GlassButton>
+          <GlassButton
+            variant="danger"
+            disabled={batchBusy}
+            onClick={() => void deleteSelected([...selectedIds])}
+          >
+            {t("nodes.deleteSelected")}
+          </GlassButton>
+          <GlassButton disabled={batchBusy} onClick={() => setSelectedIds(new Set())}>
+            {t("nodes.clearSelection")}
+          </GlassButton>
+        </div>
+      )}
+
+      {shareNotice && <div className="banner" role="status">{shareNotice}</div>}
+
       {error && (
         <ErrorModal message={error} onClose={() => setError(null)} />
       )}
@@ -368,14 +483,35 @@ export function NodesPage() {
               {displayed.slice(listRange.start, listRange.end).map((n) => {
                 const active = n.id === currentId;
                 const isTesting = testingIds.has(n.id);
+                const selected = selectedIds.has(n.id);
                 return (
                   <tr
                     key={n.id}
-                    className={`node-virtual-row ${active ? "row-active" : ""}`}
-                    onClick={customRuntime ? undefined : () => void onSelect(n.id)}
-                    style={{ cursor: customRuntime ? "default" : "pointer" }}
+                    className={`node-virtual-row ${active ? "row-active" : ""} ${selected ? "row-selected" : ""}`}
+                    onClick={(event) => {
+                      if (!customRuntime && (event.ctrlKey || event.metaKey)) toggleSelected(n.id);
+                    }}
+                    onContextMenu={(event) => {
+                      if (customRuntime) return;
+                      event.preventDefault();
+                      setContextMenu({ node: n, x: event.clientX, y: event.clientY });
+                    }}
                   >
-                    <td>{active ? "●" : "○"}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="node-select-dot"
+                        aria-label={`切换到 ${n.name}`}
+                        aria-pressed={active}
+                        disabled={customRuntime || busyId === n.id || batchBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onSelect(n.id);
+                        }}
+                      >
+                        {active ? "●" : "○"}
+                      </button>
+                    </td>
                     <td>
                       <div className="node-list-name">{n.name}</div>
                       {n.subscription_name ? (
@@ -390,12 +526,24 @@ export function NodesPage() {
                     <td>{n.server}</td>
                     <td>{n.port}</td>
                     <td className="node-list-latency">
-                      <LatencyDisplay
-                        ms={n.latency_ms}
-                        latencyAt={n.latency_at}
-                        testing={isTesting}
-                        unsupported={unsupportedIds.has(n.id)}
-                      />
+                      <button
+                        type="button"
+                        className="node-latency-action"
+                        title={t("nodes.testOneLatency")}
+                        aria-label={`${t("nodes.testOneLatency")}：${n.name}`}
+                        disabled={testing || customRuntime || batchBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void onTestNodes([n.id]);
+                        }}
+                      >
+                        <LatencyDisplay
+                          ms={n.latency_ms}
+                          latencyAt={n.latency_at}
+                          testing={isTesting}
+                          unsupported={unsupportedIds.has(n.id)}
+                        />
+                      </button>
                     </td>
                   </tr>
                 );
@@ -420,16 +568,34 @@ export function NodesPage() {
             {displayed.slice(gridRange.start, gridRange.end).map((n) => {
               const active = n.id === currentId;
               const isTesting = testingIds.has(n.id);
+              const selected = selectedIds.has(n.id);
               return (
-                <button
+                <div
                   key={n.id}
-                  type="button"
-                  className={`node-card ${active ? "active" : ""}`}
-                  onClick={() => void onSelect(n.id)}
-                  disabled={customRuntime || busyId === n.id}
+                  className={`node-card ${active ? "active" : ""} ${selected ? "selected" : ""}`}
+                  onClick={(event) => {
+                    if (!customRuntime && (event.ctrlKey || event.metaKey)) toggleSelected(n.id);
+                  }}
+                  onContextMenu={(event) => {
+                    if (customRuntime) return;
+                    event.preventDefault();
+                    setContextMenu({ node: n, x: event.clientX, y: event.clientY });
+                  }}
                 >
                   <div className="node-card-top">
-                    <span className="node-dot">{active ? "●" : "○"}</span>
+                    <button
+                      type="button"
+                      className="node-select-dot"
+                      aria-label={`切换到 ${n.name}`}
+                      aria-pressed={active}
+                      disabled={customRuntime || busyId === n.id || batchBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onSelect(n.id);
+                      }}
+                    >
+                      {active ? "●" : "○"}
+                    </button>
                     <div className="node-card-meta">
                       <code>{n.protocol}</code>
                     </div>
@@ -441,16 +607,26 @@ export function NodesPage() {
                     <span className="node-sub-label" title={n.subscription_name ?? ""}>
                       {n.subscription_name}
                     </span>
-                    <span className="node-card-latency">
+                    <button
+                      type="button"
+                      className="node-latency-action node-card-latency"
+                      title={t("nodes.testOneLatency")}
+                      aria-label={`${t("nodes.testOneLatency")}：${n.name}`}
+                      disabled={testing || customRuntime || batchBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onTestNodes([n.id]);
+                      }}
+                    >
                       <LatencyDisplay
                         ms={n.latency_ms}
                         latencyAt={n.latency_at}
                         testing={isTesting}
                         unsupported={unsupportedIds.has(n.id)}
                       />
-                    </span>
+                    </button>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -466,6 +642,23 @@ export function NodesPage() {
           </GlassButton>
         </div>
       )}
+      <NodeContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        onEdit={openNodeEditor}
+        onCopyLink={(node) => void copyShareLink(node)}
+        onShowQr={setShareNode}
+        onDelete={(node) => void deleteSelected([node.id])}
+      />
+      <NodeShareModal node={shareNode} onClose={() => setShareNode(null)} />
+      <EditLocalNodesModal
+        open={!!editNode}
+        profileId={editNode?.subscription_id ?? null}
+        profileName={editNode?.subscription_name ?? ""}
+        initialNodeId={editNode?.id ?? null}
+        onClose={() => setEditNode(null)}
+        onNodesChanged={() => void reload(false)}
+      />
     </div>
   );
 }

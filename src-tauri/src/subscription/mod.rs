@@ -10,7 +10,7 @@ mod yaml_util;
 pub use clash::parse_clash_yaml;
 pub use manual::{draft_to_node, node_to_draft, parse_manual_draft, parse_single_uri};
 pub use singbox::{looks_like_singbox_json, parse_singbox_json, validate_complete_singbox_config};
-pub use uri::parse_uri_list;
+pub use uri::{parse_uri_list, serialize_share_uri};
 
 use crate::domain::{ParseResult, SubscriptionFormat};
 use crate::error::{AppError, AppResult};

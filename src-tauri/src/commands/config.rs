@@ -6,7 +6,7 @@ use crate::config::{
 use crate::domain::{AppSettings, ManualNodeDraft, ProxyNode, RuntimeSource, SubscriptionSource};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::subscription::{draft_to_node, node_to_draft, parse_singbox_json};
+use crate::subscription::{draft_to_node, node_to_draft, parse_singbox_json, serialize_share_uri};
 use serde::Serialize;
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager, State};
@@ -350,10 +350,10 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
         let state = worker_app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
-        let (settings, was_kernel, _) = state
+        let (settings, restart_needed, _) = state
             .select_current_node_serialized(&node_id, true)
             .map_err(|e| e.to_string())?;
-        if was_kernel {
+        if restart_needed {
             crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
         }
         Ok(settings)
@@ -381,6 +381,24 @@ pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNo
                 .find_node(&id)
                 .map(node_to_draft)
                 .ok_or_else(|| AppError::NotFound(id.clone()))
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Return a portable node share URI for local copy / QR rendering. The URI is
+/// generated from the normalized node only; no local paths or app settings are
+/// included. Protocols without an interoperable share format return an error.
+#[tauri::command]
+pub fn get_node_share_uri(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    state
+        .with_store(|store| {
+            let node = store
+                .find_node(&id)
+                .ok_or_else(|| AppError::NotFound(id.clone()))?;
+            serialize_share_uri(node).map_err(|reason| AppError::InvalidProxy {
+                name: node.name.clone(),
+                reason,
+            })
         })
         .map_err(|e| e.to_string())
 }
@@ -423,7 +441,7 @@ pub fn update_node(
 
 #[tauri::command]
 pub fn delete_node(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let (node, enabled) = state
+    let (node, enabled, no_enabled_nodes) = state
         .with_store_mut(|store| {
             let enabled = store.nodes.iter().any(|entry| {
                 entry.node.id == id
@@ -432,10 +450,18 @@ pub fn delete_node(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
                         .iter()
                         .any(|sub| sub.id == entry.subscription_id && sub.enabled)
             });
-            Ok((store.delete_node(&id)?, enabled))
+            let node = store.delete_node(&id)?;
+            Ok((node, enabled, store.enabled_nodes().is_empty()))
         })
         .map_err(|e| e.to_string())?;
-    if enabled && state.is_core_running() {
+    if state.is_core_running() && no_enabled_nodes {
+        crate::app_log::info(
+            "subscription",
+            "last enabled node deleted; stopping proxy core and system proxy",
+        );
+        state.stop_proxy().map_err(|e| e.to_string())?;
+        crate::tray::refresh_icon(&app);
+    } else if enabled && state.is_core_running() {
         crate::app_log::info(
             "subscription",
             format!("{}: node deleted; queued core rebuild", node.name),
@@ -443,6 +469,60 @@ pub fn delete_node(app: AppHandle, state: State<'_, AppState>, id: String) -> Re
         crate::rule_apply::request_restart(app, Vec::new());
     }
     Ok(())
+}
+
+/// Delete multiple locally stored nodes in one operation. The caller must ask
+/// for confirmation in the UI; batching keeps a running core to one rebuild.
+#[tauri::command]
+pub fn delete_nodes(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<usize, String> {
+    let ids: std::collections::BTreeSet<String> =
+        ids.into_iter().filter(|id| !id.trim().is_empty()).collect();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let (deleted, enabled, no_enabled_nodes) = state
+        .with_store_mut(|store| {
+            // Validate the complete batch before the first mutation so a stale
+            // selection cannot produce a partial delete.
+            for id in &ids {
+                if store.find_node(id).is_none() {
+                    return Err(AppError::NotFound(id.clone()));
+                }
+            }
+            let enabled = store.nodes.iter().any(|entry| {
+                ids.contains(&entry.node.id)
+                    && store
+                        .subscriptions
+                        .iter()
+                        .any(|sub| sub.id == entry.subscription_id && sub.enabled)
+            });
+            let mut deleted = 0;
+            for id in &ids {
+                store.delete_node(id)?;
+                deleted += 1;
+            }
+            Ok((deleted, enabled, store.enabled_nodes().is_empty()))
+        })
+        .map_err(|e| e.to_string())?;
+    if state.is_core_running() && no_enabled_nodes {
+        crate::app_log::info(
+            "subscription",
+            "last enabled node deleted; stopping proxy core and system proxy",
+        );
+        state.stop_proxy().map_err(|e| e.to_string())?;
+        crate::tray::refresh_icon(&app);
+    } else if enabled && state.is_core_running() {
+        crate::app_log::info(
+            "subscription",
+            format!("{deleted} nodes deleted; queued one core rebuild"),
+        );
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(deleted)
 }
 
 #[tauri::command]

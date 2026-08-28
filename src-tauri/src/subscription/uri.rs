@@ -6,6 +6,7 @@ use crate::domain::{
 };
 use crate::error::{AppError, AppResult};
 use base64::{engine::general_purpose, Engine as _};
+use serde_json::json;
 use std::collections::BTreeMap;
 use url::Url;
 
@@ -67,6 +68,434 @@ pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
         "anytls" => parse_anytls_uri(line),
         "snell" => parse_snell_uri(line),
         _ => Err(format!("unsupported uri scheme: {scheme}")),
+    }
+}
+
+/// Export one normalized node as a portable share URI. This deliberately
+/// produces standard URI schemes rather than exposing any application config
+/// or local file paths. Nodes that have no interoperable URI representation
+/// (WireGuard / Tor) are rejected instead of generating a misleading link.
+pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
+    let endpoint = share_endpoint(&node.server, node.port);
+    let fragment = share_component(&node.name);
+
+    match &node.config {
+        ProtocolConfig::Shadowsocks {
+            method,
+            password,
+            plugin,
+            plugin_opts,
+            ..
+        } => {
+            // The whole legacy payload is base64 encoded so it remains
+            // compatible with both v2rayN and the app's own URI importer.
+            let payload = general_purpose::URL_SAFE_NO_PAD.encode(format!(
+                "{}:{}@{}",
+                share_component(method),
+                share_component(password),
+                endpoint
+            ));
+            let mut query = Vec::new();
+            if let Some(plugin) = plugin.as_deref().filter(|value| !value.is_empty()) {
+                let value = match plugin_opts.as_deref().filter(|value| !value.is_empty()) {
+                    Some(options) => format!("{plugin};{options}"),
+                    None => plugin.to_string(),
+                };
+                query.push(("plugin", value));
+            }
+            Ok(share_uri("ss", &payload, None, query, &fragment))
+        }
+        ProtocolConfig::Vmess {
+            uuid,
+            alter_id,
+            security,
+        } => {
+            let (network, path, host) = vmess_transport(node.transport.as_ref());
+            let tls = node.tls.as_ref().filter(|tls| tls.enabled);
+            let payload = json!({
+                "v": "2",
+                "ps": node.name.clone(),
+                "add": node.server.clone(),
+                "port": node.port.to_string(),
+                "id": uuid,
+                "aid": alter_id.to_string(),
+                "scy": security,
+                "net": network,
+                "type": "none",
+                "host": host.unwrap_or_default(),
+                "path": path.unwrap_or_default(),
+                "tls": if tls.is_some() { "tls" } else { "none" },
+                "sni": tls.and_then(|value| value.server_name.as_deref()).unwrap_or_default(),
+                "alpn": tls.and_then(|value| value.alpn.as_ref()).map(|items| items.join(",")).unwrap_or_default(),
+                "fp": tls.and_then(|value| value.utls_fingerprint.as_deref()).unwrap_or_default(),
+            });
+            let encoded = general_purpose::STANDARD_NO_PAD.encode(payload.to_string());
+            Ok(format!("vmess://{encoded}"))
+        }
+        ProtocolConfig::Vless { uuid, flow, .. } => {
+            let mut query = transport_query(node.transport.as_ref());
+            query.push(("encryption", "none".into()));
+            push_vless_tls_query(&mut query, node.tls.as_ref());
+            if let Some(flow) = flow.as_deref().filter(|value| !value.is_empty()) {
+                query.push(("flow", flow.to_string()));
+            }
+            Ok(share_uri("vless", uuid, Some(&endpoint), query, &fragment))
+        }
+        ProtocolConfig::Trojan { password } => {
+            let mut query = transport_query(node.transport.as_ref());
+            push_tls_query(&mut query, node.tls.as_ref());
+            Ok(share_uri(
+                "trojan",
+                password,
+                Some(&endpoint),
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Hysteria2 {
+            password,
+            up_mbps,
+            down_mbps,
+            obfs,
+            obfs_password,
+        } => {
+            let mut query = Vec::new();
+            push_tls_query(&mut query, node.tls.as_ref());
+            push_optional_query(&mut query, "upmbps", up_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "downmbps", down_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "obfs", obfs.clone());
+            push_optional_query(&mut query, "obfs-password", obfs_password.clone());
+            Ok(share_uri(
+                "hysteria2",
+                password,
+                Some(&endpoint),
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Tuic {
+            uuid,
+            password,
+            congestion_control,
+            udp_relay_mode,
+            zero_rtt_handshake,
+        } => {
+            let mut query = Vec::new();
+            push_tls_query(&mut query, node.tls.as_ref());
+            push_optional_query(&mut query, "congestion_control", congestion_control.clone());
+            push_optional_query(&mut query, "udp_relay_mode", udp_relay_mode.clone());
+            if *zero_rtt_handshake {
+                query.push(("reduce_rtt", "1".into()));
+            }
+            Ok(share_user_password_uri(
+                "tuic",
+                Some(uuid),
+                Some(password),
+                &endpoint,
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Socks5 { username, password } => Ok(share_user_password_uri(
+            "socks5",
+            username.as_deref(),
+            password.as_deref(),
+            &endpoint,
+            Vec::new(),
+            &fragment,
+        )),
+        ProtocolConfig::Http {
+            username,
+            password,
+            path,
+        } => {
+            let mut query = Vec::new();
+            push_optional_query(&mut query, "path", path.clone());
+            let scheme = if node.tls.as_ref().is_some_and(|tls| tls.enabled) {
+                "https"
+            } else {
+                "http"
+            };
+            Ok(share_user_password_uri(
+                scheme,
+                username.as_deref(),
+                password.as_deref(),
+                &endpoint,
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Hysteria {
+            auth,
+            auth_base64,
+            up_mbps,
+            down_mbps,
+            obfs,
+        } => {
+            let mut query = Vec::new();
+            let encoded_auth = if *auth_base64 {
+                general_purpose::URL_SAFE_NO_PAD.encode(auth)
+            } else {
+                auth.clone()
+            };
+            query.push(("auth", encoded_auth));
+            if *auth_base64 {
+                query.push(("auth_base64", "1".into()));
+            }
+            push_tls_query(&mut query, node.tls.as_ref());
+            push_optional_query(&mut query, "upmbps", up_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "downmbps", down_mbps.map(u32::to_string));
+            push_optional_query(&mut query, "obfs", obfs.clone());
+            Ok(share_uri("hysteria", "", Some(&endpoint), query, &fragment))
+        }
+        ProtocolConfig::ShadowTls { version, password } => {
+            let mut query = vec![("version", version.to_string())];
+            push_tls_query(&mut query, node.tls.as_ref());
+            Ok(share_uri(
+                "shadowtls",
+                password.as_deref().unwrap_or_default(),
+                Some(&endpoint),
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Ssh {
+            user,
+            password,
+            private_key,
+            ..
+        } => {
+            if private_key
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                return Err("SSH 私钥节点没有可安全互通的分享链接，请使用导出配置".into());
+            }
+            Ok(share_user_password_uri(
+                "ssh",
+                Some(user),
+                password.as_deref(),
+                &endpoint,
+                Vec::new(),
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Naive {
+            username,
+            password,
+            quic,
+        } => Ok(share_user_password_uri(
+            if *quic { "naive+quic" } else { "naive+https" },
+            Some(username),
+            Some(password),
+            &endpoint,
+            Vec::new(),
+            &fragment,
+        )),
+        ProtocolConfig::AnyTls { password } => {
+            let mut query = Vec::new();
+            push_tls_query(&mut query, node.tls.as_ref());
+            Ok(share_uri(
+                "anytls",
+                password,
+                Some(&endpoint),
+                query,
+                &fragment,
+            ))
+        }
+        ProtocolConfig::Snell {
+            psk,
+            version,
+            userkey,
+            reuse,
+            obfs_mode,
+            obfs_host,
+            mode,
+        } => {
+            let mut query = vec![("version", version.to_string())];
+            push_optional_query(&mut query, "userkey", userkey.clone());
+            if let Some(reuse) = reuse {
+                query.push(("reuse", if *reuse { "1" } else { "0" }.into()));
+            }
+            push_optional_query(&mut query, "obfs", obfs_mode.clone());
+            push_optional_query(&mut query, "obfs-host", obfs_host.clone());
+            push_optional_query(&mut query, "mode", mode.clone());
+            Ok(share_uri("snell", psk, Some(&endpoint), query, &fragment))
+        }
+        ProtocolConfig::WireGuard { .. } => {
+            Err("WireGuard 节点没有统一的分享链接格式，请使用导出配置".into())
+        }
+        ProtocolConfig::Tor { .. } => {
+            Err("Tor 节点依赖本机程序路径，不能安全地生成分享链接".into())
+        }
+    }
+}
+
+type ShareQuery = Vec<(&'static str, String)>;
+
+fn share_component(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+fn share_endpoint(server: &str, port: u16) -> String {
+    if server.contains(':') && !server.starts_with('[') {
+        format!("[{server}]:{port}")
+    } else {
+        format!("{server}:{port}")
+    }
+}
+
+fn share_query(query: ShareQuery) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in query {
+        serializer.append_pair(key, &value);
+    }
+    serializer.finish()
+}
+
+fn share_uri(
+    scheme: &str,
+    user: &str,
+    endpoint: Option<&str>,
+    query: ShareQuery,
+    fragment: &str,
+) -> String {
+    let authority = match endpoint {
+        Some(endpoint) if user.is_empty() => endpoint.to_string(),
+        Some(endpoint) => format!("{}@{endpoint}", share_component(user)),
+        None => user.to_string(),
+    };
+    let query = share_query(query);
+    if query.is_empty() {
+        format!("{scheme}://{authority}#{fragment}")
+    } else {
+        format!("{scheme}://{authority}?{query}#{fragment}")
+    }
+}
+
+fn share_user_password_uri(
+    scheme: &str,
+    username: Option<&str>,
+    password: Option<&str>,
+    endpoint: &str,
+    query: ShareQuery,
+    fragment: &str,
+) -> String {
+    let userinfo = match (username.filter(|value| !value.is_empty()), password) {
+        (Some(username), Some(password)) => {
+            format!(
+                "{}:{}@",
+                share_component(username),
+                share_component(password)
+            )
+        }
+        (Some(username), None) => format!("{}@", share_component(username)),
+        (None, Some(password)) => format!(":{}@", share_component(password)),
+        (None, None) => String::new(),
+    };
+    let query = share_query(query);
+    if query.is_empty() {
+        format!("{scheme}://{userinfo}{endpoint}#{fragment}")
+    } else {
+        format!("{scheme}://{userinfo}{endpoint}?{query}#{fragment}")
+    }
+}
+
+fn push_optional_query(query: &mut ShareQuery, key: &'static str, value: Option<String>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        query.push((key, value));
+    }
+}
+
+fn push_tls_query(query: &mut ShareQuery, tls: Option<&TlsConfig>) {
+    let Some(tls) = tls.filter(|tls| tls.enabled) else {
+        return;
+    };
+    push_optional_query(query, "sni", tls.server_name.clone());
+    if tls.insecure == Some(true) {
+        query.push(("insecure", "1".into()));
+    }
+    if let Some(alpn) = tls.alpn.as_ref().filter(|items| !items.is_empty()) {
+        query.push(("alpn", alpn.join(",")));
+    }
+    push_optional_query(query, "fp", tls.utls_fingerprint.clone());
+}
+
+fn push_vless_tls_query(query: &mut ShareQuery, tls: Option<&TlsConfig>) {
+    match tls.filter(|tls| tls.enabled) {
+        Some(tls) if tls.reality_public_key.is_some() => {
+            query.push(("security", "reality".into()));
+            push_tls_query(query, Some(tls));
+            push_optional_query(query, "pbk", tls.reality_public_key.clone());
+            push_optional_query(query, "sid", tls.reality_short_id.clone());
+        }
+        Some(tls) => {
+            query.push(("security", "tls".into()));
+            push_tls_query(query, Some(tls));
+        }
+        None => query.push(("security", "none".into())),
+    }
+}
+
+fn transport_query(transport: Option<&Transport>) -> ShareQuery {
+    let mut query = Vec::new();
+    match transport {
+        Some(Transport::Ws { path, headers, .. }) => {
+            query.push(("type", "ws".into()));
+            push_optional_query(&mut query, "path", path.clone());
+            let host = headers.as_ref().and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("host"))
+                    .map(|(_, value)| value.clone())
+            });
+            push_optional_query(&mut query, "host", host);
+        }
+        Some(Transport::Grpc { service_name }) => {
+            query.push(("type", "grpc".into()));
+            push_optional_query(&mut query, "serviceName", service_name.clone());
+        }
+        Some(Transport::Http { path, host }) => {
+            query.push(("type", "http".into()));
+            push_optional_query(&mut query, "path", path.clone());
+            push_optional_query(
+                &mut query,
+                "host",
+                host.as_ref().map(|items| items.join(",")),
+            );
+        }
+        Some(Transport::HttpUpgrade { path, host }) => {
+            query.push(("type", "httpupgrade".into()));
+            push_optional_query(&mut query, "path", path.clone());
+            push_optional_query(&mut query, "host", host.clone());
+        }
+        Some(Transport::Tcp) | None => {}
+    }
+    query
+}
+
+fn vmess_transport(
+    transport: Option<&Transport>,
+) -> (&'static str, Option<String>, Option<String>) {
+    match transport {
+        Some(Transport::Ws { path, headers, .. }) => (
+            "ws",
+            path.clone(),
+            headers.as_ref().and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case("host"))
+                    .map(|(_, value)| value.clone())
+            }),
+        ),
+        Some(Transport::Grpc { service_name }) => ("grpc", service_name.clone(), None),
+        Some(Transport::Http { path, host }) => (
+            "h2",
+            path.clone(),
+            host.as_ref().map(|items| items.join(",")),
+        ),
+        Some(Transport::HttpUpgrade { path, host }) => ("httpupgrade", path.clone(), host.clone()),
+        Some(Transport::Tcp) | None => ("tcp", None, None),
     }
 }
 
@@ -1066,6 +1495,28 @@ fn split_host_port(hostport: &str) -> Result<(String, u16), String> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn share_uri_round_trips_common_node_protocols() {
+        let originals = [
+            "ss://aes-256-gcm:p%40ss@ss.example.com:8388#SS",
+            "vless://11111111-1111-1111-1111-111111111111@vl.example.com:443?encryption=none&security=reality&sni=www.example.com&fp=chrome&pbk=public-key&sid=abcd&type=ws&path=%2Fray&host=cdn.example.com&flow=xtls-rprx-vision#VLESS",
+            "trojan://secret@tj.example.com:443?sni=tj.example.com&type=grpc&serviceName=grpc#Trojan",
+            "hysteria2://password@hy2.example.com:443?sni=hy2.example.com&insecure=1&obfs=salamander&obfs-password=obfs#HY2",
+            "tuic://22222222-2222-2222-2222-222222222222:password@tuic.example.com:443?sni=tuic.example.com&congestion_control=bbr&udp_relay_mode=native&reduce_rtt=1#TUIC",
+            "anytls://password@anytls.example.com:443?sni=anytls.example.com&insecure=1#AnyTLS",
+            "snell://psk@snell.example.com:443?version=4&obfs=http&obfs-host=www.example.com#Snell",
+        ];
+        for original in originals {
+            let node = parse_uri_line(original).expect("parse source share uri");
+            let exported = serialize_share_uri(&node).expect("export share uri");
+            let restored = parse_uri_line(&exported).expect("parse exported share uri");
+            assert_eq!(restored.protocol, node.protocol, "{exported}");
+            assert_eq!(restored.server, node.server, "{exported}");
+            assert_eq!(restored.port, node.port, "{exported}");
+            assert_eq!(restored.name, node.name, "{exported}");
+        }
+    }
 
     #[test]
     fn parse_ss_plain() {

@@ -15,7 +15,10 @@ interface Props {
   open: boolean;
   profileId: string | null;
   profileName: string;
+  /** Select this node first when opened from its context menu. */
+  initialNodeId?: string | null;
   onClose: () => void;
+  onNodesChanged?: () => void;
 }
 
 function errorText(error: unknown) {
@@ -26,7 +29,9 @@ export function EditLocalNodesModal({
   open,
   profileId,
   profileName,
+  initialNodeId,
   onClose,
+  onNodesChanged,
 }: Props) {
   const { t } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -54,10 +59,10 @@ export function EditLocalNodesModal({
       .then(async (list) => {
         if (cancelled) return;
         setNodes(list);
-        const first = list[0];
-        setSelectedId(first?.id ?? null);
-        if (!first) return;
-        const next = await getNodeDraft(first.id);
+        const initial = list.find((node) => node.id === initialNodeId) ?? list[0];
+        setSelectedId(initial?.id ?? null);
+        if (!initial) return;
+        const next = await getNodeDraft(initial.id);
         if (cancelled) return;
         setDraft(next);
         setBaseline(JSON.stringify(next));
@@ -71,7 +76,7 @@ export function EditLocalNodesModal({
     return () => {
       cancelled = true;
     };
-  }, [open, profileId]);
+  }, [open, profileId, initialNodeId]);
 
   if (!open) return null;
 
@@ -118,6 +123,7 @@ export function EditLocalNodesModal({
       setDraft(nextDraft);
       setBaseline(JSON.stringify(nextDraft));
       setStatus("saved");
+      onNodesChanged?.();
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -144,6 +150,7 @@ export function EditLocalNodesModal({
       setDraft(null);
       setBaseline("");
       setStatus("deleted");
+      onNodesChanged?.();
       if (next) {
         setLoadingDraft(true);
         try {

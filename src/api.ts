@@ -191,12 +191,22 @@ export function getNodeDraft(id: string) {
   return invoke<import("./types").ManualNodeDraft>("get_node_draft", { id });
 }
 
+/** Portable protocol URI for one stored node; used only for local copy / QR. */
+export function getNodeShareUri(id: string) {
+  return invoke<string>("get_node_share_uri", { id });
+}
+
 export function updateNode(id: string, draft: import("./types").ManualNodeDraft) {
   return invoke<ProxyNode>("update_node", { id, draft });
 }
 
 export function deleteNode(id: string) {
   return invoke<void>("delete_node", { id });
+}
+
+/** Delete selected stored nodes in one confirmed backend operation. */
+export function deleteNodes(ids: string[]) {
+  return invoke<number>("delete_nodes", { ids });
 }
 
 /**

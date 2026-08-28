@@ -5,6 +5,8 @@ import {
   addSubscriptionSingbox,
   addSubscriptionText,
   addSubscriptionUrl,
+  deleteNodes,
+  getNodeShareUri,
   getProxyStatus,
   getSettings,
   listCustomConfigNodes,
@@ -25,11 +27,15 @@ import {
 } from "../../components/AddConfigModal";
 import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
+import { EditLocalNodesModal } from "../../components/EditLocalNodesModal";
+import { NodeContextMenu, type NodeContextMenuState } from "../../components/NodeContextMenu";
+import { NodeShareModal } from "../../components/NodeShareModal";
 import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
 import { ErrorModal } from "../../components/ErrorModal";
 import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
+import { copyNodeShareText } from "../../nodeShare";
 import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
@@ -100,6 +106,12 @@ export function SimpleServersPage() {
   const [modalInitial, setModalInitial] = useState<ConfigFormValues | null>(
     null,
   );
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
+  const [shareNode, setShareNode] = useState<ProxyNode | null>(null);
+  const [editNode, setEditNode] = useState<ProxyNode | null>(null);
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
 
 
   const reload = useCallback(async (append = false) => {
@@ -130,6 +142,7 @@ export function SimpleServersPage() {
   }, [nodes.length, sortMode, customLatency]);
 
   useEffect(() => {
+    setSelectedIds(new Set());
     const timer = window.setTimeout(() => void reload(false), 150);
     return () => window.clearTimeout(timer);
     // nodes.length changes when appending and must not reset pagination.
@@ -170,7 +183,7 @@ export function SimpleServersPage() {
   });
 
   async function onSelectNode(id: string) {
-    if (busy || switching || id === currentId) return;
+    if (busy || switching || batchBusy || id === currentId) return;
     setBusy(true);
     setError(null);
     try {
@@ -195,11 +208,8 @@ export function SimpleServersPage() {
     }
   }
 
-  async function onTestAll() {
-    if (testing || nodeTotal === 0) return;
-    // Custom mode probes the extracted (unsaved) nodes — ids come from the
-    // loaded list because they are not in the node store.
-    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds();
+  async function onTestNodes(ids: string[]) {
+    if (testing || ids.length === 0) return;
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -248,6 +258,86 @@ export function SimpleServersPage() {
       // re-reading the latency-less extracted list.
       if (!customRuntime) await reload(false);
     }
+  }
+
+  async function onTestAll() {
+    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds();
+    await onTestNodes(ids);
+  }
+
+  function toggleSelected(id: string) {
+    if (customRuntime || batchBusy) return;
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const selectAllNodes = useCallback(async () => {
+    if (customRuntime || batchBusy) return;
+    try {
+      setSelectedIds(new Set(await listNodeIds()));
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }, [batchBusy, customRuntime]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      event.preventDefault();
+      void selectAllNodes();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectAllNodes]);
+
+  async function deleteSelected(ids: string[]) {
+    if (batchBusy || ids.length === 0) return;
+    const name = nodes.find((node) => node.id === ids[0])?.name ?? ids[0];
+    const confirmed = window.confirm(
+      ids.length === 1
+        ? t("nodes.deleteConfirm", { name })
+        : t("nodes.deleteSelectedConfirm", { n: ids.length }),
+    );
+    if (!confirmed) return;
+    setBatchBusy(true);
+    setError(null);
+    try {
+      await deleteNodes(ids);
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+      await reload(false);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function copyShareLink(node: ProxyNode) {
+    try {
+      await copyNodeShareText(await getNodeShareUri(node.id));
+      setShareNotice(t("nodes.shareCopied"));
+      window.setTimeout(() => setShareNotice(null), 2200);
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    }
+  }
+
+  function openNodeEditor(node: ProxyNode) {
+    if (!node.subscription_id) {
+      setError("节点来源未知，无法编辑");
+      return;
+    }
+    setEditNode(node);
   }
 
   async function onAdd(payload: ConfigFormValues) {
@@ -324,6 +414,23 @@ export function SimpleServersPage() {
         </div>
       </header>
 
+      {!customRuntime && selectedIds.size > 0 && (
+        <div className="node-batch-toolbar" role="status">
+          <span>{t("nodes.selectedCount", { n: selectedIds.size })}</span>
+          <GlassButton disabled={testing || batchBusy} onClick={() => void onTestNodes([...selectedIds])}>
+            {t("nodes.testSelected")}
+          </GlassButton>
+          <GlassButton variant="danger" disabled={batchBusy} onClick={() => void deleteSelected([...selectedIds])}>
+            {t("nodes.deleteSelected")}
+          </GlassButton>
+          <GlassButton disabled={batchBusy} onClick={() => setSelectedIds(new Set())}>
+            {t("nodes.clearSelection")}
+          </GlassButton>
+        </div>
+      )}
+
+      {shareNotice && <div className="banner" role="status">{shareNotice}</div>}
+
       {error && (
         <ErrorModal message={error} onClose={() => setError(null)} />
       )}
@@ -367,27 +474,55 @@ export function SimpleServersPage() {
             )}
             {filtered.slice(nodeRange.start, nodeRange.end).map((n) => {
               const active = n.id === currentId;
+              const selected = selectedIds.has(n.id);
               return (
                 <li key={n.id}>
-                  <button
-                    type="button"
-                    className={`simple-node-item ${active ? "active" : ""}`}
-                    disabled={busy || customRuntime}
-                    onClick={() => void onSelectNode(n.id)}
+                  <div
+                    className={`simple-node-item ${active ? "active" : ""} ${selected ? "selected" : ""}`}
+                    onClick={(event) => {
+                      if (!customRuntime && (event.ctrlKey || event.metaKey)) toggleSelected(n.id);
+                    }}
+                    onContextMenu={(event) => {
+                      if (customRuntime) return;
+                      event.preventDefault();
+                      setContextMenu({ node: n, x: event.clientX, y: event.clientY });
+                    }}
                   >
-                    <span className="simple-radio node-dot" aria-hidden>
+                    <button
+                      type="button"
+                      className="node-select-dot simple-radio"
+                      aria-label={`切换到 ${n.name}`}
+                      aria-pressed={active}
+                      disabled={busy || customRuntime || batchBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onSelectNode(n.id);
+                      }}
+                    >
                       {active ? "●" : "○"}
-                    </span>
+                    </button>
                     <span className="simple-node-proto mono">
                       {n.protocol.toUpperCase()}
                     </span>
                     <span className="simple-node-item-name">{n.name}</span>
-                    <LatencyLabel
-                      ms={n.latency_ms}
-                      testedAt={n.latency_at}
-                      testing={testingIds.has(n.id)}
-                    />
-                  </button>
+                    <button
+                      type="button"
+                      className="node-latency-action"
+                      title={t("nodes.testOneLatency")}
+                      aria-label={`${t("nodes.testOneLatency")}：${n.name}`}
+                      disabled={testing || customRuntime || batchBusy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void onTestNodes([n.id]);
+                      }}
+                    >
+                      <LatencyLabel
+                        ms={n.latency_ms}
+                        testedAt={n.latency_at}
+                        testing={testingIds.has(n.id)}
+                      />
+                    </button>
+                  </div>
                 </li>
               );
             })}
@@ -430,6 +565,23 @@ export function SimpleServersPage() {
           dismiss();
         }}
         onSubmit={(p) => void onAdd(p)}
+      />
+      <NodeContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        onEdit={openNodeEditor}
+        onCopyLink={(node) => void copyShareLink(node)}
+        onShowQr={setShareNode}
+        onDelete={(node) => void deleteSelected([node.id])}
+      />
+      <NodeShareModal node={shareNode} onClose={() => setShareNode(null)} />
+      <EditLocalNodesModal
+        open={!!editNode}
+        profileId={editNode?.subscription_id ?? null}
+        profileName={editNode?.subscription_name ?? ""}
+        initialNodeId={editNode?.id ?? null}
+        onClose={() => setEditNode(null)}
+        onNodesChanged={() => void reload(false)}
       />
     </div>
   );
