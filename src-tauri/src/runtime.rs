@@ -995,11 +995,15 @@ impl Runtime {
             crate::core::ensure_wintun(app_data_dir, resource_dir, None)?;
         }
 
-        let mut xray_opts = build_options(store, String::new());
+        let xray_opts = build_options(store, String::new());
         #[cfg(target_os = "macos")]
-        if store.settings.tun_enabled {
-            xray_opts.tun_interface_name = Some(pick_free_darwin_utun_name());
-        }
+        let xray_opts = {
+            let mut xray_opts = xray_opts;
+            if store.settings.tun_enabled {
+                xray_opts.tun_interface_name = Some(pick_free_darwin_utun_name());
+            }
+            xray_opts
+        };
         let built = build_xray_config(&nodes, &xray_opts)?;
         let config_path = write_active_config(app_data_dir, &built)?;
         // The generator falls back to the first supported node when the

@@ -104,6 +104,9 @@ foreach ($set in $RuleSets) {
 # --- 3. Frontend deps --------------------------------------------------------
 Write-Host "Installing JS dependencies..."
 pnpm install --frozen-lockfile
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
 
 # --- 4. Build + bundle -------------------------------------------------------
 if ($Bundle -eq "portable") {
@@ -113,6 +116,9 @@ if ($Bundle -eq "portable") {
   Write-Host "Building app and packaging $Bundle installer..."
   $BuildArgs = @("--bundles", $Bundle) + $TauriConfigArgs
   pnpm tauri build @BuildArgs
+}
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
 }
 
 # --- 5. Locate artifact ------------------------------------------------------
