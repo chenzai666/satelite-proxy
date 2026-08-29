@@ -1,3 +1,4 @@
+mod chain;
 mod config;
 mod connections;
 mod core;
@@ -9,6 +10,7 @@ mod proxy;
 mod rules;
 pub mod subscription;
 
+pub use chain::*;
 pub use config::*;
 pub use connections::*;
 pub use core::*;

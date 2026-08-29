@@ -284,6 +284,35 @@ impl ClashApi {
         Ok(body.delay)
     }
 
+    /// Resolve through the running core's own DNS pipeline. The diagnostic
+    /// service derives the selected resolver path from generated config;
+    /// this endpoint supplies the live answer/rcode from the core.
+    pub fn dns_query(
+        &self,
+        name: &str,
+        query_type: &str,
+        timeout: Duration,
+    ) -> AppResult<DnsQueryResponse> {
+        let response = shared_agent()
+            .get(&format!("{}/dns/query", self.base))
+            .query("name", name)
+            .query("type", query_type)
+            .set("Authorization", &auth(&self.secret))
+            .timeout(timeout)
+            .call()
+            .map_err(map_ureq)?;
+        if !(200..300).contains(&response.status()) {
+            return Err(AppError::Core(format!(
+                "dns query status {}",
+                response.status()
+            )));
+        }
+        let text = response
+            .into_string()
+            .map_err(|error| AppError::Core(format!("dns query body: {error}")))?;
+        parse_dns_query_json(&text)
+    }
+
     /// Full connections snapshot from `/connections` (HTTP).
     pub fn list_connections(&self) -> AppResult<ConnectionsSnapshot> {
         let resp = shared_agent()
@@ -339,6 +368,42 @@ pub fn parse_connections_json(text: &str) -> AppResult<ConnectionsSnapshot> {
         upload_total: body.upload_total,
         download_total: body.download_total,
         connections,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DnsQueryAnswer {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "type")]
+    pub rr_type: i64,
+    #[serde(default, rename = "TTL")]
+    pub ttl: i64,
+    #[serde(default)]
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DnsQueryResponse {
+    #[serde(default, rename = "Status")]
+    pub status: i64,
+    #[serde(default, rename = "Answer")]
+    pub answers: Vec<DnsQueryAnswer>,
+}
+
+pub fn parse_dns_query_json(text: &str) -> AppResult<DnsQueryResponse> {
+    #[derive(Deserialize)]
+    struct Wire {
+        #[serde(default, rename = "Status")]
+        status: i64,
+        #[serde(default, rename = "Answer")]
+        answers: Option<Vec<DnsQueryAnswer>>,
+    }
+    let wire: Wire = serde_json::from_str(text)
+        .map_err(|error| AppError::Core(format!("dns query json: {error}")))?;
+    Ok(DnsQueryResponse {
+        status: wire.status,
+        answers: wire.answers.unwrap_or_default(),
     })
 }
 

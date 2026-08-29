@@ -1,9 +1,11 @@
+mod chain;
 mod dns;
 mod node;
 mod rule;
 mod settings;
 mod subscription;
 
+pub use chain::{pool_outbound_tag_for_id, ChainHop, NodePool, PoolMode, ProxyChain};
 pub use dns::*;
 pub use node::*;
 pub use rule::{

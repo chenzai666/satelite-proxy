@@ -11,6 +11,12 @@ use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+/// Loopback-only endpoint used for a chain diagnostic's real exit-IP query.
+/// It is emitted only when at least one complete chain resolves.
+pub const DIAG_INBOUND_PORT: u16 = 26486;
+pub const DIAG_INBOUND_TAG: &str = "diag-in";
+pub const DIAG_SELECTOR_TAG: &str = "chain-diag";
+
 const CLIPROXY_FALLBACK_TAG: &str = "cliproxy-auto";
 const CLIPROXY_HEALTH_URL: &str = "https://cliproxy.yu8.lat/";
 const CLIPROXY_DOMAINS: [&str; 2] = ["cliproxy.yu8.lat", "cpa.yu8.lat"];
@@ -178,11 +184,36 @@ pub fn build_singbox_config_with_connection_policy(
     opts: &BuildOptions,
     interrupt_exist_connections: bool,
 ) -> AppResult<BuiltConfig> {
+    build_singbox_config_with_chain_context(nodes, opts, interrupt_exist_connections, &[], &[])
+}
+
+/// Generated sing-box config with the optional named node pools/chains used
+/// by the proxy-chain feature. Keeping this as a sibling of the historic
+/// builder preserves its public API for tests and custom integrations.
+pub fn build_singbox_config_with_chain_context(
+    nodes: &[ProxyNode],
+    opts: &BuildOptions,
+    interrupt_exist_connections: bool,
+    pools: &[crate::domain::NodePool],
+    chains: &[crate::domain::ProxyChain],
+) -> AppResult<BuiltConfig> {
     if nodes.is_empty() {
         return Err(AppError::Config(
             "no nodes available; import a subscription first".into(),
         ));
     }
+
+    // Store load/import normally prevent this. Keep a generator-side guard so
+    // a hand-built preview can never emit duplicate outbound/endpoint tags.
+    let mut normalized_nodes = nodes.to_vec();
+    let rewritten = ProxyNode::ensure_unique_ids(normalized_nodes.iter_mut());
+    if rewritten > 0 {
+        crate::app_log::warn(
+            "singbox_config",
+            format!("{rewritten} 个节点 id 重复，已在生成时改写 tag 以避免校验失败"),
+        );
+    }
+    let nodes: &[ProxyNode] = &normalized_nodes;
 
     let mut node_outbounds = Vec::new();
     let mut node_endpoints = Vec::new();
@@ -284,6 +315,25 @@ pub fn build_singbox_config_with_connection_policy(
         &tags,
         interrupt_exist_connections,
     ));
+    outbounds.extend(build_pool_selectors(pools, nodes, &tags));
+    let (chain_outbounds, chain_entry_tags) = build_chain_outbounds(chains, pools, nodes, &tags);
+    outbounds.extend(chain_outbounds);
+    let diag_members: Vec<String> = chains
+        .iter()
+        .filter_map(|chain| chain_entry_tags.get(&chain.id).cloned())
+        .collect();
+    let has_diag = !diag_members.is_empty();
+    if has_diag {
+        let mut members = diag_members;
+        members.push("direct".into());
+        let default = members[0].clone();
+        outbounds.push(json!({
+            "type": "selector",
+            "tag": DIAG_SELECTOR_TAG,
+            "outbounds": members,
+            "default": default,
+        }));
+    }
     outbounds.extend(node_outbounds);
     let mut direct_outbound = json!({ "type": "direct", "tag": "direct" });
     if let Some(strategy) = opts.direct_ip_strategy.singbox_domain_resolver_strategy() {
@@ -308,7 +358,7 @@ pub fn build_singbox_config_with_connection_policy(
     // DNS `final` is configured independently on the DNS page (local/domestic/
     // remote) and no longer follows the routing `final`.
     let (rule_set_defs, grouped_route_rules, grouped_dns_rules) =
-        build_grouped_rule_sets(&opts.rule_sets, nodes, &tags);
+        build_grouped_rule_sets_with_chains(&opts.rule_sets, nodes, &tags, &chain_entry_tags);
     if let Some(dns_rules) = built_dns.dns.get_mut("rules").and_then(Value::as_array_mut) {
         for rule in grouped_dns_rules.into_iter().rev() {
             dns_rules.insert(0, rule);
@@ -318,6 +368,13 @@ pub fn build_singbox_config_with_connection_policy(
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
     route_rules.push(json!({ "action": "sniff" }));
+    if has_diag {
+        route_rules.push(json!({
+            "inbound": [DIAG_INBOUND_TAG],
+            "action": "route",
+            "outbound": DIAG_SELECTOR_TAG,
+        }));
+    }
     // Subscription downloads use a private authenticated inbound. Route that
     // inbound before China/CDN/user rules so "via proxy" really means the
     // current proxy group even when the URL itself is classified as direct.
@@ -352,7 +409,12 @@ pub fn build_singbox_config_with_connection_policy(
             "outbound": CLIPROXY_FALLBACK_TAG
         }));
         if opts.rule_sets.is_empty() {
-            route_rules.extend(build_route_rules(&opts.rules, nodes, &tags));
+            route_rules.extend(build_route_rules_with_chains(
+                &opts.rules,
+                nodes,
+                &tags,
+                &chain_entry_tags,
+            ));
         } else {
             route_rules.extend(grouped_route_rules);
         }
@@ -404,6 +466,15 @@ pub fn build_singbox_config_with_connection_policy(
             "tag": format!("in-{}-{}", inb.kind, inb.port),
             "listen": if inb.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
             "listen_port": inb.port
+        }));
+    }
+
+    if has_diag {
+        inbounds.push(json!({
+            "type": "mixed",
+            "tag": DIAG_INBOUND_TAG,
+            "listen": "127.0.0.1",
+            "listen_port": DIAG_INBOUND_PORT,
         }));
     }
 
@@ -514,6 +585,8 @@ pub(crate) fn effective_route_rules(sets: &[RuleSet], fallback: &[Rule]) -> Vec<
                 rule.node_name = None;
                 rule.smart_include.clear();
                 rule.smart_exclude.clear();
+                rule.chain_id = None;
+                rule.chain_name = None;
             } else {
                 clamp_rule_pin_to_set(set, &mut rule);
             }
@@ -553,6 +626,11 @@ pub(crate) fn clamp_rule_pin_to_set(set: &RuleSet, rule: &mut Rule) {
             rule.smart_include = set.smart_include.clone();
             rule.smart_exclude = set.smart_exclude.clone();
         }
+        RuleSetStrategy::Chain => {
+            rule.target = RuleTarget::Chain;
+            rule.chain_id = set.chain_id.clone();
+            rule.chain_name = set.chain_name.clone();
+        }
         _ => rule.target = RuleTarget::Proxy,
     }
 }
@@ -565,6 +643,15 @@ fn build_grouped_rule_sets(
     sets: &[RuleSet],
     nodes: &[ProxyNode],
     tags: &[String],
+) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    build_grouped_rule_sets_with_chains(sets, nodes, tags, &std::collections::HashMap::new())
+}
+
+fn build_grouped_rule_sets_with_chains(
+    sets: &[RuleSet],
+    nodes: &[ProxyNode],
+    tags: &[String],
+    chain_entry_tags: &std::collections::HashMap<String, String>,
 ) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let mut definitions = Vec::new();
     let mut route_rules = Vec::new();
@@ -612,9 +699,16 @@ fn build_grouped_rule_sets(
         // the user deliberately mixes per-rule routes. Remote sets have no
         // local rules and keep their single set-level route.
         if set.remote.is_none() {
-            route_local_set_grouped(set, nodes, tags, &mut definitions, &mut route_rules);
+            route_local_set_grouped(
+                set,
+                nodes,
+                tags,
+                chain_entry_tags,
+                &mut definitions,
+                &mut route_rules,
+            );
         } else {
-            route_rules.push(remote_set_route_rule(set, nodes, tags));
+            route_rules.push(remote_set_route_rule(set, nodes, tags, chain_entry_tags));
         }
 
         if set.strategy == RuleSetStrategy::Block {
@@ -635,7 +729,12 @@ fn build_grouped_rule_sets(
 /// back to the main `proxy` group when the pin is stale / the keyword pool is
 /// empty (no selector is emitted in that case either — see
 /// `build_filter_set_selectors`).
-fn remote_set_route_rule(set: &RuleSet, nodes: &[ProxyNode], tags: &[String]) -> Value {
+fn remote_set_route_rule(
+    set: &RuleSet,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    chain_entry_tags: &std::collections::HashMap<String, String>,
+) -> Value {
     if set.strategy == RuleSetStrategy::Block {
         return json!({ "rule_set": [set.id], "action": "reject" });
     }
@@ -650,6 +749,12 @@ fn remote_set_route_rule(set: &RuleSet, nodes: &[ProxyNode], tags: &[String]) ->
                 set.smart_set_outbound_tag()
             }
         }
+        RuleSetStrategy::Chain => set
+            .chain_id
+            .as_deref()
+            .and_then(|id| chain_entry_tags.get(id))
+            .cloned()
+            .unwrap_or_else(|| "proxy".to_string()),
         _ => "proxy".to_string(),
     };
     json!({ "rule_set": [set.id], "action": "route", "outbound": outbound })
@@ -714,6 +819,7 @@ fn route_local_set_grouped(
     set: &RuleSet,
     nodes: &[ProxyNode],
     tags: &[String],
+    chain_entry_tags: &std::collections::HashMap<String, String>,
     definitions: &mut Vec<Value>,
     route_rules: &mut Vec<Value>,
 ) {
@@ -747,7 +853,10 @@ fn route_local_set_grouped(
         } else if set.strategy == RuleSetStrategy::Filter && rule.target == RuleTarget::Smart {
             filter_key.clone()
         } else {
-            format!("route:{}", resolve_rule_outbound(&rule, nodes, tags))
+            format!(
+                "route:{}",
+                resolve_rule_outbound(&rule, nodes, tags, chain_entry_tags)
+            )
         };
         if let Some((_, rules)) = groups.iter_mut().find(|(group, _)| group == &key) {
             rules.push(rule);
@@ -887,6 +996,15 @@ pub fn outbound_tag(node: &ProxyNode) -> String {
 }
 
 fn build_route_rules(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Vec<Value> {
+    build_route_rules_with_chains(rules, nodes, tags, &std::collections::HashMap::new())
+}
+
+fn build_route_rules_with_chains(
+    rules: &[Rule],
+    nodes: &[ProxyNode],
+    tags: &[String],
+    chain_entry_tags: &std::collections::HashMap<String, String>,
+) -> Vec<Value> {
     let mut sorted: Vec<&Rule> = rules.iter().filter(|r| r.enabled).collect();
     sorted.sort_by_key(|r| r.ord);
 
@@ -901,7 +1019,7 @@ fn build_route_rules(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Ve
             if matches!(r.rule_type, RuleType::Geoip) {
                 return None;
             }
-            let outbound = resolve_rule_outbound(r, nodes, tags);
+            let outbound = resolve_rule_outbound(r, nodes, tags, chain_entry_tags);
             // sing-box matches wire-format QNAME/SNI, which is always ASCII.
             // domain_keyword is a substring match — Punycode-encoding it
             // would break that semantic, so it's left as-is.
@@ -928,7 +1046,12 @@ fn build_route_rules(rules: &[Rule], nodes: &[ProxyNode], tags: &[String]) -> Ve
 }
 
 /// Map a rule to an outbound tag. Pinned node missing → fall back to main `proxy` selector.
-fn resolve_rule_outbound(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> String {
+fn resolve_rule_outbound(
+    r: &Rule,
+    nodes: &[ProxyNode],
+    tags: &[String],
+    chain_entry_tags: &std::collections::HashMap<String, String>,
+) -> String {
     use crate::domain::RuleTarget;
     match r.target {
         RuleTarget::Direct | RuleTarget::Proxy | RuleTarget::Block => {
@@ -945,6 +1068,12 @@ fn resolve_rule_outbound(r: &Rule, nodes: &[ProxyNode], tags: &[String]) -> Stri
                 r.smart_outbound_tag()
             }
         }
+        RuleTarget::Chain => r
+            .chain_id
+            .as_deref()
+            .and_then(|id| chain_entry_tags.get(id))
+            .cloned()
+            .unwrap_or_else(|| RuleTarget::Proxy.outbound_tag().into()),
     }
 }
 
@@ -975,6 +1104,259 @@ pub fn filter_pool_tags(
         .collect();
     pool.sort_by_key(|(lat, _)| *lat);
     pool.into_iter().map(|(_, tag)| tag).collect()
+}
+
+/// Member outbound tags for one [`NodePool`], resolved against the current
+/// node list. `Explicit` keeps its configured order; `Keyword` re-filters
+/// every build (same semantics as `filter_pool_tags`, latency-sorted).
+fn pool_member_tags(
+    pool: &crate::domain::NodePool,
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> Vec<String> {
+    use crate::domain::PoolMode;
+    match &pool.mode {
+        PoolMode::Explicit { node_ids } => node_ids
+            .iter()
+            .filter_map(|nid| nodes.iter().find(|n| &n.id == nid))
+            .map(outbound_tag)
+            .filter(|tag| tags.iter().any(|t| t == tag))
+            .collect(),
+        PoolMode::Keyword { include, exclude } => filter_pool_tags(include, exclude, nodes, tags),
+    }
+}
+
+/// One `selector` outbound per [`NodePool`]. Pools with no live members are
+/// skipped (a selector with an empty `outbounds` list is invalid sing-box
+/// config) — chain hops referencing an empty pool fall back to `direct` at
+/// resolution time, mirroring the empty-Smart-pool fallback.
+fn build_pool_selectors(
+    pools: &[crate::domain::NodePool],
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> Vec<Value> {
+    let mut out = Vec::new();
+    for pool in pools {
+        let members = pool_member_tags(pool, nodes, tags);
+        if members.is_empty() {
+            continue;
+        }
+        let default = members.first().cloned().unwrap_or_else(|| "direct".into());
+        out.push(json!({
+            "type": "selector",
+            "tag": pool.outbound_tag(),
+            "outbounds": members,
+            "default": default,
+        }));
+    }
+    out
+}
+
+/// Member nodes for one [`NodePool`] (live in `tags`), mirroring
+/// [`pool_member_tags`]'s ordering — `Explicit` keeps its configured order,
+/// `Keyword` is latency-sorted. Used where the chain builder needs the nodes
+/// themselves (to mint per-member clones), not just their tags.
+fn pool_member_nodes<'a>(
+    pool: &crate::domain::NodePool,
+    nodes: &'a [ProxyNode],
+    tags: &[String],
+) -> Vec<&'a ProxyNode> {
+    use crate::domain::PoolMode;
+    let live = |n: &ProxyNode| tags.iter().any(|t| t == &outbound_tag(n));
+    match &pool.mode {
+        PoolMode::Explicit { node_ids } => node_ids
+            .iter()
+            .filter_map(|nid| nodes.iter().find(|n| &n.id == nid))
+            .filter(|n| live(n))
+            .collect(),
+        PoolMode::Keyword { include, exclude } => {
+            let mut members: Vec<&ProxyNode> = nodes
+                .iter()
+                .filter(|n| crate::domain::name_matches_keywords(&n.name, include, exclude))
+                .filter(|n| live(n))
+                .collect();
+            members.sort_by_key(|n| n.latency_ms.unwrap_or(u32::MAX / 4));
+            members
+        }
+    }
+}
+
+/// Per-chain-hop-local outbound tag for a `Node` hop. Deliberately distinct
+/// from `outbound_tag(node)` — the chain rewrites this clone's `detour` to
+/// the next hop, and that must never leak onto the tag the node is directly
+/// selectable under elsewhere in the config.
+pub fn chain_hop_outbound_tag(chain: &crate::domain::ProxyChain, hop_index: usize) -> String {
+    format!(
+        "{}-h{hop_index}",
+        &chain.id[chain.id.len().saturating_sub(20)..]
+    )
+}
+
+/// Build the `detour` chain for one [`ProxyChain`]. User-facing semantics:
+/// traffic flows hop[0] → hop[1] → … → hop[N-1] → internet — hop[0] is the
+/// client-side entry, hop[N-1] is the exit the internet sees.
+///
+/// In sing-box terms `A.detour = B` means "A's server connection is dialed
+/// through B, and A remains the exit" — so the route must point at the LAST
+/// hop's tag, and each hop[i] (i ≥ 1) carries `detour: hop[i-1]`. hop[0] has
+/// no detour (the client dials it directly). Only `Node` hops need a minted
+/// outbound (their own extra_outbounds, e.g. shadowtls, ride along).
+///
+/// `Pool` hops split by position. A pool at hop[0] is the client-side entry:
+/// the client dials the selected member directly, so the shared pool
+/// selector works as-is. A pool at i ≥ 1 is dialed through hop[i-1], which
+/// the shared selector's detour-less members can't express — it's expanded
+/// into per-member clones (each carrying `detour` → the previous hop's tag)
+/// grouped under a chain-local selector, so whichever member is picked keeps
+/// chaining.
+///
+/// sing-box requires a `detour` target to be defined before the outbound
+/// that references it, so hops are emitted in forward order (each hop's
+/// target — the previous hop — already precedes it). Returns `None` if any
+/// hop is unreachable (stale id / empty pool / member that can't map to an
+/// outbound) — a chain with a broken link can't route traffic, so the whole
+/// chain is treated as absent rather than silently truncated.
+fn build_chain_outbounds_for(
+    chain: &crate::domain::ProxyChain,
+    pools: &[crate::domain::NodePool],
+    nodes: &[ProxyNode],
+    tags: &[String],
+    live_pool_ids: &std::collections::HashSet<&str>,
+) -> Option<(Vec<Value>, String)> {
+    use crate::domain::ChainHop;
+
+    let last = chain.hops.len().saturating_sub(1);
+
+    // Resolve every hop's tag first, bailing out on any dead hop before
+    // emitting anything.
+    let mut hop_tags: Vec<String> = Vec::with_capacity(chain.hops.len());
+    for (i, hop) in chain.hops.iter().enumerate() {
+        match hop {
+            ChainHop::Node { node_id } => {
+                // Must have actually produced a usable outbound, not just
+                // exist in the node list — e.g. a node whose protocol config
+                // failed to map (see `node_to_outbound`'s Err path) is present
+                // in `nodes` but absent from `tags`.
+                let live = nodes
+                    .iter()
+                    .find(|n| &n.id == node_id)
+                    .is_some_and(|n| tags.iter().any(|t| t == &outbound_tag(n)));
+                if !live {
+                    return None;
+                }
+                hop_tags.push(chain_hop_outbound_tag(chain, i));
+            }
+            ChainHop::Pool { pool_id } => {
+                if !live_pool_ids.contains(pool_id.as_str()) {
+                    return None;
+                }
+                // hop[0] pool: client-side entry, shared selector is fine;
+                // pools at i ≥ 1 get a chain-local selector over clones.
+                let tag = if i == 0 {
+                    crate::domain::pool_outbound_tag_for_id(pool_id)
+                } else {
+                    chain_hop_outbound_tag(chain, i)
+                };
+                hop_tags.push(tag);
+            }
+        }
+    }
+
+    let mut outbounds = Vec::with_capacity(chain.hops.len());
+    // Emit in forward order so each hop's detour target (the previous hop)
+    // already precedes it.
+    for i in 0..chain.hops.len() {
+        let prev_tag = if i == 0 {
+            None
+        } else {
+            Some(hop_tags[i - 1].clone())
+        };
+        match &chain.hops[i] {
+            ChainHop::Pool { pool_id } if i != 0 => {
+                let pool = pools
+                    .iter()
+                    .find(|p| &p.id == pool_id)
+                    .expect("liveness checked in the tag pass");
+                let members = pool_member_nodes(pool, nodes, tags);
+                let mut clone_tags = Vec::with_capacity(members.len());
+                for (j, node) in members.into_iter().enumerate() {
+                    let clone_tag = format!("{}-m{j}", hop_tags[i]);
+                    let (_, mut ob, extra) = match node_to_outbound_tagged(node, Some(&clone_tag)) {
+                        Ok(v) => v,
+                        Err(_) => return None,
+                    };
+                    outbounds.extend(extra);
+                    if let (Some(prev), Some(obj)) = (prev_tag.as_ref(), ob.as_object_mut()) {
+                        obj.insert("detour".into(), json!(prev));
+                    }
+                    outbounds.push(ob);
+                    clone_tags.push(clone_tag);
+                }
+                // A pool with zero clones was filtered by `live_pool_ids`
+                // already; guard anyway — an empty selector is invalid.
+                if clone_tags.is_empty() {
+                    return None;
+                }
+                let default = clone_tags[0].clone();
+                outbounds.push(json!({
+                    "type": "selector",
+                    "tag": hop_tags[i],
+                    "outbounds": clone_tags,
+                    "default": default,
+                }));
+            }
+            // hop[0] pool: the shared pool selector is emitted by
+            // `build_pool_selectors` and is dialed by the client directly.
+            ChainHop::Pool { .. } => {}
+            ChainHop::Node { node_id } => {
+                let node = nodes
+                    .iter()
+                    .find(|n| &n.id == node_id)
+                    .expect("presence checked above");
+                let own_tag = hop_tags[i].clone();
+                let (_, mut ob, extra) = match node_to_outbound_tagged(node, Some(&own_tag)) {
+                    Ok(v) => v,
+                    Err(_) => return None,
+                };
+                outbounds.extend(extra);
+                if let (Some(prev), Some(obj)) = (prev_tag.as_ref(), ob.as_object_mut()) {
+                    obj.insert("detour".into(), json!(prev));
+                }
+                outbounds.push(ob);
+            }
+        }
+    }
+
+    // Rules route to the LAST hop — it is the exit the internet sees.
+    let entry_tag = hop_tags[last].clone();
+    Some((outbounds, entry_tag))
+}
+
+/// One resolved chain's outbounds + its route-facing entry tag, or `None` if
+/// the chain is currently broken (stale hop). Skips chains whose id doesn't
+/// resolve to anything — same as an orphaned pool/node pin elsewhere.
+fn build_chain_outbounds(
+    chains: &[crate::domain::ProxyChain],
+    pools: &[crate::domain::NodePool],
+    nodes: &[ProxyNode],
+    tags: &[String],
+) -> (Vec<Value>, std::collections::HashMap<String, String>) {
+    let live_pool_ids: std::collections::HashSet<&str> = pools
+        .iter()
+        .filter(|p| !pool_member_tags(p, nodes, tags).is_empty())
+        .map(|p| p.id.as_str())
+        .collect();
+    let mut outbounds = Vec::new();
+    let mut entry_tags = std::collections::HashMap::new();
+    for chain in chains {
+        if let Some((chain_outbounds, entry_tag)) =
+            build_chain_outbounds_for(chain, pools, nodes, tags, &live_pool_ids)
+        {
+            outbounds.extend(chain_outbounds);
+            entry_tags.insert(chain.id.clone(), entry_tag);
+        }
+    }
+    (outbounds, entry_tags)
 }
 
 /// Nodes matching smart filters (for probe / UI).
@@ -1025,7 +1407,18 @@ fn build_smart_rule_selectors(
 }
 
 fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value, Vec<Value>)> {
-    let tag = outbound_tag(node);
+    node_to_outbound_tagged(node, None)
+}
+
+/// Map a node using either its normal selectable tag or a chain-local clone
+/// tag. Chain clones must not mutate the node's ordinary direct outbound.
+fn node_to_outbound_tagged(
+    node: &ProxyNode,
+    tag_override: Option<&str>,
+) -> AppResult<(String, Value, Vec<Value>)> {
+    let tag = tag_override
+        .map(ToString::to_string)
+        .unwrap_or_else(|| outbound_tag(node));
     let mut extra_outbounds = Vec::new();
     let mut ob = match (&node.protocol, &node.config) {
         (
@@ -3371,5 +3764,84 @@ mod tests {
         let out = build_route_rules(&rules, &[], &["direct".into()]);
         assert_eq!(out[0]["domain"], json!(["xn--fiq228c.com"]));
         assert_eq!(out[1]["domain_keyword"], json!(["中文"]));
+    }
+
+    #[test]
+    fn chain_rule_routes_to_last_hop_with_a_real_detour() {
+        use crate::domain::{ChainHop, ProxyChain};
+
+        let entry = sample_ss();
+        let mut exit = sample_ss();
+        exit.id = "1122334455667788".into();
+        exit.name = "SS-US".into();
+        exit.server = "us.example.com".into();
+        let nodes = vec![entry.clone(), exit.clone()];
+        let chain = ProxyChain::new(
+            "HK → US",
+            vec![
+                ChainHop::Node {
+                    node_id: entry.id.clone(),
+                },
+                ChainHop::Node {
+                    node_id: exit.id.clone(),
+                },
+            ],
+        );
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "example.com".into(),
+            RuleTarget::Chain,
+            0,
+        );
+        rule.chain_id = Some(chain.id.clone());
+
+        let options = BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![rule],
+            rule_sets: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
+            tun_interface_name: None,
+        };
+        let built =
+            build_singbox_config_with_chain_context(&nodes, &options, true, &[], &[chain.clone()])
+                .expect("chain config");
+        let h0 = chain_hop_outbound_tag(&chain, 0);
+        let h1 = chain_hop_outbound_tag(&chain, 1);
+        let outbounds = built.value["outbounds"].as_array().expect("outbounds");
+        let entry_outbound = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"] == h0)
+            .expect("entry hop");
+        assert!(entry_outbound.get("detour").is_none());
+        let exit_outbound = outbounds
+            .iter()
+            .find(|outbound| outbound["tag"] == h1)
+            .expect("exit hop");
+        assert_eq!(exit_outbound["detour"], json!(h0));
+
+        let route = built.value["route"]["rules"]
+            .as_array()
+            .expect("route rules")
+            .iter()
+            .find(|item| item.get("domain_suffix") == Some(&json!(["example.com"])))
+            .expect("chain route");
+        assert_eq!(route["outbound"], json!(h1));
     }
 }

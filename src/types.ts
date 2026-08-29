@@ -81,6 +81,44 @@ export interface DnsTestResult {
   note: string;
 }
 
+export interface DnsDiagAnswer {
+  name: string;
+  rr_type: number;
+  ttl: number;
+  data: string;
+}
+
+export interface DnsDiagPath {
+  strategy: "remote" | "domestic" | "local" | "block" | "hosts" | "fake_ip";
+  servers: string[];
+  via_proxy: boolean;
+  matched_by: string;
+  approx: boolean;
+  note?: string | null;
+}
+
+export interface DnsDiagDomainResult {
+  domain: string;
+  path?: DnsDiagPath | null;
+  query?: {
+    ok: boolean;
+    status_code: number;
+    status_text: string;
+    answers: DnsDiagAnswer[];
+    elapsed_ms: number;
+    error?: string | null;
+  } | null;
+  query_note?: string | null;
+}
+
+export interface DnsDiagReport {
+  core_type: string;
+  running: boolean;
+  runtime_source: string;
+  results: DnsDiagDomainResult[];
+  notes: string[];
+}
+
 /** From subscription-userinfo header and/or remark node names. */
 export interface SubscriptionTraffic {
   upload?: number | null;
@@ -473,6 +511,9 @@ export interface RuleSetSummary {
   node_name?: string | null;
   smart_include?: string[];
   smart_exclude?: string[];
+  /** Set-level selected multi-hop chain (strategy === "chain"). */
+  chain_id?: string | null;
+  chain_name?: string | null;
   dns_strategy: RuleSetDnsStrategy;
   /** Restorable by Reset: only the bundled remote rule sets. */
   resettable: boolean;
@@ -488,6 +529,7 @@ export type RuleSetStrategy =
   | "block"
   | "node"
   | "filter"
+  | "chain"
   | "smart";
 export type RuleSetDnsStrategy = "local" | "domestic" | "remote";
 
@@ -536,13 +578,16 @@ export interface RuleSet {
   smart_include?: string[];
   /** When strategy is `filter`: blacklist keywords (OR). */
   smart_exclude?: string[];
+  /** When strategy is `chain`: whole-set selected chain id. */
+  chain_id?: string | null;
+  chain_name?: string | null;
   dns_strategy: RuleSetDnsStrategy;
   remote?: RemoteRuleSetConfig | null;
   dns_rules: DnsRule[];
   rules: Rule[];
 }
 
-export type RuleTarget = "direct" | "proxy" | "block" | "node" | "smart";
+export type RuleTarget = "direct" | "proxy" | "block" | "node" | "smart" | "chain";
 
 export interface Rule {
   id: string;
@@ -559,6 +604,64 @@ export interface Rule {
   smart_include?: string[];
   /** Smart mode blacklist: name containing any keyword is skipped (OR). */
   smart_exclude?: string[];
+  /** When target is `chain`: selected multi-hop chain id. */
+  chain_id?: string | null;
+  chain_name?: string | null;
+}
+
+/** How a reusable node pool selects its live members. */
+export type PoolMode =
+  | { mode: "explicit"; node_ids: string[] }
+  | { mode: "keyword"; include: string[]; exclude: string[] };
+
+export interface NodePool {
+  id: string;
+  name: string;
+  mode: PoolMode;
+}
+
+export type ChainHop =
+  | { kind: "node"; node_id: string }
+  | { kind: "pool"; pool_id: string };
+
+export interface ProxyChain {
+  id: string;
+  name: string;
+  hops: ChainHop[];
+}
+
+export interface ChainHopDiag {
+  label: string;
+  kind: "node" | "pool" | string;
+  stale: boolean;
+  soloMs?: number | null;
+  soloError?: string | null;
+  chainedMs?: number | null;
+  chainedError?: string | null;
+}
+
+export interface ChainExitGeo {
+  ip: string;
+  country?: string | null;
+  countryCode?: string | null;
+  region?: string | null;
+  city?: string | null;
+  asn?: string | null;
+  asnOrganization?: string | null;
+  organization?: string | null;
+  timezone?: string | null;
+}
+
+export interface ChainExitProbe {
+  geo?: ChainExitGeo | null;
+  ipError?: string | null;
+  ipSbMs?: number | null;
+  ipSbError?: string | null;
+}
+
+export interface ChainDiagnosis {
+  hops: ChainHopDiag[];
+  exit: ChainExitProbe;
 }
 
 /** Live connection or historical request row */

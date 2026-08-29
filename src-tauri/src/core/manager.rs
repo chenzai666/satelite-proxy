@@ -84,6 +84,14 @@ impl CoreManager {
         self.state
     }
 
+    /// True only for a core process launched by this session through the
+    /// Windows UAC path. The status card uses this to distinguish a normal
+    /// process from a TUN core that is currently elevated.
+    #[allow(dead_code)]
+    pub fn is_windows_elevated(&self) -> bool {
+        matches!(self.run_mode, RunMode::ElevatedPid) && self.is_running()
+    }
+
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
@@ -247,12 +255,14 @@ impl CoreManager {
                 );
             }
 
-            return Err(AppError::Core(format!(
+            let message = format!(
                 "{} check failed ({status_s})\nconfig: {}\nbinary: {}\n{detail}",
                 kind.display_name(),
                 config.display(),
                 binary.display(),
-            )));
+            );
+            crate::app_log::error("core", message.clone());
+            return Err(AppError::Core(message));
         }
         Ok(())
     }
@@ -340,6 +350,60 @@ impl CoreManager {
         api_port: Option<u16>,
         extra_ports: &[u16],
         elevated: bool,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<()> {
+        match self.start_with_ports_inner(
+            kind,
+            binary,
+            config,
+            log_dir,
+            mixed_port,
+            api_port,
+            extra_ports,
+            elevated,
+            resource_dir,
+        ) {
+            Err(error) if is_stale_cache_db_error(&error.to_string()) => {
+                #[cfg(target_os = "macos")]
+                if let Some(config_dir) = config.parent() {
+                    let cache_path = config_dir.join("cache.db");
+                    crate::app_log::warn(
+                        "core",
+                        format!(
+                            "stale cache.db blocked core start; recreating {}",
+                            cache_path.display()
+                        ),
+                    );
+                    super::macos_auth::remove_stale_cache_db(&cache_path)?;
+                    return self.start_with_ports_inner(
+                        kind,
+                        binary,
+                        config,
+                        log_dir,
+                        mixed_port,
+                        api_port,
+                        extra_ports,
+                        elevated,
+                        resource_dir,
+                    );
+                }
+                Err(error)
+            }
+            other => other,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_with_ports_inner(
+        &mut self,
+        kind: CoreKind,
+        binary: &Path,
+        config: &Path,
+        log_dir: &Path,
+        mixed_port: u16,
+        api_port: Option<u16>,
+        extra_ports: &[u16],
+        elevated: bool,
         _resource_dir: Option<&Path>,
     ) -> AppResult<()> {
         self.poll();
@@ -416,11 +480,7 @@ impl CoreManager {
         let log_path = crate::log_retention::hourly_path(log_dir, kind.log_prefix());
         crate::log_retention::cleanup_current_hour(log_dir)
             .map_err(|e| AppError::Core(format!("clean logs: {e}")))?;
-        let _ = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|e| AppError::Core(format!("open log: {e}")))?;
+        let _ = open_hourly_log(&log_path).map_err(|e| AppError::Core(format!("open log: {e}")))?;
 
         self.state = CoreState::Starting;
         self.last_error = None;
@@ -438,8 +498,17 @@ impl CoreManager {
             return self.start_elevated_windows(kind, binary, config, &log_path, mixed_port);
         }
 
+        let run_args = kind.run_command_args(config);
+        crate::app_log::info(
+            "core",
+            format!(
+                "starting {}: {}",
+                kind.display_name(),
+                format_command_line(binary, &run_args)
+            ),
+        );
         let mut cmd = Command::new(binary);
-        cmd.args(kind.run_command_args(config));
+        cmd.args(&run_args);
         // sing-box writes cache.db (fakeip/rule-set cache) relative to its cwd.
         // GUI apps launched from Finder/Dock inherit cwd "/" (read-only), which
         // makes cache_file init FATAL as soon as it's enabled. Anchor cwd to the
@@ -457,9 +526,11 @@ impl CoreManager {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| {
+                let message = format!("spawn {} failed: {e}", kind.display_name());
+                crate::app_log::error("core", message.clone());
                 self.state = CoreState::Error;
                 self.last_error = Some(e.to_string());
-                AppError::Core(format!("spawn {} failed: {e}", kind.display_name()))
+                AppError::Core(message)
             })?;
 
         // Tie the child to the parent's lifetime via a Job Object: if this
@@ -510,12 +581,20 @@ impl CoreManager {
     #[cfg(target_os = "windows")]
     fn start_elevated_windows(
         &mut self,
-        _kind: CoreKind,
+        kind: CoreKind,
         binary: &Path,
         config: &Path,
         _log_path: &Path,
         mixed_port: u16,
     ) -> AppResult<()> {
+        crate::app_log::info(
+            "core",
+            format!(
+                "starting {} (elevated): {}",
+                kind.display_name(),
+                format_command_line(binary, &kind.run_command_args(config))
+            ),
+        );
         let helper = std::env::current_exe()
             .map_err(|e| AppError::Core(format!("resolve log helper: {e}")))?;
         let log_dir = self
@@ -548,19 +627,27 @@ impl CoreManager {
         self.wait_until_ready(mixed_port)
     }
 
+    fn start_failed_error(&mut self) -> AppError {
+        let error = self
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "process exited immediately".into());
+        crate::app_log::error(
+            "core",
+            format!("{} failed to start: {error}", self.kind.display_name()),
+        );
+        self.state = CoreState::Error;
+        self.run_mode = RunMode::None;
+        AppError::Core(map_tun_permission_hint(&error))
+    }
+
     fn wait_until_ready(&mut self, mixed_port: u16) -> AppResult<()> {
         // wait a bit for immediate FATAL
         for _ in 0..20 {
             std::thread::sleep(Duration::from_millis(100));
             self.poll();
             if !self.process_tracked_alive() {
-                let err = self
-                    .last_error
-                    .clone()
-                    .unwrap_or_else(|| "process exited immediately".into());
-                self.state = CoreState::Error;
-                self.run_mode = RunMode::None;
-                return Err(AppError::Core(map_tun_permission_hint(&err)));
+                return Err(self.start_failed_error());
             }
             if !Self::is_port_free(mixed_port) {
                 break;
@@ -569,13 +656,7 @@ impl CoreManager {
 
         self.poll();
         if !self.process_tracked_alive() {
-            let err = self
-                .last_error
-                .clone()
-                .unwrap_or_else(|| "process exited immediately".into());
-            self.state = CoreState::Error;
-            self.run_mode = RunMode::None;
-            return Err(AppError::Core(map_tun_permission_hint(&err)));
+            return Err(self.start_failed_error());
         }
 
         self.state = CoreState::Running;
@@ -827,6 +908,25 @@ fn elevated_kill_force(pid: u32) {
     }
 }
 
+fn format_command_line(binary: &Path, args: &[String]) -> String {
+    let quote = |argument: &str| {
+        if argument.contains(' ') {
+            format!("\"{argument}\"")
+        } else {
+            argument.to_string()
+        }
+    };
+    std::iter::once(quote(&binary.display().to_string()))
+        .chain(args.iter().map(|argument| quote(argument)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_stale_cache_db_error(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    lower.contains("cache.db") && lower.contains("permission denied")
+}
+
 fn map_tun_permission_hint(err: &str) -> String {
     let lower = err.to_ascii_lowercase();
     if lower.contains("operation not permitted")
@@ -1065,6 +1165,25 @@ fn read_log_tail(path: &Path, max_bytes: u64) -> Option<String> {
     Some(buf.trim().to_string())
 }
 
+/// A root-owned TUN session can leave the current hourly log non-writable.
+/// Logs are disposable diagnostic data, so recreate exactly that file and
+/// preserve the rest of the log directory.
+fn open_hourly_log(path: &Path) -> std::io::Result<File> {
+    let try_open = || OpenOptions::new().create(true).append(true).open(path);
+    match try_open() {
+        Ok(file) => Ok(file),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            crate::app_log::warn(
+                "core",
+                format!("recreating stale non-writable core log: {}", path.display()),
+            );
+            fs::remove_file(path)?;
+            try_open()
+        }
+        Err(error) => Err(error),
+    }
+}
+
 struct RotatingCoreWriter {
     log_dir: PathBuf,
     log_prefix: &'static str,
@@ -1090,7 +1209,7 @@ impl RotatingCoreWriter {
         let hour = crate::log_retention::current_hour();
         if self.file_hour != Some(hour) || self.file.is_none() {
             let path = crate::log_retention::hourly_path_for(&self.log_dir, self.log_prefix, hour);
-            match OpenOptions::new().create(true).append(true).open(&path) {
+            match open_hourly_log(&path) {
                 Ok(opened) => {
                     self.file_bytes = opened.metadata().map(|m| m.len()).unwrap_or(0);
                     self.bytes_since_cleanup = 0;

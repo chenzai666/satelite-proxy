@@ -189,6 +189,10 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
                 return;
             }
         };
+        let builder = match crate::portable::webview_data_dir() {
+            Some(dir) => builder.data_directory(dir),
+            None => builder,
+        };
         // Simple mode: user-resizable strip, shrink-only (frontend restores size).
         let builder = if mode == "simple" {
             builder

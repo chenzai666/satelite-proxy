@@ -256,6 +256,28 @@ pub fn remove_setuid_core_if_needed(core: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Remove only the generated sing-box cache after a previous setuid-TUN
+/// session left it owned by another uid. The cache contains no user settings;
+/// it is rebuilt by the core on the next start. A normal remove is attempted
+/// before showing an admin prompt.
+pub fn remove_stale_cache_db(cache_db: &Path) -> AppResult<()> {
+    if !cache_db.is_file() {
+        return Ok(());
+    }
+    if std::fs::remove_file(cache_db).is_ok() {
+        return Ok(());
+    }
+    let path_q = shell_single_quote(&cache_db.to_string_lossy());
+    let (code, output) = run_privileged(Path::new("/bin/sh"), &["-c", &format!("rm -f {path_q}")])?;
+    if code != 0 || cache_db.is_file() {
+        return Err(AppError::Core(format!(
+            "无法清理旧的 cache.db: {}",
+            output.trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Run `tool args` as root.
 ///
 /// Prefers `sudo` over a PTY so **Touch ID** (pam_tid) can appear; falls back to

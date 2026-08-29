@@ -41,10 +41,11 @@ import type {
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
 import { HostsPage } from "./HostsPage";
+import { ChainPage } from "./ChainPage";
 
-type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "core";
+type SettingsTab = "app" | "ports" | "rules" | "dns" | "hosts" | "chain" | "core";
 
-const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts"]);
+const CUSTOM_BLOCKED_TABS = new Set(["rules", "dns", "hosts", "chain"]);
 
 /** Repository link shown in the bottom-right corner of the settings page. */
 const PROJECT_URL = "https://github.com/chenzai666/satelite-proxy/";
@@ -176,6 +177,11 @@ export function SettingsPage() {
           id: "hosts" as const,
           label: t("settings.tabHosts"),
           hint: t("settings.hintHosts"),
+        },
+        {
+          id: "chain" as const,
+          label: t("settings.tabChain"),
+          hint: t("settings.hintChain"),
         },
         {
           id: "core" as const,
@@ -334,6 +340,9 @@ export function SettingsPage() {
    * from its own finally when the user edited mid-flight). */
   const autoApplyRef = useRef<() => Promise<void>>(async () => {});
   const applyingRef = useRef(false);
+  // A failed restart (for example an unavailable LAN listener) must not
+  // endlessly retry the identical draft. Re-apply only after a new edit.
+  const applyGenerationRef = useRef(0);
   /** Previous tun_enabled value, to detect the off → on transition. */
   const prevTunEnabledRef = useRef<boolean | undefined>(undefined);
 
@@ -392,8 +401,10 @@ export function SettingsPage() {
       seen.add(row.port);
     }
     applyingRef.current = true;
+    const generationAtStart = applyGenerationRef.current;
     setBusy(true);
     setError(null);
+    let succeeded = false;
     try {
       const s = await updateSettings({
         mixedPort,
@@ -414,13 +425,17 @@ export function SettingsPage() {
       if (status?.running) {
         await restartProxy();
       }
+      succeeded = true;
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       applyingRef.current = false;
       setBusy(false);
-      // Pick up edits made while we were applying.
-      void autoApplyRef.current();
+      // Retry only after a successful write or a newer user edit. This avoids
+      // an invisible restart loop when the same setting cannot be applied.
+      if (succeeded || applyGenerationRef.current !== generationAtStart) {
+        void autoApplyRef.current();
+      }
     }
   }, [allowLan, api, blockQuic, bypassLan, directIpStrategy, extra, mixed, probe, settings, t, tunIpv6, tunStack, udpTlsCompat]);
 
@@ -430,6 +445,7 @@ export function SettingsPage() {
   // toggles / selects / modal saves settle within the same short window.
   useEffect(() => {
     if (!settings) return;
+    applyGenerationRef.current += 1;
     const timer = setTimeout(() => void autoApplyRef.current(), 600);
     return () => clearTimeout(timer);
     // Fire on any draft change; autoApplyNetwork itself decides if there is
@@ -871,6 +887,7 @@ export function SettingsPage() {
                 rules: t("config.customDisabled"),
                 dns: t("config.customDisabled"),
                 hosts: t("config.customDisabled"),
+                chain: t("config.customDisabled"),
               }
             : undefined
         }
@@ -880,7 +897,8 @@ export function SettingsPage() {
       {error &&
         visibleTab !== "rules" &&
         visibleTab !== "dns" &&
-        visibleTab !== "hosts" && (
+        visibleTab !== "hosts" &&
+        visibleTab !== "chain" && (
         <ErrorModal message={error} onClose={() => setError(null)} />
       )}
 
@@ -893,7 +911,7 @@ export function SettingsPage() {
               ? " settings-ports-page"
               : ""
         }${
-          visibleTab === "rules" || visibleTab === "dns"
+          visibleTab === "rules" || visibleTab === "dns" || visibleTab === "chain"
             ? " settings-scroll-embed"
             : ""
         }`}
@@ -905,6 +923,7 @@ export function SettingsPage() {
           <DnsPage embedded />
         )}
         {!customRuntime && visibleTab === "hosts" && <HostsPage embedded />}
+        {!customRuntime && visibleTab === "chain" && <ChainPage embedded />}
       {visibleTab === "app" && settings && (
         <section className="settings-panel" aria-label="Application">
           <div className="card settings-app-card">

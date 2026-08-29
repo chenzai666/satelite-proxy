@@ -16,6 +16,7 @@ import {
   getRuleSet,
   getSettings,
   listAllNodes,
+  listChains,
   listRemoteRuleItems,
   listRuleSets,
   peekSettings,
@@ -44,6 +45,7 @@ import { extractDomainSuffix } from "./FailuresPage";
 import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import type {
   ProxyNode,
+  ProxyChain,
   Rule,
   RuleSetDnsStrategy,
   RuleSetSummary,
@@ -163,10 +165,12 @@ function SingboxRulesPage({ embedded = false }: Props) {
   const [payload, setPayload] = useState("");
   const [target, setTarget] = useState<RuleTarget>("proxy");
   const [pinNodeId, setPinNodeId] = useState<string>("");
+  const [pinChainId, setPinChainId] = useState<string>("");
   const [nodeQuery, setNodeQuery] = useState("");
   const [smartInclude, setSmartInclude] = useState("");
   const [smartExclude, setSmartExclude] = useState("");
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
+  const [chains, setChains] = useState<ProxyChain[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
 
@@ -176,10 +180,11 @@ function SingboxRulesPage({ embedded = false }: Props) {
   const [newSetKind, setNewSetKind] = useState<"local" | "remote">("local");
   const [newSetUrl, setNewSetUrl] = useState("");
   const [newSetTarget, setNewSetTarget] = useState<
-    "proxy" | "direct" | "block" | "node" | "filter"
+    "proxy" | "direct" | "block" | "node" | "filter" | "chain"
   >("proxy");
   const [newSetNodeId, setNewSetNodeId] = useState("");
   const [newSetNodeQuery, setNewSetNodeQuery] = useState("");
+  const [newSetChainId, setNewSetChainId] = useState("");
   const [newSetSmartInclude, setNewSetSmartInclude] = useState("");
   const [newSetSmartExclude, setNewSetSmartExclude] = useState("");
   const [newSetUpdateInterval, setNewSetUpdateInterval] = useState<
@@ -217,6 +222,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
   const [batchTarget, setBatchTarget] = useState<RuleTarget>("proxy");
   const [batchNodeId, setBatchNodeId] = useState("");
   const [batchNodeQuery, setBatchNodeQuery] = useState("");
+  const [batchChainId, setBatchChainId] = useState("");
   const [batchSmartInclude, setBatchSmartInclude] = useState("");
   const [batchSmartExclude, setBatchSmartExclude] = useState("");
 
@@ -313,6 +319,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
   useEffect(() => {
     void reload();
     void ensureNodesLoaded();
+    void ensureChainsLoaded();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -648,6 +655,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
       { value: "block", label: t("rules.targetBlock") },
       { value: "node", label: t("rules.targetNode") },
       { value: "smart", label: t("rules.targetSmart") },
+      { value: "chain", label: t("rules.targetChain") },
     ],
     [t],
   );
@@ -691,6 +699,8 @@ function SingboxRulesPage({ embedded = false }: Props) {
             ? t("rules.strategyNode")
             : s === "filter"
               ? t("rules.strategyFilter")
+              : s === "chain"
+                ? t("rules.targetChain")
               : t("rules.strategySmart");
   }
 
@@ -707,7 +717,12 @@ function SingboxRulesPage({ embedded = false }: Props) {
    *  keywords fill in any per-rule blanks at build time; plain sets are
    *  limited to proxy/direct/block. */
   function clampTargetForSet(target: RuleTarget): RuleTarget {
-    if (viewSet?.strategy === "smart" || viewSet?.strategy === "node" || viewSet?.strategy === "filter") {
+    if (
+      viewSet?.strategy === "smart" ||
+      viewSet?.strategy === "node" ||
+      viewSet?.strategy === "filter" ||
+      viewSet?.strategy === "chain"
+    ) {
       return target;
     }
     return target === "proxy" || target === "direct" || target === "block"
@@ -724,10 +739,20 @@ function SingboxRulesPage({ embedded = false }: Props) {
     if (s === "smart") return targetOpts;
     if (s === "node") return [...base, targetOpts[3]];
     if (s === "filter") return [...base, targetOpts[4]];
+    if (s === "chain") return [...base, targetOpts[5]];
     return base;
   }, [viewSet?.strategy, targetOpts]);
 
   function targetLabel(r: Rule): { text: string; stale: boolean; cls: string } {
+    if (r.target === "chain") {
+      const chain = chains.find((item) => item.id === r.chain_id);
+      if (chain) return { text: chain.name, stale: false, cls: "target-chain" };
+      return {
+        text: t("rules.chainStaleLabel", { name: r.chain_name?.trim() || r.chain_id || "—" }),
+        stale: true,
+        cls: "target-stale",
+      };
+    }
     if (r.target === "smart") {
       const parts: string[] = [t("rules.smartLabel")];
       const inc = (r.smart_include ?? []).filter(Boolean);
@@ -773,6 +798,14 @@ function SingboxRulesPage({ embedded = false }: Props) {
     }
   }
 
+  async function ensureChainsLoaded() {
+    try {
+      setChains(await listChains());
+    } catch {
+      setChains([]);
+    }
+  }
+
   function openCreate() {
     setEditRule(null);
     setRuleType("domain_suffix");
@@ -781,12 +814,14 @@ function SingboxRulesPage({ embedded = false }: Props) {
     // pin; filter-set keywords stay empty and inherit the set filters).
     setTarget(setUniformTarget ?? "proxy");
     setPinNodeId(viewSet?.strategy === "node" ? (viewSet.node_id ?? "") : "");
+    setPinChainId(viewSet?.strategy === "chain" ? (viewSet.chain_id ?? "") : "");
     setNodeQuery("");
     setSmartInclude("");
     setSmartExclude("");
     setEnabled(true);
     setEditOpen(true);
     void ensureNodesLoaded();
+    void ensureChainsLoaded();
   }
 
   function openEdit(r: Rule) {
@@ -795,12 +830,14 @@ function SingboxRulesPage({ embedded = false }: Props) {
     setPayload(r.payload);
     setTarget(clampTargetForSet(r.target));
     setPinNodeId(r.node_id ?? "");
+    setPinChainId(r.chain_id ?? "");
     setNodeQuery("");
     setSmartInclude((r.smart_include ?? []).join(" "));
     setSmartExclude((r.smart_exclude ?? []).join(" "));
     setEnabled(r.enabled);
     setEditOpen(true);
     void ensureNodesLoaded();
+    void ensureChainsLoaded();
   }
 
   async function onSave(e: FormEvent) {
@@ -811,6 +848,10 @@ function SingboxRulesPage({ embedded = false }: Props) {
     const effectiveTarget = clampTargetForSet(target);
     if (effectiveTarget === "node" && !pinNodeId.trim()) {
       setError(t("rules.needNode"));
+      return;
+    }
+    if (effectiveTarget === "chain" && !pinChainId.trim()) {
+      setError(t("rules.needChain"));
       return;
     }
     if (effectiveTarget === "smart" && smartKeywordOverlap.length > 0) {
@@ -833,11 +874,13 @@ function SingboxRulesPage({ embedded = false }: Props) {
         nodeId: effectiveTarget === "node" ? pinNodeId : null,
         smartInclude: effectiveTarget === "smart" ? parseKeywords(smartInclude) : null,
         smartExclude: effectiveTarget === "smart" ? parseKeywords(smartExclude) : null,
+        chainId: effectiveTarget === "chain" ? pinChainId : null,
       });
       setEditOpen(false);
       await reloadRules(viewSetId);
       await reloadSets();
       void ensureNodesLoaded();
+      void ensureChainsLoaded();
     } catch (err) {
       setError(typeof err === "string" ? err : String(err));
     } finally {
@@ -923,10 +966,12 @@ function SingboxRulesPage({ embedded = false }: Props) {
     setBatchTarget("proxy");
     setBatchNodeId("");
     setBatchNodeQuery("");
+    setBatchChainId("");
     setBatchSmartInclude("");
     setBatchSmartExclude("");
     setBatchOpen(true);
     void ensureNodesLoaded();
+    void ensureChainsLoaded();
   }
 
   async function onBatchApply(e: FormEvent) {
@@ -934,6 +979,10 @@ function SingboxRulesPage({ embedded = false }: Props) {
     if (!viewSetId || batchBusy) return;
     if (batchTarget === "node" && !batchNodeId.trim()) {
       setError(t("rules.needNode"));
+      return;
+    }
+    if (batchTarget === "chain" && !batchChainId.trim()) {
+      setError(t("rules.needChain"));
       return;
     }
     if (batchTarget === "smart" && batchKeywordOverlap.length > 0) {
@@ -951,6 +1000,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
         batchTarget === "node" ? batchNodeId : null,
         batchTarget === "smart" ? parseKeywords(batchSmartInclude) : null,
         batchTarget === "smart" ? parseKeywords(batchSmartExclude) : null,
+        batchTarget === "chain" ? batchChainId : null,
       );
       setBatchOpen(false);
       await Promise.all([reloadSets(), reloadRules(viewSetId)]);
@@ -983,12 +1033,14 @@ function SingboxRulesPage({ embedded = false }: Props) {
     setNewSetTarget("proxy");
     setNewSetNodeId("");
     setNewSetNodeQuery("");
+    setNewSetChainId("");
     setNewSetSmartInclude("");
     setNewSetSmartExclude("");
     setNewSetUpdateInterval("disabled");
     setNewSetOpen(true);
     setError(null);
     void ensureNodesLoaded();
+    void ensureChainsLoaded();
   }
 
   async function onCreateSet(e: FormEvent) {
@@ -1000,6 +1052,10 @@ function SingboxRulesPage({ embedded = false }: Props) {
     }
     if (newSetTarget === "node" && !newSetNodeId.trim()) {
       setError(t("rules.needNode"));
+      return;
+    }
+    if (newSetTarget === "chain" && !newSetChainId.trim()) {
+      setError(t("rules.needChain"));
       return;
     }
     if (newSetKeywordOverlap.length > 0) {
@@ -1025,6 +1081,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
         newSetTarget === "node" ? newSetNodeId : null,
         newSetTarget === "filter" ? parseKeywords(newSetSmartInclude) : null,
         newSetTarget === "filter" ? parseKeywords(newSetSmartExclude) : null,
+        newSetTarget === "chain" ? newSetChainId : null,
       );
       const list = await listRuleSets();
       setSets(list);
@@ -1934,6 +1991,20 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   )}
                 </div>
               )}
+              {batchTarget === "chain" && (
+                <div className="field">
+                  <span>{t("rules.pickChain")}</span>
+                  <SolidSelect
+                    value={batchChainId}
+                    onChange={setBatchChainId}
+                    aria-label={t("rules.pickChain")}
+                    options={[
+                      { value: "", label: t("rules.needChain") },
+                      ...chains.map((chain) => ({ value: chain.id, label: chain.name })),
+                    ]}
+                  />
+                </div>
+              )}
               {batchTarget === "smart" && (
                 <div className="field rule-smart-filters">
                   <label className="field" style={{ marginBottom: 8 }}>
@@ -2001,7 +2072,8 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   disabled={
                     batchBusy ||
                     (!viewSet.remote && rules.length === 0) ||
-                    (batchTarget === "node" && !batchNodeId.trim())
+                    (batchTarget === "node" && !batchNodeId.trim()) ||
+                    (batchTarget === "chain" && !batchChainId.trim())
                   }
                 >
                   {batchBusy
@@ -2129,6 +2201,20 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   )}
                 </div>
               )}
+              {(viewSet?.strategy === "smart" || viewSet?.strategy === "chain") && target === "chain" && (
+                <div className="field">
+                  <span>{t("rules.pickChain")}</span>
+                  <SolidSelect
+                    value={pinChainId}
+                    onChange={setPinChainId}
+                    aria-label={t("rules.pickChain")}
+                    options={[
+                      { value: "", label: t("rules.needChain") },
+                      ...chains.map((chain) => ({ value: chain.id, label: chain.name })),
+                    ]}
+                  />
+                </div>
+              )}
               {viewSet?.strategy === "smart" && target === "smart" && (
                 <div className="field rule-smart-filters">
                   <p className="muted" style={{ margin: "0 0 8px", fontSize: 12 }}>
@@ -2212,6 +2298,8 @@ function SingboxRulesPage({ embedded = false }: Props) {
                     plainDiverged ||
                     !payload.trim() ||
                     (viewSet?.strategy === "smart" && target === "node" && !pinNodeId.trim()) ||
+                    ((viewSet?.strategy === "smart" || viewSet?.strategy === "chain") &&
+                      target === "chain" && !pinChainId.trim()) ||
                     (viewSet?.strategy === "smart" && target === "smart" &&
                       (nodes.length === 0 || smartKeywordOverlap.length > 0))
                   }
@@ -2288,7 +2376,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   ariaLabel={t("rules.routeStrategyAria")}
                   onChange={(value) =>
                     setNewSetTarget(
-                      value as "proxy" | "direct" | "block" | "node" | "filter",
+                      value as "proxy" | "direct" | "block" | "node" | "filter" | "chain",
                     )
                   }
                   options={[
@@ -2297,6 +2385,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
                     { value: "block", label: t("rules.targetBlock") },
                     { value: "node", label: t("rules.strategyNode") },
                     { value: "filter", label: t("rules.strategyFilter") },
+                    { value: "chain", label: t("rules.targetChain") },
                   ]}
                 />
               </label>
@@ -2337,6 +2426,20 @@ function SingboxRulesPage({ embedded = false }: Props) {
                       />
                     </>
                   )}
+                </div>
+              )}
+              {newSetTarget === "chain" && (
+                <div className="field">
+                  <span>{t("rules.pickChain")}</span>
+                  <SolidSelect
+                    value={newSetChainId}
+                    onChange={setNewSetChainId}
+                    aria-label={t("rules.pickChain")}
+                    options={[
+                      { value: "", label: t("rules.needChain") },
+                      ...chains.map((chain) => ({ value: chain.id, label: chain.name })),
+                    ]}
+                  />
                 </div>
               )}
               {newSetTarget === "filter" && (
@@ -2434,6 +2537,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
                     (newSetKind === "remote" && !newSetUrl.trim()) ||
                     (newSetTarget === "node" &&
                       (nodes.length === 0 || !newSetNodeId.trim())) ||
+                    (newSetTarget === "chain" && !newSetChainId.trim()) ||
                     newSetKeywordOverlap.length > 0
                   }
                 >

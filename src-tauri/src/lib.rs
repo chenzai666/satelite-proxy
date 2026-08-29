@@ -9,6 +9,7 @@ mod core;
 mod domain;
 mod error;
 mod log_retention;
+mod portable;
 mod proxy;
 mod remote_rule_auto;
 mod rule_apply;
@@ -104,6 +105,10 @@ pub fn run() {
     if let Some(code) = core::manager::try_run_elevated_log_helper() {
         std::process::exit(code);
     }
+    // Portable mode is explicit: a marker next to the executable redirects
+    // both app data and the WebView profile to the extracted folder.
+    let mut context = tauri::generate_context!();
+    portable::patch_context(&mut context);
     let mut builder = tauri::Builder::default();
 
     // Single instance + deep-link: second launch (e.g. click clash:// while running)
@@ -120,7 +125,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
-            let dir = match app.path().app_data_dir() {
+            if portable::is_portable() {
+                portable::build_main_window(app);
+            }
+            let dir = match portable::resolve_app_data_dir(app.handle()) {
                 Ok(dir) => dir,
                 Err(error) => {
                     show_startup_failure(app, error, None);
@@ -428,6 +436,7 @@ pub fn run() {
             commands::update_dns_settings,
             commands::reset_dns_defaults,
             commands::test_dns_lookup,
+            commands::diagnose_dns,
             commands::read_system_hosts,
             commands::set_current_node_live,
             commands::smart_switch_now,
@@ -446,6 +455,16 @@ pub fn run() {
             commands::delete_rule_set,
             commands::reset_rule_set,
             commands::reset_builtin_rule_set,
+            commands::list_pools,
+            commands::create_pool,
+            commands::update_pool,
+            commands::delete_pool,
+            commands::list_chains,
+            commands::list_chain_usage,
+            commands::create_chain,
+            commands::update_chain,
+            commands::delete_chain,
+            commands::diagnose_chain,
             commands::list_rules,
             commands::save_rule,
             commands::remove_rule,
@@ -466,7 +485,7 @@ pub fn run() {
             peek_pending_import_urls,
             clear_pending_import_urls,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             match event {
@@ -525,7 +544,7 @@ fn parse_subscription_text(content: String) -> Result<domain::ParseResult, Strin
 /// Persist UI shell preference (pro | simple) for correct window size on recreate.
 #[tauri::command]
 fn set_ui_mode_pref(app: tauri::AppHandle, mode: String) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = portable::resolve_app_data_dir(&app).map_err(|e| e.to_string())?;
     window_ctrl::write_ui_mode(&dir, &mode);
     Ok(())
 }

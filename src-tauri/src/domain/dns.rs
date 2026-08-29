@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Shared resolver pools for generated configurations and DNS diagnostics.
+/// Remote DoH is always sent through the proxy path; domestic UDP stays
+/// direct. Keep these constants central so switching cores cannot silently
+/// change the selected resolver family.
+pub const REMOTE_DNS_POOL: [&str; 2] = ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
+pub const DOMESTIC_DNS_POOL: [&str; 2] = ["223.5.5.5", "119.29.29.29"];
+
 /// Legacy stored value. Resolution modes were removed in schema v3; this is
 /// deserialized only so older stores can still be opened safely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

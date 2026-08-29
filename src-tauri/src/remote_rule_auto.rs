@@ -144,9 +144,7 @@ pub fn spawn(app: AppHandle) {
 }
 
 async fn cleanup_orphaned_cache(app: &AppHandle) -> Result<usize, String> {
-    let cache_dir = app
-        .path()
-        .app_data_dir()
+    let cache_dir = crate::portable::resolve_app_data_dir(app)
         .map_err(|error| error.to_string())?
         .join("remote-rule-sets");
     let referenced = app
@@ -311,7 +309,7 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
         },
     };
 
-    let cache_dir = match app.path().app_data_dir() {
+    let cache_dir = match crate::portable::resolve_app_data_dir(&app) {
         Ok(path) => path.join("remote-rule-sets"),
         Err(error) => return fail(app, id, error.to_string()),
     };

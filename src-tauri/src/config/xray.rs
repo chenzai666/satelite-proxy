@@ -40,7 +40,7 @@ const DIRECT_DNS_TAG: &str = "direct-dns";
 const NODE_TAG_PREFIX: &str = "node-";
 
 pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
-    let supported: Vec<ProxyNode> = nodes
+    let mut supported: Vec<ProxyNode> = nodes
         .iter()
         .filter(|n| CoreKind::Xray.supports(n.protocol))
         .cloned()
@@ -49,6 +49,14 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
         return Err(AppError::Config(
             "no Xray-compatible nodes (supports vmess/vless/shadowsocks/trojan/hysteria2(no obfs)/socks5/http/wireguard)".into(),
         ));
+    }
+
+    let rewritten = ProxyNode::ensure_unique_ids(supported.iter_mut());
+    if rewritten > 0 {
+        crate::app_log::warn(
+            "xray_config",
+            format!("{rewritten} 个节点 id 重复，已在生成时改写 tag 以避免校验失败"),
+        );
     }
 
     let mut tags = Vec::new();
@@ -433,7 +441,10 @@ fn rule_to_xray(
     let outbound = match target {
         RuleTarget::Direct => "direct".to_string(),
         RuleTarget::Block => "block".to_string(),
-        RuleTarget::Proxy | RuleTarget::Smart => main_target.to_string(),
+        // Xray does not have sing-box-style detour chains. Preserve reachability
+        // by falling back to the selected proxy instead of generating invalid
+        // routing outbounds; the UI exposes chain routing only under sing-box.
+        RuleTarget::Proxy | RuleTarget::Smart | RuleTarget::Chain => main_target.to_string(),
         RuleTarget::Node => {
             let pinned = node_id
                 .as_deref()

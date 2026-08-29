@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   getDnsSettings,
+  diagnoseDns,
   testDnsLookup,
   updateDnsSettings,
 } from "../api";
@@ -9,7 +10,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
-import type { DnsFinalStrategy, DnsSettings, DnsTestResult } from "../types";
+import type { DnsDiagReport, DnsFinalStrategy, DnsSettings, DnsTestResult } from "../types";
 
 function SettingRow({
   title,
@@ -38,6 +39,7 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [testDomain, setTestDomain] = useState("www.baidu.com");
   const [testResult, setTestResult] = useState<DnsTestResult | null>(null);
+  const [diagReport, setDiagReport] = useState<DnsDiagReport | null>(null);
   const [testBusy, setTestBusy] = useState(false);
   const [bypassText, setBypassText] = useState("");
 
@@ -93,8 +95,12 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
     setTestBusy(true);
     setError(null);
     try {
-      const r = await testDnsLookup(testDomain);
+      const [r, diag] = await Promise.all([
+        testDnsLookup(testDomain),
+        diagnoseDns([testDomain]),
+      ]);
       setTestResult(r);
+      setDiagReport(diag);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -322,6 +328,17 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
                   <div className="warn">{testResult.error}</div>
                 )}
                 <div className="dns-test-note">{testResult.note}</div>
+                {diagReport?.results[0]?.path && (
+                  <div className="dns-test-note">
+                    <strong>{t("dns.corePath")}：</strong>
+                    {diagReport.results[0].path.matched_by} · {diagReport.results[0].path.servers.join(" / ") || "—"}
+                    {diagReport.results[0].path.via_proxy ? ` · ${t("dns.viaProxy")}` : ""}
+                    {diagReport.results[0].query && ` · ${diagReport.results[0].query.elapsed_ms} ms`}
+                  </div>
+                )}
+                {diagReport?.results[0]?.query_note && (
+                  <div className="dns-test-note">{diagReport.results[0].query_note}</div>
+                )}
               </div>
             ) : (
               <div className="dns-empty soft">{t("dns.diagEmptyHint")}</div>

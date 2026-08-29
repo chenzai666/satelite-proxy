@@ -23,6 +23,9 @@ pub struct SaveRuleInput {
     /// When `target == smart`: name must not contain any keyword.
     #[serde(default)]
     pub smart_exclude: Option<Vec<String>>,
+    /// Required when `target == chain`.
+    #[serde(default)]
+    pub chain_id: Option<String>,
 }
 
 /// Persisting is done; queue one globally debounced restart and return.
@@ -281,9 +284,7 @@ pub async fn list_remote_rule_items(
             })
             .map_err(|error| error.to_string())?;
 
-    let cache_dir = app
-        .path()
-        .app_data_dir()
+    let cache_dir = crate::portable::resolve_app_data_dir(&app)
         .map_err(|error| error.to_string())?
         .join("remote-rule-sets")
         .canonicalize()
@@ -507,9 +508,12 @@ pub fn set_rule_set_strategy(
             }
             // Node/Filter carry whole-set parameters (node pin / keywords)
             // that this command cannot accept — the batch path owns them.
-            if matches!(strategy, RuleSetStrategy::Node | RuleSetStrategy::Filter) {
+            if matches!(
+                strategy,
+                RuleSetStrategy::Node | RuleSetStrategy::Filter | RuleSetStrategy::Chain
+            ) {
                 return Err(crate::error::AppError::Config(
-                    "指定 / 过滤策略需要节点或关键词参数，请在「批量设置路由」中修改".into(),
+                    "指定 / 过滤 / 链路策略需要附加参数，请在「批量设置路由」中修改".into(),
                 ));
             }
             set.strategy = strategy;
@@ -556,6 +560,7 @@ pub fn batch_set_rule_targets(
     node_id: Option<String>,
     smart_include: Option<Vec<String>>,
     smart_exclude: Option<Vec<String>>,
+    chain_id: Option<String>,
 ) -> Result<RuleSet, String> {
     let (set, needs_restart) = state
         .with_store_mut(|store| {
@@ -565,6 +570,7 @@ pub fn batch_set_rule_targets(
                 node_id,
                 smart_include.unwrap_or_default(),
                 smart_exclude.unwrap_or_default(),
+                chain_id,
             )
         })
         .map_err(|e| e.to_string())?;
@@ -636,6 +642,7 @@ pub fn create_rule_set(
     node_id: Option<String>,
     smart_include: Option<Vec<String>>,
     smart_exclude: Option<Vec<String>>,
+    chain_id: Option<String>,
 ) -> Result<RuleSet, String> {
     let set = state
         .with_store_mut(|store| {
@@ -687,12 +694,20 @@ pub fn create_rule_set(
                     node_id,
                     smart_include,
                     smart_exclude,
+                    chain_id,
                 )
             } else {
                 // Local set: an optional initial whole-set route from the
                 // new-set dialog (node/smart carry the set-level pin /
                 // keyword filters; Mixed stays an emergent per-rule state).
-                store.create_local_rule_set(n, target, node_id, smart_include, smart_exclude)
+                store.create_local_rule_set(
+                    n,
+                    target,
+                    node_id,
+                    smart_include,
+                    smart_exclude,
+                    chain_id,
+                )
             }
         })
         .map_err(|e| e.to_string())?;
@@ -975,6 +990,27 @@ pub fn save_rule(
                 (Vec::new(), Vec::new())
             };
 
+            let (chain_id, chain_name) = if matches!(effective_target, RuleTarget::Chain) {
+                let chain_id = input
+                    .chain_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        crate::error::AppError::Config("链路出口需要选择一个链路".into())
+                    })?;
+                let chain = store
+                    .chains
+                    .iter()
+                    .find(|chain| chain.id == chain_id)
+                    .ok_or_else(|| {
+                        crate::error::AppError::Config("指定的链路不存在，请重新选择".into())
+                    })?;
+                (Some(chain.id.clone()), Some(chain.name.clone()))
+            } else {
+                (None, None)
+            };
+
             let rule = if let Some(id) = input.id.clone() {
                 if let Some(existing) = set.rules.iter().find(|r| r.id == id) {
                     let mut r = existing.clone();
@@ -986,6 +1022,8 @@ pub fn save_rule(
                     r.node_name = node_name;
                     r.smart_include = smart_include;
                     r.smart_exclude = smart_exclude;
+                    r.chain_id = chain_id;
+                    r.chain_name = chain_name;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -997,6 +1035,8 @@ pub fn save_rule(
                     r.node_name = node_name;
                     r.smart_include = smart_include;
                     r.smart_exclude = smart_exclude;
+                    r.chain_id = chain_id;
+                    r.chain_name = chain_name;
                     if let Some(en) = input.enabled {
                         r.enabled = en;
                     }
@@ -1008,7 +1048,9 @@ pub fn save_rule(
                 r.node_name = node_name;
                 r.smart_include = smart_include;
                 r.smart_exclude = smart_exclude;
-                if matches!(input.target, RuleTarget::Smart) {
+                r.chain_id = chain_id;
+                r.chain_name = chain_name;
+                if matches!(input.target, RuleTarget::Smart | RuleTarget::Chain) {
                     r.id = Rule::compute_id(
                         r.rule_type,
                         &r.payload,
@@ -1016,6 +1058,7 @@ pub fn save_rule(
                         None,
                         &r.smart_include,
                         &r.smart_exclude,
+                        r.chain_id.as_deref(),
                     );
                 }
                 if let Some(en) = input.enabled {

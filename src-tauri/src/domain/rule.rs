@@ -37,13 +37,15 @@ pub enum RuleTarget {
     Node,
     /// Smart pool: filter nodes by name keywords, then pick best via smart-switch probe.
     Smart,
+    /// Route through a named multi-hop chain (`chain_id` on [`Rule`]).
+    Chain,
 }
 
 impl RuleTarget {
     pub fn outbound_tag(self) -> &'static str {
         match self {
             Self::Direct => "direct",
-            Self::Proxy | Self::Node | Self::Smart => "proxy",
+            Self::Proxy | Self::Node | Self::Smart | Self::Chain => "proxy",
             Self::Block => "block",
         }
     }
@@ -52,7 +54,7 @@ impl RuleTarget {
     pub fn clash_token(self) -> &'static str {
         match self {
             Self::Direct => "DIRECT",
-            Self::Proxy | Self::Node | Self::Smart => "PROXY",
+            Self::Proxy | Self::Node | Self::Smart | Self::Chain => "PROXY",
             Self::Block => "REJECT",
         }
     }
@@ -80,12 +82,18 @@ pub struct Rule {
     /// When `target == Smart`: blacklist — name containing any keyword is skipped (OR).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_exclude: Vec<String>,
+    /// When `target == Chain`: stable id of the selected multi-hop chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    /// Snapshot of the selected chain display name (for stale-chain UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_name: Option<String>,
 }
 
 impl Rule {
     pub fn new(rule_type: RuleType, payload: String, target: RuleTarget, ord: i32) -> Self {
         let payload = payload.trim().to_string();
-        let id = Self::compute_id(rule_type, &payload, target, None, &[], &[]);
+        let id = Self::compute_id(rule_type, &payload, target, None, &[], &[], None);
         Self {
             id,
             ord,
@@ -97,6 +105,8 @@ impl Rule {
             node_name: None,
             smart_include: Vec::new(),
             smart_exclude: Vec::new(),
+            chain_id: None,
+            chain_name: None,
         }
     }
 
@@ -118,6 +128,7 @@ impl Rule {
         node_id: Option<&str>,
         smart_include: &[String],
         smart_exclude: &[String],
+        chain_id: Option<&str>,
     ) -> String {
         let mut h = Sha256::new();
         h.update(rule_type.as_str().as_bytes());
@@ -137,6 +148,12 @@ impl Rule {
             for k in smart_exclude {
                 h.update(b"|-");
                 h.update(k.as_bytes());
+            }
+        }
+        if matches!(target, RuleTarget::Chain) {
+            if let Some(cid) = chain_id.filter(|s| !s.is_empty()) {
+                h.update(b"|c");
+                h.update(cid.as_bytes());
             }
         }
         hex::encode(&h.finalize()[..12])
@@ -247,6 +264,12 @@ pub struct RuleSet {
     /// When `strategy == Filter`: blacklist — name containing any keyword is skipped (OR).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_exclude: Vec<String>,
+    /// When `strategy == Chain`: stable id of the selected multi-hop chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    /// Snapshot of the selected chain display name (for stale-chain UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_name: Option<String>,
     /// Whole-set DNS resolver policy, independent from the route strategy.
     #[serde(default)]
     pub dns_strategy: RuleSetDnsStrategy,
@@ -281,6 +304,8 @@ pub enum RuleSetStrategy {
     /// Whole set routed to a keyword-filtered node pool
     /// (`smart_include`/`smart_exclude` on [`RuleSet`]).
     Filter,
+    /// Whole set routed through a named multi-hop chain (`chain_id` on [`RuleSet`]).
+    Chain,
     /// Per-item route/DNS decisions (emergent "Mixed" tag).
     Smart,
 }
@@ -312,6 +337,7 @@ impl RuleSetStrategy {
             RuleTarget::Block => Self::Block,
             RuleTarget::Node => Self::Node,
             RuleTarget::Smart => Self::Filter,
+            RuleTarget::Chain => Self::Chain,
         }
     }
 
@@ -320,7 +346,7 @@ impl RuleSetStrategy {
             Self::Proxy => Some(RuleTarget::Proxy),
             Self::Direct => Some(RuleTarget::Direct),
             Self::Block => Some(RuleTarget::Block),
-            Self::Node | Self::Filter | Self::Smart => None,
+            Self::Node | Self::Filter | Self::Smart | Self::Chain => None,
         }
     }
 
@@ -328,7 +354,7 @@ impl RuleSetStrategy {
     /// Block has no editable DNS policy because it always emits DNS reject.
     pub fn recommended_dns_strategy(self) -> Option<RuleSetDnsStrategy> {
         match self {
-            Self::Proxy | Self::Node | Self::Filter | Self::Smart => {
+            Self::Proxy | Self::Node | Self::Filter | Self::Smart | Self::Chain => {
                 Some(RuleSetDnsStrategy::Remote)
             }
             Self::Direct => Some(RuleSetDnsStrategy::Local),
@@ -423,6 +449,8 @@ impl RuleSet {
             node_name: None,
             smart_include: Vec::new(),
             smart_exclude: Vec::new(),
+            chain_id: None,
+            chain_name: None,
             dns_strategy: RuleSetDnsStrategy::Remote,
             remote: None,
             dns_rules: Vec::new(),
@@ -511,6 +539,10 @@ pub struct RuleSetSummary {
     pub smart_include: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub smart_exclude: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_name: Option<String>,
     pub dns_strategy: RuleSetDnsStrategy,
     /// Restorable by Reset: only the bundled remote rule sets.
     #[serde(default)]

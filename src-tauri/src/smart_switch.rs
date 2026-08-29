@@ -964,6 +964,8 @@ fn collect_enabled_smart_rules(state: &AppState) -> Vec<Rule> {
                         node_name: None,
                         smart_include: set.smart_include.clone(),
                         smart_exclude: set.smart_exclude.clone(),
+                        chain_id: None,
+                        chain_name: None,
                     }),
                     RuleSetStrategy::Smart => {
                         for r in set

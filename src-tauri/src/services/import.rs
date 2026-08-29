@@ -1137,7 +1137,7 @@ fn build_outcome(
 
     // Re-hash node ids with subscription scope for multi-sub stability.
     let sub_id = subscription.id.clone();
-    let nodes: Vec<ProxyNode> = real_nodes
+    let mut nodes: Vec<ProxyNode> = real_nodes
         .into_iter()
         .map(|mut n| {
             n.id = ProxyNode::compute_id(
@@ -1152,6 +1152,13 @@ fn build_outcome(
             n
         })
         .collect();
+    let rewritten = ProxyNode::ensure_unique_ids(nodes.iter_mut());
+    if rewritten > 0 {
+        crate::app_log::warn(
+            "import",
+            format!("{rewritten} 个节点的标识发生冲突，已自动改写以避免内核 tag 重复"),
+        );
+    }
     ImportOutcome {
         subscription,
         nodes,

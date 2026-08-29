@@ -36,6 +36,13 @@ pub struct AppStore {
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub rule_sets: Vec<RuleSet>,
+    /// Reusable node pools and named multi-hop chains. They are stored
+    /// separately from rule sets so a chain can be edited without touching
+    /// subscription data.
+    #[serde(default)]
+    pub pools: Vec<crate::domain::NodePool>,
+    #[serde(default)]
+    pub chains: Vec<crate::domain::ProxyChain>,
     /// Legacy single-active field; migrated into `RuleSet.enabled`.
     #[serde(default)]
     pub active_rule_set_id: Option<String>,
@@ -61,6 +68,10 @@ pub struct AppStore {
     retained_rules: Vec<Value>,
     #[serde(skip)]
     retained_rule_sets: Vec<Value>,
+    #[serde(skip)]
+    retained_pools: Vec<Value>,
+    #[serde(skip)]
+    retained_chains: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +99,14 @@ impl AppStore {
         store.migrate_user_rule_presets();
         store.migrate_file_sources_to_copied_text();
         store.ensure_subscription_enable_policy();
+        let rewritten =
+            ProxyNode::ensure_unique_ids(store.nodes.iter_mut().map(|item| &mut item.node));
+        if rewritten > 0 {
+            crate::app_log::warn(
+                "storage",
+                format!("检测到 {rewritten} 个重复节点标识，已自动修复以避免内核 tag 冲突"),
+            );
+        }
         if schema_before < 5 && source_raw.is_some() {
             let backup = path.with_file_name("store.pre-v5.backup.json");
             if !backup.exists() {
@@ -259,6 +278,8 @@ impl AppStore {
                     node_name: None,
                     smart_include: Vec::new(),
                     smart_exclude: Vec::new(),
+                    chain_id: None,
+                    chain_name: None,
                     dns_strategy: RuleSetDnsStrategy::Remote,
                     remote: None,
                     dns_rules: Vec::new(),
@@ -350,7 +371,7 @@ impl AppStore {
                         RuleTarget::Proxy => "proxy",
                         RuleTarget::Direct => "direct",
                         RuleTarget::Block => "block",
-                        RuleTarget::Node | RuleTarget::Smart => "smart",
+                        RuleTarget::Node | RuleTarget::Smart | RuleTarget::Chain => "smart",
                     };
                     if let Some((_, rules)) = buckets.iter_mut().find(|(bucket, _)| *bucket == key)
                     {
@@ -437,6 +458,8 @@ impl AppStore {
                         node_name: None,
                         smart_include: Vec::new(),
                         smart_exclude: Vec::new(),
+                        chain_id: None,
+                        chain_name: None,
                         dns_strategy: match key {
                             "direct" => RuleSetDnsStrategy::Local,
                             "smart" => RuleSetDnsStrategy::Domestic,
@@ -478,6 +501,7 @@ impl AppStore {
                         | RuleSetStrategy::Block
                         | RuleSetStrategy::Node
                         | RuleSetStrategy::Filter
+                        | RuleSetStrategy::Chain
                         | RuleSetStrategy::Smart => RuleSetDnsStrategy::Remote,
                     });
 
@@ -506,6 +530,8 @@ impl AppStore {
                         node_name: None,
                         smart_include: Vec::new(),
                         smart_exclude: Vec::new(),
+                        chain_id: None,
+                        chain_name: None,
                     });
                     next_ord += 10;
                 }
@@ -557,6 +583,7 @@ impl AppStore {
             let target = match set.strategy {
                 RuleSetStrategy::Direct => RuleTarget::Direct,
                 RuleSetStrategy::Block => RuleTarget::Block,
+                RuleSetStrategy::Chain => RuleTarget::Chain,
                 _ => RuleTarget::Proxy,
             };
             for rule in &mut set.rules {
@@ -1134,6 +1161,8 @@ impl AppStore {
                 node_name: s.node_name.clone(),
                 smart_include: s.smart_include.clone(),
                 smart_exclude: s.smart_exclude.clone(),
+                chain_id: s.chain_id.clone(),
+                chain_name: s.chain_name.clone(),
                 dns_strategy: s.dns_strategy,
                 resettable: is_builtin_remote_id(&s.id),
                 remote: s.remote.clone(),
@@ -1193,14 +1222,21 @@ impl AppStore {
 
     /// Validate + normalize whole-set route parameters: a node pin for
     /// `node` targets (must exist), normalized keyword filters for `smart`
-    /// targets (no include/exclude overlap). Returns (pin, include, exclude).
+    /// targets (no include/exclude overlap), or a validated named chain.
+    /// Returns (node pin, include, exclude, chain pin).
     fn resolve_set_route_params(
         &self,
         target: crate::domain::RuleTarget,
         node_id: Option<String>,
         smart_include: Vec<String>,
         smart_exclude: Vec<String>,
-    ) -> AppResult<(Option<(String, String)>, Vec<String>, Vec<String>)> {
+        chain_id: Option<String>,
+    ) -> AppResult<(
+        Option<(String, String)>,
+        Vec<String>,
+        Vec<String>,
+        Option<(String, String)>,
+    )> {
         use crate::domain::{keyword_list_overlap, Rule, RuleTarget};
         let pin = if target == RuleTarget::Node {
             let nid = node_id
@@ -1225,7 +1261,22 @@ impl AppStore {
                 "关键词不能同时出现在白名单和黑名单中：{k}"
             )));
         }
-        Ok((pin, include, exclude))
+        let chain_pin = if target == RuleTarget::Chain {
+            let chain_id = chain_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Config("请选择链路".into()))?;
+            let chain = self
+                .chains
+                .iter()
+                .find(|chain| chain.id == chain_id)
+                .ok_or_else(|| AppError::Config("指定的链路不存在".into()))?;
+            Some((chain.id.clone(), chain.name.clone()))
+        } else {
+            None
+        };
+        Ok((pin, include, exclude, chain_pin))
     }
 
     /// Apply one whole-set route target + parameters: strategy flip, set-level
@@ -1237,6 +1288,7 @@ impl AppStore {
         pin: &Option<(String, String)>,
         include: &[String],
         exclude: &[String],
+        chain_pin: &Option<(String, String)>,
     ) {
         use crate::domain::{RuleSetStrategy, RuleTarget};
         set.strategy = RuleSetStrategy::from_target(target);
@@ -1252,6 +1304,8 @@ impl AppStore {
         } else {
             Vec::new()
         };
+        set.chain_id = chain_pin.as_ref().map(|(id, _)| id.clone());
+        set.chain_name = chain_pin.as_ref().map(|(_, name)| name.clone());
         if let Some(dns) = set.strategy.recommended_dns_strategy() {
             set.dns_strategy = dns;
         }
@@ -1269,16 +1323,17 @@ impl AppStore {
         node_id: Option<String>,
         smart_include: Vec<String>,
         smart_exclude: Vec<String>,
+        chain_id: Option<String>,
     ) -> AppResult<(RuleSet, bool)> {
         use crate::domain::RuleTarget;
-        let (pin, include, exclude) =
-            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
+        let (pin, include, exclude, chain_pin) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude, chain_id)?;
         let set = self
             .rule_sets
             .iter_mut()
             .find(|set| set.id == id)
             .ok_or_else(|| crate::error::AppError::NotFound(id.to_string()))?;
-        Self::apply_set_route(set, target, &pin, &include, &exclude);
+        Self::apply_set_route(set, target, &pin, &include, &exclude, &chain_pin);
         if let Some(remote) = set.remote.as_mut() {
             remote.target = target;
         }
@@ -1296,6 +1351,8 @@ impl AppStore {
             } else {
                 Vec::new()
             };
+            rule.chain_id = chain_pin.as_ref().map(|(id, _)| id.clone());
+            rule.chain_name = chain_pin.as_ref().map(|(_, name)| name.clone());
         }
         let needs_restart = !crate::config::rule_set_is_empty_for_config(set);
         Ok((set.clone(), needs_restart))
@@ -1312,11 +1369,12 @@ impl AppStore {
         node_id: Option<String>,
         smart_include: Vec<String>,
         smart_exclude: Vec<String>,
+        chain_id: Option<String>,
     ) -> AppResult<RuleSet> {
-        let (pin, include, exclude) =
-            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
+        let (pin, include, exclude, chain_pin) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude, chain_id)?;
         let mut set = RuleSet::new_user(name, vec![]);
-        Self::apply_set_route(&mut set, target, &pin, &include, &exclude);
+        Self::apply_set_route(&mut set, target, &pin, &include, &exclude, &chain_pin);
         // New sets start disabled — enable once they hold effective rules.
         set.enabled = false;
         self.rule_sets.insert(0, set.clone());
@@ -1332,14 +1390,15 @@ impl AppStore {
         node_id: Option<String>,
         smart_include: Vec<String>,
         smart_exclude: Vec<String>,
+        chain_id: Option<String>,
     ) -> AppResult<RuleSet> {
-        let (pin, include, exclude) =
-            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude)?;
+        let (pin, include, exclude, chain_pin) =
+            self.resolve_set_route_params(target, node_id, smart_include, smart_exclude, chain_id)?;
         let mut set = RuleSet::new_remote(name, url, target);
         if let Some(remote) = set.remote.as_mut() {
             remote.update_interval = update_interval.to_string();
         }
-        Self::apply_set_route(&mut set, target, &pin, &include, &exclude);
+        Self::apply_set_route(&mut set, target, &pin, &include, &exclude, &chain_pin);
         // New sets start disabled — enable after the first successful
         // download produces a cached rule file.
         set.enabled = false;
@@ -1353,6 +1412,246 @@ impl AppStore {
             .filter(|set| set.enabled)
             .cloned()
             .collect()
+    }
+
+    // ---- Proxy chain state -------------------------------------------------
+
+    pub fn create_pool(
+        &mut self,
+        name: &str,
+        mode: crate::domain::PoolMode,
+    ) -> AppResult<crate::domain::NodePool> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Config("节点池名称不能为空".into()));
+        }
+        if name.chars().count() > 64 {
+            return Err(AppError::Config("节点池名称过长（最多 64 字）".into()));
+        }
+        if self
+            .pools
+            .iter()
+            .any(|pool| pool.name.eq_ignore_ascii_case(name))
+        {
+            return Err(AppError::Config(format!("已存在同名节点池「{name}」")));
+        }
+        Self::validate_pool_mode(&mode, &self.nodes)?;
+        let pool = crate::domain::NodePool::new(name, mode);
+        self.pools.push(pool.clone());
+        Ok(pool)
+    }
+
+    pub fn update_pool(
+        &mut self,
+        id: &str,
+        name: &str,
+        mode: crate::domain::PoolMode,
+    ) -> AppResult<crate::domain::NodePool> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Config("节点池名称不能为空".into()));
+        }
+        if name.chars().count() > 64 {
+            return Err(AppError::Config("节点池名称过长（最多 64 字）".into()));
+        }
+        if self
+            .pools
+            .iter()
+            .any(|pool| pool.id != id && pool.name.eq_ignore_ascii_case(name))
+        {
+            return Err(AppError::Config(format!("已存在同名节点池「{name}」")));
+        }
+        Self::validate_pool_mode(&mode, &self.nodes)?;
+        let pool = self
+            .pools
+            .iter_mut()
+            .find(|pool| pool.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        pool.name = name.to_string();
+        pool.mode = mode;
+        Ok(pool.clone())
+    }
+
+    pub fn delete_pool(&mut self, id: &str) -> AppResult<()> {
+        let references: Vec<String> = self
+            .chains
+            .iter()
+            .filter(|chain| {
+                chain.hops.iter().any(
+                    |hop| matches!(hop, crate::domain::ChainHop::Pool { pool_id } if pool_id == id),
+                )
+            })
+            .map(|chain| chain.name.clone())
+            .collect();
+        if !references.is_empty() {
+            return Err(AppError::Config(format!(
+                "节点池被以下链路引用，无法删除：{}",
+                references.join("、")
+            )));
+        }
+        let before = self.pools.len();
+        self.pools.retain(|pool| pool.id != id);
+        if before == self.pools.len() {
+            return Err(AppError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    fn validate_pool_mode(mode: &crate::domain::PoolMode, nodes: &[StoredNode]) -> AppResult<()> {
+        match mode {
+            crate::domain::PoolMode::Explicit { node_ids } => {
+                if node_ids.is_empty() {
+                    return Err(AppError::Config("显式节点池至少需要选择一个节点".into()));
+                }
+                if let Some(id) = node_ids
+                    .iter()
+                    .find(|id| !nodes.iter().any(|stored| stored.node.id == **id))
+                {
+                    return Err(AppError::Config(format!(
+                        "节点池引用了不存在的节点 id：{id}"
+                    )));
+                }
+            }
+            crate::domain::PoolMode::Keyword { include, exclude } => {
+                let include = Rule::normalize_keywords(include);
+                let exclude = Rule::normalize_keywords(exclude);
+                if let Some(keyword) =
+                    crate::domain::keyword_list_overlap(&include, &exclude).first()
+                {
+                    return Err(AppError::Config(format!(
+                        "关键词不能同时出现在白名单和黑名单中：{keyword}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create_chain(
+        &mut self,
+        name: &str,
+        hops: Vec<crate::domain::ChainHop>,
+    ) -> AppResult<crate::domain::ProxyChain> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Config("链路名称不能为空".into()));
+        }
+        if name.chars().count() > 64 {
+            return Err(AppError::Config("链路名称过长（最多 64 字）".into()));
+        }
+        if self
+            .chains
+            .iter()
+            .any(|chain| chain.name.eq_ignore_ascii_case(name))
+        {
+            return Err(AppError::Config(format!("已存在同名链路「{name}」")));
+        }
+        self.validate_chain_hops(&hops)?;
+        let chain = crate::domain::ProxyChain::new(name, hops);
+        self.chains.push(chain.clone());
+        Ok(chain)
+    }
+
+    pub fn update_chain(
+        &mut self,
+        id: &str,
+        name: &str,
+        hops: Vec<crate::domain::ChainHop>,
+    ) -> AppResult<crate::domain::ProxyChain> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Config("链路名称不能为空".into()));
+        }
+        if name.chars().count() > 64 {
+            return Err(AppError::Config("链路名称过长（最多 64 字）".into()));
+        }
+        if self
+            .chains
+            .iter()
+            .any(|chain| chain.id != id && chain.name.eq_ignore_ascii_case(name))
+        {
+            return Err(AppError::Config(format!("已存在同名链路「{name}」")));
+        }
+        self.validate_chain_hops(&hops)?;
+        let chain = self
+            .chains
+            .iter_mut()
+            .find(|chain| chain.id == id)
+            .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+        chain.name = name.to_string();
+        chain.hops = hops;
+        Ok(chain.clone())
+    }
+
+    pub fn delete_chain(&mut self, id: &str) -> AppResult<()> {
+        let mut references: Vec<String> = self
+            .rule_sets
+            .iter()
+            .filter(|set| {
+                set.chain_id.as_deref() == Some(id)
+                    || set
+                        .rules
+                        .iter()
+                        .any(|rule| rule.chain_id.as_deref() == Some(id))
+            })
+            .map(|set| set.name.clone())
+            .collect();
+        references.sort();
+        references.dedup();
+        if !references.is_empty() {
+            return Err(AppError::Config(format!(
+                "链路被以下规则集引用，无法删除：{}",
+                references.join("、")
+            )));
+        }
+        let before = self.chains.len();
+        self.chains.retain(|chain| chain.id != id);
+        if before == self.chains.len() {
+            return Err(AppError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn chain_rule_usage(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut usage = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for set in &self.rule_sets {
+            let mut ids = set.chain_id.iter().map(String::as_str).collect::<Vec<_>>();
+            ids.extend(set.rules.iter().filter_map(|rule| rule.chain_id.as_deref()));
+            for id in ids {
+                let names = usage.entry(id.to_string()).or_default();
+                if !names.iter().any(|name| name == &set.name) {
+                    names.push(set.name.clone());
+                }
+            }
+        }
+        usage
+    }
+
+    fn validate_chain_hops(&self, hops: &[crate::domain::ChainHop]) -> AppResult<()> {
+        if hops.len() < 2 {
+            return Err(AppError::Config(
+                "链路至少需要 2 跳；单跳请直接选择节点".into(),
+            ));
+        }
+        for hop in hops {
+            match hop {
+                crate::domain::ChainHop::Node { node_id } => {
+                    if !self.nodes.iter().any(|stored| stored.node.id == *node_id) {
+                        return Err(AppError::Config(format!(
+                            "链路引用了不存在的节点 id：{node_id}"
+                        )));
+                    }
+                }
+                crate::domain::ChainHop::Pool { pool_id } => {
+                    if !self.pools.iter().any(|pool| pool.id == *pool_id) {
+                        return Err(AppError::Config(format!(
+                            "链路引用了不存在的节点池 id：{pool_id}"
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Reorder rule sets by id list. Unknown ids ignored; missing ids appended at end.
@@ -1534,6 +1833,15 @@ fn store_from_json(value: Value) -> AppStore {
     store.rule_sets = rule_sets;
     store.retained_rule_sets = retained_sets;
 
+    let (pools, retained_pools) = split_known_items::<crate::domain::NodePool>(obj.get("pools"));
+    store.pools = pools;
+    store.retained_pools = retained_pools;
+
+    let (chains, retained_chains) =
+        split_known_items::<crate::domain::ProxyChain>(obj.get("chains"));
+    store.chains = chains;
+    store.retained_chains = retained_chains;
+
     if let Some(settings) = obj.get("settings") {
         match serde_json::from_value::<AppSettings>(settings.clone()) {
             Ok(parsed) => store.settings = parsed,
@@ -1588,6 +1896,8 @@ fn serialize_store(store: &AppStore) -> Result<String, serde_json::Error> {
         merge_retained(obj, "nodes", &store.retained_nodes);
         merge_retained(obj, "rules", &store.retained_rules);
         merge_retained(obj, "rule_sets", &store.retained_rule_sets);
+        merge_retained(obj, "pools", &store.retained_pools);
+        merge_retained(obj, "chains", &store.retained_chains);
     }
     serde_json::to_string_pretty(&value)
 }
@@ -1799,7 +2109,14 @@ mod tests {
         let id = store.rule_sets[0].id.clone();
 
         let (updated, _) = store
-            .batch_set_rule_targets(&id, RuleTarget::Node, Some("node-1".into()), vec![], vec![])
+            .batch_set_rule_targets(
+                &id,
+                RuleTarget::Node,
+                Some("node-1".into()),
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         // Batch node → whole-set Node strategy + set-level pin; every local
         // rule carries the same pin for per-row display.
@@ -1820,6 +2137,7 @@ mod tests {
                 None,
                 vec!["东京".into(), "东京 ".into()],
                 vec!["香港".into()],
+                None,
             )
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Filter);
@@ -1840,13 +2158,14 @@ mod tests {
                 None,
                 vec!["东京".into()],
                 vec!["东京".into()],
+                None,
             )
             .is_err());
 
         // Batch to direct collapses back to a plain uniform strategy and
         // clears the set-level pin / filters.
         let (updated, _) = store
-            .batch_set_rule_targets(&id, RuleTarget::Direct, None, vec![], vec![])
+            .batch_set_rule_targets(&id, RuleTarget::Direct, None, vec![], vec![], None)
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Direct);
         assert!(updated.node_id.is_none());
@@ -1870,11 +2189,12 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
             )
             .unwrap();
 
         let (updated, _) = store
-            .batch_set_rule_targets(&set.id, RuleTarget::Direct, None, vec![], vec![])
+            .batch_set_rule_targets(&set.id, RuleTarget::Direct, None, vec![], vec![], None)
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Direct);
         assert_eq!(
@@ -1908,7 +2228,14 @@ mod tests {
             node: node_pin,
         });
         let (updated, _) = store
-            .batch_set_rule_targets(&set.id, RuleTarget::Node, Some("n1".into()), vec![], vec![])
+            .batch_set_rule_targets(
+                &set.id,
+                RuleTarget::Node,
+                Some("n1".into()),
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Node);
         assert_eq!(updated.node_id.as_deref(), Some("n1"));
@@ -1924,6 +2251,7 @@ mod tests {
                 None,
                 vec!["东京".into()],
                 vec![],
+                None,
             )
             .unwrap();
         assert_eq!(updated.strategy, RuleSetStrategy::Filter);
@@ -1939,7 +2267,7 @@ mod tests {
         use crate::domain::{RuleSetStrategy, RuleTarget};
         let mut store = AppStore::default();
         let set = store
-            .create_local_rule_set("本地直连集", RuleTarget::Direct, None, vec![], vec![])
+            .create_local_rule_set("本地直连集", RuleTarget::Direct, None, vec![], vec![], None)
             .unwrap();
         assert_eq!(set.strategy, RuleSetStrategy::Direct);
         // DNS pairing follows the same recommendation as a strategy flip.
@@ -1963,6 +2291,7 @@ mod tests {
                 None,
                 vec!["东京".into()],
                 vec![],
+                None,
             )
             .unwrap();
         assert_eq!(set.strategy, RuleSetStrategy::Filter);
@@ -1978,7 +2307,7 @@ mod tests {
         use crate::domain::{Rule, RuleTarget, RuleType};
         let mut store = AppStore::default();
         let local = store
-            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![])
+            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![], None)
             .unwrap();
         assert!(!local.enabled, "new local sets start disabled");
         assert!(
@@ -2007,6 +2336,7 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
             )
             .unwrap();
         assert!(!remote.enabled, "new remote sets start disabled");
@@ -2868,7 +3198,7 @@ mod tests {
             .push(RuleSet::new_user("已有规则", Vec::new()));
 
         let local = store
-            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![])
+            .create_local_rule_set("新本地", RuleTarget::Proxy, None, vec![], vec![], None)
             .unwrap();
         assert_eq!(store.rule_sets[0].id, local.id);
 
@@ -2881,6 +3211,7 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
             )
             .unwrap();
         assert_eq!(store.rule_sets[0].id, remote.id);

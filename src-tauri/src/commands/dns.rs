@@ -180,3 +180,28 @@ pub async fn test_dns_lookup(
     .await
     .map_err(|error| format!("DNS lookup task: {error}"))
 }
+
+/// Read-only DNS-path diagnosis: replay the active generated rule chain and,
+/// when a Clash-compatible core is running, query its live DNS endpoint too.
+#[tauri::command]
+pub async fn diagnose_dns(
+    state: State<'_, AppState>,
+    domains: Vec<String>,
+) -> Result<crate::services::dns_diag::DnsDiagReport, String> {
+    let input = state
+        .with_store(|store| {
+            Ok(crate::services::dns_diag::DnsDiagInput {
+                core_type: store.settings.core_type.clone(),
+                runtime_source: store.settings.runtime_source.clone(),
+                tun_enabled: store.settings.tun_enabled,
+                outbound_mode: store.settings.outbound_mode,
+                rule_sets: store.rule_sets.clone(),
+                dns: store.dns.clone(),
+                data_dir: state.app_data_dir.clone(),
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    let running = state.is_core_running();
+    let api = state.lock_runtime().clash_api_clone();
+    Ok(crate::services::dns_diag::run(input, domains, running, api).await)
+}

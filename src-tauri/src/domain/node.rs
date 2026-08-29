@@ -388,6 +388,36 @@ impl ProxyNode {
     pub fn instance_key(&self) -> String {
         format!("{}|{}", self.identity_key(), self.name)
     }
+
+    /// Ensure ids remain unique in the first 16 characters used to derive
+    /// core outbound tags. Subscription import intentionally keeps nodes that
+    /// differ only by credentials; without this final disambiguation those
+    /// distinct nodes can still generate an identical `node-…` tag.
+    pub fn ensure_unique_ids<'a, I>(nodes: I) -> usize
+    where
+        I: Iterator<Item = &'a mut ProxyNode>,
+    {
+        let mut seen = std::collections::HashSet::new();
+        let mut rewritten = 0;
+        for node in nodes {
+            let mut salt = 1;
+            while !seen.insert(tag_prefix(&node.id)) {
+                salt += 1;
+                node.id = Self::compute_id(
+                    &format!("dup:{}:{salt}", node.id),
+                    &node.server,
+                    node.port,
+                    node.protocol,
+                );
+                rewritten += 1;
+            }
+        }
+        rewritten
+    }
+}
+
+fn tag_prefix(id: &str) -> String {
+    id[..id.len().min(16)].to_string()
 }
 
 fn config_identity(config: &ProtocolConfig) -> String {

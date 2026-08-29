@@ -2,7 +2,7 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    apply_udp_node_compatibility, build_mihomo_config, build_singbox_config_with_connection_policy,
+    apply_udp_node_compatibility, build_mihomo_config, build_singbox_config_with_chain_context,
     build_xray_config, generate_api_secret, inspect_singbox_config, outbound_tag,
     subscription_proxy_port, write_active_config, write_active_yaml_config, write_custom_config,
     BuildOptions,
@@ -714,10 +714,26 @@ impl Runtime {
             ));
         }
 
-        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available_on(
+            store.settings.mixed_port,
+            if store.settings.allow_lan {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            },
+            "Mixed",
+        )?;
         ensure_listen_port_available(store.settings.api_port, "Clash API")?;
         for inb in &store.settings.extra_inbounds {
-            ensure_listen_port_available(inb.port, "Inbound")?;
+            ensure_listen_port_available_on(
+                inb.port,
+                if inb.allow_lan {
+                    "0.0.0.0"
+                } else {
+                    "127.0.0.1"
+                },
+                "Inbound",
+            )?;
         }
         let subscription_port = subscription_proxy_port(
             store.settings.mixed_port,
@@ -738,11 +754,40 @@ impl Runtime {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
         apply_udp_node_compatibility(&mut nodes, store.settings.udp_tls_compat);
-        let built = build_singbox_config_with_connection_policy(
+        let built = build_singbox_config_with_chain_context(
             &nodes,
             &build_options(store, secret.clone()),
             store.settings.close_connections_on_switch,
+            &store.pools,
+            &store.chains,
         )?;
+        let has_chain_diag = built
+            .value
+            .get("inbounds")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|inbounds| {
+                inbounds.iter().any(|inbound| {
+                    inbound.get("tag").and_then(serde_json::Value::as_str)
+                        == Some(crate::config::DIAG_INBOUND_TAG)
+                })
+            });
+        if has_chain_diag {
+            let diag_port = crate::config::DIAG_INBOUND_PORT;
+            let configured_collision = store.settings.mixed_port == diag_port
+                || store.settings.api_port == diag_port
+                || subscription_port == diag_port
+                || store
+                    .settings
+                    .extra_inbounds
+                    .iter()
+                    .any(|inbound| inbound.port == diag_port);
+            if configured_collision {
+                return Err(AppError::Config(format!(
+                    "代理链诊断保留端口 127.0.0.1:{diag_port} 与当前监听配置冲突；请修改混合/API/附加入站端口后重试"
+                )));
+            }
+            ensure_listen_port_available(diag_port, "Chain diagnostics")?;
+        }
         let config_path = write_active_config(app_data_dir, &built)?;
         let config_ready_ms = total_started.elapsed().as_millis();
         store.settings.clash_api_secret = Some(secret.clone());
@@ -757,6 +802,9 @@ impl Runtime {
         let elevated = store.settings.tun_enabled;
         let mut auxiliary_ports = vec![subscription_port];
         auxiliary_ports.extend(store.settings.extra_inbounds.iter().map(|inb| inb.port));
+        if has_chain_diag {
+            auxiliary_ports.push(crate::config::DIAG_INBOUND_PORT);
+        }
         self.core.start_with_ports(
             CoreKind::SingBox,
             &bin,
@@ -912,10 +960,26 @@ impl Runtime {
             );
         }
 
-        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available_on(
+            store.settings.mixed_port,
+            if store.settings.allow_lan {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            },
+            "Mixed",
+        )?;
         ensure_listen_port_available(store.settings.api_port, "Metrics")?;
         for inb in &store.settings.extra_inbounds {
-            ensure_listen_port_available(inb.port, "Inbound")?;
+            ensure_listen_port_available_on(
+                inb.port,
+                if inb.allow_lan {
+                    "0.0.0.0"
+                } else {
+                    "127.0.0.1"
+                },
+                "Inbound",
+            )?;
         }
 
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Xray);
@@ -1069,10 +1133,26 @@ impl Runtime {
             );
         }
 
-        ensure_listen_port_available(store.settings.mixed_port, "Mixed")?;
+        ensure_listen_port_available_on(
+            store.settings.mixed_port,
+            if store.settings.allow_lan {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            },
+            "Mixed",
+        )?;
         ensure_listen_port_available(store.settings.api_port, "Clash API")?;
         for inb in &store.settings.extra_inbounds {
-            ensure_listen_port_available(inb.port, "Inbound")?;
+            ensure_listen_port_available_on(
+                inb.port,
+                if inb.allow_lan {
+                    "0.0.0.0"
+                } else {
+                    "127.0.0.1"
+                },
+                "Inbound",
+            )?;
         }
 
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Mihomo);
@@ -1489,9 +1569,17 @@ impl Default for Runtime {
 }
 
 fn ensure_listen_port_available(port: u16, label: &str) -> AppResult<()> {
+    ensure_listen_port_available_on(port, "127.0.0.1", label)
+}
+
+/// `allow_lan` changes the bind target for mixed and extra inbounds. Only
+/// reject a visible listener; do not probe-bind here because a stale
+/// root-owned TUN listener may be invisible to the current process and would
+/// otherwise make the app reject a restart before the core can clean it up.
+fn ensure_listen_port_available_on(port: u16, host: &str, label: &str) -> AppResult<()> {
     if CoreManager::has_port_listener(port) {
         return Err(AppError::Core(format!(
-            "{label} 端口 127.0.0.1:{port} 已被其他程序占用，请关闭冲突程序或修改端口"
+            "{label} 端口 {host}:{port} 已被其他程序占用，请关闭冲突程序或修改端口"
         )));
     }
     Ok(())

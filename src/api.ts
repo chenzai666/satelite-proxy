@@ -24,6 +24,11 @@ import type {
   DnsSettings,
   DnsTestResult,
   HostsEntry,
+  ChainDiagnosis,
+  ChainHop,
+  NodePool,
+  PoolMode,
+  ProxyChain,
 } from "./types";
 import { trackCoreBusy } from "./coreBusy";
 
@@ -613,6 +618,12 @@ export function testDnsLookup(domain: string) {
   return invoke<DnsTestResult>("test_dns_lookup", { domain });
 }
 
+/** Read-only: show the generated DNS decision path and, when available, the
+ * live answer returned by the currently running core. */
+export function diagnoseDns(domains: string[]) {
+  return invoke<import("./types").DnsDiagReport>("diagnose_dns", { domains });
+}
+
 /** Read the OS hosts file as a read-only entry list (for the Hosts UI). */
 export function readSystemHosts() {
   return invoke<HostsEntry[]>("read_system_hosts");
@@ -650,6 +661,7 @@ export function createRuleSet(
   nodeId?: string | null,
   smartInclude?: string[] | null,
   smartExclude?: string[] | null,
+  chainId?: string | null,
 ) {
   return invoke<RuleSet>("create_rule_set", {
     name,
@@ -659,6 +671,7 @@ export function createRuleSet(
     nodeId: nodeId ?? null,
     smartInclude: smartInclude ?? null,
     smartExclude: smartExclude ?? null,
+    chainId: chainId ?? null,
   });
 }
 
@@ -683,10 +696,11 @@ export function updateRuleSet(
 /** Apply one target to every rule of a local set (batch set-routes). */
 export function batchSetRuleTargets(
   id: string,
-  target: "proxy" | "direct" | "block" | "node" | "smart",
+  target: RuleTarget,
   nodeId?: string | null,
   smartInclude?: string[] | null,
   smartExclude?: string[] | null,
+  chainId?: string | null,
 ) {
   return invoke<RuleSet>("batch_set_rule_targets", {
     id,
@@ -694,6 +708,7 @@ export function batchSetRuleTargets(
     nodeId: nodeId ?? null,
     smartInclude: smartInclude ?? null,
     smartExclude: smartExclude ?? null,
+    chainId: chainId ?? null,
   });
 }
 
@@ -745,6 +760,7 @@ export function saveRule(input: {
   nodeId?: string | null;
   smartInclude?: string[] | null;
   smartExclude?: string[] | null;
+  chainId?: string | null;
 }) {
   return invoke<Rule>("save_rule", {
     input: {
@@ -758,6 +774,7 @@ export function saveRule(input: {
       node_id: input.nodeId ?? null,
       smart_include: input.smartInclude ?? null,
       smart_exclude: input.smartExclude ?? null,
+      chain_id: input.chainId ?? null,
     },
   });
 }
@@ -772,6 +789,48 @@ export function setRuleEnabled(id: string, enabled: boolean, setId?: string | nu
     enabled,
     setId: setId ?? null,
   });
+}
+
+// ---- 代理链：节点池与多跳链路 -------------------------------------------
+
+export function listPools() {
+  return invoke<NodePool[]>("list_pools");
+}
+
+export function createPool(name: string, mode: PoolMode) {
+  return invoke<NodePool>("create_pool", { name, mode });
+}
+
+export function updatePool(id: string, name: string, mode: PoolMode) {
+  return invoke<NodePool>("update_pool", { id, name, mode });
+}
+
+export function deletePool(id: string) {
+  return invoke<void>("delete_pool", { id });
+}
+
+export function listChains() {
+  return invoke<ProxyChain[]>("list_chains");
+}
+
+export function listChainUsage() {
+  return invoke<Record<string, string[]>>("list_chain_usage");
+}
+
+export function createChain(name: string, hops: ChainHop[]) {
+  return invoke<ProxyChain>("create_chain", { name, hops });
+}
+
+export function updateChain(id: string, name: string, hops: ChainHop[]) {
+  return invoke<ProxyChain>("update_chain", { id, name, hops });
+}
+
+export function deleteChain(id: string) {
+  return invoke<void>("delete_chain", { id });
+}
+
+export function diagnoseChain(chainId: string) {
+  return invoke<ChainDiagnosis>("diagnose_chain", { chainId });
 }
 
 export function listConnections() {

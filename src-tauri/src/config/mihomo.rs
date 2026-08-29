@@ -84,6 +84,14 @@ pub fn build_mihomo_config(
         ));
     }
 
+    let rewritten = ProxyNode::ensure_unique_ids(supported.iter_mut());
+    if rewritten > 0 {
+        crate::app_log::warn(
+            "mihomo_config",
+            format!("{rewritten} 个节点 id 重复，已在生成时改写名称以避免校验失败"),
+        );
+    }
+
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
     // Keep providers/groups present in Global and Direct modes too, so users

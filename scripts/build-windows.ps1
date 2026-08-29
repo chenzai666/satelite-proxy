@@ -2,11 +2,12 @@
 # Usage:
 #   pwsh scripts/build-windows.ps1                 # NSIS (.exe) setup, sing-box core only (default)
 #   pwsh scripts/build-windows.ps1 -Bundle msi     # MSI installer
+#   pwsh scripts/build-windows.ps1 -Bundle portable # extract-and-run zip
 #   pwsh scripts/build-windows.ps1 -AllCores       # also bundle the Xray + mihomo cores
 #   pwsh scripts/build-windows.ps1 -Proxy http://127.0.0.1:7890
 [CmdletBinding()]
 param(
-  [ValidateSet("nsis", "msi")]
+  [ValidateSet("nsis", "msi", "portable")]
   [string]$Bundle = "nsis",
   [switch]$AllCores,
   [string]$Proxy  = $env:HTTPS_PROXY,
@@ -105,25 +106,73 @@ Write-Host "Installing JS dependencies..."
 pnpm install --frozen-lockfile
 
 # --- 4. Build + bundle -------------------------------------------------------
-Write-Host "Building app and packaging $Bundle installer..."
-$BuildArgs = @("--bundles", $Bundle) + $TauriConfigArgs
-pnpm tauri build @BuildArgs
+if ($Bundle -eq "portable") {
+  Write-Host "Building app for portable zip..."
+  pnpm tauri build --no-bundle @TauriConfigArgs
+} else {
+  Write-Host "Building app and packaging $Bundle installer..."
+  $BuildArgs = @("--bundles", $Bundle) + $TauriConfigArgs
+  pnpm tauri build @BuildArgs
+}
 
 # --- 5. Locate artifact ------------------------------------------------------
-$OutDir = Join-Path $ROOT "src-tauri\target\release\bundle\$Bundle"
-if (-not (Test-Path $OutDir)) {
-  Write-Error "Build finished but no $Bundle output under $OutDir"
-  exit 1
-}
-$Artifact = Get-ChildItem $OutDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $Artifact) {
-  Write-Error "No artifact found in $OutDir"
-  exit 1
+if ($Bundle -eq "portable") {
+  $Version = (Get-Content (Join-Path $ROOT "package.json") -Raw | ConvertFrom-Json).version
+  $StageRoot = Join-Path $ROOT "src-tauri\target\release\portable-stage"
+  $Stage = Join-Path $StageRoot "Satelite-Portable"
+  if (Test-Path $StageRoot) { Remove-Item -Recurse -Force $StageRoot }
+  New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+  $Exe = Join-Path $ROOT "src-tauri\target\release\satelite-proxy.exe"
+  if (-not (Test-Path $Exe)) {
+    Write-Error "Build finished but $Exe is missing"
+    exit 1
+  }
+  Copy-Item $Exe $Stage
+  $ConfName = if ($AllCores) { "tauri.windows.conf.json" } else { "tauri.singbox-windows.conf.json" }
+  $Conf = Get-Content (Join-Path $ROOT "src-tauri\$ConfName") -Raw | ConvertFrom-Json
+  foreach ($Entry in @($Conf.bundle.resources)) {
+    $Src = Join-Path $ROOT "src-tauri\$Entry"
+    if (-not (Test-Path $Src)) {
+      Write-Error "Resource listed in $ConfName is missing: $Entry"
+      exit 1
+    }
+    $Dest = Join-Path $Stage $Entry
+    New-Item -ItemType Directory -Force -Path (Split-Path $Dest -Parent) | Out-Null
+    Copy-Item -Recurse -Force $Src $Dest
+  }
+  Set-Content -Path (Join-Path $Stage "portable.flag") -Value "Satelite portable marker - keep this file next to satelite-proxy.exe." -NoNewline
+  Set-Content -Path (Join-Path $Stage "README.txt") -Encoding utf8 -Value @"
+Satelite 便携版 $Version
+========================
+
+解压后直接运行 satelite-proxy.exe，无需安装。
+
+- 数据、内核、配置、日志和 WebView2 缓存均保存在此目录；请保留 portable.flag。
+- 删除 portable.flag 后将回退为安装版行为，数据会写入 AppData。
+- 需要 Microsoft Edge WebView2 运行时；Windows 10/11 通常已经自带。
+- 便携版与安装版不能同时运行。
+"@
+  $OutDir = Join-Path $ROOT "src-tauri\target\release\bundle\portable"
+  New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+  $Artifact = Join-Path $OutDir "Satelite_${Version}_x64_portable.zip"
+  if (Test-Path $Artifact) { Remove-Item -Force $Artifact }
+  Compress-Archive -Path $Stage -DestinationPath $Artifact -CompressionLevel Optimal
+} else {
+  $OutDir = Join-Path $ROOT "src-tauri\target\release\bundle\$Bundle"
+  if (-not (Test-Path $OutDir)) {
+    Write-Error "Build finished but no $Bundle output under $OutDir"
+    exit 1
+  }
+  $Artifact = (Get-ChildItem $OutDir -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+  if (-not $Artifact) {
+    Write-Error "No artifact found in $OutDir"
+    exit 1
+  }
 }
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
-Write-Host "$Bundle installer ready:" -ForegroundColor Green
-Write-Host "  $($Artifact.FullName)" -ForegroundColor Green
-Write-Host "  $([math]::Round($Artifact.Length / 1MB, 1)) MB" -ForegroundColor Green
+Write-Host "$Bundle artifact ready:" -ForegroundColor Green
+Write-Host "  $Artifact" -ForegroundColor Green
+Write-Host "  $([math]::Round((Get-Item $Artifact).Length / 1MB, 1)) MB" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
