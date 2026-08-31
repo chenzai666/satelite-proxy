@@ -3109,6 +3109,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
