@@ -629,6 +629,26 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
         .map_err(|e| e.to_string())
 }
 
+/// Shared display sort for node listings. `list_nodes_page` and
+/// `list_node_ids` must agree so the Nodes-page latency test can run in
+/// the exact order the list is showing.
+fn sort_listed_nodes(nodes: &mut [ListedNode], sort_mode: Option<&str>) {
+    match sort_mode {
+        Some("name") => nodes.sort_by_cached_key(|n| n.node.name.to_lowercase()),
+        Some("latency") => nodes.sort_by(|a, b| {
+            let score = |n: &ListedNode| match n.node.latency_ms {
+                Some(ms) => (0u8, ms as u64),
+                None if n.node.latency_at.is_some() => (1, 0),
+                None => (2, 0),
+            };
+            score(a)
+                .cmp(&score(b))
+                .then_with(|| a.node.name.to_lowercase().cmp(&b.node.name.to_lowercase()))
+        }),
+        _ => {}
+    }
+}
+
 #[tauri::command(async)]
 pub fn list_nodes_page(
     state: State<'_, AppState>,
@@ -674,20 +694,7 @@ pub fn list_nodes_page(
                         .to_string(),
                 })
                 .collect();
-            match sort_mode.as_deref() {
-                Some("name") => nodes.sort_by_cached_key(|n| n.node.name.to_lowercase()),
-                Some("latency") => nodes.sort_by(|a, b| {
-                    let score = |n: &ListedNode| match n.node.latency_ms {
-                        Some(ms) => (0u8, ms as u64),
-                        None if n.node.latency_at.is_some() => (1, 0),
-                        None => (2, 0),
-                    };
-                    score(a)
-                        .cmp(&score(b))
-                        .then_with(|| a.node.name.to_lowercase().cmp(&b.node.name.to_lowercase()))
-                }),
-                _ => {}
-            }
+            sort_listed_nodes(&mut nodes, sort_mode.as_deref());
             let total = nodes.len();
             let offset = offset.unwrap_or(0).min(total);
             let limit = limit.unwrap_or(200).clamp(1, 500);
@@ -701,26 +708,30 @@ pub fn list_nodes_page(
         .map_err(|e| e.to_string())
 }
 
+/// Ids of listing-eligible nodes, in display order when `sort_mode` is
+/// given — the Nodes-page test buttons use this so probes start (and
+/// stream back) top to bottom of the current list.
 #[tauri::command(async)]
 pub fn list_node_ids(
     state: State<'_, AppState>,
     query: Option<String>,
+    sort_mode: Option<String>,
 ) -> Result<Vec<String>, String> {
     state
         .with_store(|store| {
+            let names: HashMap<&str, &str> = store
+                .subscriptions
+                .iter()
+                .map(|s| (s.id.as_str(), s.name.as_str()))
+                .collect();
             let enabled: std::collections::HashSet<&str> = store
                 .subscriptions
                 .iter()
                 .filter(|s| s.enabled)
                 .map(|s| s.id.as_str())
                 .collect();
-            let names: HashMap<&str, &str> = store
-                .subscriptions
-                .iter()
-                .map(|s| (s.id.as_str(), s.name.as_str()))
-                .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
-            Ok(store
+            let mut nodes: Vec<ListedNode> = store
                 .nodes
                 .iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
@@ -733,8 +744,18 @@ pub fn list_node_ids(
                             .get(n.subscription_id.as_str())
                             .is_some_and(|name| name.to_lowercase().contains(&query))
                 })
-                .map(|n| n.node.id.clone())
-                .collect())
+                .map(|n| ListedNode {
+                    node: n.node.clone(),
+                    subscription_id: n.subscription_id.clone(),
+                    subscription_name: names
+                        .get(n.subscription_id.as_str())
+                        .copied()
+                        .unwrap_or("")
+                        .to_string(),
+                })
+                .collect();
+            sort_listed_nodes(&mut nodes, sort_mode.as_deref());
+            Ok(nodes.into_iter().map(|n| n.node.id).collect())
         })
         .map_err(|e| e.to_string())
 }

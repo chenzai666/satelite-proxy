@@ -282,7 +282,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 |---|---|
 | `DashboardPage` (1399 行) | 启停/重启、capture/出站模式快控、节点选择、配置预览弹窗（按内核显示 JSON/YAML）、60 样本迷你图、LAN IP、版本（并行三内核 info）；hero ⋯ 指定内核子菜单（三选项） |
 | `ConfigPage` (831) | 订阅卡片（流量配额条）、排他选择/Mix、`AddConfigModal`、深链预填（`useImportIntent`） |
-| `NodesPage` (464) | 列表/网格（`useVirtualRange`×2）、搜索排序测速、改名、custom 配置节点；切节点 `waitForCoreRestart` |
+| `NodesPage` (464) | 列表/网格（`useVirtualRange`×2）、搜索排序测速（批量测速按当前排序下发 ids，后端逐节点流式回传、rAF 合帧就地刷新，见 §7 改测速）、改名、custom 配置节点；切节点 `waitForCoreRestart` |
 | `TrafficPage` (~70) | 三 tab 容器：实时连接 / 请求历史 / 失败请求；Xray 模式下三 tab 降级为空态，页首提示改指向「日志 → 内核日志」（原内嵌日志视图已移除，避免与 LogsPage 重复） |
 | `ConnectionsPage` (215) | 1.5s revision-delta 增量轮询（`list_connection_changes` + `applyConnectionChanges`） |
 | `RequestsPage` (258) / `FailuresPage` (510) | 已关闭请求/失败请求日志；Failures 可一键生成封锁规则集 |
@@ -318,7 +318,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `theme/` — `ThemeId = "aerospace"(深,默认) | "day"`；`accents.ts` 6 个主题色，由一个基色派生整个 `--primary*` 变量族（Rec.709 亮度决定 `--on-primary`）。语义色 `--success*` 为固定绿（App.css tokens），**不随主题色**（ok/直连/测速良好语义稳定）；自定义 `#rrggbb` accent 在 `applyAccentToDom` 应用时按主题做亮度钳制（深色提亮 ≥0.5 / 浅色加深 ≤0.6）保证文字对比度，存储仍保留原始 hex。另有独立背景光晕色 `glow_color`（`"accent"`=跟随主题色 / 预设 id / `#rrggbb`），`applyGlowToDom` 下发 `--glow-rgb`（原始色，驱动 `--hero-glow`）与 `--glow-deep-rgb`（按感知亮度归一化的深色变体，驱动 app-shell 大气层，防止亮色光晕把暗色主题洗亮）。
 - 独立模块：`customNodes.ts`（custom 节点客户端侧过滤/排序/分页镜像）、`subscriptionUrl.ts`（URL 规范化去重）、`deepLink.ts`（深链解析→ImportPrefill）、`coreBusy.ts`（全局 busy 深度计数 + `waitForCoreRestart`）、`connectionChanges.ts`（delta 合并纯函数）、`trafficFilter.ts`（all/direct/proxy 分类）、`windowLayout.ts`（窗口尺寸/模式）。
 - `theme/` — `ThemeId = "day"(浅,Rust `default_theme` 默认) | "aerospace"(深)`；theme/uiMode/heroStyle 三者均镜像到 localStorage（`index.html` 内联脚本 + Provider 初始 `useState` 同步读取）防 WebView 重建首帧闪烁/误挂 three.js hero；`accents.ts` 6 个主题色，由一个基色派生整个 `--primary*` 变量族（Rec.709 亮度决定 `--on-primary`）。语义色 `--success*` 为固定绿（App.css tokens），**不随主题色**（ok/直连/测速良好语义稳定）；自定义 `#rrggbb` accent 在 `applyAccentToDom` 应用时按主题做亮度钳制（深色提亮 ≥0.5 / 浅色加深 ≤0.6）保证文字对比度，存储仍保留原始 hex。另有独立背景光晕色 `glow_color`（`"accent"`=跟随主题色 / 预设 id / `#rrggbb`），`applyGlowToDom` 下发 `--glow-rgb`（原始色，驱动 `--hero-glow`）与 `--glow-deep-rgb`（按感知亮度归一化的深色变体，驱动 app-shell 大气层，防止亮色光晕把暗色主题洗亮）。
-- 独立模块：`customNodes.ts`（custom 节点客户端侧过滤/排序/分页镜像）、`subscriptionUrl.ts`（URL 规范化去重）、`deepLink.ts`（深链解析→ImportPrefill）、`coreBusy.ts`（全局 busy 深度计数 + `waitForCoreRestart`）、`connectionChanges.ts`（delta 合并纯函数）、`trafficFilter.ts`（all/direct/proxy 分类）、`coreLog.ts`（内核原始日志行级别推断，LogsPage 内核日志视图使用）、`windowLayout.ts`（窗口尺寸/模式）。
+- 独立模块：`customNodes.ts`（custom 节点客户端侧过滤/排序/分页镜像）、`latencyStream.ts`（批量测速流式结果 rAF 合帧缓冲，Nodes/SimpleServers 共用）、`subscriptionUrl.ts`（URL 规范化去重）、`deepLink.ts`（深链解析→ImportPrefill）、`coreBusy.ts`（全局 busy 深度计数 + `waitForCoreRestart`）、`connectionChanges.ts`（delta 合并纯函数）、`trafficFilter.ts`（all/direct/proxy 分类）、`coreLog.ts`（内核原始日志行级别推断，LogsPage 内核日志视图使用）、`windowLayout.ts`（窗口尺寸/模式）。
 - `App.css` — 单文件 ~7.6k 行，按 `/* —— 段落 —— */` 横幅分节（tokens → shell → topnav → page → nodes → …）；玻璃材质 = 半透明 rgba + `backdrop-filter` + 左上光源 `::after`；专业窗口固定 960px 宽（网格断点据此调）。
 
 ## 7. 常见修改场景 → 去哪里改
@@ -339,8 +339,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 | 加页面 | `src/pages/` + `App.tsx` lazy 导入 + `NavKey`（types.ts）+ `TopNav` + i18n `nav.*` |
 | 改样式 | `src/App.css` 对应段落；新主题色变体在 `theme/accents.ts` |
 | 加托盘功能 | `src-tauri/src/tray.rs` |
-| 改测速 | `services/latency.rs` + `src/api.ts`：节点页「测真实延迟」= `test_nodes_latency`（内核运行时走 Clash delay API 经真实代理链路，unified delay 双探测取第二次）；「Ping 测试」= `ping_nodes_latency`（纯 TCP 直连、并发 30、内核运行时也不经内核；QUIC-only 协议报 unsupported）；智能选路排序 = `probe_nodes_ranked`（TCP ping + QUIC-only 内核兜底，见 §5.1）。TCP 直连只反映可达性，会漏报 REALITY/Vision 这类「TCP 活但代理死」的节点——故当前节点健康确认仍用内核 URL 探测 |
-| 改内核下载/资产 | `core/download.rs` + `core/assets.rs` + `scripts/fetch-bundled-*-<平台>` 脚本 + `tauri.*.conf.json` resources 四处联动 |
+| 改测速 | `services/latency.rs` + `src/api.ts`：节点页「测真实延迟」= `test_nodes_latency`（内核运行时走 Clash delay API 经真实代理链路，unified delay 双探测取第二次）；「Ping 测试」= `ping_nodes_latency`（纯 TCP 直连、并发 30、内核运行时也不经内核；QUIC-only 协议报 unsupported）；智能选路排序 = `probe_nodes_ranked`（TCP ping + QUIC-only 内核兜底，见 §5.1）。TCP 直连只反映可达性，会漏报 REALITY/Vision 这类「TCP 活但代理死」的节点——故当前节点健康确认仍用内核 URL 探测。**三个批量测速 command 均带必填 `on_result: Channel<LatencyResult>`**（api.ts 用 `@tauri-apps/api/core` 的 `Channel` 封装，调用方没有回调也给静默 channel）：后端每个探测完成即推送，前端（NodesPage/SimpleServersPage）按 rAF 合帧逐节点就地刷新；前端 ids 经 `list_node_ids(query, sort_mode)` 按当前显示排序下发，后端 `load_nodes_in_display_order` 保持该顺序起测；手动测速一律不读缓存（`use_cache=false`，结果仍写回），共享探测缓存 TTL 成功 30s / 失败 15s（2026-08） |
 | 改内核下载/资产 | `core/download.rs` + `core/assets.rs` + `scripts/fetch-bundled-*-<平台>` 脚本 + `tauri.*.conf.json` resources 四处联动；给内核新增运行时依赖时记得挂进 `assets.rs::prefetch_runtime_assets`（下载后即时预取，§5.5/§9.22） |
 | 打 Windows 便携版 | `scripts/build-windows.ps1 -Bundle portable`（zip 组装逻辑在此脚本；Rust 侧便携行为集中在 `src-tauri/src/portable.rs`，见 §9.19） |
 | 重大架构 / 模块 / 流程变动 | **同步更新本文档对应章节**（规则见 §0） |

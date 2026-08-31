@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   AppSettings,
   CoreDownloadResult,
@@ -7,6 +7,7 @@ import type {
   GenerateConfigResult,
   ImportResult,
   LatencyBatchResult,
+  LatencyResult,
   ConnectionView,
   ProxyNode,
   ProxyStatus,
@@ -179,8 +180,8 @@ export function listNodesPage(query: string, sortMode: string, offset = 0, limit
   });
 }
 
-export function listNodeIds(query = "") {
-  return invoke<string[]>("list_node_ids", { query });
+export function listNodeIds(query = "", sortMode: string | null = null) {
+  return invoke<string[]>("list_node_ids", { query, sortMode });
 }
 
 /** Read-only nodes extracted from the selected custom sing-box config (custom mode). */
@@ -550,12 +551,27 @@ export function refreshGeodata(force = false, kind: CoreKind | null = null) {
   return invoke<GeodataInfo>("refresh_geodata", { force, kind });
 }
 
-export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
+/** Wrap a per-result callback in a Tauri IPC channel so streaming commands
+ * can push each node's probe result the moment it completes. The Rust side
+ * declares the channel as a required arg, so callers without a callback get
+ * a silent one. */
+function latencyResultChannel(onResult?: (r: LatencyResult) => void) {
+  const channel = new Channel<LatencyResult>();
+  channel.onmessage = onResult ?? (() => {});
+  return channel;
+}
+
+export function testNodesLatency(
+  ids?: string[] | null,
+  timeoutMs?: number | null,
+  onResult?: (r: LatencyResult) => void,
+) {
   // Tauri 2 accepts camelCase; include snake_case for compatibility.
   const args: Record<string, unknown> = {
     ids: ids ?? null,
     timeoutMs: timeoutMs ?? null,
     timeout_ms: timeoutMs ?? null,
+    onResult: latencyResultChannel(onResult),
   };
   return invoke<LatencyBatchResult>("test_nodes_latency", args);
 }
@@ -563,20 +579,29 @@ export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | nul
 /** Fast "Ping 测试": direct TCP connect (30 concurrent), never through the
  * kernel even while the core is running — raw reachability, not real proxy
  * latency. Same result shape as testNodesLatency. */
-export function pingNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
+export function pingNodesLatency(
+  ids?: string[] | null,
+  timeoutMs?: number | null,
+  onResult?: (r: LatencyResult) => void,
+) {
   const args: Record<string, unknown> = {
     ids: ids ?? null,
     timeoutMs: timeoutMs ?? null,
     timeout_ms: timeoutMs ?? null,
+    onResult: latencyResultChannel(onResult),
   };
   return invoke<LatencyBatchResult>("ping_nodes_latency", args);
 }
 
 /** Same TCP probe, for nodes extracted from the selected custom sing-box config (results not persisted). */
-export function testCustomNodesLatency(timeoutMs?: number | null) {
+export function testCustomNodesLatency(
+  timeoutMs?: number | null,
+  onResult?: (r: LatencyResult) => void,
+) {
   const args: Record<string, unknown> = {
     timeoutMs: timeoutMs ?? null,
     timeout_ms: timeoutMs ?? null,
+    onResult: latencyResultChannel(onResult),
   };
   return invoke<LatencyBatchResult>("test_custom_nodes_latency", args);
 }

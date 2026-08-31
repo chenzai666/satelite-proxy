@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteNodes,
   generateSingboxConfig,
@@ -25,6 +25,7 @@ import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { filterCustomNodes, applyCustomLatency, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
+import { createLatencyResultBuffer } from "../latencyStream";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
@@ -143,7 +144,15 @@ export function NodesPage() {
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
-
+  // Batch-test streaming: the rAF buffer between channel messages and state
+  // (see latencyStream.ts); stopped on unmount so no flush lands post-dismount.
+  const latencyBufferRef = useRef<ReturnType<
+    typeof createLatencyResultBuffer
+  > | null>(null);
+  useEffect(
+    () => () => latencyBufferRef.current?.stop(),
+    [],
+  );
   const reload = useCallback(async (append = false) => {
     setError(null);
     if (append) setLoadingMore(true);
@@ -309,7 +318,6 @@ export function NodesPage() {
     setTesting(true);
     setTestKind(kind);
     setError(null);
-    // no top banner / completion message
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
     // loaded list because they are not in the node store.
     const idSet = new Set(ids);
@@ -324,31 +332,35 @@ export function NodesPage() {
       ),
     );
 
-    try {
-      // Custom mode can't map into the running config, so both probes are
-      // the same direct-TCP path there.
-      const batch = customRuntime
-        ? await testCustomNodesLatency(3000)
-        : kind === "ping"
-          ? await pingNodesLatency(ids, 3000)
-          : await testNodesLatency(ids, 3000);
-      const map = new Map(batch.results.map((r) => [r.id, r]));
-      setUnsupportedIds(
-        new Set(batch.results.filter((r) => r.method === "unsupported").map((r) => r.id)),
-      );
+    // Per-node streaming: the backend pushes each result over an IPC channel
+    // the moment its probe completes; the buffer applies them per animation
+    // frame (see latencyStream.ts).
+    const buffer = createLatencyResultBuffer((batch) => {
+      setUnsupportedIds((prev) => {
+        const next = new Set(prev);
+        for (const r of batch.values())
+          if (r.method === "unsupported") next.add(r.id);
+        return next;
+      });
       if (customRuntime) {
         // Session-only — remember results across filter / sort / page reloads.
         setCustomLatency((prev) => {
           const next = new Map(prev);
-          for (const r of batch.results) {
-            next.set(r.id, { ms: r.latency_ms ?? null, at: r.tested_at });
+          for (const [id, r] of batch) {
+            next.set(id, { ms: r.latency_ms ?? null, at: r.tested_at });
           }
           return next;
         });
       }
+      // Retire the finished spinners as their results land.
+      setTestingIds((prev) => {
+        const next = new Set(prev);
+        for (const id of batch.keys()) next.delete(id);
+        return next;
+      });
       setNodes((prev) =>
         prev.map((n) => {
-          const r = map.get(n.id);
+          const r = batch.get(n.id);
           if (!r) return n;
           return {
             ...n,
@@ -358,7 +370,23 @@ export function NodesPage() {
           };
         }),
       );
+    });
+    latencyBufferRef.current = buffer;
+
+    try {
+      // Custom mode can't map into the running config, so both probes are
+      // the same direct-TCP path there.
+      const batch = customRuntime
+        ? await testCustomNodesLatency(3000, buffer.push)
+        : kind === "ping"
+          ? await pingNodesLatency(ids, 3000, buffer.push)
+          : await testNodesLatency(ids, 3000, buffer.push);
+      buffer.flushNow();
+      setUnsupportedIds(
+        new Set(batch.results.filter((r) => r.method === "unsupported").map((r) => r.id)),
+      );
     } catch (e) {
+      buffer.flushNow();
       setError(typeof e === "string" ? e : String(e));
       if (!customRuntime) await reload();
     } finally {
@@ -371,7 +399,9 @@ export function NodesPage() {
   }
 
   async function onTestLatency(kind: "real" | "ping" = "real") {
-    const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
+    const ids = customRuntime
+      ? nodes.map((n) => n.id)
+      : await listNodeIds(query, sortMode);
     await onTestNodes(ids, kind);
   }
 
