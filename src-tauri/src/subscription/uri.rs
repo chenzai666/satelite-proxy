@@ -110,7 +110,7 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
             alter_id,
             security,
         } => {
-            let (network, path, host) = vmess_transport(node.transport.as_ref());
+            let (network, path, host, mode) = vmess_transport(node.transport.as_ref());
             let tls = node.tls.as_ref().filter(|tls| tls.enabled);
             let payload = json!({
                 "v": "2",
@@ -124,6 +124,7 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
                 "type": "none",
                 "host": host.unwrap_or_default(),
                 "path": path.unwrap_or_default(),
+                "mode": mode.unwrap_or_default(),
                 "tls": if tls.is_some() { "tls" } else { "none" },
                 "sni": tls.and_then(|value| value.server_name.as_deref()).unwrap_or_default(),
                 "alpn": tls.and_then(|value| value.alpn.as_ref()).map(|items| items.join(",")).unwrap_or_default(),
@@ -477,6 +478,12 @@ fn transport_query(transport: Option<&Transport>) -> ShareQuery {
             push_optional_query(&mut query, "path", path.clone());
             push_optional_query(&mut query, "host", host.clone());
         }
+        Some(Transport::Xhttp { path, host, mode }) => {
+            query.push(("type", "xhttp".into()));
+            push_optional_query(&mut query, "path", path.clone());
+            push_optional_query(&mut query, "host", host.clone());
+            push_optional_query(&mut query, "mode", mode.clone());
+        }
         Some(Transport::Tcp) | None => {}
     }
     query
@@ -484,7 +491,7 @@ fn transport_query(transport: Option<&Transport>) -> ShareQuery {
 
 fn vmess_transport(
     transport: Option<&Transport>,
-) -> (&'static str, Option<String>, Option<String>) {
+) -> (&'static str, Option<String>, Option<String>, Option<String>) {
     match transport {
         Some(Transport::Ws { path, headers, .. }) => (
             "ws",
@@ -495,15 +502,22 @@ fn vmess_transport(
                     .find(|(key, _)| key.eq_ignore_ascii_case("host"))
                     .map(|(_, value)| value.clone())
             }),
+            None,
         ),
-        Some(Transport::Grpc { service_name }) => ("grpc", service_name.clone(), None),
+        Some(Transport::Grpc { service_name }) => ("grpc", service_name.clone(), None, None),
         Some(Transport::Http { path, host }) => (
             "h2",
             path.clone(),
             host.as_ref().map(|items| items.join(",")),
+            None,
         ),
-        Some(Transport::HttpUpgrade { path, host }) => ("httpupgrade", path.clone(), host.clone()),
-        Some(Transport::Tcp) | None => ("tcp", None, None),
+        Some(Transport::HttpUpgrade { path, host }) => {
+            ("httpupgrade", path.clone(), host.clone(), None)
+        }
+        Some(Transport::Xhttp { path, host, mode }) => {
+            ("xhttp", path.clone(), host.clone(), mode.clone())
+        }
+        Some(Transport::Tcp) | None => ("tcp", None, None, None),
     }
 }
 
@@ -909,6 +923,10 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
         .get("host")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let transport_mode = json
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let transport = match network.as_str() {
         "ws" => {
@@ -938,7 +956,7 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
         "xhttp" | "splithttp" => Some(Transport::Xhttp {
             path,
             host: host_header,
-            mode: None,
+            mode: transport_mode,
         }),
         "tcp" | "" => Some(Transport::Tcp),
         other => return Err(format!("unsupported transport: {other}")),
@@ -1653,6 +1671,33 @@ mod tests {
             node.transport,
             Some(Transport::HttpUpgrade { .. })
         ));
+    }
+
+    #[test]
+    fn xhttp_share_export_preserves_transport_mode() {
+        let vless = parse_uri_line(
+            "vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&type=xhttp&path=%2Fupload&host=cdn.example.com&mode=stream-up#VL-XHTTP",
+        )
+        .unwrap();
+        let vless_exported = serialize_share_uri(&vless).unwrap();
+        let vless_restored = parse_uri_line(&vless_exported).unwrap();
+        assert_eq!(
+            vless_restored.transport, vless.transport,
+            "{vless_exported}"
+        );
+
+        let vmess_json = r#"{"v":"2","ps":"VM-XHTTP","add":"vm.example.com","port":"443","id":"11111111-1111-1111-1111-111111111111","aid":"0","net":"xhttp","type":"none","host":"cdn.example.com","path":"/upload","mode":"stream-up","tls":"tls"}"#;
+        let vmess = parse_uri_line(&format!(
+            "vmess://{}",
+            general_purpose::STANDARD.encode(vmess_json),
+        ))
+        .unwrap();
+        let vmess_exported = serialize_share_uri(&vmess).unwrap();
+        let vmess_restored = parse_uri_line(&vmess_exported).unwrap();
+        assert_eq!(
+            vmess_restored.transport, vmess.transport,
+            "{vmess_exported}"
+        );
     }
 
     #[test]

@@ -178,6 +178,21 @@ pub struct Runtime {
     core_memory_cache: Option<(u32, u64, Instant)>,
 }
 
+/// Resolve the Clash API secret for the next generated configuration.
+/// Existing installations keep their secret; older stores receive one on
+/// demand. This project does not expose the newer upstream opt-out flag, so
+/// never clear an existing secret implicitly.
+fn resolve_clash_api_secret(store: &mut AppStore) -> String {
+    let secret = store
+        .settings
+        .clash_api_secret
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(generate_api_secret);
+    store.settings.clash_api_secret = Some(secret.clone());
+    secret
+}
+
 impl Runtime {
     pub fn new() -> Self {
         Self {
@@ -267,6 +282,10 @@ impl Runtime {
             self.core_started_at = Some(now_unix_secs());
         }
         let core_memory_bytes = self.core_memory_bytes();
+        // On Windows, CoreManager records the UAC-owned core process. This is
+        // intentionally derived from the live manager state so a stale PID
+        // cannot leave the UI claiming that a stopped core is elevated.
+        let core_elevated = self.core.is_windows_elevated();
         ProxyStatus {
             running: self.core.is_running(),
             core_state: self.core.state(),
@@ -362,6 +381,33 @@ impl Runtime {
         let bytes = read_process_rss_bytes(pid)?;
         self.core_memory_cache = Some((pid, bytes, Instant::now()));
         Some(bytes)
+    }
+
+    /// Startup diagnostics shared by the core readiness paths. Prefer the
+    /// manager's captured error, otherwise return the end of its log file.
+    fn core_startup_log_hint(&self) -> String {
+        self.core
+            .last_error()
+            .map(ToString::to_string)
+            .or_else(|| {
+                self.core
+                    .log_path()
+                    .and_then(|path| std::fs::read(path).ok())
+                    .and_then(|bytes| {
+                        let text = String::from_utf8_lossy(&bytes);
+                        let tail: String = text
+                            .chars()
+                            .rev()
+                            .take(1200)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect();
+                        let cleaned = tail.replace('\0', "");
+                        (!cleaned.trim().is_empty()).then_some(cleaned)
+                    })
+            })
+            .unwrap_or_default()
     }
 
     /// Passive health for smart switch from connection journal (no MITM / no HTTP codes).

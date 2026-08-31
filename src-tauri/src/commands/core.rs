@@ -1,8 +1,7 @@
 use crate::core::{
     active_core_version, bundled_core_version, detect_platform, download_latest_core_with_progress,
     fetch_latest_app_tag, fetch_latest_app_tag_via_redirect, fetch_latest_prerelease_with_proxy,
-    fetch_latest_release_with_proxy, inspect_core_bin, CoreDownloadProgress, CoreDownloadResult,
-    CoreKind, CoreSource,
+    fetch_latest_release_with_proxy, inspect_core_bin, CoreDownloadResult, CoreKind, CoreSource,
 };
 use crate::error::AppError;
 use crate::state::AppState;
@@ -288,7 +287,6 @@ pub async fn download_core(
 ) -> Result<CoreDownloadResult, String> {
     let kind = parse_kind(kind);
     let proxy_url = current_download_proxy(&state)?;
-    let via_proxy = proxy_url.is_some();
     let progress_app = app.clone();
     let result = download_latest_core_with_progress(
         kind,
