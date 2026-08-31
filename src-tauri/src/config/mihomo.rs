@@ -154,7 +154,13 @@ pub fn build_mihomo_config(
     );
     root.insert(str_yaml("secret"), str_yaml(&opts.api_secret));
     if opts.tun_enabled {
-        root.insert(str_yaml("tun"), Yaml::Mapping(tun_block()));
+        // Keep Mihomo's system capture semantics aligned with sing-box:
+        // explicit mixed stack for UDP-heavy applications, strict routing to
+        // prevent accidental bypass, and IPv4-only when the shared TUN IPv6
+        // switch is off. The top-level `ipv6` flag is required by Mihomo for
+        // the TUN IPv6 setting to have an unambiguous effect.
+        root.insert(str_yaml("ipv6"), Yaml::Bool(opts.tun_ipv6));
+        root.insert(str_yaml("tun"), Yaml::Mapping(tun_block(opts)));
     }
     root.insert(
         str_yaml("dns"),
@@ -242,15 +248,19 @@ fn url_test_group(name: &str, members: Vec<String>, probe_url: &str) -> Mapping 
 }
 
 /// mihomo tun block. mihomo works best with fake-ip DNS for tun —
-/// `build_dns` forces fake-ip whenever tun is on. `stack` defaults to
-/// system in mihomo; `strict-route` etc. stay at defaults intentionally.
-fn tun_block() -> Mapping {
+/// `build_dns` forces fake-ip whenever tun is on. Mixed stack keeps UDP-heavy
+/// applications such as games inside the user-space path while TCP uses the
+/// system stack.
+fn tun_block(opts: &BuildOptions) -> Mapping {
     let mut t = Mapping::new();
     t.insert(str_yaml("enable"), Yaml::Bool(true));
+    t.insert(str_yaml("stack"), str_yaml(opts.normalized_tun_stack()));
     t.insert(str_yaml("auto-route"), Yaml::Bool(true));
+    t.insert(str_yaml("auto-detect-interface"), Yaml::Bool(true));
+    t.insert(str_yaml("strict-route"), Yaml::Bool(true));
     t.insert(
         str_yaml("dns-hijack"),
-        Yaml::Sequence(vec![str_yaml("any:53")]),
+        Yaml::Sequence(vec![str_yaml("any:53"), str_yaml("tcp://any:53")]),
     );
     t
 }
@@ -1959,8 +1969,13 @@ mod tests {
         let built = build_mihomo_config(&[node], &opts).expect("build");
         let doc = parse(&built);
         assert_eq!(doc["tun"]["enable"].as_bool(), Some(true));
+        assert_eq!(doc["tun"]["stack"].as_str(), Some("mixed"));
         assert_eq!(doc["tun"]["auto-route"].as_bool(), Some(true));
+        assert_eq!(doc["tun"]["auto-detect-interface"].as_bool(), Some(true));
+        assert_eq!(doc["tun"]["strict-route"].as_bool(), Some(true));
         assert_eq!(doc["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
+        assert_eq!(doc["tun"]["dns-hijack"][1].as_str(), Some("tcp://any:53"));
+        assert_eq!(doc["ipv6"].as_bool(), Some(false));
         assert_eq!(doc["dns"]["enhanced-mode"].as_str(), Some("fake-ip"));
         assert!(doc["dns"]["fake-ip-range"].as_str().is_some());
     }

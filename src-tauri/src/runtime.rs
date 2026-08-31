@@ -1066,10 +1066,10 @@ impl Runtime {
     ///
     /// `start_with_ports` itself waits until the first sidecar port is
     /// listening (and errors if the process dies), so a successful return
-    /// means every delegated node's inbound is live. Config validation runs
-    /// via Xray's own `-test` (`CoreKind::check_command_args`); the sidecar
-    /// config deliberately contains no geodata references, so the test never
-    /// needs the geosite/geoip assets.
+    /// means every delegated node's inbound is live. The sidecar's actual
+    /// Xray process validates its config while starting; a separate `-test`
+    /// preflight is intentionally avoided because it reparses the same
+    /// config and needlessly doubles the switch delay.
     fn start_xray_sidecar(
         &mut self,
         app_data_dir: &Path,

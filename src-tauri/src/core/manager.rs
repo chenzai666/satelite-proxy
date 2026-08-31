@@ -472,13 +472,17 @@ impl CoreManager {
             }
         }
 
-        // sing-box `check -c` is pure JSON validation, but Xray's
-        // `run -test -c` actually creates the tun adapter for tun configs —
-        // which needs admin. Running it unelevated fails with access-denied
-        // before the elevated start path is ever reached, so elevated Xray
-        // sessions skip the pre-check; the elevated run surfaces config
-        // errors through the log tail instead.
-        let skip_check = elevated && kind == CoreKind::Xray;
+        // sing-box and mihomo have a useful, relatively cheap preflight check.
+        // Xray's `run -test -c` reparses the complete config (including the
+        // geodata/routing tables) and the real `run -c` immediately performs
+        // the same work again. On a normal generated config this duplicated
+        // preflight can add several seconds to every core switch, while the
+        // real process still supplies the authoritative validation and its
+        // log tail is already surfaced on startup failure. Skip the redundant
+        // Xray pre-check for both normal and elevated sessions. Elevated Xray
+        // sessions must skip it anyway because testing a TUN config can create
+        // the adapter before the actual UAC start path.
+        let skip_check = kind == CoreKind::Xray;
         if !skip_check {
             Self::check_config(kind, binary, config)?;
         }
