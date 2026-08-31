@@ -1583,41 +1583,47 @@ impl AppStore {
         Ok(chain.clone())
     }
 
-    pub fn delete_chain(&mut self, id: &str) -> AppResult<()> {
-        let mut references: Vec<String> = self
-            .rule_sets
-            .iter()
-            .filter(|set| {
-                set.chain_id.as_deref() == Some(id)
-                    || set
-                        .rules
-                        .iter()
-                        .any(|rule| rule.chain_id.as_deref() == Some(id))
-            })
-            .map(|set| set.name.clone())
-            .collect();
-        references.sort();
-        references.dedup();
-        if !references.is_empty() {
-            return Err(AppError::Config(format!(
-                "链路被以下规则集引用，无法删除：{}",
-                references.join("、")
-            )));
+    /// Chain ids this rule set effectively pins in the generated config —
+    /// the same reference semantics the config builders use. A `chain_id`
+    /// left over from an earlier strategy, or one inside a disabled/empty
+    /// set or a disabled rule, produces no route and must not count as a
+    /// reference. Keep in sync with `config::builder`: disabled/empty sets
+    /// are skipped entirely, and only effective rules (the same shape as
+    /// `inline_rule_is_effective`) emit per-rule outbounds.
+    fn chain_refs_in_effective_config(set: &RuleSet) -> Vec<&str> {
+        if !set.enabled || crate::config::rule_set_is_empty_for_config(set) {
+            return Vec::new();
         }
-        let before = self.chains.len();
-        self.chains.retain(|chain| chain.id != id);
-        if before == self.chains.len() {
-            return Err(AppError::NotFound(id.to_string()));
+        let mut refs: Vec<&str> = Vec::new();
+        if set.strategy == RuleSetStrategy::Chain {
+            if let Some(id) = set.chain_id.as_deref().filter(|s| !s.is_empty()) {
+                refs.push(id);
+            }
         }
-        Ok(())
+        refs.extend(
+            set.rules
+                .iter()
+                .filter(|r| {
+                    r.enabled
+                        && r.target == RuleTarget::Chain
+                        && !r.payload.trim().is_empty()
+                        && r.rule_type != RuleType::Geoip
+                })
+                .filter_map(|r| r.chain_id.as_deref().filter(|s| !s.is_empty())),
+        );
+        refs
     }
 
+    /// Distinct rule-set names referencing each chain — the same reference
+    /// detection `delete_chain`'s guard uses, filtered to references that
+    /// actually reach the generated config (see
+    /// [`Self::chain_refs_in_effective_config`]), deduped per set. Powers the
+    /// chain list page's "used by N rule sets" hint so users can see deletion
+    /// impact up front.
     pub fn chain_rule_usage(&self) -> std::collections::BTreeMap<String, Vec<String>> {
         let mut usage = std::collections::BTreeMap::<String, Vec<String>>::new();
         for set in &self.rule_sets {
-            let mut ids = set.chain_id.iter().map(String::as_str).collect::<Vec<_>>();
-            ids.extend(set.rules.iter().filter_map(|rule| rule.chain_id.as_deref()));
-            for id in ids {
+            for id in Self::chain_refs_in_effective_config(set) {
                 let names = usage.entry(id.to_string()).or_default();
                 if !names.iter().any(|name| name == &set.name) {
                     names.push(set.name.clone());
@@ -1627,6 +1633,33 @@ impl AppStore {
         usage
     }
 
+    pub fn delete_chain(&mut self, id: &str) -> AppResult<()> {
+        let referencing_rules: Vec<String> = self
+            .rule_sets
+            .iter()
+            .filter(|set| Self::chain_refs_in_effective_config(set).contains(&id))
+            .map(|set| set.name.clone())
+            .collect();
+        if !referencing_rules.is_empty() {
+            let mut uniq = referencing_rules;
+            uniq.sort();
+            uniq.dedup();
+            return Err(AppError::Config(format!(
+                "链路被以下规则集引用，无法删除：{}",
+                uniq.join("、")
+            )));
+        }
+        let before = self.chains.len();
+        self.chains.retain(|c| c.id != id);
+        if self.chains.len() == before {
+            return Err(AppError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// Structural validation: at least 2 hops (single-hop chains are just a
+    /// node/pool pin — use `RuleTarget::Node`/keyword `Filter` directly), and
+    /// every referenced node/pool id must exist.
     fn validate_chain_hops(&self, hops: &[crate::domain::ChainHop]) -> AppResult<()> {
         if hops.len() < 2 {
             return Err(AppError::Config(
@@ -3370,5 +3403,415 @@ mod tests {
         assert_eq!(store.settings.runtime_source, "singbox:sb1");
         store.remove_subscription("sb1").unwrap();
         assert_eq!(store.settings.runtime_source, "generated");
+    }
+
+    // ---- Proxy Chain: pool/chain CRUD -------------------------------------
+
+    fn mk_stored_node(id: &str, name: &str) -> StoredNode {
+        use crate::domain::{Protocol, ProtocolConfig, ProxyNode};
+        StoredNode {
+            subscription_id: "sub-1".into(),
+            node: ProxyNode {
+                id: id.into(),
+                name: name.into(),
+                protocol: Protocol::Shadowsocks,
+                server: "example.com".into(),
+                port: 8388,
+                tls: None,
+                transport: None,
+                udp: None,
+                config: ProtocolConfig::Shadowsocks {
+                    method: "aes-128-gcm".into(),
+                    password: "secret".into(),
+                    plugin: None,
+                    plugin_opts: None,
+                    shadow_tls: None,
+                },
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            },
+        }
+    }
+
+    #[test]
+    fn create_pool_rejects_duplicate_name_case_insensitively() {
+        use crate::domain::PoolMode;
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "HK-1"));
+        store
+            .create_pool(
+                "香港",
+                PoolMode::Explicit {
+                    node_ids: vec!["n1".into()],
+                },
+            )
+            .unwrap();
+        let err = store
+            .create_pool(
+                "香港",
+                PoolMode::Explicit {
+                    node_ids: vec!["n1".into()],
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("已存在同名"));
+    }
+
+    #[test]
+    fn create_pool_explicit_mode_rejects_unknown_node_id() {
+        // A dangling node id in an Explicit pool would silently drop that
+        // member at build time (filter_pool_tags-style code only emits tags
+        // present in `nodes`) — better to reject it up front than let the
+        // user believe a node is in the pool when it never resolves.
+        use crate::domain::PoolMode;
+        let mut store = AppStore::default();
+        let err = store
+            .create_pool(
+                "坏池",
+                PoolMode::Explicit {
+                    node_ids: vec!["does-not-exist".into()],
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("不存在的节点"));
+    }
+
+    #[test]
+    fn create_pool_explicit_mode_requires_at_least_one_node() {
+        use crate::domain::PoolMode;
+        let mut store = AppStore::default();
+        let err = store
+            .create_pool("空池", PoolMode::Explicit { node_ids: vec![] })
+            .unwrap_err();
+        assert!(err.to_string().contains("至少需要选择一个节点"));
+    }
+
+    #[test]
+    fn create_pool_keyword_mode_rejects_include_exclude_overlap() {
+        use crate::domain::PoolMode;
+        let mut store = AppStore::default();
+        let err = store
+            .create_pool(
+                "冲突池",
+                PoolMode::Keyword {
+                    include: vec!["香港".into()],
+                    exclude: vec!["香港".into()],
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("不能同时出现在白名单和黑名单"));
+    }
+
+    #[test]
+    fn delete_pool_blocked_while_a_chain_references_it() {
+        // Deleting a pool a chain depends on would leave that chain with a
+        // dangling hop — the config builder degrades that to "chain absent"
+        // (see build_chain_outbounds_for), silently breaking a route the
+        // user thinks is still configured. Block the delete instead.
+        use crate::domain::{ChainHop, PoolMode};
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "HK-1"));
+        store.nodes.push(mk_stored_node("n2", "Exit"));
+        let pool = store
+            .create_pool(
+                "落地池",
+                PoolMode::Explicit {
+                    node_ids: vec!["n1".into()],
+                },
+            )
+            .unwrap();
+        store
+            .create_chain(
+                "链A",
+                vec![
+                    ChainHop::Pool {
+                        pool_id: pool.id.clone(),
+                    },
+                    ChainHop::Node {
+                        node_id: "n2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let err = store.delete_pool(&pool.id).unwrap_err();
+        assert!(err.to_string().contains("链路引用"));
+        assert_eq!(
+            store.pools.len(),
+            1,
+            "blocked delete must not remove the pool"
+        );
+    }
+
+    #[test]
+    fn create_chain_requires_at_least_two_hops() {
+        // A single-hop "chain" is just a node/pool pin — RuleTarget::Node or
+        // a keyword Filter pool already cover that; allowing a 1-hop chain
+        // would be a redundant, confusing second way to say the same thing.
+        use crate::domain::ChainHop;
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "Only"));
+        let err = store
+            .create_chain(
+                "单跳",
+                vec![ChainHop::Node {
+                    node_id: "n1".into(),
+                }],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("至少需要 2 跳"));
+    }
+
+    #[test]
+    fn create_chain_rejects_unknown_node_and_pool_ids() {
+        use crate::domain::ChainHop;
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "Entry"));
+        let err = store
+            .create_chain(
+                "坏链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "does-not-exist".into(),
+                    },
+                ],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("不存在的节点"));
+
+        let err = store
+            .create_chain(
+                "坏链2",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Pool {
+                        pool_id: "pool-nope".into(),
+                    },
+                ],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("不存在的节点池"));
+    }
+
+    #[test]
+    fn delete_chain_blocked_while_a_rule_set_references_it() {
+        use crate::domain::{ChainHop, Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "A"));
+        store.nodes.push(mk_stored_node("n2", "B"));
+        let chain = store
+            .create_chain(
+                "被引用链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "n2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        // The set must hold at least one effective rule: an empty set emits
+        // nothing to the kernel config, so its whole-set pin is not a live
+        // reference (see chain_usage_ignores_references_that_reach_no_config).
+        let mut set = RuleSet::new_user(
+            "规则集",
+            vec![Rule::new(
+                RuleType::DomainSuffix,
+                "example.com".into(),
+                RuleTarget::Proxy,
+                0,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Chain;
+        set.chain_id = Some(chain.id.clone());
+        store.rule_sets.push(set);
+
+        let err = store.delete_chain(&chain.id).unwrap_err();
+        assert!(err.to_string().contains("规则集引用"));
+        assert_eq!(
+            store.chains.len(),
+            1,
+            "blocked delete must not remove the chain"
+        );
+    }
+
+    #[test]
+    fn chain_rule_usage_dedups_set_level_and_per_rule_references() {
+        use crate::domain::{ChainHop, Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "A"));
+        store.nodes.push(mk_stored_node("n2", "B"));
+        let chain = store
+            .create_chain(
+                "被引用链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "n2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+
+        // Set A: whole-set chain pin AND a per-rule chain target — must count
+        // this set exactly once.
+        let mut set_a = RuleSet::new_user("集合A", vec![]);
+        set_a.strategy = RuleSetStrategy::Chain;
+        set_a.chain_id = Some(chain.id.clone());
+        let mut rule_a = Rule::new(
+            RuleType::DomainSuffix,
+            "example.com".into(),
+            RuleTarget::Chain,
+            0,
+        );
+        rule_a.chain_id = Some(chain.id.clone());
+        set_a.rules.push(rule_a);
+        // Set B: only a per-rule reference.
+        let mut set_b = RuleSet::new_user("集合B", vec![]);
+        let mut rule_b = Rule::new(
+            RuleType::DomainSuffix,
+            "other.com".into(),
+            RuleTarget::Chain,
+            0,
+        );
+        rule_b.chain_id = Some(chain.id.clone());
+        set_b.rules.push(rule_b);
+        // Set C: unrelated set, must not appear.
+        let set_c = RuleSet::new_user("集合C", vec![]);
+        store.rule_sets.push(set_a);
+        store.rule_sets.push(set_b);
+        store.rule_sets.push(set_c);
+
+        let usage = store.chain_rule_usage();
+        let names = &usage[&chain.id];
+        assert_eq!(
+            names.len(),
+            2,
+            "set A counted once despite two reference levels"
+        );
+        assert!(names.contains(&"集合A".to_string()));
+        assert!(names.contains(&"集合B".to_string()));
+        assert!(!names.contains(&"集合C".to_string()));
+    }
+
+    #[test]
+    fn chain_usage_ignores_references_that_reach_no_config() {
+        use crate::domain::{ChainHop, Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType};
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "A"));
+        store.nodes.push(mk_stored_node("n2", "B"));
+        let chain = store
+            .create_chain(
+                "被引用链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "n2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let chain_rule = |name: &str| {
+            let mut r = Rule::new(
+                RuleType::DomainSuffix,
+                format!("{name}.com"),
+                RuleTarget::Chain,
+                0,
+            );
+            r.chain_id = Some(chain.id.clone());
+            r
+        };
+
+        // Whole-set pin but every rule deleted: the empty set reaches no
+        // generated config, so the pin is not a live reference (the reported
+        // bug — usage stayed after the rules were removed).
+        let mut emptied = RuleSet::new_user("已清空", vec![]);
+        emptied.strategy = RuleSetStrategy::Chain;
+        emptied.chain_id = Some(chain.id.clone());
+        // Strategy flipped away from Chain while the stale pin fields linger.
+        let mut flipped = RuleSet::new_user("已改策略", vec![chain_rule("flipped")]);
+        flipped.chain_id = Some(chain.id.clone());
+        flipped.rules[0].target = RuleTarget::Proxy;
+        // Disabled per-rule chain reference inside an otherwise live set.
+        let mut has_disabled = RuleSet::new_user("含停用规则", vec![chain_rule("off")]);
+        has_disabled.rules[0].enabled = false;
+        has_disabled.rules.push(Rule::new(
+            RuleType::DomainSuffix,
+            "live.com".into(),
+            RuleTarget::Proxy,
+            10,
+        ));
+        // Disabled set entirely.
+        let mut disabled_set = RuleSet::new_user("已停用", vec![chain_rule("ds")]);
+        disabled_set.enabled = false;
+        store.rule_sets.push(emptied);
+        store.rule_sets.push(flipped);
+        store.rule_sets.push(has_disabled);
+        store.rule_sets.push(disabled_set);
+
+        let usage = store.chain_rule_usage();
+        assert!(
+            !usage.contains_key(&chain.id),
+            "no live reference remains, usage must be empty: {:?}",
+            usage
+        );
+        // The delete guard shares the same semantics: the chain is deletable.
+        store.delete_chain(&chain.id).expect(
+            "stale/empty references must not block deletion — \
+             usage display and the delete guard must agree",
+        );
+        assert!(store.chains.is_empty());
+    }
+
+    #[test]
+    fn update_chain_revalidates_hops_against_current_nodes() {
+        // A chain edited to reference a node that no longer exists must be
+        // rejected the same way create_chain would reject it — update isn't
+        // a looser code path than create.
+        use crate::domain::ChainHop;
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "A"));
+        store.nodes.push(mk_stored_node("n2", "B"));
+        let chain = store
+            .create_chain(
+                "链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "n2".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let err = store
+            .update_chain(
+                &chain.id,
+                "链",
+                vec![
+                    ChainHop::Node {
+                        node_id: "n1".into(),
+                    },
+                    ChainHop::Node {
+                        node_id: "gone".into(),
+                    },
+                ],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("不存在的节点"));
+        // Original hops must survive a rejected update.
+        assert_eq!(store.chains[0].hops.len(), 2);
     }
 }
