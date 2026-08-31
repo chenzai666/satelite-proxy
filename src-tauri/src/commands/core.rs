@@ -290,59 +290,46 @@ pub async fn download_core(
     let proxy_url = current_download_proxy(&state)?;
     let via_proxy = proxy_url.is_some();
     let progress_app = app.clone();
-    let result = download_latest_core_with_progress(
-        kind,
-        &state.app_data_dir,
-        tag,
-        proxy_url.clone(),
-        move |progress| {
+    let result =
+        download_latest_core_with_progress(kind, &state.app_data_dir, tag, proxy_url.clone(), move |progress| {
             let _ = progress_app.emit(CORE_DOWNLOAD_EVENT, progress);
-        },
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // A downloaded mihomo binary is not usable with Satelite's GEOSITE/GEOIP
-    // rules until its data pair exists. Fetch it while the old core is still
-    // running so the current proxy can carry the download; otherwise the first
-    // switch/start appears frozen while a stopped-core path downloads it.
-    if kind == CoreKind::Mihomo {
-        let _ = app.emit(
-            CORE_DOWNLOAD_EVENT,
-            CoreDownloadProgress {
-                kind: kind.as_str().into(),
-                stage: "installing",
-                downloaded: result.bytes,
-                total: Some(result.bytes),
-                percent: Some(100),
-                via_proxy,
-            },
-        );
-        let app_data_dir = state.app_data_dir.clone();
-        let resource_dir = app.path().resource_dir().ok();
-        let geodata_proxy = proxy_url;
-        tauri::async_runtime::spawn_blocking(move || {
-            crate::core::ensure_mihomo_geodata(
-                &app_data_dir,
-                resource_dir.as_deref(),
-                geodata_proxy.as_deref(),
-            )
         })
         .await
-        .map_err(|e| format!("mihomo geodata task: {e}"))?
         .map_err(|e| e.to_string())?;
-        let _ = app.emit(
-            CORE_DOWNLOAD_EVENT,
-            CoreDownloadProgress {
-                kind: kind.as_str().into(),
-                stage: "done",
-                downloaded: result.bytes,
-                total: Some(result.bytes),
-                percent: Some(100),
-                via_proxy,
-            },
-        );
+
+    // The binary is installed — eagerly fetch its runtime assets (geodata,
+    // wintun) through the same download proxy, so the first start doesn't
+    // discover-and-download them while holding the store/runtime locks
+    // (AGENTS.md §9.22). Failures are warnings; startup ensure_* still run
+    // as the fallback.
+    let _ = app.emit(
+        CORE_DOWNLOAD_EVENT,
+        crate::core::CoreDownloadProgress {
+            kind: kind.as_str().into(),
+            stage: "assets",
+            downloaded: 0,
+            total: None,
+            percent: None,
+            via_proxy: proxy_url.is_some(),
+        },
+    );
+    let data_dir = state.app_data_dir.clone();
+    let resource_dir = app.path().resource_dir().ok();
+    let prefetch_proxy = proxy_url.clone();
+    let warnings = tauri::async_runtime::spawn_blocking(move || {
+        crate::core::prefetch_runtime_assets(
+            kind,
+            &data_dir,
+            resource_dir.as_deref(),
+            prefetch_proxy.as_deref(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    for warning in &warnings {
+        crate::app_log::warn("core_assets", warning.clone());
     }
+
     Ok(result)
 }
 

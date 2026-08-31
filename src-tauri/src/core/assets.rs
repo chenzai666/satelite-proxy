@@ -366,6 +366,50 @@ pub fn mihomo_geodata_state(app_data_dir: &Path) -> [(&'static str, GeodataFileS
     }
 }
 
+// ---------------------------------------------------------------------------
+// Post-download prefetch: fetch a core's runtime assets right after the core
+// itself is installed (settings → core download/update), so the first start
+// doesn't discover-and-download them while holding the store/runtime locks
+// (AGENTS.md §9.22).
+// ---------------------------------------------------------------------------
+
+/// Fetch whatever network assets `kind` needs at start time. Best-effort:
+/// returns one warning string per failed asset; the startup `ensure_*`
+/// calls remain as the fallback when something fails here.
+pub fn prefetch_runtime_assets(
+    kind: crate::core::CoreKind,
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+    proxy_url: Option<&str>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    match kind {
+        crate::core::CoreKind::Xray => {
+            if let Err(error) = ensure_geodata(app_data_dir, resource_dir, proxy_url) {
+                warnings.push(format!("xray geodata prefetch failed: {error}"));
+            }
+        }
+        crate::core::CoreKind::Mihomo => {
+            if let Err(error) = download_missing_mihomo_geodata(app_data_dir, proxy_url, false) {
+                warnings.push(format!("mihomo geodata prefetch failed: {error}"));
+            }
+        }
+        crate::core::CoreKind::SingBox => {}
+    }
+    // wintun.dll (Windows TUN) is shared by Xray and mihomo — prefetch it for
+    // both so enabling TUN never triggers a download on core start.
+    #[cfg(target_os = "windows")]
+    if matches!(
+        kind,
+        crate::core::CoreKind::Xray | crate::core::CoreKind::Mihomo
+    ) {
+        if let Err(error) = ensure_wintun(app_data_dir, resource_dir, proxy_url) {
+            warnings.push(format!("wintun prefetch failed: {error}"));
+        }
+    }
+    warnings
+}
+
 /// Xray's native tun inbound loads wintun.dll on Windows (not shipped in the
 /// Xray release zip). Ensure it sits next to the core binary in `bin/`.
 #[cfg(target_os = "windows")]

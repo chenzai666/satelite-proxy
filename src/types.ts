@@ -432,7 +432,8 @@ export interface CoreDownloadResult {
 
 export interface CoreDownloadProgress {
   kind?: CoreKind | string;
-  stage: "preparing" | "downloading" | "installing" | "done";
+  /** "assets" = post-install prefetch of geodata/wintun (stage 4 of 4). */
+  stage: "preparing" | "downloading" | "installing" | "assets" | "done";
   downloaded: number;
   total?: number | null;
   percent?: number | null;

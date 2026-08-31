@@ -18,6 +18,7 @@ pub use assets::ensure_geodata;
 pub use assets::ensure_wintun;
 pub use assets::{download_missing_geodata, geodata_state};
 pub use assets::{download_missing_mihomo_geodata, ensure_mihomo_geodata, mihomo_geodata_state};
+pub use assets::prefetch_runtime_assets;
 pub use kind::CoreKind;
 pub use memory::read_process_rss_bytes;
 
