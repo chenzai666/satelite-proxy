@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/License-Apache%202.0-green.svg" alt="License" />
 </p>
 
-导入订阅、三内核切换、规则分流、代理链、智能 DNS、系统代理 / TUN、托盘常驻——日常该有的都有。  
+导入订阅、三内核切换、规则分流、代理链、智能 DNS、系统代理 / TUN、托盘常驻——日常该有的都有。
 它**足够轻、足够稳、也足够好看**。
 
 <p align="center">
