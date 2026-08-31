@@ -23,7 +23,7 @@ pub async fn list_app_logs(
     .map_err(|e| format!("list logs task: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_app_logs() -> Result<(), String> {
     app_log::clear()
 }
@@ -41,7 +41,7 @@ pub struct CoreLogTail {
 /// file to read (sing-box | xray | mihomo) — under multi-core mode the
 /// sidecar writes its own file separate from the main core's; `None` keeps
 /// the historical behavior of tailing the main core.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_core_log_tail(
     state: State<'_, AppState>,
     limit: Option<usize>,
@@ -72,7 +72,7 @@ pub fn get_core_log_tail(
 /// Truncate the current-hour log file of the given core (same manager
 /// resolution as `get_core_log_tail`). Only the file this app instance
 /// writes is cleared — previous hours' rotated files stay for retention.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_core_log(state: State<'_, AppState>, kind: String) -> Result<(), String> {
     let parsed = match kind.as_str() {
         "singbox" => CoreKind::SingBox,

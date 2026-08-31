@@ -38,7 +38,7 @@ pub struct NodePage {
     pub offset: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
     state
         .with_store(|store| Ok(store.settings.clone()))
@@ -63,7 +63,7 @@ pub async fn regenerate_api_secret(app: AppHandle) -> Result<AppSettings, String
     .map_err(|e| format!("regenerate secret task: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -429,7 +429,7 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
     .map_err(|e| format!("select node task: {e}"))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_node(
     state: State<'_, AppState>,
     id: String,
@@ -592,7 +592,7 @@ pub fn delete_nodes(
     Ok(deleted)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     state
         .with_store(|store| {
@@ -629,7 +629,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_nodes_page(
     state: State<'_, AppState>,
     query: Option<String>,
@@ -701,7 +701,7 @@ pub fn list_nodes_page(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_node_ids(
     state: State<'_, AppState>,
     query: Option<String>,
@@ -765,7 +765,7 @@ fn extract_custom_nodes(
 /// Read-only node list extracted from the selected custom sing-box config.
 /// Custom profiles never feed the node store, so the stored config body is
 /// parsed on demand. Empty when not in custom runtime mode.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_custom_config_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, String> {
     custom_config_nodes(&state)
 }
@@ -954,7 +954,7 @@ pub async fn generate_singbox_config(
     Ok(result)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<String>, String> {
     // mihomo keeps its Clash YAML in active.yaml; JSON cores share active.json.
     let core_type = state

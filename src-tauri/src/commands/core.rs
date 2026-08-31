@@ -36,7 +36,7 @@ pub struct CoreInfo {
 }
 
 /// Local core status only (no network). Prefer this for page load.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_core_info(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -519,7 +519,7 @@ fn mihomo_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
 
 /// Absolute path of the running executable — the app's own install location,
 /// shown on the version tab next to the kernel binary path.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_app_install_path() -> Result<String, String> {
     std::env::current_exe()
         .map(|p| p.display().to_string())

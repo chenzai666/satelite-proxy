@@ -266,7 +266,11 @@ pub fn download_missing_mihomo_geodata(
             continue;
         }
         let url = format!("{MIHOMO_GEODATA_BASE_URL}/{file}");
-        let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(120));
+        // 30s: this download sits inside the core-start path holding the
+        // store/runtime locks. 120s × 2 files let a blocked GitHub route
+        // (CN direct) stall the restart for minutes with the UI busy.
+        // The files are ~8MB/~4MB — 30s is ample on any working route.
+        let mut builder = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30));
         if let Some(proxy) = proxy_url {
             let proxy = ureq::Proxy::new(proxy)
                 .map_err(|e| AppError::Core(format!("mihomo geodata proxy: {e}")))?;
