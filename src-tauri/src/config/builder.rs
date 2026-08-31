@@ -2890,8 +2890,6 @@ mod tests {
             log_level: "info".into(),
             rules: vec![],
             rule_sets: vec![],
-            pools: vec![],
-            chains: vec![],
             tun_enabled: false,
             tun_stack: "mixed".into(),
             dns: DnsSettings::default(),
@@ -3957,8 +3955,6 @@ mod tests {
             log_level: "info".into(),
             rules: vec![],
             rule_sets: vec![],
-            pools: vec![],
-            chains: vec![],
             tun_enabled: false,
             tun_stack: "mixed".into(),
             dns: DnsSettings::default(),
@@ -3970,9 +3966,17 @@ mod tests {
             tun_ipv6: false,
             block_quic: false,
             bypass_lan: false,
+            direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
             sidecar: plan,
         }
+    }
+
+    fn sample_node(id: &str, name: &str) -> ProxyNode {
+        let mut node = sample_ss();
+        node.id = id.into();
+        node.name = name.into();
+        node
     }
 
     #[test]

@@ -669,37 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn new_store_keeps_api_secret_disabled_by_default() {
-        // A clean/new AppSettings never had a secret, so the migration is a
-        // no-op: users who never turned this on don't get surprised by it.
-        let mut settings = AppSettings::default();
-        settings.migrate_api_secret_enabled();
-        assert!(!settings.api_secret_enabled);
-    }
-
-    #[test]
-    fn store_with_a_preexisting_secret_migrates_to_enabled() {
-        // Pre-toggle stores always carried a secret unconditionally — treat
-        // that as "was enabled" so upgrading doesn't drop anyone's auth.
-        let mut settings = AppSettings {
-            clash_api_secret: Some("abc123".into()),
-            ..AppSettings::default()
-        };
-        settings.migrate_api_secret_enabled();
-        assert!(settings.api_secret_enabled);
-    }
-
-    #[test]
-    fn store_with_an_empty_secret_field_stays_disabled() {
-        let mut settings = AppSettings {
-            clash_api_secret: Some("   ".into()),
-            ..AppSettings::default()
-        };
-        settings.migrate_api_secret_enabled();
-        assert!(!settings.api_secret_enabled);
-    }
-
-    #[test]
     fn tray_icon_style_parses_and_defaults_to_badge() {
         assert_eq!(AppSettings::default().tray_icon, TrayIconStyle::Badge);
         assert_eq!(TrayIconStyle::parse("ghost"), Some(TrayIconStyle::Ghost));

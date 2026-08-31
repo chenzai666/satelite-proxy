@@ -2279,22 +2279,8 @@ mod clash_api_secret_tests {
     use super::*;
 
     #[test]
-    fn disabled_toggle_clears_any_stored_secret_and_returns_empty() {
-        // Turning the toggle off must actually wipe the persisted secret —
-        // otherwise the UI could still display/copy a "dead" key that no
-        // longer matches what's in the running config.
+    fn missing_secret_is_generated_and_persisted() {
         let mut store = AppStore::default();
-        store.settings.api_secret_enabled = false;
-        store.settings.clash_api_secret = Some("leftover".into());
-        let secret = resolve_clash_api_secret(&mut store);
-        assert_eq!(secret, "");
-        assert_eq!(store.settings.clash_api_secret, None);
-    }
-
-    #[test]
-    fn enabled_toggle_generates_a_secret_when_none_is_stored() {
-        let mut store = AppStore::default();
-        store.settings.api_secret_enabled = true;
         store.settings.clash_api_secret = None;
         let secret = resolve_clash_api_secret(&mut store);
         assert!(!secret.is_empty());
@@ -2302,11 +2288,10 @@ mod clash_api_secret_tests {
     }
 
     #[test]
-    fn enabled_toggle_reuses_the_persisted_secret_across_restarts() {
+    fn stored_secret_is_reused_across_restarts() {
         // Regenerating on every restart would silently break any external
         // tool that saved the previous secret.
         let mut store = AppStore::default();
-        store.settings.api_secret_enabled = true;
         store.settings.clash_api_secret = Some("kept-secret".into());
         let secret = resolve_clash_api_secret(&mut store);
         assert_eq!(secret, "kept-secret");
