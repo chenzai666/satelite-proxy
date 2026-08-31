@@ -1799,6 +1799,7 @@ tr.row-active {
   align-items: center;
   gap: 0.85rem;
   margin-bottom: 0.65rem;
+  flex-wrap: wrap;
 }
 
 .ver-mark {
