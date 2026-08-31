@@ -175,7 +175,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
   - `conn_journal.rs` — 轮询/WS 订阅 Clash 连接快照（UI 可见时 100ms，托盘时降频），维护活跃+历史连接环形日志
   - `subscription_auto.rs` — 按 `auto_update` 间隔定时刷新订阅（默认 1440 分钟）
   - `remote_rule_auto.rs` — 应用侧下载远程规则集缓存到本地，sing-box 只加载本地文件
-  - `smart_switch.rs` — 智能选路：被动连接日志感知劣化 → 按需探测 top-K 候选 → 评分+容差+冷却
+  - `smart_switch.rs` — 智能选路：被动连接日志感知劣化 → 按需探测 top-K 候选 → 评分+容差+冷却。候选排序用 `probe_nodes_ranked`（TCP-capable 节点=TCP ping 直连，QUIC-only 协议=内核 URL 探测兜底）；**当前节点健康确认仍走内核 URL 探测**（防「TCP 活但代理死」被误判健康），排序对比值也取 ranked 结果保证同口径（URL-vs-TCP 对比会虚高当前节点数值导致来回切）
   - `rule_apply.rs` — 规则变更的 500ms 防抖合并 + 全局串行 apply-and-restart
   - `state.rs::spawn_core_watchdog` — 内核看门狗：running→error 意外退出（非用户停止）经 `rule_apply::request_restart` 自动重启，10 分钟滚动窗口内最多 3 次防配置错误死循环；决策逻辑 `watchdog_should_restart` 纯函数有单测（背景：曾有机静默 exit(1) 的实战事故）
 - `main.rs` — 仅调 `run()`。
@@ -324,7 +324,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 | 加页面 | `src/pages/` + `App.tsx` lazy 导入 + `NavKey`（types.ts）+ `TopNav` + i18n `nav.*` |
 | 改样式 | `src/App.css` 对应段落；新主题色变体在 `theme/accents.ts` |
 | 加托盘功能 | `src-tauri/src/tray.rs` |
-| 改测速 | `services/latency.rs` + `src/api.ts` testNodesLatency（内核运行时一律走 Clash delay API 经真实代理链路探测；直连 TCP 仅在内核停止/custom 配置/Xray 下回退——TCP 直连只反映可达性，会漏报 REALITY/Vision 这类「TCP 活但代理死」的节点） |
+| 改测速 | `services/latency.rs` + `src/api.ts`：节点页「测真实延迟」= `test_nodes_latency`（内核运行时走 Clash delay API 经真实代理链路，unified delay 双探测取第二次）；「Ping 测试」= `ping_nodes_latency`（纯 TCP 直连、并发 30、内核运行时也不经内核；QUIC-only 协议报 unsupported）；智能选路排序 = `probe_nodes_ranked`（TCP ping + QUIC-only 内核兜底，见 §5.1）。TCP 直连只反映可达性，会漏报 REALITY/Vision 这类「TCP 活但代理死」的节点——故当前节点健康确认仍用内核 URL 探测 |
 | 改内核下载/资产 | `core/download.rs` + `core/assets.rs` + `scripts/fetch-bundled-*-<平台>` 脚本 + `tauri.*.conf.json` resources 四处联动 |
 | 重大架构 / 模块 / 流程变动 | **同步更新本文档对应章节**（规则见 §0） |
 
