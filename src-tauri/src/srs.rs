@@ -55,6 +55,11 @@ pub(crate) struct ParsedSrs {
     pub version: u8,
     /// Any rule carries AdGuard domain items (not decompilable by the core).
     pub has_adguard: bool,
+    /// Any rule carries destination `ip_cidr` items. A rule-set containing
+    /// these fields must be referenced from a sing-box DNS rule with
+    /// response matching; otherwise sing-box 1.14 rejects the config as a
+    /// legacy address filter.
+    pub has_ip_cidr: bool,
     /// Row count the viewer will show. Regular sets match source-set
     /// semantics (`crate::domain::remote_rule_display_count`); AdGuard
     /// sets count their filter lines regardless of logical nesting,
@@ -126,6 +131,7 @@ fn parse_inner(bytes: &[u8], collect_rules: bool) -> Result<ParsedSrs, String> {
     let mut walker = Walker {
         cursor: Cursor::new(&decompressed),
         has_adguard: false,
+        has_ip_cidr: false,
         collect_rules,
         rules: Vec::new(),
         adguard_rows: 0,
@@ -157,6 +163,7 @@ fn parse_inner(bytes: &[u8], collect_rules: bool) -> Result<ParsedSrs, String> {
     Ok(ParsedSrs {
         version,
         has_adguard: walker.has_adguard,
+        has_ip_cidr: walker.has_ip_cidr,
         display_count,
         rules: collect_rules.then_some(walker.rules),
     })
@@ -273,6 +280,7 @@ impl<'a> Cursor<'a> {
 struct Walker<'a> {
     cursor: Cursor<'a>,
     has_adguard: bool,
+    has_ip_cidr: bool,
     collect_rules: bool,
     rules: Vec<serde_json::Value>,
     /// AdGuard filter lines across the whole set, nesting-independent.
@@ -400,6 +408,9 @@ impl<'a> Walker<'a> {
             ITEM_SOURCE_IP_CIDR | ITEM_IP_CIDR => {
                 let ranges = self.read_ip_set()?;
                 let count = ranges.len();
+                if item_type == ITEM_IP_CIDR {
+                    self.has_ip_cidr = true;
+                }
                 let field = if item_type == ITEM_IP_CIDR {
                     "ip_cidr"
                 } else {

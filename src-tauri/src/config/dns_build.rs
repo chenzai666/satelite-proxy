@@ -243,7 +243,6 @@ fn build_default(
         "servers": servers,
         "rules": rules,
         "final": final_tag,
-        "independent_cache": settings.cache,
         "strategy": "prefer_ipv4"
     });
     BuiltDns {
@@ -355,6 +354,12 @@ mod tests {
         s.dns_final = "domestic".into();
         let b = build_dns_section(&s, false, &[]);
         assert_eq!(b.dns["final"].as_str().unwrap(), "dns-cn");
+    }
+
+    #[test]
+    fn independent_cache_is_not_emitted_for_sing_box_1_14() {
+        let b = build_dns_section(&DnsSettings::default(), false, &[]);
+        assert!(b.dns.get("independent_cache").is_none());
     }
 
     #[test]

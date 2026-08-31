@@ -775,18 +775,88 @@ fn build_grouped_rule_sets_with_chains(
             route_rules.push(remote_set_route_rule(set, nodes, tags, chain_entry_tags));
         }
 
-        if set.strategy == RuleSetStrategy::Block {
-            dns_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
-        } else {
-            dns_rules.push(json!({
-                "rule_set": [set.id],
-                "action": "route",
-                "server": set.dns_strategy.server_tag(),
-            }));
-        }
+        push_dns_rule_set_rule(&mut dns_rules, set, rule_set_has_address_filter(set));
     }
 
     (definitions, route_rules, dns_rules)
+}
+
+/// Add the DNS-side reference for a rule-set.
+///
+/// sing-box 1.14 no longer accepts a DNS rule that directly uses a rule-set
+/// containing destination `ip_cidr` fields. Those fields describe the answer
+/// addresses, so the modern form first resolves the query with `evaluate` and
+/// then applies the rule-set with `match_response`. Domain-only sets retain the
+/// shorter form because they match the query name itself.
+fn push_dns_rule_set_rule(dns_rules: &mut Vec<Value>, set: &RuleSet, has_address_filter: bool) {
+    if has_address_filter {
+        dns_rules.push(json!({
+            "action": "evaluate",
+            "server": set.dns_strategy.server_tag(),
+        }));
+    }
+
+    if set.strategy == RuleSetStrategy::Block {
+        let mut rule = json!({ "rule_set": [set.id], "action": "reject" });
+        if has_address_filter {
+            rule["match_response"] = json!(true);
+        }
+        dns_rules.push(rule);
+    } else {
+        let mut rule = json!({
+            "rule_set": [set.id],
+            "action": "route",
+            "server": set.dns_strategy.server_tag(),
+        });
+        if has_address_filter {
+            rule["match_response"] = json!(true);
+        }
+        dns_rules.push(rule);
+    }
+}
+
+/// Detect whether the same rule-set definition is an address filter from the
+/// DNS rule engine's perspective. Route rules may still use `ip_cidr` directly;
+/// this check is only for the DNS reference emitted above.
+fn rule_set_has_address_filter(set: &RuleSet) -> bool {
+    match &set.remote {
+        None => set
+            .rules
+            .iter()
+            .any(|rule| inline_rule_is_effective(rule) && rule.rule_type == RuleType::IpCidr),
+        Some(remote) => {
+            let Some(path) = remote
+                .local_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+            else {
+                return false;
+            };
+            let Ok(bytes) = std::fs::read(path) else {
+                return false;
+            };
+            if remote.format.eq_ignore_ascii_case("binary") {
+                return crate::srs::parse(&bytes)
+                    .map(|parsed| parsed.has_ip_cidr)
+                    .unwrap_or(false);
+            }
+            serde_json::from_slice::<Value>(&bytes)
+                .map(|source| json_contains_non_empty_ip_cidr(&source))
+                .unwrap_or(false)
+        }
+    }
+}
+
+fn json_contains_non_empty_ip_cidr(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            (key == "ip_cidr" && value.as_array().is_some_and(|items| !items.is_empty()))
+                || json_contains_non_empty_ip_cidr(value)
+        }),
+        Value::Array(items) => items.iter().any(json_contains_non_empty_ip_cidr),
+        _ => false,
+    }
 }
 
 /// Whole-set route rule for a remote set. Node pins and Filter pools fall
@@ -2342,6 +2412,82 @@ mod tests {
         assert_eq!(
             dns,
             vec![json!({ "rule_set": [tag], "action": "route", "server": "dns-local" })]
+        );
+    }
+
+    #[test]
+    fn address_rule_set_uses_response_matching_for_dns_rules() {
+        let mut set = RuleSet::new_user(
+            "地址规则",
+            vec![Rule::new(
+                RuleType::IpCidr,
+                "1.1.1.0/24".into(),
+                RuleTarget::Proxy,
+                10,
+            )],
+        );
+        set.strategy = RuleSetStrategy::Proxy;
+        set.dns_strategy = crate::domain::RuleSetDnsStrategy::Remote;
+
+        let tag = set.id.clone();
+        let (definitions, routes, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            routes,
+            vec![json!({
+                "rule_set": [tag.clone()],
+                "action": "route",
+                "outbound": "proxy"
+            })]
+        );
+        assert_eq!(
+            dns,
+            vec![
+                json!({ "action": "evaluate", "server": "dns-remote" }),
+                json!({
+                    "rule_set": [tag],
+                    "match_response": true,
+                    "action": "route",
+                    "server": "dns-remote"
+                })
+            ]
+        );
+    }
+
+    #[test]
+    fn source_address_rule_set_uses_response_matching_for_dns_rules() {
+        let path = std::env::temp_dir().join(format!(
+            "satelite-test-rule-set-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            br#"{"version":1,"rules":[{"ip_cidr":["192.0.2.0/24"]}]}"#,
+        )
+        .unwrap();
+
+        let mut set = RuleSet::new_remote(
+            "地址远程规则",
+            "https://example.com/rules.json",
+            RuleTarget::Direct,
+        );
+        set.remote.as_mut().unwrap().local_path = Some(path.to_string_lossy().into_owned());
+        let tag = set.id.clone();
+        let (_, _, dns) = build_grouped_rule_sets(&[set], &[], &[]);
+
+        let _ = std::fs::remove_file(path);
+        assert_eq!(
+            dns,
+            vec![
+                json!({ "action": "evaluate", "server": "dns-remote" }),
+                json!({
+                    "rule_set": [tag],
+                    "match_response": true,
+                    "action": "route",
+                    "server": "dns-remote"
+                })
+            ]
         );
     }
 
