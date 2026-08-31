@@ -390,6 +390,11 @@ pub async fn set_core_type(
         let settings = state
             .with_store_mut(|store| {
                 store.settings.core_type = parsed.as_str().to_string();
+                // Multi-core mode hangs off the sing-box config: switching to
+                // another core auto-disables it (the running sidecar stops
+                // with the restart below). Protocol pins are kept, so
+                // switching back only needs the switch re-flipped.
+                store.settings.enforce_multi_core_scope();
                 Ok(store.settings.clone())
             })
             .map_err(|e| e.to_string())?;

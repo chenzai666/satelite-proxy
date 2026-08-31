@@ -115,6 +115,11 @@ export function NodesPage() {
   // Node ids whose last test used method "unsupported" (UDP-only protocol,
   // core not running) — shown as "start core to test" instead of "timeout".
   const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
+  // Protocols delegated to the companion Xray sidecar (from settings) —
+  // surfaced as a small badge so the egress path is visible per node.
+  const [delegatedProtocols, setDelegatedProtocols] = useState<Set<string>>(
+    new Set(),
+  );
   const [columnCount, setColumnCount] = useState(gridColumns);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
@@ -138,6 +143,15 @@ export function NodesPage() {
       setCustomRuntime(custom);
       setCurrentId(settings.current_node_id ?? null);
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
+      setDelegatedProtocols(
+        settings.multi_core_enabled
+          ? new Set(
+              (settings.protocol_cores ?? [])
+                .filter((e) => e.core === "xray")
+                .map((e) => e.protocol),
+            )
+          : new Set(),
+      );
       const offset = append ? nodes.length : 0;
       if (custom) {
         // Custom mode: read-only nodes extracted from the sing-box config,
@@ -482,8 +496,9 @@ export function NodesPage() {
               {testing && testKind === "ping" ? t("nodes.pinging") : t("nodes.pingTest")}
             </GlassButton>
           )}
-          {/* Click-test toggle: accent-tinted while enabled. Meaningless in
-              custom mode (rows are not clickable there) — hidden with ping. */}
+          {/* Click-test toggle: accent-tinted while enabled, and the label
+              itself states the behavior ("Click = test latency"). Meaningless
+              in custom mode (rows are not clickable there) — hidden with ping. */}
           {!customRuntime && (
             <GlassButton
               icon="👆"
@@ -491,7 +506,7 @@ export function NodesPage() {
               onClick={() => setClickTest((v) => !v)}
               title={t("nodes.clickTestHint")}
             >
-              {t("nodes.clickTest")}
+              {clickTest ? t("nodes.clickTestOn") : t("nodes.clickTest")}
             </GlassButton>
           )}
 
@@ -539,6 +554,14 @@ export function NodesPage() {
         <div className="banner busy" role="status">
           <span className="lat-spinner" aria-hidden />
           {t("nodes.switchingManual")}
+        </div>
+      )}
+
+      {/* Persistent mode reminder right above the list, so the changed click
+          behavior is visible without hovering anything. */}
+      {clickTest && !customRuntime && (
+        <div className="banner" role="status">
+          {t("nodes.clickTestBanner")}
         </div>
       )}
 
@@ -620,6 +643,9 @@ export function NodesPage() {
                     </td>
                     <td>
                       <code>{n.protocol}</code>
+                      {delegatedProtocols.has(n.protocol) ? (
+                        <span className="pill sidecar-tag">Xray</span>
+                      ) : null}
                     </td>
                     <td>{n.server}</td>
                     <td>{n.port}</td>
@@ -703,6 +729,9 @@ export function NodesPage() {
                     </button>
                     <div className="node-card-meta">
                       <code>{n.protocol}</code>
+                      {delegatedProtocols.has(n.protocol) ? (
+                        <span className="pill sidecar-tag">Xray</span>
+                      ) : null}
                     </div>
                   </div>
                   <div className="node-card-name" title={n.name}>

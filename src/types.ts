@@ -363,6 +363,22 @@ export interface AppSettings {
   runtime_source?: string;
   /** Which core runs: `singbox` (default) | `xray` | `mihomo`. */
   core_type?: CoreKind;
+  /** Multi-core mode master switch (sing-box main mode only): protocols
+   * pinned to a non-main core egress through a companion core process. */
+  multi_core_enabled?: boolean;
+  /** Per-protocol core routing rows (delegations only; missing protocols
+   * follow the main core). */
+  protocol_cores?: ProtocolCoreItem[];
+  /** Base loopback port for the sidecar's per-node inbounds. */
+  sidecar_port?: number;
+}
+
+/** One protocol→core row of the multi-core settings table. */
+export interface ProtocolCoreItem {
+  /** `Protocol::as_str` value, e.g. "vless". */
+  protocol: string;
+  /** `CoreKind` the protocol is pinned to (v1: "xray"). */
+  core: string;
 }
 
 /** Kernel binary kind. */
@@ -478,6 +494,11 @@ export interface ProxyStatus {
   core_memory_bytes?: number | null;
   /** Which core is active: `singbox` (default) | `xray` | `mihomo`. */
   core_type?: CoreKind | string;
+  /** True when the running core has elevated privileges (macOS: setuid-root;
+   *  Windows: UAC). */
+  core_elevated?: boolean;
+  /** Companion Xray sidecar process is running (sing-box main mode). */
+  sidecar_running?: boolean;
 }
 
 export interface MihomoProxyGroup {

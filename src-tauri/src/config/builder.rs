@@ -105,6 +105,9 @@ pub struct BuildOptions {
     /// config. `None` on other platforms/cores, where Xray accepts an
     /// arbitrary interface name.
     pub tun_interface_name: Option<String>,
+    /// Nodes routed through the companion Xray sidecar process (loopback
+    /// socks outbounds). `None`/empty = fully native config (default).
+    pub sidecar: Option<SidecarPlan>,
 }
 
 impl BuildOptions {
@@ -122,6 +125,38 @@ impl BuildOptions {
             "block" => "block",
             _ => "proxy",
         }
+    }
+}
+
+/// Nodes delegated to the Xray sidecar process (`settings.xray_sidecar_*`).
+///
+/// Each entry maps a node id to the loopback port of its dedicated sidecar
+/// inbound (`127.0.0.1:port`, one `mixed` inbound per node in the Xray
+/// config). Delegated nodes are emitted into the sing-box config as plain
+/// `socks` outbounds pointing at that port — the tag stays
+/// [`outbound_tag`], so selectors, rule pins, smart pools and the Clash API
+/// hot-switch keep working unchanged; only the egress path detours through
+/// the sidecar.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SidecarPlan {
+    /// node id → sidecar loopback inbound port.
+    pub ports: Vec<(String, u16)>,
+}
+
+impl SidecarPlan {
+    pub fn port_for(&self, node_id: &str) -> Option<u16> {
+        self.ports
+            .iter()
+            .find(|(id, _)| id == node_id)
+            .map(|(_, port)| *port)
+    }
+
+    /// All sidecar ports (deduplicated, source order).
+    pub fn port_list(&self) -> Vec<u16> {
+        let mut ports: Vec<u16> = self.ports.iter().map(|(_, p)| *p).collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
     }
 }
 
@@ -221,6 +256,27 @@ pub fn build_singbox_config_with_chain_context(
     let mut errors = Vec::new();
 
     for node in nodes {
+        // Sidecar-delegated node: keep the same tag but emit a plain socks
+        // outbound pointing at the node's dedicated sidecar inbound, so
+        // selectors / rule pins / smart pools / Clash hot-switch all keep
+        // working while the egress path detours through the Xray process.
+        // WireGuard is endpoint-shaped and chains keep native semantics —
+        // both are excluded from delegation when the plan is computed.
+        if let Some(port) = opts
+            .sidecar
+            .as_ref()
+            .and_then(|plan| plan.port_for(&node.id))
+        {
+            let tag = outbound_tag(node);
+            tags.push(tag.clone());
+            node_outbounds.push(json!({
+                "type": "socks",
+                "tag": tag,
+                "server": "127.0.0.1",
+                "server_port": port,
+            }));
+            continue;
+        }
         match node_to_outbound(node) {
             Ok((tag, outbound, extra_outbounds)) => {
                 tags.push(tag);
@@ -244,6 +300,14 @@ pub fn build_singbox_config_with_chain_context(
             "failed to map any node to outbound: {}",
             errors.join("; ")
         )));
+    }
+    // Nodes the running setup can't serve are filtered from this config —
+    // always say so, one warn per node, so "my node disappeared" has an
+    // answer in the log. They stay in the node store untouched and show up
+    // again when the core setup supports them (different core, or multi-core
+    // delegation covering their protocol).
+    for reason in &errors {
+        crate::app_log::warn("singbox_config", format!("filtered node: {reason}"));
     }
 
     let selected_tag = resolve_selected_tag(nodes, &tags, opts.current_node_id.as_deref());
@@ -1416,6 +1480,16 @@ fn node_to_outbound_tagged(
     node: &ProxyNode,
     tag_override: Option<&str>,
 ) -> AppResult<(String, Value, Vec<Value>)> {
+    // sing-box has no xhttp transport — such nodes are filtered from the
+    // generated config (with the reason logged) unless their protocol is
+    // delegated to the Xray sidecar via multi-core mode, in which case the
+    // sidecar config (config/xray.rs) renders the real xhttp outbound.
+    if matches!(node.transport, Some(Transport::Xhttp { .. })) {
+        return Err(AppError::Config(
+            "xhttp 传输 sing-box 不支持：该节点已从本次生成的配置中过滤（开启多核模式并将该协议指向 Xray，或切换 Xray 内核即可使用）"
+                .into(),
+        ));
+    }
     let tag = tag_override
         .map(ToString::to_string)
         .unwrap_or_else(|| outbound_tag(node));
@@ -1961,6 +2035,9 @@ fn transport_to_json(t: &Transport) -> Option<Value> {
             }
             Some(o)
         }
+        // Unreachable in practice: node_to_outbound_tagged rejects xhttp
+        // nodes before this mapping runs (sing-box has no such transport).
+        Transport::Xhttp { .. } => None,
     }
 }
 
@@ -2128,6 +2205,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -2616,6 +2694,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -2729,6 +2808,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -2774,6 +2854,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -2809,6 +2890,8 @@ mod tests {
             log_level: "info".into(),
             rules: vec![],
             rule_sets: vec![],
+            pools: vec![],
+            chains: vec![],
             tun_enabled: false,
             tun_stack: "mixed".into(),
             dns: DnsSettings::default(),
@@ -2822,6 +2905,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
         let built = build_singbox_config(&nodes, &options).unwrap();
         assert_eq!(built.outbound_tags.len(), 1);
@@ -2938,6 +3022,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -2979,6 +3064,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3079,6 +3165,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3144,6 +3231,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3190,6 +3278,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3226,6 +3315,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3292,6 +3382,7 @@ mod tests {
             bypass_lan,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3448,6 +3539,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap_err();
@@ -3482,6 +3574,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3517,6 +3610,7 @@ mod tests {
                     bypass_lan: false,
                     direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                     tun_interface_name: None,
+                    sidecar: None,
                 },
             )
             .unwrap();
@@ -3558,6 +3652,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3605,6 +3700,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3653,6 +3749,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3705,6 +3802,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                sidecar: None,
             },
         )
         .unwrap();
@@ -3818,6 +3916,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         };
         let built =
             build_singbox_config_with_chain_context(&nodes, &options, true, &[], &[chain.clone()])
@@ -3843,5 +3942,104 @@ mod tests {
             .find(|item| item.get("domain_suffix") == Some(&json!(["example.com"])))
             .expect("chain route");
         assert_eq!(route["outbound"], json!(h1));
+    }
+
+    // ---- Xray sidecar delegation -----------------------------------------
+
+    fn sidecar_opts(plan: Option<SidecarPlan>) -> BuildOptions {
+        BuildOptions {
+            mixed_port: 2080,
+            allow_lan: false,
+            api_port: 19090,
+            extra_inbounds: vec![],
+            api_secret: "test".into(),
+            current_node_id: None,
+            log_level: "info".into(),
+            rules: vec![],
+            rule_sets: vec![],
+            pools: vec![],
+            chains: vec![],
+            tun_enabled: false,
+            tun_stack: "mixed".into(),
+            dns: DnsSettings::default(),
+            outbound_mode: OutboundMode::Rule,
+            route_final: "proxy".into(),
+            auto_select: crate::domain::AutoSelectMode::Off,
+            probe_url: "https://www.gstatic.com/generate_204".into(),
+            find_process: true,
+            tun_ipv6: false,
+            block_quic: false,
+            bypass_lan: false,
+            tun_interface_name: None,
+            sidecar: plan,
+        }
+    }
+
+    #[test]
+    fn sidecar_delegated_node_becomes_socks_outbound_with_same_tag() {
+        let native = sample_node("n2", "HK-native");
+        let delegated = sample_node("n1", "HK-xray");
+        let nodes = vec![native, delegated];
+        let plan = SidecarPlan {
+            ports: vec![("n1".into(), 20890)],
+        };
+        let built = build_singbox_config(&nodes, &sidecar_opts(Some(plan))).unwrap();
+        let tag = outbound_tag(&nodes[1]);
+        let outbounds = built.value["outbounds"].as_array().unwrap();
+
+        // Delegated node: plain socks outbound pointing at its sidecar port.
+        let out = outbounds
+            .iter()
+            .find(|o| o["tag"] == json!(tag))
+            .expect("delegated tag present");
+        assert_eq!(out["type"], "socks");
+        assert_eq!(out["server"], "127.0.0.1");
+        assert_eq!(out["server_port"], 20890);
+
+        // Native node untouched.
+        let native_tag = outbound_tag(&nodes[0]);
+        let native_out = outbounds
+            .iter()
+            .find(|o| o["tag"] == json!(native_tag))
+            .unwrap();
+        assert_eq!(native_out["type"], "shadowsocks");
+
+        // Selector keeps both tags — hot switching keeps working.
+        let selector = outbounds
+            .iter()
+            .find(|o| o["tag"] == json!("proxy"))
+            .unwrap();
+        let members = selector["outbounds"].as_array().unwrap();
+        assert!(members.contains(&json!(tag)));
+        assert!(members.contains(&json!(native_tag)));
+        assert_eq!(built.selected_tag, native_tag, "first node stays selected");
+    }
+
+    #[test]
+    fn sidecar_plan_none_keeps_everything_native() {
+        let nodes = vec![sample_node("n1", "A")];
+        let built = build_singbox_config(&nodes, &sidecar_opts(None)).unwrap();
+        let tag = outbound_tag(&nodes[0]);
+        let out = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == json!(tag))
+            .unwrap();
+        assert_eq!(out["type"], "shadowsocks");
+    }
+
+    #[test]
+    fn xhttp_node_never_generates_a_native_singbox_outbound() {
+        // sing-box has no xhttp transport: the node must be rejected with the
+        // delegation hint, never silently downgraded to another transport.
+        let mut n = sample_node("n1", "A");
+        n.transport = Some(Transport::Xhttp {
+            path: Some("/x".into()),
+            host: None,
+            mode: None,
+        });
+        let err = build_singbox_config(&[n], &sidecar_opts(None)).unwrap_err();
+        assert!(err.to_string().contains("xhttp"), "got: {err}");
     }
 }

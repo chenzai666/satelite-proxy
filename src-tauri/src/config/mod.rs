@@ -9,10 +9,10 @@ mod write;
 mod xray;
 
 pub use builder::{
-    apply_udp_node_compatibility, build_singbox_config_with_chain_context,
+    apply_udp_node_compatibility, build_singbox_config, build_singbox_config_with_chain_context,
     build_singbox_config_with_connection_policy, chain_hop_outbound_tag, generate_api_secret,
     outbound_tag, rule_set_is_empty_for_config, smart_pool_nodes, subscription_proxy_port,
-    BuildOptions, DIAG_INBOUND_PORT, DIAG_INBOUND_TAG, DIAG_SELECTOR_TAG,
+    BuildOptions, SidecarPlan, DIAG_INBOUND_PORT, DIAG_INBOUND_TAG, DIAG_SELECTOR_TAG,
     SUBSCRIPTION_PROXY_USERNAME,
 };
 pub use custom::inspect_singbox_config;
@@ -23,6 +23,6 @@ pub use punycode::to_ascii_domain;
 pub use rule_files::{dump_rule_set_files, remove_rule_set_files};
 pub use write::{
     active_config_path, active_yaml_config_path, remove_custom_config, write_active_config,
-    write_active_yaml_config, write_custom_config,
+    write_active_yaml_config, write_custom_config, write_xray_sidecar_config,
 };
-pub use xray::build_xray_config;
+pub use xray::{build_xray_config, build_xray_sidecar_config};

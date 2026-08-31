@@ -337,7 +337,7 @@ fn parse_vmess(
     let security = get_str(map, &["cipher", "security"]).unwrap_or_else(|| "auto".into());
 
     let tls = parse_tls_common(map, false);
-    let transport = parse_transport(map);
+    let transport = parse_transport(map)?;
 
     Ok((
         tls,
@@ -366,7 +366,7 @@ fn parse_vless(
         }
     }
 
-    let transport = parse_transport(map);
+    let transport = parse_transport(map)?;
 
     Ok((
         tls,
@@ -395,7 +395,7 @@ fn parse_trojan(
         tls.server_name = get_str(map, &["sni", "servername", "server-name"]);
     }
 
-    let transport = parse_transport(map);
+    let transport = parse_transport(map)?;
 
     Ok((Some(tls), transport, ProtocolConfig::Trojan { password }))
 }
@@ -832,9 +832,13 @@ fn normalize_utls_fingerprint(raw: &str) -> Option<String> {
     }
 }
 
-fn parse_transport(map: &serde_yaml::Mapping) -> Option<Transport> {
+/// Parse the clash `network` field into a [`Transport`]. Unknown networks
+/// (xhttp / splithttp / kcp …) are a hard error — the node gets skipped with
+/// the reason — because silently degrading them to plain Tcp used to produce
+/// nodes that parse fine but can never connect.
+fn parse_transport(map: &serde_yaml::Mapping) -> Result<Option<Transport>, String> {
     let network = get_str(map, &["network", "net"]).unwrap_or_else(|| "tcp".into());
-    match network.to_ascii_lowercase().as_str() {
+    let transport = match network.to_ascii_lowercase().as_str() {
         "ws" | "websocket" => {
             let opts = get_map(map, &["ws-opts", "ws_opts"]);
             let path = opts
@@ -895,9 +899,22 @@ fn parse_transport(map: &serde_yaml::Mapping) -> Option<Transport> {
             let host = opts.and_then(|m| get_str(m, &["host"]));
             Some(Transport::HttpUpgrade { path, host })
         }
+        // Xray-only transport; carried in the model so multi-core mode can
+        // delegate such nodes to the Xray sidecar (sing-box rejects them).
+        "xhttp" | "splithttp" => {
+            let opts = get_map(map, &["xhttp-opts", "xhttp_opts", "splithttp-opts"]);
+            Some(Transport::Xhttp {
+                path: opts.and_then(|m| get_str(m, &["path"])),
+                host: opts
+                    .and_then(|m| get_str(m, &["host"]))
+                    .or_else(|| opts.and_then(|m| get_str(m, &["Host"]))),
+                mode: opts.and_then(|m| get_str(m, &["mode"])),
+            })
+        }
         "tcp" | "" => Some(Transport::Tcp),
-        _ => Some(Transport::Tcp),
-    }
+        other => return Err(format!("unsupported transport: {other}")),
+    };
+    Ok(transport)
 }
 
 #[cfg(test)]
@@ -986,7 +1003,6 @@ proxies:
         assert_eq!(result.nodes.len(), 7);
         assert_eq!(result.skipped.len(), 1);
         assert!(result.skipped[0].reason.contains("unsupported type: ssr"));
-
         let ss = result.nodes.iter().find(|n| n.name == "SS-HK").expect("ss");
         assert_eq!(ss.protocol, Protocol::Shadowsocks);
         assert_eq!(ss.server, "ss.example.com");
@@ -1032,6 +1048,70 @@ proxies:
         }
 
         assert!(result.nodes.iter().all(|n| !n.id.is_empty()));
+    }
+
+    #[test]
+    fn unknown_transport_skips_node_instead_of_degrading_to_tcp() {
+        // kcp has no representation in the Transport model — it must be an
+        // explicit skip, never a silent downgrade to plain Tcp (the old
+        // catch-all behavior that produced nodes which could never connect).
+        // xhttp IS representable now (see parses_xhttp_network_with_opts).
+        let yaml = r#"
+proxies:
+  - name: "VM-KCP"
+    type: vmess
+    server: vm.example.com
+    port: 443
+    uuid: 11111111-1111-1111-1111-111111111111
+    alterId: 0
+    cipher: auto
+    network: kcp
+  - name: "VL-OK"
+    type: vless
+    server: vl.example.com
+    port: 443
+    uuid: 22222222-2222-2222-2222-222222222222
+    tls: true
+    network: tcp
+"#;
+        let result = parse_clash_yaml(yaml).expect("parse ok");
+        assert_eq!(result.nodes.len(), 1);
+        assert_eq!(result.nodes[0].name, "VL-OK");
+        assert_eq!(result.skipped.len(), 1);
+        assert_eq!(result.skipped[0].name, Some("VM-KCP".into()));
+        assert!(result.skipped[0]
+            .reason
+            .contains("unsupported transport: kcp"));
+    }
+
+    #[test]
+    fn parses_xhttp_network_with_opts() {
+        // xhttp IS representable (Xray-only) — must parse into the model,
+        // never degrade to Tcp.
+        let yaml = r#"
+proxies:
+  - name: "VL-XHTTP"
+    type: vless
+    server: vl.example.com
+    port: 443
+    uuid: 22222222-2222-2222-2222-222222222222
+    tls: true
+    network: xhttp
+    xhttp-opts:
+      path: /upload
+      host: cdn.example.com
+      mode: stream-up
+"#;
+        let result = parse_clash_yaml(yaml).expect("parse ok");
+        assert_eq!(result.nodes.len(), 1);
+        match &result.nodes[0].transport {
+            Some(Transport::Xhttp { path, host, mode }) => {
+                assert_eq!(path.as_deref(), Some("/upload"));
+                assert_eq!(host.as_deref(), Some("cdn.example.com"));
+                assert_eq!(mode.as_deref(), Some("stream-up"));
+            }
+            other => panic!("expected xhttp transport, got {other:?}"),
+        }
     }
 
     #[test]

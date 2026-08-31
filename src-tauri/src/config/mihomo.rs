@@ -1320,6 +1320,9 @@ fn apply_transport(m: &mut Mapping, node: &ProxyNode) {
                 m.insert(str_yaml("httpupgrade-opts"), Yaml::Mapping(o));
             }
         }
+        // Unreachable in practice: Mihomo.supports_node rejects xhttp nodes
+        // (kept Xray-only in this app), so they never reach the generator.
+        Transport::Xhttp { .. } => {}
     }
 }
 
@@ -1418,6 +1421,7 @@ mod tests {
             bypass_lan: true,
             direct_ip_strategy: crate::domain::DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            sidecar: None,
         }
     }
 

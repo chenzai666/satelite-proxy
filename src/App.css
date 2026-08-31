@@ -1734,6 +1734,65 @@ tr.row-active {
    are compact .kernel-row lists): a mark tile with the name/tagline on the
    left, the big current version on the right, then a stats/actions grid and
    the quiet project link along the bottom hairline. */
+/* —— Multi-core mode tab (sidecar) ——
+   One enable row (title + running pill + switch) and, when enabled, the
+   protocol→core table + base-port field. */
+
+.sidecar-card {
+  width: 100%;
+  max-width: 48rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem 1.05rem;
+}
+
+.sidecar-card .via-proxy-row {
+  align-items: center;
+}
+
+.sidecar-pill {
+  margin-left: 0.5rem;
+}
+
+.sidecar-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.18));
+  padding-top: 0.7rem;
+}
+
+.sidecar-warn {
+  color: var(--warning);
+}
+
+/* Protocol→core table: protocol column + per-row core select. */
+.multicore-table td {
+  vertical-align: middle;
+}
+
+.multicore-table .sidecar-tag {
+  margin-left: 0.45rem;
+  font-size: 0.62rem;
+  padding: 0.05rem 0.4rem;
+}
+
+.multicore-table .solid-select {
+  width: 100%;
+  min-width: 9rem;
+}
+
+/* Delegated-protocol badge on node rows (list + grid). */
+.sidecar-tag {
+  margin-left: 0.35rem;
+  font-size: 0.62rem;
+  padding: 0.05rem 0.4rem;
+}
+
+/* —— Version tab: app bar (full width under the kernel cards) ——
+   Two compact lines: identity + versions + actions, then a quiet meta strip
+   (last check · platform · stack · exe path) and the link row. */
 
 .ver-hero {
   display: flex;
@@ -7121,28 +7180,42 @@ select:not([size]):disabled {
   white-space: nowrap;
 }
 
-/* —— Traffic page core-log tab (Xray mode) ——
-   Reuses the Logs page toolbar/panel anatomy. Core lines carry no separate
-   timestamp/target columns (both live inside the message text), so the row
-   grid drops to level + message. */
-.core-log-tab {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.core-log-tab .logs-panel {
-  flex: 1 1 auto;
-}
+/* —— Core log lines (Logs page kernel-log view) ——
+   Core lines carry no separate timestamp/target columns (both live inside
+   the message text), so the row grid drops to level + message. */
 
 .log-line.core-log-line {
   grid-template-columns: 52px 1fr;
 }
 
-.core-log-count {
-  flex: none;
-  font-size: 12px;
+/* Running indicator inside the kernel log tabs (green = process alive). */
+.seg-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  background: var(--muted);
+  opacity: 0.4;
+}
+
+.seg-dot.on {
+  background: var(--success);
+  opacity: 1;
+  box-shadow: 0 0 6px var(--success);
+}
+
+/* Logs page kernel-log view: core picker + source file path foot line. */
+.logs-toolbar .solid-select {
+  min-width: 7.5rem;
+}
+
+.logs-core-path {
+  margin: 0.4rem 0.2rem 0;
+  font-size: 11px;
+  word-break: break-all;
+  user-select: text;
 }
 
 button.active-soft {

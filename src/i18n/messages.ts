@@ -181,6 +181,9 @@ const en = {
   // logs
   "logs.title": "Logs",
   "logs.desc": "Current-session diagnostics (smart switch, core, settings). Cleared when the proxy stops; not sing-box access logs.",
+  "logs.tabApp": "App log",
+  "logs.coreDesc": "Raw kernel stdout (sing-box / Xray / mihomo). Under multi-core mode each core has its own file — pick one to read.",
+  "logs.coreEmpty": "No core log (core not running, or nothing at this level).",
   "logs.level": "Level",
   "logs.minLevel": "Minimum level",
   "logs.filter": "Filter message / target…",
@@ -333,6 +336,25 @@ const en = {
   "settings.coreSwitchHint": "switch",
   "settings.coreVersionTitle": "Kernel",
   "settings.appVersionTitle": "App version · satelite-proxy",
+  "settings.tabMultiCore": "Multi-Core",
+  "settings.hintMultiCore": "Route node protocols to different cores",
+  "settings.multiCore": "Multi-core mode",
+  "settings.multiCoreRunning": "sidecar running",
+  "settings.multiCoreIdle": "not running",
+  "settings.multiCoreDesc":
+    "Runs a companion core beside sing-box: nodes of the protocols pinned below egress through that core via loopback socks. Hot switching, latency tests and the connections page keep working. Generated mode + sing-box core only; changes restart a running core.",
+  "settings.multiCoreProtocolCol": "Protocol",
+  "settings.multiCoreCoreCol": "Core",
+  "settings.multiCoreFollowMain": "Follow main core",
+  "settings.multiCoreTableHint":
+    "Only Xray-capable protocols are listed; nodes whose transport combination Xray can't speak fall back to native sing-box outbounds automatically.",
+  "settings.multiCoreNoProtocols":
+    "No protocol is pinned to Xray yet — the sidecar process starts once you route at least one protocol below.",
+  "settings.multiCorePort": "Sidecar base port",
+  "settings.multiCorePortHint":
+    "Each delegated node occupies one consecutive 127.0.0.1 port from this base.",
+  "settings.multiCoreSingboxOnly":
+    "Multi-core mode requires the sing-box main core; switching to another core turns it off.",
   "settings.appLatest": "Latest release",
   "settings.appUpToDate": "up to date",
   "settings.appTagline": "sing-box desktop proxy",
@@ -416,8 +438,10 @@ const en = {
   "nodes.pinging": "Pinging…",
   "nodes.pingUnsupported": "Protocol doesn't support ping",
   "nodes.clickTest": "Click test",
+  "nodes.clickTestOn": "Click = test",
   "nodes.clickTestHint": "When enabled, clicking a node tests its latency instead of selecting it",
   "nodes.clickTestLatency": "Click to test latency",
+  "nodes.clickTestBanner": "Click-test is on — clicking a node tests its latency, it will not switch the selection.",
   "nodes.testing": "Testing…",
   "nodes.empty": "No nodes. Import a profile first.",
   "nodes.customReadOnly": "Custom mode · nodes below are extracted read-only from the sing-box config",
@@ -458,13 +482,8 @@ const en = {
   // traffic (active + closed)
   "traffic.title": "Traffic",
   "traffic.desc": "Active and closed connections",
-  "traffic.xrayLogTitle": "Xray core log",
-  "traffic.xrayLogDesc":
-    "Xray exposes no per-connection API; the core log carries accepted connections and routing decisions.",
-  "traffic.xrayLogToggle": "View core log",
-  "traffic.xrayLogOff": "Turn on the switch above to view the Xray core log.",
-  "traffic.xrayLogEmpty":
-    "No core output yet — start the Xray core and its log appears here.",
+  "traffic.xrayHint":
+    "Xray exposes no per-connection data — raw Xray output lives in Logs → Core log.",
   "traffic.tabLive": "Active",
   "traffic.tabHistory": "Closed",
   "traffic.tabFailures": "Failed",
@@ -1039,6 +1058,9 @@ const zh: Record<MessageKey, string> = {
 
   "logs.title": "日志",
   "logs.desc": "本次运行的应用内部诊断日志（智能切换、内核、设置等）；停止代理后自动清空，不是 sing-box 访问日志。",
+  "logs.tabApp": "应用日志",
+  "logs.coreDesc": "内核原始输出（sing-box / Xray / mihomo）。多核模式下每个内核各写一份日志，切换查看。",
+  "logs.coreEmpty": "暂无内核日志（内核未运行，或当前级别无输出）。",
   "logs.level": "级别",
   "logs.minLevel": "最低级别",
   "logs.filter": "过滤消息 / 模块…",
@@ -1182,6 +1204,25 @@ const zh: Record<MessageKey, string> = {
   "settings.coreSwitchHint": "点击切换",
   "settings.coreVersionTitle": "内核",
   "settings.appVersionTitle": "软件版本 · satelite-proxy",
+  "settings.tabMultiCore": "多核模式",
+  "settings.hintMultiCore": "按协议把节点交给不同内核转发",
+  "settings.multiCore": "多核模式",
+  "settings.multiCoreRunning": "副进程运行中",
+  "settings.multiCoreIdle": "未运行",
+  "settings.multiCoreDesc":
+    "在 sing-box 主内核旁启动一个副内核：下表中指定协议的节点经本地回环 socks 交给该内核转发，热切换、测速、连接页均不受影响。仅生成配置 + sing-box 主内核模式生效，变更后自动重启。",
+  "settings.multiCoreProtocolCol": "协议",
+  "settings.multiCoreCoreCol": "内核",
+  "settings.multiCoreFollowMain": "跟随主内核",
+  "settings.multiCoreTableHint":
+    "仅列出 Xray 支持的协议；节点传输组合 Xray 不支持时自动回退 sing-box 原生出站。",
+  "settings.multiCoreNoProtocols":
+    "尚未把任何协议钉到 Xray——至少在下方把一个协议选为 Xray 后，副进程才会启动。",
+  "settings.multiCorePort": "副进程端口基址",
+  "settings.multiCorePortHint":
+    "每个委托节点从此基址起占用一个连续的 127.0.0.1 端口。",
+  "settings.multiCoreSingboxOnly":
+    "多核模式仅支持 sing-box 主内核；切换到其他内核时会自动关闭。",
   "settings.appLatest": "最新版本",
   "settings.appUpToDate": "已是最新",
   "settings.appTagline": "基于 sing-box 的桌面代理",
@@ -1263,8 +1304,10 @@ const zh: Record<MessageKey, string> = {
   "nodes.pinging": "Ping 中…",
   "nodes.pingUnsupported": "协议不支持 Ping",
   "nodes.clickTest": "点击测试",
+  "nodes.clickTestOn": "点击 = 测延迟",
   "nodes.clickTestHint": "启用后，点击节点改为测试该节点延迟，而不再选用",
   "nodes.clickTestLatency": "点击测试延迟",
+  "nodes.clickTestBanner": "点击测试已开启：点击任意节点即测该节点延迟，不会切换选中节点。",
   "nodes.testing": "测试中…",
   "nodes.empty": "暂无节点，请先导入配置",
   "nodes.customReadOnly": "自配置模式 · 以下节点从该 sing-box 配置只读提取",
@@ -1303,12 +1346,8 @@ const zh: Record<MessageKey, string> = {
 
   "traffic.title": "流量",
   "traffic.desc": "连接中与已关闭的连接记录",
-  "traffic.xrayLogTitle": "Xray 内核日志",
-  "traffic.xrayLogDesc":
-    "Xray 无逐连接数据接口，内核日志记录了连接建立与路由决策。",
-  "traffic.xrayLogToggle": "查看内核日志",
-  "traffic.xrayLogOff": "打开右上角开关查看 Xray 内核日志。",
-  "traffic.xrayLogEmpty": "暂无内核输出——启动 Xray 后运行日志会显示在这里。",
+  "traffic.xrayHint":
+    "Xray 无逐连接数据——Xray 运行日志请到「日志 → 内核日志」查看。",
   "traffic.tabLive": "连接中",
   "traffic.tabHistory": "已关闭",
   "traffic.tabFailures": "失败",

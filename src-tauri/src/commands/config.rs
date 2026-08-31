@@ -96,6 +96,11 @@ pub fn update_settings(
     auto_select: Option<String>, // off | smart | kernel
     route_final: Option<String>, // proxy | direct | block (Rule mode)
     find_process: Option<bool>,
+    multi_core_enabled: Option<bool>,
+    // Per-protocol core routing rows. Only delegations are stored (v1:
+    // core == "xray"); unknown protocols/cores are dropped silently.
+    protocol_cores: Option<Vec<crate::domain::ProtocolCoreItem>>,
+    sidecar_port: Option<u16>,
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
     let mut auto_select_changed: Option<(
@@ -107,6 +112,7 @@ pub fn update_settings(
     let mut bypass_lan_changed = false;
     let mut direct_ip_strategy_changed = false;
     let mut close_connections_changed = false;
+    let mut multi_core_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -331,6 +337,51 @@ pub fn update_settings(
                     ),
                 );
             }
+            // —— Multi-core mode (sing-box main mode) ——
+            if let Some(v) = multi_core_enabled {
+                // Defense in depth for a stale UI: the mode only exists under
+                // the sing-box main core (set_core_type auto-disables it on
+                // switch; here we refuse to re-enable it under another core).
+                if v && !store.settings.multi_core_available() {
+                    return Err(AppError::Config("多核模式仅支持 sing-box 主内核".into()));
+                }
+                if store.settings.multi_core_enabled != v {
+                    multi_core_changed = true;
+                    store.settings.multi_core_enabled = v;
+                }
+            }
+            if let Some(list) = protocol_cores {
+                // Normalize: trim + lowercase both sides, dedupe by protocol
+                // (first wins), keep only real delegations. Unknown values are
+                // harmless (never match a node) — the build-time plan
+                // re-checks each node against the sidecar core support anyway.
+                let mut seen = std::collections::HashSet::new();
+                let cleaned: Vec<crate::domain::ProtocolCoreItem> = list
+                    .iter()
+                    .map(|e| crate::domain::ProtocolCoreItem {
+                        protocol: e.protocol.trim().to_ascii_lowercase(),
+                        core: e.core.trim().to_ascii_lowercase(),
+                    })
+                    .filter(|e| {
+                        !e.protocol.is_empty()
+                            && e.core == crate::core::CoreKind::Xray.as_str()
+                            && seen.insert(e.protocol.clone())
+                    })
+                    .collect();
+                if cleaned != store.settings.protocol_cores {
+                    multi_core_changed = true;
+                    store.settings.protocol_cores = cleaned;
+                }
+            }
+            if let Some(p) = sidecar_port {
+                if p == 0 {
+                    return Err(AppError::Config("副进程端口无效".into()));
+                }
+                if store.settings.sidecar_port != p {
+                    multi_core_changed = true;
+                    store.settings.sidecar_port = p;
+                }
+            }
             Ok(store.settings.clone())
         })
         .map_err(|e| e.to_string())?;
@@ -348,6 +399,7 @@ pub fn update_settings(
         || bypass_lan_changed
         || direct_ip_strategy_changed
         || close_connections_changed
+        || multi_core_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -816,6 +868,9 @@ pub async fn generate_singbox_config(
     let worker_secret = secret.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
+        // Mirror the runtime's delegation plan so the written config matches
+        // what a start would generate (None in mihomo/Xray main modes).
+        let sidecar = crate::runtime::compute_sidecar_plan(&settings, &chains, &nodes);
         let opts = BuildOptions {
             mixed_port: settings.mixed_port,
             allow_lan: settings.allow_lan,
@@ -839,6 +894,7 @@ pub async fn generate_singbox_config(
             bypass_lan: settings.bypass_lan,
             direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
+            sidecar,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
@@ -943,6 +999,9 @@ pub async fn preview_singbox_config(
     };
     tauri::async_runtime::spawn_blocking(move || {
         apply_udp_node_compatibility(&mut nodes, settings.udp_tls_compat);
+        // Mirror the runtime's delegation plan so the preview matches what a
+        // start would actually generate (None in mihomo/Xray main modes).
+        let sidecar = crate::runtime::compute_sidecar_plan(&settings, &chains, &nodes);
         let opts = BuildOptions {
             mixed_port: settings.mixed_port,
             allow_lan: settings.allow_lan,
@@ -966,6 +1025,7 @@ pub async fn preview_singbox_config(
             bypass_lan: settings.bypass_lan,
             direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
+            sidecar,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
