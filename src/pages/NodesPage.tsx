@@ -8,6 +8,7 @@ import {
   listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
+  pingNodesLatency,
   setCurrentNode,
   testCustomNodesLatency,
   testNodesLatency,
@@ -42,18 +43,23 @@ function LatencyDisplay({
   latencyAt,
   testing,
   unsupported,
+  unsupportedLabel,
 }: {
   ms?: number | null;
   latencyAt?: number | null;
   testing: boolean;
   unsupported?: boolean;
+  /** Overrides the default "start core" note — e.g. after a ping test the
+      QUIC-only note applies instead (the core isn't involved at all). */
+  unsupportedLabel?: string;
 }) {
   const { t } = useI18n();
   if (testing) {
     return <span className="lat-spinner" aria-label="测试中" />;
   }
   if (unsupported) {
-    return <span className="lat lat-none" title={t("nodes.latencyNeedsCore")}>{t("nodes.latencyNeedsCore")}</span>;
+    const label = unsupportedLabel ?? t("nodes.latencyNeedsCore");
+    return <span className="lat lat-none" title={label}>{label}</span>;
   }
   if (ms != null && ms >= 0) {
     return (
@@ -99,6 +105,9 @@ export function NodesPage() {
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  // Which probe the current/last run used — "real" rides the kernel's proxy
+  // path, "ping" is direct TCP; drives button labels and the unsupported note.
+  const [testKind, setTestKind] = useState<"real" | "ping">("real");
   // Node ids whose last test used method "unsupported" (UDP-only protocol,
   // core not running) — shown as "start core to test" instead of "timeout".
   const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
@@ -209,9 +218,10 @@ export function NodesPage() {
     }
   }
 
-  async function onTestNodes(ids: string[]) {
+  async function onTestNodes(ids: string[], kind: "real" | "ping" = "real") {
     if (testing || ids.length === 0) return;
     setTesting(true);
+    setTestKind(kind);
     setError(null);
     // no top banner / completion message
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
@@ -229,9 +239,13 @@ export function NodesPage() {
     );
 
     try {
+      // Custom mode can't map into the running config, so both probes are
+      // the same direct-TCP path there.
       const batch = customRuntime
         ? await testCustomNodesLatency(3000)
-        : await testNodesLatency(ids, 3000);
+        : kind === "ping"
+          ? await pingNodesLatency(ids, 3000)
+          : await testNodesLatency(ids, 3000);
       const map = new Map(batch.results.map((r) => [r.id, r]));
       setUnsupportedIds(
         new Set(batch.results.filter((r) => r.method === "unsupported").map((r) => r.id)),
@@ -270,9 +284,9 @@ export function NodesPage() {
     }
   }
 
-  async function onTestLatency() {
+  async function onTestLatency(kind: "real" | "ping" = "real") {
     const ids = customRuntime ? nodes.map((n) => n.id) : await listNodeIds(query);
-    await onTestNodes(ids);
+    await onTestNodes(ids, kind);
   }
 
   function toggleSelected(id: string) {
@@ -348,6 +362,9 @@ export function NodesPage() {
     }
     setEditNode(node);
   }
+  // After a ping run, "unsupported" means QUIC-only (unpingable), not "core
+  // stopped" — swap the cell note accordingly.
+  const pingNote = testKind === "ping" ? t("nodes.pingUnsupported") : undefined;
 
   return (
     <div className="page nodes-page">
@@ -398,11 +415,23 @@ export function NodesPage() {
             variant="primary"
             icon="⚡"
             disabled={testing || displayed.length === 0}
-            onClick={() => void onTestLatency()}
-            title={t("nodes.testLatency")}
+            onClick={() => void onTestLatency("real")}
+            title={t("nodes.testRealLatencyHint")}
           >
-            {testing ? t("nodes.testing") : t("nodes.testLatency")}
+            {testing && testKind === "real" ? t("nodes.testing") : t("nodes.testRealLatency")}
           </GlassButton>
+          {/* Hidden in custom mode — there both probes take the same
+              direct-TCP path (extracted nodes have no kernel mapping). */}
+          {!customRuntime && (
+            <GlassButton
+              icon="📶"
+              disabled={testing || displayed.length === 0}
+              onClick={() => void onTestLatency("ping")}
+              title={t("nodes.pingTestHint")}
+            >
+              {testing && testKind === "ping" ? t("nodes.pinging") : t("nodes.pingTest")}
+            </GlassButton>
+          )}
 
           <GlassSeg
             value={viewMode}
@@ -534,7 +563,7 @@ export function NodesPage() {
                         disabled={testing || customRuntime || batchBusy}
                         onClick={(event) => {
                           event.stopPropagation();
-                          void onTestNodes([n.id]);
+                          void onTestNodes([n.id], "real");
                         }}
                       >
                         <LatencyDisplay
@@ -542,6 +571,7 @@ export function NodesPage() {
                           latencyAt={n.latency_at}
                           testing={isTesting}
                           unsupported={unsupportedIds.has(n.id)}
+                          unsupportedLabel={pingNote}
                         />
                       </button>
                     </td>
@@ -615,7 +645,7 @@ export function NodesPage() {
                       disabled={testing || customRuntime || batchBusy}
                       onClick={(event) => {
                         event.stopPropagation();
-                        void onTestNodes([n.id]);
+                        void onTestNodes([n.id], "real");
                       }}
                     >
                       <LatencyDisplay
@@ -623,6 +653,7 @@ export function NodesPage() {
                         latencyAt={n.latency_at}
                         testing={isTesting}
                         unsupported={unsupportedIds.has(n.id)}
+                        unsupportedLabel={pingNote}
                       />
                     </button>
                   </div>

@@ -9,21 +9,35 @@ use crate::subscription::yaml_util::{
     as_mapping, get_bool, get_map, get_str, get_str_list, get_u16, get_u32, map_to_string_map,
     value_to_string,
 };
+use serde::Deserialize as _;
 use serde_yaml::Value;
 
 /// Parse a full Clash config document or a bare proxies list.
+///
+/// Some providers concatenate several Clash documents into one payload
+/// (separated by `---`). `serde_yaml::from_str` rejects multi-document input,
+/// so iterate every document with the `Deserializer` and merge all `proxies`
+/// lists in document order.
 pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
     let content = content.trim();
     if content.is_empty() {
         return Err(AppError::EmptySubscription);
     }
 
-    let root: Value = serde_yaml::from_str(content)
-        .map_err(|e| AppError::SubscriptionParse(format!("invalid yaml: {e}")))?;
+    let mut proxies: Vec<Value> = Vec::new();
+    for document in serde_yaml::Deserializer::from_str(content) {
+        let root = Value::deserialize(document)
+            .map_err(|e| AppError::SubscriptionParse(format!("invalid yaml: {e}")))?;
+        if let Some(list) = extract_proxies_seq(&root) {
+            proxies.extend(list.iter().cloned());
+        }
+    }
 
-    let proxies = extract_proxies_seq(&root).ok_or_else(|| {
-        AppError::SubscriptionParse("no `proxies` list found in clash yaml".into())
-    })?;
+    if proxies.is_empty() {
+        return Err(AppError::SubscriptionParse(
+            "no `proxies` list found in clash yaml".into(),
+        ));
+    }
     crate::subscription::ensure_entry_limit(proxies.len())?;
 
     let mut nodes = Vec::new();
@@ -1051,6 +1065,47 @@ proxies:
   cipher: aes-128-gcm
   password: p
 "#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(result.nodes.len(), 1);
+    }
+
+    // Some providers concatenate several Clash documents into one payload
+    // (`---` separators). serde_yaml's `from_str` used to reject that with
+    // "deserializing from YAML containing more than one document is not
+    // supported"; the proxies lists of all documents must be merged instead,
+    // and documents without a `proxies` list are skipped.
+    #[test]
+    fn merges_multi_document_clash_yaml() {
+        let yaml = r#"
+proxies:
+  - name: "Doc1-SS"
+    type: ss
+    server: a.com
+    port: 1
+    cipher: aes-256-gcm
+    password: p
+---
+mixed-port: 7890
+mode: rule
+---
+proxies:
+  - name: "Doc3-Trojan"
+    type: trojan
+    server: b.com
+    port: 443
+    password: q
+"#;
+        let result = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(result.nodes.len(), 2);
+        assert_eq!(result.nodes[0].name, "Doc1-SS");
+        assert_eq!(result.nodes[1].name, "Doc3-Trojan");
+    }
+
+    // A single document with a leading `---` marker (the common form emitted
+    // by exporters) must keep parsing as before.
+    #[test]
+    fn parses_single_document_with_leading_marker() {
+        let yaml = "---\nproxies:\n  - name: only\n    type: ss\n    server: a.com\n    port: 1\n    cipher: aes-128-gcm\n    password: p\n";
         let result = parse_clash_yaml(yaml).unwrap();
         assert_eq!(result.nodes.len(), 1);
     }

@@ -541,6 +541,18 @@ export function testNodesLatency(ids?: string[] | null, timeoutMs?: number | nul
   return invoke<LatencyBatchResult>("test_nodes_latency", args);
 }
 
+/** Fast "Ping 测试": direct TCP connect (30 concurrent), never through the
+ * kernel even while the core is running — raw reachability, not real proxy
+ * latency. Same result shape as testNodesLatency. */
+export function pingNodesLatency(ids?: string[] | null, timeoutMs?: number | null) {
+  const args: Record<string, unknown> = {
+    ids: ids ?? null,
+    timeoutMs: timeoutMs ?? null,
+    timeout_ms: timeoutMs ?? null,
+  };
+  return invoke<LatencyBatchResult>("ping_nodes_latency", args);
+}
+
 /** Same TCP probe, for nodes extracted from the selected custom sing-box config (results not persisted). */
 export function testCustomNodesLatency(timeoutMs?: number | null) {
   const args: Record<string, unknown> = {

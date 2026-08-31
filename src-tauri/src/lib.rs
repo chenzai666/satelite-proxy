@@ -423,6 +423,7 @@ pub fn run() {
             commands::refresh_geodata,
             commands::set_core_type,
             commands::test_nodes_latency,
+            commands::ping_nodes_latency,
             commands::test_custom_nodes_latency,
             commands::get_proxy_status,
             commands::start_proxy,
