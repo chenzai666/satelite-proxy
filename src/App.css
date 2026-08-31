@@ -7249,11 +7249,13 @@ select:not([size]):disabled {
 }
 
 /* —— Core log lines (Logs page kernel-log view) ——
-   Core lines carry no separate timestamp/target columns (both live inside
-   the message text), so the row grid drops to level + message. */
+   The timestamp is parsed out of the raw message (ANSI codes stripped,
+   zone offset dropped), so the row grid is ts + level + message — the ts
+   column is slightly wider than the app log's to fit the `MM-DD HH:MM:SS`
+   fallback for lines from another day. */
 
 .log-line.core-log-line {
-  grid-template-columns: 52px 1fr;
+  grid-template-columns: 104px 52px 1fr;
 }
 
 /* Running indicator inside the kernel log tabs (green = process alive). */
