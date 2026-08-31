@@ -480,6 +480,7 @@ pub fn run() {
             commands::clear_request_history,
             commands::list_app_logs,
             commands::clear_app_logs,
+            commands::log_frontend_event,
             commands::clear_core_log,
             commands::get_core_log_tail,
             parse_subscription_text,

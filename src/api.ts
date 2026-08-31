@@ -245,8 +245,55 @@ function keepSettings(p: Promise<AppSettings>): Promise<AppSettings> {
 function keepProxy(p: Promise<ProxyStatus>): Promise<ProxyStatus> {
   return p.then((status) => {
     proxySnapshot = status;
+    notifyProxySnapshot(status);
     return status;
   });
+}
+
+/**
+ * Push channel for core lifecycle edges (backend `core-status-changed`,
+ * emitted by the watchdog on death/revival). Polling alone leaves pages
+ * stale while hidden or while a capture switch suppresses their poll, so
+ * mounted pages subscribe here and re-render from the refreshed snapshot
+ * the moment the backend announces a change.
+ */
+type ProxySnapshotListener = (status: ProxyStatus) => void;
+const proxySnapshotListeners = new Set<ProxySnapshotListener>();
+
+function notifyProxySnapshot(status: ProxyStatus) {
+  for (const listener of proxySnapshotListeners) listener(status);
+}
+
+/** Subscribe to proxy-status snapshot updates; returns an unsubscribe fn. */
+export function onProxySnapshot(listener: ProxySnapshotListener): () => void {
+  proxySnapshotListeners.add(listener);
+  return () => {
+    proxySnapshotListeners.delete(listener);
+  };
+}
+
+/**
+ * Re-fetch the proxy status and publish it to the snapshot + subscribers.
+ * Used by the backend `core-status-changed` listener and by operation error
+ * paths (a failed start must flip the UI off RUNNING right away). Errors
+ * resolve to null — subscribers keep their last known state.
+ */
+export async function refreshProxyStatus(): Promise<ProxyStatus | null> {
+  try {
+    return await getProxyStatus();
+  } catch {
+    return null;
+  }
+}
+
+/** Fire-and-forget frontend crash reporter → app log (`webview` target,
+ * visible in Logs → 应用日志). Never rejects: a crashing reporter inside an
+ * error path must not produce a second error. */
+export function logFrontendEvent(
+  message: string,
+  level: "warn" | "error" = "error",
+): void {
+  void invoke("log_frontend_event", { level, message }).catch(() => undefined);
 }
 
 export function getSettings() {
