@@ -31,16 +31,25 @@ export function useVirtualRange({
     startRow: 0,
     endRow: Math.min(totalRows, 30),
   }));
+  // Tracks whether `rows` reflects a real measurement of the current
+  // scroll position rather than the initial guess above. Without this,
+  // flipping `enabled` from false→true (e.g. a list growing past the
+  // virtualize threshold while scrolled down) renders one frame windowed
+  // to rows 0-30 before the layout effect below corrects it — collapsing
+  // already-visible content and reading as a flash back to the top.
+  const measuredRef = useRef(false);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!enabled || !container) {
+      measuredRef.current = false;
       setRows({ startRow: 0, endRow: totalRows });
       return;
     }
 
     const scroller = container.closest<HTMLElement>(scrollerSelector);
     if (!scroller) {
+      measuredRef.current = false;
       setRows({ startRow: 0, endRow: totalRows });
       return;
     }
@@ -63,6 +72,7 @@ export function useVirtualRange({
         totalRows,
         Math.ceil(visibleBottom / itemSize) + overscanRows,
       );
+      measuredRef.current = true;
       setRows((current) =>
         current.startRow === startRow && current.endRow === endRow
           ? current
@@ -88,7 +98,7 @@ export function useVirtualRange({
   }, [enabled, itemSize, overscanRows, scrollerSelector, totalRows]);
 
   return useMemo(() => {
-    if (!enabled) {
+    if (!enabled || !measuredRef.current) {
       return {
         containerRef,
         start: 0,
@@ -106,5 +116,6 @@ export function useVirtualRange({
       paddingTop: startRow * itemSize,
       paddingBottom: Math.max(0, (totalRows - endRow) * itemSize),
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- measuredRef is a ref, not reactive state
   }, [enabled, itemCount, itemSize, itemsPerRow, rows, totalRows]);
 }

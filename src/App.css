@@ -2178,6 +2178,7 @@ tr.row-active {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--muted) 7%, transparent);
   font-weight: 600;
+  cursor: pointer;
 }
 
 .node-group-head {
@@ -2189,6 +2190,16 @@ tr.row-active {
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--muted) 7%, transparent);
   font-weight: 600;
+  cursor: pointer;
+}
+
+.node-group-caret {
+  display: inline-block;
+  transition: transform 0.16s ease;
+}
+
+.node-group-caret.closed {
+  transform: rotate(-90deg);
 }
 
 .node-group-label {

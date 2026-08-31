@@ -5,9 +5,9 @@ import {
   getNodeShareUri,
   getProxyStatus,
   getSettings,
+  listAllNodes,
   listCustomConfigNodes,
   listNodeIds,
-  listNodesPage,
   pingNodesLatency,
   setCurrentNode,
   testCustomNodesLatency,
@@ -31,12 +31,11 @@ import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 const VIRTUALIZE_AFTER = 200;
 const LIST_ROW_HEIGHT = 49;
 const GRID_ROW_HEIGHT = 94;
-const PAGE_SIZE = 200;
 
 /** Flat render items for the grouped list (headers share the row height so
  *  the fixed-size virtualizer math stays exact). */
 type ListItem =
-  | { type: "group"; label: string; flag?: string; count: number }
+  | { type: "group"; key: string; label: string; flag?: string; count: number }
   | { type: "node"; n: ProxyNode };
 /** Grid variant: a full-width header occupies one cell slot and pads the rest
  *  of its row with fillers so subsequent cards stay aligned. */
@@ -97,7 +96,6 @@ export function NodesPage() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -153,9 +151,21 @@ export function NodesPage() {
     () => () => latencyBufferRef.current?.stop(),
     [],
   );
-  const reload = useCallback(async (append = false) => {
+
+  // Grouping: default (flat) / subscription / protocol / country, persisted
+  // like viewMode. v2 key: the first iteration persisted "sub" as its
+  // default — the feature is unreleased, so bump the key to let every
+  // profile start on the new "default = flat" preference.
+  const [groupBy, setGroupBy] = useState<GroupBy>(
+    () =>
+      (localStorage.getItem("nodes.groupBy.v2") as GroupBy | null) || "default",
+  );
+  useEffect(() => {
+    localStorage.setItem("nodes.groupBy.v2", groupBy);
+  }, [groupBy]);
+
+  const reload = useCallback(async () => {
     setError(null);
-    if (append) setLoadingMore(true);
     try {
       const settings = await getSettings();
       const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
@@ -171,33 +181,27 @@ export function NodesPage() {
             )
           : new Set(),
       );
-      const offset = append ? nodes.length : 0;
-      if (custom) {
-        // Custom mode: read-only nodes extracted from the sing-box config,
-        // overlaid with this session's latency results.
-        const all = applyCustomLatency(await listCustomConfigNodes(), customLatency);
-        const filtered = filterCustomNodes(all, query, sortMode, offset, PAGE_SIZE);
-        setNodes((prev) => (append ? [...prev, ...filtered.nodes] : filtered.nodes));
-        setTotal(filtered.total);
-      } else {
-        const page = await listNodesPage(query, sortMode, offset, PAGE_SIZE);
-        setNodes((prev) => (append ? [...prev, ...page.nodes] : page.nodes));
-        setTotal(page.total);
-      }
+      // Always load the full node set — grouping needs to see everything to
+      // classify correctly, and pagination made "load more" ambiguous once
+      // grouped (unclear which group new items would land in).
+      const all = custom
+        ? applyCustomLatency(await listCustomConfigNodes(), customLatency)
+        : await listAllNodes();
+      const filtered = filterCustomNodes(all, query, sortMode, 0, Number.MAX_SAFE_INTEGER);
+      setNodes(filtered.nodes);
+      setTotal(filtered.total);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
       setLoading(false);
-      setLoadingMore(false);
     }
-  }, [nodes.length, query, sortMode, customLatency]);
+  }, [query, sortMode, customLatency]);
 
   useEffect(() => {
     setLoading(true);
     setSelectedIds(new Set());
-    const timer = window.setTimeout(() => void reload(false), 150);
+    const timer = window.setTimeout(() => void reload(), 150);
     return () => window.clearTimeout(timer);
-    // nodes.length changes as pages append and must not restart the first page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, sortMode]);
 
@@ -213,14 +217,6 @@ export function NodesPage() {
     localStorage.setItem("nodes.clickTest", clickTest ? "1" : "0");
   }, [clickTest]);
 
-  // Grouping: subscription / protocol / country (persisted like viewMode).
-  const [groupBy, setGroupBy] = useState<GroupBy>(
-    () => (localStorage.getItem("nodes.groupBy") as GroupBy) || "default",
-  );
-  useEffect(() => {
-    localStorage.setItem("nodes.groupBy", groupBy);
-  }, [groupBy]);
-
   const displayed = nodes;
 
   // Flat render items: group headers interleave with nodes at the same fixed
@@ -235,38 +231,73 @@ export function NodesPage() {
     [displayed, groupBy, locale, t],
   );
 
+  // Collapsed group keys (session-only — collapse is a browsing gesture).
+  // Starts every group collapsed when grouping is (re)enabled or the
+  // dimension changes; subsequent data reloads under the same dimension
+  // don't reset groups the user has already opened.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const collapsedForGroupByRef = useRef<GroupBy | null>(null);
+  useEffect(() => {
+    if (groupBy === "default") {
+      collapsedForGroupByRef.current = null;
+      return;
+    }
+    if (collapsedForGroupByRef.current === groupBy) return;
+    if (groups.length === 0) return; // wait for data before collapsing
+    collapsedForGroupByRef.current = groupBy;
+    setCollapsedGroups(new Set(groups.map((g) => g.key)));
+  }, [groupBy, groups]);
+  function toggleGroup(key: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   const listItems = useMemo(() => {
     const out: ListItem[] = [];
     for (const g of groups) {
-      if (groupBy !== "default") {
+      const grouped = groupBy !== "default";
+      if (grouped) {
         out.push({
           type: "group",
+          key: g.key,
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
         });
       }
-      for (const n of g.nodes) out.push({ type: "node", n });
+      if (!grouped || !collapsedGroups.has(g.key)) {
+        for (const n of g.nodes) out.push({ type: "node", n });
+      }
     }
     return out;
-  }, [groups, groupBy]);
+  }, [groups, groupBy, collapsedGroups]);
 
   const gridItems = useMemo(() => {
     const out: GridItem[] = [];
     for (const g of groups) {
-      if (groupBy !== "default") {
+      const grouped = groupBy !== "default";
+      if (grouped) {
         out.push({
           type: "group",
+          key: g.key,
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
         });
         for (let i = 1; i < columnCount; i++) out.push({ type: "filler" });
       }
-      for (const n of g.nodes) out.push({ type: "node", n });
+      if (!grouped || !collapsedGroups.has(g.key)) {
+        for (const n of g.nodes) out.push({ type: "node", n });
+      }
     }
     return out;
-  }, [groups, groupBy, columnCount]);
+  }, [groups, groupBy, columnCount, collapsedGroups]);
 
   const virtualized = displayed.length > VIRTUALIZE_AFTER;
   const listRange = useVirtualRange({
@@ -394,7 +425,7 @@ export function NodesPage() {
       setTestingIds(new Set());
       // Custom results are session-only — keep the merged values instead of
       // re-reading the latency-less extracted list.
-      if (!customRuntime) await reload(false);
+      if (!customRuntime) await reload();
     }
   }
 
@@ -453,7 +484,7 @@ export function NodesPage() {
         ids.forEach((id) => next.delete(id));
         return next;
       });
-      await reload(false);
+      await reload();
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
@@ -524,30 +555,45 @@ export function NodesPage() {
     }
   }
 
-  /** Group header row (list): full-width cell at ROW_H for the virtualizer. */
-  function renderGroupRow(key: string, label: string, flag: string | undefined, count: number) {
+  /** Group header row (list): click to expand or collapse its node set. */
+  function renderGroupRow(item: Extract<ListItem, { type: "group" }>) {
+    const open = !collapsedGroups.has(item.key);
     return (
-      <tr key={key} className="node-group-row">
+      <tr
+        key={item.key}
+        className="node-group-row"
+        onClick={() => toggleGroup(item.key)}
+        title="点击展开或收起分组"
+      >
         <td colSpan={6}>
+          <span className={`node-group-caret${open ? "" : " closed"}`}>▾</span>
           <span className="node-group-label">
-            {flag ? <span className="node-group-flag">{flag}</span> : null}
-            {label}
+            {item.flag ? <span className="node-group-flag">{item.flag}</span> : null}
+            {item.label}
           </span>
-          <span className="node-group-count mono">{count}</span>
+          <span className="node-group-count mono">{item.count}</span>
         </td>
       </tr>
     );
   }
 
-  /** Group header band (grid): spans all columns at GRID_ROW_HEIGHT. */
-  function renderGroupHead(key: string, label: string, flag: string | undefined, count: number) {
+  /** Group header band (grid): spans all columns and toggles its node set. */
+  function renderGroupHead(item: Extract<GridItem, { type: "group" }>) {
+    const open = !collapsedGroups.has(item.key);
     return (
-      <div key={key} className="node-group-head" style={{ height: GRID_ROW_HEIGHT }}>
+      <div
+        key={item.key}
+        className="node-group-head"
+        style={{ height: GRID_ROW_HEIGHT }}
+        onClick={() => toggleGroup(item.key)}
+        title="点击展开或收起分组"
+      >
+        <span className={`node-group-caret${open ? "" : " closed"}`}>▾</span>
         <span className="node-group-label">
-          {flag ? <span className="node-group-flag">{flag}</span> : null}
-          {label}
+          {item.flag ? <span className="node-group-flag">{item.flag}</span> : null}
+          {item.label}
         </span>
-        <span className="node-group-count mono">{count}</span>
+        <span className="node-group-count mono">{item.count}</span>
       </div>
     );
   }
@@ -883,17 +929,8 @@ export function NodesPage() {
               )}
               {listItems
                 .slice(listRange.start, listRange.end)
-                .map((item, i) =>
-                  item.type === "group" ? (
-                    renderGroupRow(
-                      `g-${listRange.start + i}`,
-                      item.label,
-                      item.flag,
-                      item.count,
-                    )
-                  ) : (
-                    renderNodeRow(item.n)
-                  ),
+                .map((item) =>
+                  item.type === "group" ? renderGroupRow(item) : renderNodeRow(item.n),
                 )}
               {listRange.paddingBottom > 0 && (
                 <tr className="node-virtual-spacer" aria-hidden="true">
@@ -917,13 +954,7 @@ export function NodesPage() {
             {gridItems
               .slice(gridRange.start, gridRange.end)
               .map((item, i) => {
-                if (item.type === "group")
-                  return renderGroupHead(
-                    `g-${gridRange.start + i}`,
-                    item.label,
-                    item.flag,
-                    item.count,
-                  );
+                if (item.type === "group") return renderGroupHead(item);
                 if (item.type === "filler")
                   return <div key={`f-${gridRange.start + i}`} aria-hidden />;
                 return renderNodeCard(item.n);
@@ -932,13 +963,6 @@ export function NodesPage() {
           {gridRange.paddingBottom > 0 && (
             <div style={{ height: gridRange.paddingBottom }} aria-hidden="true" />
           )}
-        </div>
-      )}
-      {!loading && nodes.length < total && (
-        <div style={{ display: "flex", justifyContent: "center", padding: 12 }}>
-          <GlassButton disabled={loadingMore} onClick={() => void reload(true)}>
-            {loadingMore ? t("common.loading") : `加载更多（${nodes.length}/${total}）`}
-          </GlassButton>
         </div>
       )}
       <NodeContextMenu
@@ -956,7 +980,7 @@ export function NodesPage() {
         profileName={editNode?.subscription_name ?? ""}
         initialNodeId={editNode?.id ?? null}
         onClose={() => setEditNode(null)}
-        onNodesChanged={() => void reload(false)}
+        onNodesChanged={() => void reload()}
       />
     </div>
   );
