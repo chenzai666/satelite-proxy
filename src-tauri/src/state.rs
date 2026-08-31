@@ -852,6 +852,17 @@ impl AppState {
         status.core_state = core_state;
     }
 
+    /// Record a failed start in the cache. Without this the snapshot lingers
+    /// at `Starting` until the next successful status poll, and every
+    /// consumer serving the cache meanwhile (the try_lock fallback, the
+    /// transitioning window) reports a start that already failed.
+    fn mark_cached_core_error(&self, error: &str) {
+        let mut status = recover_lock(&self.status_cache, "status_cache");
+        status.core_state = CoreState::Error;
+        status.running = false;
+        status.error = Some(error.to_string());
+    }
+
     pub fn unload_ui_on_tray(&self) -> bool {
         self.with_store(|s| Ok(s.settings.unload_ui_on_tray))
             .unwrap_or(false)
@@ -905,12 +916,19 @@ impl AppState {
             store.settings.capture_mode = crate::domain::CaptureMode::System;
             store.settings.tun_enabled = false;
         }
-        let mut status = runtime.start_proxy(
+        let mut status = match runtime.start_proxy(
             &self.app_data_dir,
             resource_dir,
             &mut store,
             enable_system_proxy,
-        )?;
+        ) {
+            Ok(status) => status,
+            Err(error) => {
+                // Don't leave the cached snapshot claiming a start that failed.
+                self.mark_cached_core_error(&error.to_string());
+                return Err(error);
+            }
+        };
         if runtime.system_proxy_on != enable_system_proxy {
             status = runtime.set_system_proxy(&store, enable_system_proxy)?;
         }
@@ -1009,7 +1027,33 @@ impl AppState {
             .with_store(|store| Ok(store.settings.runtime_source().is_custom()))
             .unwrap_or(false);
         if custom {
-            // Never rebuild active.json or rewrite the user file.
+            // Never rebuild active.json or rewrite the user file: rule/DNS
+            // edits don't affect a custom profile's config, so a restart
+            // would only interrupt the core for nothing.
+            return Ok(None);
+        }
+        Ok(Some(self.restart_proxy(resource_dir)?))
+    }
+
+    /// Watchdog path: revive a core that died unexpectedly. The regular
+    /// `restart_if_running` is deliberately a no-op unless the core is running
+    /// (rule edits on a stopped core must not start anything) — but the
+    /// watchdog fires precisely because a running core just died, so without
+    /// this entry point its "auto-restart" attempts were silent no-ops. Only
+    /// an unexpected exit (cached state `Error`) is revived; a deliberate
+    /// stop lands on `Stopped` and stays down. Custom profiles are revived
+    /// too: `start_custom_proxy` re-runs the same stored content and never
+    /// rebuilds generated config.
+    pub fn restart_after_unexpected_exit(
+        &self,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<Option<crate::runtime::ProxyStatus>> {
+        if self.is_core_transitioning() {
+            return Err(crate::error::AppError::Core("内核正在切换，请稍候".into()));
+        }
+        // is_core_running reaps the dead child and refreshes the cache, so
+        // the state read below reflects the poll it just did.
+        if !should_revive_dead_core(self.is_core_running(), self.cached_core_state()) {
             return Ok(None);
         }
         Ok(Some(self.restart_proxy(resource_dir)?))
@@ -1902,6 +1946,20 @@ const WATCHDOG_POLL_MS: u64 = 2000;
 const WATCHDOG_MAX_ATTEMPTS: usize = 3;
 const WATCHDOG_WINDOW: Duration = Duration::from_secs(600);
 
+/// Backend → frontend push for core lifecycle edges. Polling alone leaves
+/// the UI stale while the window is hidden, while the runtime lock is busy
+/// (get_proxy_status serves its cache), or while capture switches skip the
+/// poll — an unexpected core exit must reach the UI within one watchdog
+/// tick instead. The payload is a hint; the frontend re-fetches full status.
+const CORE_STATUS_EVENT: &str = "core-status-changed";
+
+#[derive(Clone, serde::Serialize)]
+struct CoreStatusChangedEvent {
+    running: bool,
+    core_state: CoreState,
+    sidecar_running: bool,
+}
+
 /// Pure decision core (unit-tested): restart only on the running→not-running
 /// edge, only for the `Error` state (a deliberate stop lands on `Stopped`),
 /// never during a core transition, and only within the attempt budget.
@@ -1919,12 +1977,19 @@ fn watchdog_should_restart(
         && attempts_in_window < WATCHDOG_MAX_ATTEMPTS
 }
 
+/// Pure revival gate (unit-tested): only a dead core whose cached state is
+/// `Error` — i.e. an unexpected exit, not a user stop — may be auto-revived.
+fn should_revive_dead_core(running: bool, core_state: CoreState) -> bool {
+    !running && core_state == CoreState::Error
+}
+
 pub fn spawn_core_watchdog(app: tauri::AppHandle) {
-    use tauri::Manager;
+    use tauri::{Emitter, Manager};
     std::thread::Builder::new()
         .name("core-watchdog".into())
         .spawn(move || {
             let mut was_running = false;
+            let mut was_core_state = CoreState::Stopped;
             let mut attempts: Vec<Instant> = Vec::new();
             // Companion Xray sidecar gets its own edge/budget tracking: it
             // crashes independently of the main core (which stays Running),
@@ -1941,8 +2006,29 @@ pub fn spawn_core_watchdog(app: tauri::AppHandle) {
                 let now_running = state.is_core_running();
                 let transitioning = state.is_core_transitioning();
                 let core_state = state.cached_core_state();
+                let sidecar = state.poll_sidecar();
                 let now = Instant::now();
                 attempts.retain(|t| now.duration_since(*t) < WATCHDOG_WINDOW);
+
+                // Announce lifecycle edges (death, revival, restart) so the
+                // frontend can resync immediately instead of waiting for its
+                // next poll. Emitted before the restart request below, so the
+                // event reflects the observed edge, not the post-revival state.
+                let sidecar_running = sidecar.is_some_and(|(s, _)| s);
+                if now_running != was_running
+                    || core_state != was_core_state
+                    || sidecar_running != sidecar_was_running
+                {
+                    let _ = app.emit(
+                        CORE_STATUS_EVENT,
+                        CoreStatusChangedEvent {
+                            running: now_running,
+                            core_state,
+                            sidecar_running,
+                        },
+                    );
+                }
+
                 if watchdog_should_restart(
                     was_running,
                     now_running,
@@ -1959,14 +2045,18 @@ pub fn spawn_core_watchdog(app: tauri::AppHandle) {
                             WATCHDOG_WINDOW.as_secs()
                         ),
                     );
-                    crate::rule_apply::request_restart(app.clone(), Vec::new());
+                    // Forced: the core is already dead, and the regular
+                    // restart path skips dead cores by design. This flag is
+                    // what makes the auto-restart actually restart.
+                    crate::rule_apply::request_forced_restart(app.clone(), Vec::new());
                 }
                 was_running = now_running;
+                was_core_state = core_state;
 
                 // Sidecar watchdog: only meaningful while the main core is
                 // up (stop paths tear the sidecar down with it, landing on
                 // Stopped, which the edge check rejects).
-                let Some((sidecar_running, sidecar_state)) = state.poll_sidecar() else {
+                let Some((sidecar_running, sidecar_state)) = sidecar else {
                     continue;
                 };
                 sidecar_attempts.retain(|t| now.duration_since(*t) < WATCHDOG_WINDOW);
@@ -1987,7 +2077,7 @@ pub fn spawn_core_watchdog(app: tauri::AppHandle) {
                             WATCHDOG_WINDOW.as_secs()
                         ),
                     );
-                    crate::rule_apply::request_restart(app.clone(), Vec::new());
+                    crate::rule_apply::request_forced_restart(app.clone(), Vec::new());
                 }
                 sidecar_was_running = sidecar_running;
             }
@@ -2055,5 +2145,16 @@ mod watchdog_tests {
             CoreState::Running,
             0
         ));
+    }
+
+    #[test]
+    fn revives_only_a_dead_core_in_error_state() {
+        // Unexpected exit: dead + Error → the revival path may restart it.
+        assert!(should_revive_dead_core(false, CoreState::Error));
+        // Deliberate stop (Stopped) stays down — never auto-start.
+        assert!(!should_revive_dead_core(false, CoreState::Stopped));
+        // Still running, or any other state → nothing to revive.
+        assert!(!should_revive_dead_core(true, CoreState::Error));
+        assert!(!should_revive_dead_core(false, CoreState::Starting));
     }
 }

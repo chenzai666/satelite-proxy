@@ -1,7 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-08-31（应用版本固定为 1.0.16，三内核：sing-box / Xray / mihomo；支持代理链、便携版和 sing-box + Xray 协议委托）。
+最后核对：2026-08-31（应用版本固定为 1.0.16，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托，以及端口就绪验证和异常内核恢复）。
 
 ## 0. 阅读与维护规则（必读）
 
@@ -177,13 +177,14 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
   - `remote_rule_auto.rs` — 应用侧下载远程规则集缓存到本地，sing-box 只加载本地文件
   - `smart_switch.rs` — 智能选路：被动连接日志感知劣化 → 按需探测 top-K 候选 → 评分+容差+冷却。候选排序用 `probe_nodes_ranked`（TCP-capable 节点=TCP ping 直连，QUIC-only 协议=内核 URL 探测兜底）；**当前节点健康确认仍走内核 URL 探测**（防「TCP 活但代理死」被误判健康），排序对比值也取 ranked 结果保证同口径（URL-vs-TCP 对比会虚高当前节点数值导致来回切）
   - `rule_apply.rs` — 规则变更的 500ms 防抖合并 + 全局串行 apply-and-restart
-  - `state.rs::spawn_core_watchdog` — 内核看门狗：running→error 意外退出（非用户停止）经 `rule_apply::request_restart` 自动重启，10 分钟滚动窗口内最多 3 次防配置错误死循环；决策逻辑 `watchdog_should_restart` 纯函数有单测（背景：曾有机静默 exit(1) 的实战事故）。**同时独立盯 Xray 副进程**（`poll_sidecar`，独立边沿/预算跟踪；仅主核运行时才触发整体重启）
+  - `state.rs::spawn_core_watchdog` — 内核看门狗：running→error 意外退出（非用户停止）经 `rule_apply::request_forced_restart` **真重启**（`restart_after_unexpected_exit`，仅缓存态=Error 的死核可复活；用户主动停止落在 Stopped 永不自动拉起），10 分钟滚动窗口内最多 3 次防配置错误死循环；决策逻辑 `watchdog_should_restart`/`should_revive_dead_core` 纯函数有单测（背景：曾有机静默 exit(1) 的实战事故；**注意普通 `request_restart` 路径对死核是空转**——`restart_if_running` 要求核心在运行，watchdog 必须走 forced 入口）。每次轮询还把 running/状态/副进程的**任何变化边沿** emit 为 `core-status-changed` 事件（payload `{running, core_state, sidecar_running}`），前端收到即 `refreshProxyStatus()`，消除隐藏窗口/锁忙/captureBusy 跳过轮询时的状态盲区。**同时独立盯 Xray 副进程**（`poll_sidecar`，独立边沿/预算跟踪；仅主核运行时才触发整体重启）
 - `main.rs` — 仅调 `run()`。
 
 ### 5.2 状态与存储
 
 - `state.rs` — `AppState`（managed state，`Mutex<AppStore>` + runtime 句柄 + pending 深链 URL + UI 可见标志）。几乎所有 command 走 `state.with_store(...)` / `with_store_mut(...)`。
 - `storage/store.rs` — `AppStore`（serde JSON）：`subscriptions`、`nodes`（StoredNode）、`settings`、`dns`、`rule_sets`、`pools`、`chains`、`node_aliases` + 4 组 `retained_*`（**解析不了的新 schema 数据写回而非丢弃**）。含 `store.backup.json` 备份、损坏快照保留、schema 迁移（如 capture_mode/auto_select 迁移）。
+- `state.rs` — `AppState`（managed state，`Mutex<AppStore>` + runtime 句柄 + pending 深链 URL + UI 可见标志）。几乎所有 command 走 `state.with_store(...)` / `with_store_mut(...)`。`start_proxy` 失败时会把 `status_cache` 写成 Error+错误文本（`mark_cached_core_error`），失败启动不再在缓存里停留 Starting。
 - 磁盘布局（`app_data_dir`）：
   - `store.json` — 主存储；`store.backup.json` — 备份
   - `config/active.json` — JSON 系内核（sing-box/Xray）的运行配置（**两内核共用同一文件，有意为之**：每次启动由当前内核的生成器整体重写，tmp+rename 原子写，带时间戳备份；内容从不跨内核混用）；`config/active.yaml` — mihomo 的 Clash YAML（同款整体重写策略）；`config/xray-sidecar.json` — Xray 副进程配置（§9.20，仅委托开启时生成）；custom 运行时另有独立文件，**绝不写 active.\***
@@ -239,6 +240,13 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `state.rs` `select_current_node_serialized` — sing-box/mihomo 走 clash select_proxy 热切换（组名 `proxy`）；Xray 无 API → 持久化后返回 restart_needed，由 `rule_apply::request_restart` 重启生效；不支持的节点形状直接报错。
 - `services/latency.rs` — 测速：TCP 协议直连 server:port（内核无关）；UDP 系协议（hysteria2/tuic）走 Clash delay API（sing-box/mihomo 有此 API；Xray 模式下此类节点本就不被支持）。
 - `services/import.rs` — 订阅 URL 去重键、导入文件读取；`services/dns_diag.rs` 和 `services/chain_diag.rs` 分别做 DNS 与链路出口诊断。
+- `runtime.rs` — `Runtime`/`ProxyStatus`（含 `core_type`/`sidecar_running`）：按 `settings.core_type` 分支 config 生成 → 写盘 → core 启停 → 系统代理联动；连接视图缓存与 delta（`LiveConnectionBatch` revision 机制）。**启动就绪判定必须实测端口**（2026-08）：sing-box/mihomo health 等待（TUN 10s / 非 TUN 6s）成功条件 = Clash API `/version` 应答 **且** `dial_mixed_ok()`（mixed 端口 TCP 拨号实测，`readiness_failure_detail` 区分「API 未应答」与「API 活但入站未监听」两种失败）；Xray 就绪窗口同为 6/10s、成功条件 = 进程存活 **且** mixed 拨号成功（metrics 命中仅 best-effort warn，不作为就绪条件）；custom 配置路径不拨号（入站形状任意）。失败信息统一附 `core_startup_log_hint` 日志尾并过 `map_tun_permission_hint`（`manager.rs`，pub(crate)）。Xray 分支 `start_xray_proxy`：ensure geodata/wintun → `build_xray_config` → 按上述端口拨号判定就绪，`xray_metrics` 替代 clash_api。mihomo 分支 `start_mihomo_proxy`：ensure mihomo geodata → `build_mihomo_config` → 写 active.yaml → 与 sing-box 同款「ClashApi health + mixed 拨号」等待（`self.api` 即 clash_api，conn_journal/热切/智能切换全复用）。`build_options()` 为三生成器共享的 BuildOptions 构造器。sing-box 分支支持 **Xray 副进程**（§9.20）：`compute_sidecar_plan`（settings+chains+nodes → 委托计划，commands 预览同款复用）→ 主核 health OK 后 `start_xray_sidecar` 写 `xray-sidecar.json` 并经 `Runtime.sidecar`（第二个 `CoreManager` 实例，结构体无静态状态可直接并存）拉起；停/重启/退出先停副进程，主核启动失败或副进程启动失败均整体回滚。
+- `api/clash_api.rs` — Clash 兼容 API 客户端（sing-box 与 mihomo 模式共用；热切需 `Content-Type: application/json`，`send_json` 已带）。**HTTP 用 ureq（非 reqwest::blocking，避免嵌套 Tokio runtime panic，见文件头注释）；WS 用 tungstenite 仅握手**。
+- `api/xray_metrics.rs` — Xray 模式 metrics 客户端：轮询 `/debug/vars` 汇总 `stats.outbound[*].uplink/downlink` → TrafficTotals（connections 恒 0；无逐连接 API）。
+- `state.rs` `select_current_node_serialized` — sing-box/mihomo 走 clash select_proxy 热切换（组名 `proxy`）；Xray 无 API → 持久化后返回 restart_needed，由 `rule_apply::request_restart` 重启生效；不支持的节点形状直接报错。
+- `services/latency.rs` — 测速：TCP 协议直连 server:port（内核无关）；UDP 系协议（hysteria2/tuic）走 Clash delay API（sing-box/mihomo 有此 API；Xray 模式下此类节点本就不被支持）。批量探测按输入顺序起测（并发槽空出即从前向后补位）；`probe_nodes_streaming`/`ping_nodes_streaming` 带 `on_result` 回调，每个探测完成即刻回调（commands/latency.rs 据此经 Tauri `Channel<LatencyResult>` 逐节点推给前端）。探测共享结果缓存（成功 30s / 失败 15s，per-key 在途合并；**这也是 smart_switch 后台排序/健康探测读的缓存**）；手动触发的三个测速 command 一律 `use_cache=false`——不读缓存每次真测，结果仍写回缓存供后台复用（2026-08）。
+- `services/import.rs` — 订阅 URL 去重键、导入文件读取。
+- `services/dns_diag.rs` — ★ 内核级 DNS 诊断（DNS 页「诊断」，command `diagnose_dns`）：双层设计——① 实时查询：sing-box/mihomo 经 `ClashApi::dns_query`（`GET /dns/query?name=&type=A`，sing-box 走完整 DNS 规则链、两内核响应同构且都不返回上游 server）；② 路径推演：`DnsPathAnalyzer` 在应用侧复刻三生成器的决策链（规则集 stored order → Hosts → DNS 页规则 → FakeIP → dns_final，含 §18 分歧点：mihomo 关键词回落 nameserver、Block 集仅 sing-box 拒绝 DNS、xray/mihomo 跳过用户 .srs、内置 geosite 集按本地 .srs 缓存近似判定 approx）。远程集匹配复用 `srs.rs`/source JSON，缓存路径校验同 `list_remote_rule_items`。Xray 无 DNS API → 仅路径推演 + query_note 说明。
 - `srs.rs` — `.srs` 二进制规则集结构解析（LOUDS trie），供列表/计数/校验（`list_remote_rule_items` 的后端；固定用 sing-box 二进制 decompile）。
 - `smart_switch.rs` / `rule_apply.rs` / `remote_rule_auto.rs` / `builtin_remote_rules.rs` — 见 5.1。smart_switch 在 Xray 模式禁用（依赖连接日志；mihomo 有连接日志不受限）。
 - `conn_journal.rs` — 连接日志（活跃快照 + 已关闭请求历史 + 失败请求），`list_connections/list_connection_changes/list_requests/list_request_failures` 的数据源；Xray 模式降级为 metrics 轮询（仅流量）；mihomo 模式与 sing-box 同款全量。
@@ -273,7 +281,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
   - `updateSettings` 是 **60ms 批量合并写入器**；
   - `peekSettings/peekProxyStatus + keepSettings/keepProxy` 模块级快照，供页面重挂载时种子状态防闪默认值；
   - 生命周期类调用（start/stop/restart/capture/outbound）包 `trackCoreBusy()` 驱动导航栏 spinner。
-- Tauri 事件消费：`config-apply-status`（App.tsx）、`deep-link-urls`（ImportIntentContext）、`core-download-progress`（SettingsPage）、`remote-rule-set-status` 与 `rule-set-apply-status`（RulesPage）。
+- Tauri 事件消费：`config-apply-status`（App.tsx）、`core-status-changed`（App.tsx → `refreshProxyStatus()`；watchdog 发出的生命周期边沿推送，Dashboard/SimpleConnect/TopNav 经 `api.ts::onProxySnapshot` 订阅快照即时重绘）、`deep-link-urls`（ImportIntentContext）、`core-download-progress`（SettingsPage）、`remote-rule-set-status` 与 `rule-set-apply-status`（RulesPage）。
 - `types.ts` — 与 Rust `domain/*` 对应的手写类型（注意 `ProxyStatus`、`AppSettings`、`ManualNodeDraft` 46 字段等需两边同步）。
 
 ### 6.3 页面（pages/）

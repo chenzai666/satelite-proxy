@@ -175,7 +175,7 @@ impl CoreManager {
                             self.kind.display_name()
                         ),
                     );
-                    self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
+                    self.last_error = Some(map_core_startup_hint(&strip_ansi(&detail)));
                 }
             }
             return;
@@ -205,7 +205,7 @@ impl CoreManager {
                             .unwrap_or_else(|| {
                                 format!("{} exited: {status}", self.kind.display_name())
                             });
-                        self.last_error = Some(map_tun_permission_hint(&strip_ansi(&detail)));
+                        self.last_error = Some(map_core_startup_hint(&strip_ansi(&detail)));
                     }
                 }
                 Ok(None) => {}
@@ -451,7 +451,7 @@ impl CoreManager {
         if elevated {
             if let Err(e) = super::macos_auth::ensure_core_setuid(binary) {
                 self.state = CoreState::Error;
-                let msg = map_tun_permission_hint(&e.to_string());
+                let msg = map_core_startup_hint(&e.to_string());
                 self.last_error = Some(msg.clone());
                 return Err(AppError::Core(msg));
             }
@@ -643,17 +643,17 @@ impl CoreManager {
     }
 
     fn start_failed_error(&mut self) -> AppError {
-        let error = self
+        let err = self
             .last_error
             .clone()
             .unwrap_or_else(|| "process exited immediately".into());
         crate::app_log::error(
             "core",
-            format!("{} failed to start: {error}", self.kind.display_name()),
+            format!("{} failed to start: {err}", self.kind.display_name()),
         );
         self.state = CoreState::Error;
         self.run_mode = RunMode::None;
-        AppError::Core(map_tun_permission_hint(&error))
+        AppError::Core(map_core_startup_hint(&err))
     }
 
     fn wait_until_ready(&mut self, mixed_port: u16) -> AppResult<()> {
@@ -942,6 +942,34 @@ fn is_stale_cache_db_error(error: &str) -> bool {
     lower.contains("cache.db") && lower.contains("permission denied")
 }
 
+/// Appends actionable guidance for known core-startup / core-death failure
+/// classes. All error-surface call sites should go through this wrapper so
+/// every failure class gets exactly one hint. Currently: a locked `cache.db`
+/// (see below) and TUN permission failures (see [`map_tun_permission_hint`]).
+pub(crate) fn map_core_startup_hint(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    if (lower.contains("cache-file") || lower.contains("cache_file")) && lower.contains("timeout") {
+        // `initialize cache-file: timeout` is the signature of an orphaned
+        // elevated core from a previous session: the helper/sing-box pair
+        // outlives a crashed session (nothing binds the helper to the app,
+        // and the unprivileged app cannot terminate a higher-integrity
+        // process), so the bolt file lock stays held until the user or a
+        // reboot clears it. Say so — the raw FATAL line alone reads like a
+        // config bug.
+        format!(
+            "{err}\n\n{}",
+            "sing-box 的 cache.db 被其他进程占用（初始化超时）。通常是上次会话异常退出后残留的管理员权限 sing-box 仍在运行，普通权限无法结束它。\n\
+             处理：以管理员身份运行任务管理器结束 sing-box.exe，或重启电脑后重试；残留进程还持有 TUN 虚拟网卡，放着不管可能导致无法上网。"
+        )
+    } else {
+        map_tun_permission_hint(err)
+    }
+}
+
+/// Appends the platform TUN-permission guidance when `err` matches a
+/// permission-denied failure. Also applied by the runtime's readiness
+/// windows: their embedded log tail is exactly where a FATAL "Access is
+/// denied" TUN line surfaces when a death slips past `wait_until_ready`.
 fn map_tun_permission_hint(err: &str) -> String {
     let lower = err.to_ascii_lowercase();
     if lower.contains("operation not permitted")
@@ -1387,5 +1415,124 @@ mod cwd_tests {
         // Building/inspecting the command must not panic regardless of what
         // `parent()` returned for this degenerate path.
         let _ = format!("{cmd:?}");
+    }
+}
+
+#[cfg(test)]
+mod stale_cache_db_tests {
+    //! `is_stale_cache_db_error` must fire on the exact FATAL sing-box emits
+    //! when `cache.db` is owned by a different euid (stale setuid-root
+    //! leftover) — the case that needs delete-and-retry, not the TUN-setuid
+    //! hint. It must NOT fire on a generic TUN "permission denied" (adapter
+    //! creation denied), which needs the setuid prompt instead: routing that
+    //! case here would retry a delete that can't fix a missing privilege
+    //! and never show the user the hint that actually gets them unstuck.
+    use super::is_stale_cache_db_error;
+
+    #[test]
+    fn matches_the_real_cache_file_fatal() {
+        let err =
+            "FATAL[0001] start service: initialize cache-file: open cache.db: permission denied";
+        assert!(is_stale_cache_db_error(err));
+    }
+
+    #[test]
+    fn does_not_match_generic_tun_permission_denied() {
+        let err = "operation not permitted: configure tun";
+        assert!(!is_stale_cache_db_error(err));
+    }
+
+    #[test]
+    fn does_not_match_permission_denied_without_cache_db() {
+        // Some other file under the config dir could also hit EACCES; only
+        // cache.db has the known stale-euid failure mode and a safe fix
+        // (delete — it's rebuildable cache, not user data).
+        let err = "open active.json: permission denied";
+        assert!(!is_stale_cache_db_error(err));
+    }
+}
+
+#[cfg(test)]
+mod core_startup_hint_tests {
+    //! `map_core_startup_hint` routes each known failure class to its one
+    //! actionable hint: the locked-cache.db timeout (orphaned elevated core
+    //! from a crashed session) gets the cache hint, TUN permission failures
+    //! the UAC/setuid hint, and unknown errors pass through untouched.
+    use super::map_core_startup_hint;
+
+    #[test]
+    fn cache_file_timeout_gets_the_orphan_hint() {
+        // The exact FATAL from the field incident: an orphaned elevated
+        // sing-box (helper survived the crashed session; the app cannot
+        // terminate a higher-integrity process) holds cache.db's file lock.
+        let err = "FATAL[0010] start service: initialize cache-file: timeout";
+        let mapped = map_core_startup_hint(err);
+        assert!(mapped.contains("cache.db 被其他进程占用"));
+        assert!(mapped.contains("管理员身份"));
+        assert!(mapped.starts_with(err), "original FATAL text is preserved");
+    }
+
+    #[test]
+    fn cache_file_word_without_timeout_is_not_the_lock_case() {
+        // `is_stale_cache_db_error` owns the permission-denied variant; the
+        // hint here must not fire on unrelated cache-file wording.
+        let err = "FATAL start service: initialize cache-file: bad path";
+        assert_eq!(map_core_startup_hint(err), err);
+    }
+
+    #[test]
+    fn tun_permission_failures_still_get_the_tun_hint() {
+        let err = "FATAL start inbound/tun[tun-in]: configure tun interface: Access is denied.";
+        let mapped = map_core_startup_hint(err);
+        assert!(mapped.contains("TUN"));
+        assert!(!mapped.contains("cache.db 被其他进程占用"));
+    }
+
+    #[test]
+    fn unknown_errors_pass_through_untouched() {
+        let err = "FATAL something entirely unknown happened";
+        assert_eq!(map_core_startup_hint(err), err);
+    }
+}
+
+#[cfg(test)]
+mod is_windows_elevated_tests {
+    //! `is_windows_elevated()` backs the dashboard's ROOT badge on Windows.
+    //! It must reflect BOTH "the tracked run mode is the elevated one" AND
+    //! "the process is actually still running" — a stale `ElevatedPid` from
+    //! a session that already exited should not light the badge (the
+    //! sidecar `Sidecar` mode, or the default `None`, must not either).
+    use super::{CoreManager, CoreState, RunMode};
+
+    #[test]
+    fn false_by_default() {
+        let mgr = CoreManager::default();
+        assert!(!mgr.is_windows_elevated());
+    }
+
+    #[test]
+    fn false_when_elevated_pid_mode_but_not_running() {
+        let mut mgr = CoreManager::default();
+        mgr.run_mode = RunMode::ElevatedPid;
+        mgr.elevated_pid = Some(4242);
+        mgr.state = CoreState::Stopped;
+        assert!(!mgr.is_windows_elevated());
+    }
+
+    #[test]
+    fn false_when_running_as_plain_sidecar() {
+        let mut mgr = CoreManager::default();
+        mgr.run_mode = RunMode::Sidecar;
+        mgr.state = CoreState::Running;
+        assert!(!mgr.is_windows_elevated());
+    }
+
+    #[test]
+    fn true_when_elevated_pid_mode_and_running() {
+        let mut mgr = CoreManager::default();
+        mgr.run_mode = RunMode::ElevatedPid;
+        mgr.elevated_pid = Some(4242);
+        mgr.state = CoreState::Running;
+        assert!(mgr.is_windows_elevated());
     }
 }

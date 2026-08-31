@@ -87,6 +87,13 @@ pub struct ProxyStatus {
 /// Cap history to limit RAM (UI only needs recent activity).
 const MAX_REQUEST_HISTORY: usize = 3_000;
 const MAX_LIVE_REMOVAL_HISTORY: usize = 10_000;
+/// Cap the live-connection batch served to the UI. Under TUN the core's
+/// live set is every active connection on the machine (easily thousands ≈
+/// several MB of JSON per poll); `live_connection_batch` serves only the
+/// newest window, aligned with the frontend's MAX_LIVE_ROWS (1000) — its
+/// trim runs after the WebView has already parsed whatever we sent, so the
+/// bound must live here, at the payload source.
+const MAX_LIVE_BATCH_ROWS: usize = 1000;
 
 /// Passive connection-journal stats for one outbound tag (smart switch Level 0).
 #[derive(Debug, Clone, Default)]
@@ -575,23 +582,25 @@ impl Runtime {
         let full = since_revision.is_none_or(|since| since < self.live_diff_floor);
         let since = since_revision.unwrap_or(0);
         let tag_info = node_tag_info_map(store);
+        // Newest-wins tail window (see MAX_LIVE_BATCH_ROWS): under TUN the
+        // core's live set is every active connection on the machine, and the
+        // frontend's own trim only runs after the WebView has received and
+        // JSON-parsed the whole payload.
+        let skip = self
+            .live_connections
+            .len()
+            .saturating_sub(MAX_LIVE_BATCH_ROWS);
+        let tail = self.live_connections.iter().skip(skip);
         // Order payload is O(N); skip it when the client's order revision is
         // current — pure traffic-counter deltas then merge in place on the
         // client without rebuilding the whole array.
         let order_ids = if full || last_order_revision != Some(self.live_order_revision) {
-            Some(
-                self.live_connections
-                    .iter()
-                    .map(connection_history_key)
-                    .collect::<Vec<_>>(),
-            )
+            Some(tail.clone().map(connection_history_key).collect::<Vec<_>>())
         } else {
             None
         };
         LiveConnectionBatch {
-            rows: self
-                .live_connections
-                .iter()
+            rows: tail
                 .filter(|connection| {
                     full || self
                         .live_item_revisions
@@ -909,10 +918,17 @@ impl Runtime {
         };
         let wait_started = Instant::now();
         let mut ok = false;
+        let mut api_seen_ok = false;
         while wait_started.elapsed() < max_wait {
             if api.health_ok() {
-                ok = true;
-                break;
+                api_seen_ok = true;
+                // The control API responding is not enough to claim success —
+                // the mixed inbound must accept connections too (a core whose
+                // inbound never bound would otherwise be reported running).
+                if dial_mixed_ok(store.settings.mixed_port) {
+                    ok = true;
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
             self.core.poll();
@@ -949,16 +965,16 @@ impl Runtime {
                 })
                 .unwrap_or_default();
             let _ = self.core.stop();
+            let what = crate::core::manager::map_core_startup_hint(&readiness_failure_detail(
+                "sing-box",
+                api_seen_ok,
+                store.settings.mixed_port,
+                store.settings.api_port,
+            ));
             let detail = if log_hint.is_empty() {
-                format!(
-                    "sing-box started but clash_api not responding at 127.0.0.1:{}",
-                    store.settings.api_port
-                )
+                what
             } else {
-                format!(
-                    "sing-box started but clash_api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
-                    store.settings.api_port
-                )
+                format!("{what}\n--- log ---\n{log_hint}")
             };
             return Err(AppError::Core(detail));
         }
@@ -1211,20 +1227,61 @@ impl Runtime {
         self.last_binary_path = Some(bin.clone());
         self.api = None;
         let metrics = XrayMetrics::new("127.0.0.1", store.settings.api_port);
-        // Confirm the metrics module is serving; a miss doesn't fail the
-        // start (proxying works without stats) but gets logged for diagnosis.
+        // Readiness = the mixed inbound accepting connections (Xray has no
+        // selector/hot-switch API to lean on and nothing else proves user
+        // traffic has somewhere to go). The metrics module is probed on the
+        // same loop but a miss only degrades traffic stats, never the start.
+        // TUN start can take a few seconds — same window as the other cores.
+        let max_wait = if elevated {
+            Duration::from_secs(10)
+        } else {
+            Duration::from_secs(6)
+        };
         let wait_started = Instant::now();
         let mut metrics_ok = false;
-        while wait_started.elapsed() < Duration::from_secs(3) {
-            if metrics.health_ok() {
+        let mut listening = false;
+        let mut died_during_wait = false;
+        while wait_started.elapsed() < max_wait {
+            if !metrics_ok && metrics.health_ok() {
                 metrics_ok = true;
+            }
+            if dial_mixed_ok(store.settings.mixed_port) {
+                listening = true;
                 break;
             }
             self.core.poll();
             if !self.core.is_running() {
+                died_during_wait = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(150));
+        }
+        if died_during_wait {
+            // Mirrors the sing-box/mihomo health-wait failure path: the core
+            // died after `wait_until_ready` accepted it — surface its log tail
+            // instead of reporting a successful start the watchdog must undo.
+            let log_hint = self.core_startup_log_hint();
+            let _ = self.core.stop();
+            let detail = if log_hint.is_empty() {
+                "xray exited during startup".to_string()
+            } else {
+                format!("xray exited during startup\n--- log ---\n{log_hint}")
+            };
+            return Err(AppError::Core(detail));
+        }
+        if !listening {
+            let log_hint = self.core_startup_log_hint();
+            let _ = self.core.stop();
+            let what = crate::core::manager::map_core_startup_hint(&format!(
+                "xray started but the mixed inbound never listened at 127.0.0.1:{}（代理端口不可用），已停止内核",
+                store.settings.mixed_port
+            ));
+            let detail = if log_hint.is_empty() {
+                what
+            } else {
+                format!("{what}\n--- log ---\n{log_hint}")
+            };
+            return Err(AppError::Core(detail));
         }
         if !metrics_ok {
             crate::app_log::warn(
@@ -1390,10 +1447,16 @@ impl Runtime {
         };
         let wait_started = Instant::now();
         let mut ok = false;
+        let mut api_seen_ok = false;
         while wait_started.elapsed() < max_wait {
             if api.health_ok() {
-                ok = true;
-                break;
+                api_seen_ok = true;
+                // Same gate as sing-box: report running only once the mixed
+                // inbound actually accepts connections.
+                if dial_mixed_ok(store.settings.mixed_port) {
+                    ok = true;
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
             self.core.poll();
@@ -1430,16 +1493,16 @@ impl Runtime {
                 })
                 .unwrap_or_default();
             let _ = self.core.stop();
+            let what = crate::core::manager::map_core_startup_hint(&readiness_failure_detail(
+                "mihomo",
+                api_seen_ok,
+                store.settings.mixed_port,
+                store.settings.api_port,
+            ));
             let detail = if log_hint.is_empty() {
-                format!(
-                    "mihomo started but clash api not responding at 127.0.0.1:{}",
-                    store.settings.api_port
-                )
+                what
             } else {
-                format!(
-                    "mihomo started but clash api not responding at 127.0.0.1:{}\n--- log ---\n{log_hint}",
-                    store.settings.api_port
-                )
+                format!("{what}\n--- log ---\n{log_hint}")
             };
             return Err(AppError::Core(detail));
         }
@@ -1762,6 +1825,39 @@ fn ensure_listen_port_available_on(port: u16, host: &str, label: &str) -> AppRes
         )));
     }
     Ok(())
+}
+
+/// True once the local mixed inbound actually accepts TCP connections.
+/// Complements the Clash-API/metrics health probes: a core that exited (or
+/// never bound its inbound — e.g. TUN creation denied) fails those too, but
+/// readiness claims must not rest on the control port alone. This dial is
+/// what "running" ultimately promises the user: their apps can connect.
+fn dial_mixed_ok(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(350),
+    )
+    .is_ok()
+}
+
+/// Failure text when the post-spawn readiness window expires. Distinguishes
+/// "control API never answered" (core likely dead or wedged) from "API
+/// answered but the mixed inbound never listened" (alive but user traffic
+/// has nowhere to go) — the exact misleading-running class this window
+/// exists to catch.
+fn readiness_failure_detail(
+    core_label: &str,
+    api_seen_ok: bool,
+    mixed_port: u16,
+    api_port: u16,
+) -> String {
+    if api_seen_ok {
+        format!(
+            "{core_label} 控制接口已应答，但本地代理入站始终未在 127.0.0.1:{mixed_port} 监听（代理端口不可用），已停止内核"
+        )
+    } else {
+        format!("{core_label} started but clash_api not responding at 127.0.0.1:{api_port}")
+    }
 }
 
 /// Shared BuildOptions for both generators (sing-box and Xray). The api
@@ -2510,6 +2606,33 @@ mod stop_behavior_tests {
             "status must remain a memory-only operation"
         );
     }
+
+    #[test]
+    fn dial_mixed_ok_reflects_whatever_listens_on_loopback() {
+        // A live listener must dial OK...
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(dial_mixed_ok(port));
+
+        // ...and a free port must not. Reserve one then release it so we
+        // don't race into a port some other process happens to occupy.
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert!(!dial_mixed_ok(free));
+    }
+
+    #[test]
+    fn readiness_failure_detail_distinguishes_api_vs_inbound() {
+        // API never answered → control-plane wording.
+        assert!(readiness_failure_detail("sing-box", false, 2080, 19090)
+            .contains("clash_api not responding at 127.0.0.1:19090"));
+        // API answered but the inbound never listened → the misleading-running
+        // class: the message must name the dead proxy port.
+        let msg = readiness_failure_detail("sing-box", true, 2080, 19090);
+        assert!(msg.contains("127.0.0.1:2080"));
+        assert!(!msg.contains("not responding"));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -2613,5 +2736,61 @@ mod live_batch_tests {
         assert!(delta3.order_ids.is_some());
         assert_eq!(delta3.order_ids.as_ref().map(Vec::len), Some(2));
         assert!(!delta3.removed_ids.is_empty());
+    }
+
+    #[test]
+    fn live_batch_serves_only_the_newest_window_at_tun_scale() {
+        // Under TUN the live set is every machine connection (thousands).
+        // The served batch must be the newest MAX_LIVE_BATCH_ROWS window —
+        // the WebView must never receive an unbounded payload.
+        let conn = |id: &str, up: u64| ConnectionInfo {
+            id: id.into(),
+            destination: format!("{id}.example:443"),
+            host: format!("{id}.example"),
+            destination_ip: "1.2.3.4".into(),
+            destination_port: "443".into(),
+            network: "tcp".into(),
+            conn_type: String::new(),
+            source: "127.0.0.1:1".into(),
+            process: String::new(),
+            chains: vec![],
+            node: String::new(),
+            rule: String::new(),
+            rule_payload: String::new(),
+            upload: up,
+            download: 0,
+            start: String::new(),
+        };
+
+        let mut runtime = Runtime::new();
+        let store = AppStore::default();
+        let total = MAX_LIVE_BATCH_ROWS + 500;
+        runtime.ingest_connections(
+            (0..total)
+                .map(|i| conn(&format!("c{i:05}"), 0))
+                .collect::<Vec<_>>(),
+        );
+
+        let batch = runtime.live_connection_batch(&store, None, None);
+        assert!(batch.full);
+        assert_eq!(batch.rows.len(), MAX_LIVE_BATCH_ROWS);
+        let ids = batch.order_ids.expect("full batch carries order_ids");
+        assert_eq!(ids.len(), MAX_LIVE_BATCH_ROWS);
+
+        // Newest-wins: the head (oldest) is trimmed off, the tail is intact.
+        let oldest = connection_history_key(&conn("c00000", 0));
+        let newest = connection_history_key(&conn(&format!("c{:05}", total - 1), 0));
+        assert!(!ids.contains(&oldest));
+        assert!(ids.contains(&newest));
+
+        // Row/order consistency: every served row is inside the order window
+        // (the client merges by id against it).
+        for row in &batch.rows {
+            assert!(
+                ids.contains(&row.id),
+                "row {} missing from order_ids",
+                row.id
+            );
+        }
     }
 }
