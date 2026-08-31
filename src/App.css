@@ -2167,6 +2167,33 @@ tr.row-active {
   height: 49px;
 }
 
+/* —— 单点测试 armed: every node wears a green outline so the
+   click-to-test affordance stays visible across the whole list/grid.
+   Cards take a real border + soft glow; table rows draw theirs via the
+   cells (tr can't carry borders reliably under border-collapse). */
+.spot-armed .node-card {
+  border-color: var(--success-border);
+  box-shadow:
+    0 0 0 1px var(--success-border),
+    0 0 10px color-mix(in srgb, var(--success) 20%, transparent);
+}
+
+.spot-armed .node-virtual-row > td {
+  border-top: 1px solid var(--success-border);
+  border-bottom: 1px solid var(--success-border);
+}
+
+.spot-armed .node-virtual-row > td:first-child {
+  border-left: 1px solid var(--success-border);
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.spot-armed .node-virtual-row > td:last-child {
+  border-right: 1px solid var(--success-border);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+
 .node-virtual-spacer > td {
   padding: 0;
   border: 0;
@@ -6524,6 +6551,7 @@ button.check.on {
     color-mix(in srgb, var(--danger) 14%, rgba(255, 255, 255, 0.05)) 100%
   );
 }
+
 
 /* —— Glass switch (frosted toggle, same family) —— */
 .glass-switch {

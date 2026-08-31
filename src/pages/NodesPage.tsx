@@ -475,9 +475,10 @@ export function NodesPage() {
             ]}
           />
 
+          {/* Monochrome text glyphs (same family as ↻ / + elsewhere) — they
+              follow the button color instead of rendering as color emoji. */}
           <GlassButton
-            variant="primary"
-            icon="⚡"
+            icon="◉"
             disabled={testing || displayed.length === 0}
             onClick={() => void onTestLatency("real")}
             title={t("nodes.testRealLatencyHint")}
@@ -488,7 +489,7 @@ export function NodesPage() {
               direct-TCP path (extracted nodes have no kernel mapping). */}
           {!customRuntime && (
             <GlassButton
-              icon="📶"
+              icon="∿"
               disabled={testing || displayed.length === 0}
               onClick={() => void onTestLatency("ping")}
               title={t("nodes.pingTestHint")}
@@ -496,17 +497,23 @@ export function NodesPage() {
               {testing && testKind === "ping" ? t("nodes.pinging") : t("nodes.pingTest")}
             </GlassButton>
           )}
-          {/* Click-test toggle: accent-tinted while enabled, and the label
-              itself states the behavior ("Click = test latency"). Meaningless
-              in custom mode (rows are not clickable there) — hidden with ping. */}
+          {/* 单点测试 toggle: state reads from the LED dot alone — gray
+              while off, green while armed (same LED language as the logs
+              page kernel tabs). Label stays constant in both states.
+              Meaningless in custom mode (rows are not clickable there) —
+              hidden with ping. */}
           {!customRuntime && (
             <GlassButton
-              icon="👆"
-              variant={clickTest ? "primary" : "plain"}
+              icon={
+                <span
+                  className={`seg-dot${clickTest ? " on" : ""}`}
+                  aria-hidden
+                />
+              }
               onClick={() => setClickTest((v) => !v)}
               title={t("nodes.clickTestHint")}
             >
-              {clickTest ? t("nodes.clickTestOn") : t("nodes.clickTest")}
+              {t("nodes.clickTest")}
             </GlassButton>
           )}
 
@@ -557,14 +564,6 @@ export function NodesPage() {
         </div>
       )}
 
-      {/* Persistent mode reminder right above the list, so the changed click
-          behavior is visible without hovering anything. */}
-      {clickTest && !customRuntime && (
-        <div className="banner" role="status">
-          {t("nodes.clickTestBanner")}
-        </div>
-      )}
-
       {loading ? (
         <div className="empty">{t("common.loading")}</div>
       ) : displayed.length === 0 ? (
@@ -576,7 +575,7 @@ export function NodesPage() {
             : "—"}
         </div>
       ) : viewMode === "list" ? (
-        <div className="card table-wrap">
+        <div className={`card table-wrap${clickTest ? " spot-armed" : ""}`}>
           <table>
             <thead>
               <tr>
@@ -689,7 +688,9 @@ export function NodesPage() {
           {gridRange.paddingTop > 0 && (
             <div style={{ height: gridRange.paddingTop }} aria-hidden="true" />
           )}
-          <div className={`node-grid ${virtualized ? "node-grid-virtual" : ""}`}>
+          <div
+            className={`node-grid ${virtualized ? "node-grid-virtual" : ""}${clickTest ? " spot-armed" : ""}`}
+          >
             {displayed.slice(gridRange.start, gridRange.end).map((n) => {
               const active = n.id === currentId;
               const isTesting = testingIds.has(n.id);
