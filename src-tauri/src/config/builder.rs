@@ -2444,12 +2444,12 @@ mod tests {
         assert_eq!(
             dns,
             vec![
-                json!({ "action": "evaluate", "server": "dns-remote" }),
+                json!({ "action": "evaluate", "server": "dns-local" }),
                 json!({
                     "rule_set": [tag],
                     "match_response": true,
                     "action": "route",
-                    "server": "dns-remote"
+                    "server": "dns-local"
                 })
             ]
         );
