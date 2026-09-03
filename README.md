@@ -149,7 +149,7 @@ pwsh scripts/build-windows.ps1 -Bundle portable   # 解压即用的便携版
 
 也可以直接推送到 `main` 分支，GitHub Actions 会自动构建 Windows NSIS 安装包。构建完成后进入仓库的 **Actions → Windows 构建**，在任务页面底部下载 `Satelite-Windows-*` 构建产物；云端产物保留 14 天，也支持在 Actions 页面手动触发构建。
 
-应用版本已固定为 `1.0.16`，后续功能和修复不再递增版本号。工作流会校验 `package.json`、`Cargo.toml` 和 `Cargo.lock`，任一处偏离 `1.0.16` 都会阻止构建。正式 Release 固定使用 `v1.0.16`；后续构建以 Git 提交 SHA 和 GitHub Actions 构建时间区分，不再创建 `v1.0.17` 等新版本标签。由于版本号不再变化，已安装的 `1.0.16` 不会仅靠版本比较提示同版本的新构建，需要按提交 SHA 或发布时间判断是否重新下载安装。
+当前应用版本为 `1.0.18`。工作流会校验 `package.json`、`Cargo.toml` 和 `Cargo.lock` 三处版本一致，正式 Release 使用对应的 `v1.0.18` 标签；后续版本变更时需要同步更新这三处、版本校验脚本和 Actions 标签条件。构建仍可通过 Git 提交 SHA 和 GitHub Actions 构建时间区分。
 
 ### 局域网代理
 

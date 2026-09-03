@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v1.0.16"
+      - "v1.0.18"
 
 permissions:
   contents: read
@@ -84,7 +84,7 @@ jobs:
 
   release:
     name: 发布 GitHub Release
-    if: github.ref == 'refs/tags/v1.0.16'
+    if: github.ref == 'refs/tags/v1.0.18'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

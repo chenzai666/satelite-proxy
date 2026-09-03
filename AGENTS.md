@@ -1,7 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-08-31（应用版本固定为 1.0.16，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托，以及端口就绪验证和异常内核恢复）。
+最后核对：2026-09-03（应用版本为 1.0.18，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托，以及端口就绪验证和异常内核恢复）。
 
 ## 0. 阅读与维护规则（必读）
 
@@ -354,8 +354,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 8. 构建细节与产物
 
-- **固定版本号**：应用版本永久保持 `1.0.16`，禁止递增。`scripts/check-fixed-version.ps1` 与 GitHub Actions 同时校验 `package.json`、`Cargo.toml`、`Cargo.lock`；后续构建以提交 SHA 和构建时间区分，固定 Release 标签为 `v1.0.16`。
-- **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`、`.../portable/Satelite_1.0.16_x64_portable.zip`）。GitHub Actions 会上传安装包与便携版；固定标签 `v1.0.16` 的 Release 同时附带二者，重新打同一标签时会覆盖同名产物。
+- **版本号**：当前应用版本为 `1.0.18`。`scripts/check-fixed-version.ps1` 与 GitHub Actions 同时校验 `package.json`、`Cargo.toml`、`Cargo.lock` 三处一致；发版标签使用 `v1.0.18`，版本变更时必须同步更新这三处、校验脚本和 Actions 标签条件。
+- **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`、`.../portable/Satelite_1.0.18_x64_portable.zip`）。GitHub Actions 会上传安装包与便携版；`v1.0.18` 的 Release 同时附带二者。
 - **Rust 测试布局**：集成测试 `src-tauri/tests/parse_subscription.rs`（fixtures 在 `tests/fixtures/`：clash yaml ×2、singbox json ×1）；`download_core_live.rs` 为 `#[ignore]` 真网测试；单测散落各文件 `#[cfg(test)]`。
 - **换行符**：`.gitattributes` 规定源码 eol=lf、`.ps1/.bat/.cmd` 为 CRLF。
 - **内核版本**：macOS 预取脚本默认 sing-box v1.13.18，Windows v1.13.15，两者独立演进，升级时分别改脚本；Xray 各平台统一 v26.3.27（`scripts/fetch-bundled-xray-*` + `core/kind.rs::fallback_version` 两处同步）；mihomo 各平台统一 v1.19.30（`scripts/fetch-bundled-mihomo-*` + `core/kind.rs::fallback_version` 两处同步）。

@@ -3328,7 +3328,7 @@ dependencies = [
 
 [[package]]
 name = "satelite-proxy"
-version = "1.0.16"
+version = "1.0.18"
 dependencies = [
  "base64 0.22.1",
  "core-foundation 0.10.1",
