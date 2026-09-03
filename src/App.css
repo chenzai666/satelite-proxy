@@ -2289,6 +2289,45 @@ button {
   white-space: nowrap;
 }
 
+/* Keep the node name and its subscription/group origin readable in the
+   narrow identity column. They used to share a horizontal flex row, which
+   made short labels such as "mine" appear glued to the node name. */
+.node-list-row > .node-list-identity {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.12rem;
+  white-space: normal;
+}
+
+.node-list-identity .node-list-name,
+.node-list-identity .node-sub-label {
+  width: 100%;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+.node-list-identity .node-list-name {
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.node-list-identity .node-sub-label {
+  display: inline-block;
+  width: fit-content;
+  box-sizing: border-box;
+  margin-top: 0.08rem;
+  padding: 0.06rem 0.38rem;
+  border: 1px solid var(--primary-border);
+  border-radius: 999px;
+  background: var(--primary-muted);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.15;
+}
+
 .node-list-group-row {
   display: flex;
   box-sizing: border-box;
@@ -2345,6 +2384,9 @@ button {
   gap: 0.35rem;
   min-width: 0;
   text-align: left;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
 .node-group-flag {

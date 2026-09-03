@@ -746,7 +746,7 @@ export function NodesPage() {
             {active ? "●" : "○"}
           </button>
         </span>
-        <span>
+        <span className="node-list-identity">
           <div className="node-list-name">{n.name}</div>
           {n.subscription_name ? (
             <div className="node-sub-label" title={n.subscription_name}>
