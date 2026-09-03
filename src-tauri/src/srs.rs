@@ -55,10 +55,9 @@ pub(crate) struct ParsedSrs {
     pub version: u8,
     /// Any rule carries AdGuard domain items (not decompilable by the core).
     pub has_adguard: bool,
-    /// Any rule carries destination `ip_cidr` items. A rule-set containing
-    /// these fields must be referenced from a sing-box DNS rule with
-    /// response matching; otherwise sing-box 1.14 rejects the config as a
-    /// legacy address filter.
+    /// Any rule carries destination `ip_cidr` items. Such rule-sets are used
+    /// for routing only; sing-box 1.14 rejects a DNS-side rule-set reference
+    /// to them as a legacy address filter when FakeIP is enabled.
     pub has_ip_cidr: bool,
     /// Row count the viewer will show. Regular sets match source-set
     /// semantics (`crate::domain::remote_rule_display_count`); AdGuard

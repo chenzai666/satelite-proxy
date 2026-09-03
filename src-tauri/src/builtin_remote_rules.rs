@@ -136,7 +136,7 @@ pub fn seed(
         let Ok(bytes) = std::fs::read(&stable) else {
             continue;
         };
-        let Ok(parsed) = crate::srs::parse(&bytes) else {
+        let Ok(parsed) = crate::srs::parse_with_rules(&bytes) else {
             crate::app_log::warn(
                 "builtin_rules",
                 format!("stable cache {} is not valid SRS", stable.display()),
@@ -147,7 +147,7 @@ pub fn seed(
             set,
             &stable,
             parsed.display_count,
-            parsed.has_ip_cidr && !parsed.has_adguard,
+            parsed_srs_contains_ip(&parsed),
         );
     }
 }
@@ -157,6 +157,21 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Whether a parsed SRS contains destination `ip_cidr` conditions.
+///
+/// Use the rules-collecting parser here because the startup classification is
+/// persisted as metadata and must be based on the actual rule contents. An
+/// AdGuard set may contain address-like syntax that is not a destination
+/// `ip_cidr` matcher and is not safe to classify as an IP-only set.
+pub(crate) fn parsed_srs_contains_ip(parsed: &crate::srs::ParsedSrs) -> bool {
+    !parsed.has_adguard
+        && parsed
+            .rules
+            .as_deref()
+            .map(crate::domain::rules_contain_ip_cidr)
+            .unwrap_or(false)
 }
 
 /// Mark a seeded/restored cache as a completed update so the auto scheduler
@@ -192,14 +207,14 @@ pub fn restore_set(
     let Ok(bytes) = std::fs::read(&path) else {
         return set;
     };
-    let Ok(parsed) = crate::srs::parse(&bytes) else {
+    let Ok(parsed) = crate::srs::parse_with_rules(&bytes) else {
         return set;
     };
     mark_updated(
         &mut set,
         &path,
         parsed.display_count,
-        parsed.has_ip_cidr && !parsed.has_adguard,
+        parsed_srs_contains_ip(&parsed),
     );
     set
 }

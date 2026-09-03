@@ -507,9 +507,9 @@ pub(crate) fn heal_contains_ip(store: &mut crate::storage::AppStore) {
             continue;
         };
         let verdict = if remote.format.eq_ignore_ascii_case("binary") {
-            crate::srs::parse(&bytes)
+            crate::srs::parse_with_rules(&bytes)
                 .ok()
-                .map(|parsed| parsed.has_ip_cidr && !parsed.has_adguard)
+                .map(|parsed| crate::builtin_remote_rules::parsed_srs_contains_ip(&parsed))
         } else {
             serde_json::from_slice::<serde_json::Value>(&bytes)
                 .ok()

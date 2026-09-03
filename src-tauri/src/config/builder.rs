@@ -2407,7 +2407,10 @@ mod tests {
             RuleTarget::Direct,
         );
         set.remote.as_mut().unwrap().local_path = Some(path.to_string_lossy().into_owned());
-        let tag = set.id.clone();
+        // Remote rule contents are classified when downloaded or during the
+        // startup cache-heal pass. The builder consumes that persisted
+        // metadata instead of doing file I/O for every rebuild.
+        set.remote.as_mut().unwrap().contains_ip = Some(true);
         let (_, _, dns) = build_grouped_rule_sets(&[set], &[], &[]);
 
         let _ = std::fs::remove_file(path);
