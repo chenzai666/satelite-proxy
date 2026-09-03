@@ -999,6 +999,28 @@ fn map_tun_permission_hint(err: &str) -> String {
     }
 }
 
+/// sing-tun logs this warning when the Windows Wintun adapter takes longer
+/// than its normal startup window. The runtime uses it as evidence that the
+/// core is still booting and should not be killed at the short base deadline.
+pub(crate) const SLOW_TUN_WARN_NEEDLE: &str = "take too much time to finish";
+
+/// Add actionable guidance when a readiness failure contains the slow-Wintun
+/// warning from the core log. Keep the original diagnostic intact and make
+/// the mapping idempotent so repeated status/error handling does not append
+/// the same text multiple times.
+pub(crate) fn map_slow_tun_start_hint(err: &str) -> String {
+    const MARKER: &str = "TUN 虚拟网卡在本机创建异常缓慢";
+    if !err.contains(SLOW_TUN_WARN_NEEDLE) || err.contains(MARKER) {
+        return err.to_string();
+    }
+    format!(
+        "{err}\n\n{}",
+        "TUN 虚拟网卡在本机创建异常缓慢，内核一直在等待网卡就绪。\n\
+         常见原因：其他 VPN/代理客户端占用 wintun 虚拟网卡、杀毒软件拦截、Windows 网络栈卡顿。\n\
+         处理：退出其他正在运行的 VPN/代理软件后重试；仍失败请重启电脑后再开启 TUN。"
+    )
+}
+
 fn port_has_listener(port: u16) -> bool {
     !listener_pids_on_port(port).is_empty()
 }

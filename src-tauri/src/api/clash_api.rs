@@ -336,15 +336,29 @@ impl ClashApi {
     /// WebSocket URL for streaming connection snapshots (`interval` in ms).
     /// sing-box Clash API defaults to 1000ms; lower values catch more short-lived conns.
     pub fn connections_ws_url(&self, interval_ms: u64) -> String {
-        let base = self
-            .base
-            .replacen("https://", "wss://", 1)
-            .replacen("http://", "ws://", 1);
+        let base = self.ws_base();
         // token= works for WS without custom headers (also send Authorization).
         format!(
             "{base}/connections?interval={interval_ms}&token={}",
             urlencoding::encode(&self.secret)
         )
+    }
+
+    /// WebSocket URL for Mihomo's warning/error log stream. The listener uses
+    /// it to capture outbound dial failures that never enter `/connections`.
+    pub fn logs_ws_url(&self, level: &str) -> String {
+        let base = self.ws_base();
+        format!(
+            "{base}/logs?level={}&token={}",
+            urlencoding::encode(level),
+            urlencoding::encode(&self.secret)
+        )
+    }
+
+    fn ws_base(&self) -> String {
+        self.base
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1)
     }
 }
 

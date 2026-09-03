@@ -143,7 +143,12 @@ pub fn seed(
             );
             continue;
         };
-        mark_updated(set, &stable, parsed.display_count);
+        mark_updated(
+            set,
+            &stable,
+            parsed.display_count,
+            parsed.has_ip_cidr && !parsed.has_adguard,
+        );
     }
 }
 
@@ -157,7 +162,7 @@ fn now_secs() -> i64 {
 /// Mark a seeded/restored cache as a completed update so the auto scheduler
 /// counts the 24h interval from seeding instead of refreshing immediately
 /// (`due_ids` treats "never attempted" as due).
-fn mark_updated(set: &mut RuleSet, path: &Path, count: u32) {
+fn mark_updated(set: &mut RuleSet, path: &Path, count: u32, contains_ip: bool) {
     let Some(remote) = set.remote.as_mut() else {
         return;
     };
@@ -169,6 +174,7 @@ fn mark_updated(set: &mut RuleSet, path: &Path, count: u32) {
     remote.last_update = Some(now);
     remote.last_attempt = Some(now);
     remote.rule_count = Some(count);
+    remote.contains_ip = Some(contains_ip);
 }
 /// Build the factory entry for one bundled rule set, (re)copying the
 /// packaged file so the restored set works offline immediately. Used by the
@@ -189,7 +195,12 @@ pub fn restore_set(
     let Ok(parsed) = crate::srs::parse(&bytes) else {
         return set;
     };
-    mark_updated(&mut set, &path, parsed.display_count);
+    mark_updated(
+        &mut set,
+        &path,
+        parsed.display_count,
+        parsed.has_ip_cidr && !parsed.has_adguard,
+    );
     set
 }
 

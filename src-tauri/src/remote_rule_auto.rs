@@ -286,8 +286,8 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
         Ok(bytes) => bytes,
         Err(error) => return fail(app, id, error),
     };
-    let (bytes, format, source_rule_count, binary_scan) = match validate_source(&bytes) {
-        Ok(count) => (bytes, RuleSetFileFormat::Source, Some(count), None),
+    let (bytes, format, source_scan, binary_scan) = match validate_source(&bytes) {
+        Ok(scan) => (bytes, RuleSetFileFormat::Source, Some(scan), None),
         Err(_) if bytes.starts_with(b"SRS") => {
             // Structural parse validates the binary container without the
             // core, and is the only validation possible for AdGuard
@@ -298,7 +298,14 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
             }
         }
         Err(source_error) => match convert_clash_list_to_source(&bytes) {
-            Ok((converted, count)) => (converted, RuleSetFileFormat::Source, Some(count), None),
+            Ok((converted, count)) => {
+                // Re-scan the exact converted payload so IP rules imported
+                // from Clash lists are classified just like native source
+                // JSON. The count returned by the converter is retained as a
+                // defensive fallback for an impossible validation mismatch.
+                let scan = validate_source(&converted).unwrap_or((count, false));
+                (converted, RuleSetFileFormat::Source, Some(scan), None)
+            }
             Err(clash_error) => {
                 return fail(
                     app,
@@ -337,14 +344,14 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
         return fail(app, id, error);
     }
 
-    let rule_count = match source_rule_count {
-        Some(count) => count,
+    let (rule_count, contains_ip) = match source_scan {
+        Some(scan) => scan,
         None => {
             let parsed = binary_scan.expect("binary sets are scanned before writing");
             if parsed.has_adguard {
                 // AdGuard rule-sets cannot be decompiled by sing-box; the
                 // structural scan above already validated the file.
-                parsed.display_count
+                (parsed.display_count, false)
             } else {
                 let resource_dir = app.path().resource_dir().ok();
                 let (core, _) = crate::core::resolve_core_bin(
@@ -365,7 +372,7 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
                         .map_err(|error| error.to_string())
                         .and_then(|result| result);
                         match result {
-                            Ok(count) => count,
+                            Ok(scan) => scan,
                             Err(error) => {
                                 let _ = std::fs::remove_file(&path);
                                 return fail(app, id, error);
@@ -374,7 +381,10 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
                     }
                     // No core available to decompile with: the structural
                     // scan already verified the file, accept it as-is.
-                    None => parsed.display_count,
+                    None => (
+                        parsed.display_count,
+                        parsed.has_ip_cidr && !parsed.has_adguard,
+                    ),
                 }
             }
         }
@@ -398,6 +408,7 @@ async fn refresh_inner(app: &AppHandle, id: &str) -> Result<DownloadedRule, Stri
             remote.download_error = None;
             remote.last_update = Some(attempt);
             remote.rule_count = Some(rule_count);
+            remote.contains_ip = Some(contains_ip);
             Ok((set.clone(), old_path))
         })
         .map_err(|error| error.to_string());
@@ -446,7 +457,10 @@ async fn download(url: &str, proxy_port: Option<u16>) -> Result<Vec<u8>, String>
         .await
 }
 
-fn validate_source(bytes: &[u8]) -> Result<u32, String> {
+/// Validate a sing-box source rule-set and return its display count together
+/// with whether it contains destination `ip_cidr` fields. This metadata is
+/// persisted so config generation does not need to parse every cache file.
+fn validate_source(bytes: &[u8]) -> Result<(u32, bool), String> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|error| format!("远程规则集不是有效的 sing-box source JSON: {error}"))?;
     let rules = value
@@ -462,7 +476,52 @@ fn validate_source(bytes: &[u8]) -> Result<u32, String> {
             total.checked_add(crate::domain::remote_rule_display_count(rule))
         })
         .ok_or_else(|| "远程规则集条目数量过多".to_string())?;
-    u32::try_from(count).map_err(|_| "远程规则集条目数量过多".to_string())
+    let count = u32::try_from(count).map_err(|_| "远程规则集条目数量过多".to_string())?;
+    Ok((count, crate::domain::rules_contain_ip_cidr(rules)))
+}
+
+/// Backfill the IP classification for remote caches written by versions that
+/// predate `contains_ip`. Unreadable or missing files stay unknown so the
+/// builder keeps its conservative domain-only behavior.
+pub(crate) fn heal_contains_ip(store: &mut crate::storage::AppStore) {
+    for set in &mut store.rule_sets {
+        let Some(remote) = set.remote.as_mut() else {
+            continue;
+        };
+        if remote.contains_ip.is_some() {
+            continue;
+        }
+        let Some(path) = remote
+            .local_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        let path = Path::new(path);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let verdict = if remote.format.eq_ignore_ascii_case("binary") {
+            crate::srs::parse(&bytes)
+                .ok()
+                .map(|parsed| parsed.has_ip_cidr && !parsed.has_adguard)
+        } else {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|value| {
+                    let rules = value.get("rules")?.as_array()?;
+                    (!rules.is_empty()).then(|| crate::domain::rules_contain_ip_cidr(rules))
+                })
+        };
+        if let Some(contains_ip) = verdict {
+            remote.contains_ip = Some(contains_ip);
+        }
+    }
 }
 
 /// Convert Clash classical `.list` / `payload:` YAML into a sing-box source
@@ -658,7 +717,7 @@ mod tests {
     fn accepts_sing_box_source_json() {
         assert_eq!(
             validate_source(br#"{"version":3,"rules":[{"domain_suffix":["example.com"]}]}"#),
-            Ok(1)
+            Ok((1, false))
         );
     }
 
@@ -668,7 +727,7 @@ mod tests {
             validate_source(
                 br#"{"version":3,"rules":[{"domain_suffix":["a.com","b.com"],"ip_cidr":["10.0.0.0/8"]}]}"#
             ),
-            Ok(3)
+            Ok((3, true))
         );
     }
 
@@ -691,7 +750,7 @@ payload:
 "#;
         let (source, count) = convert_clash_list_to_source(input).unwrap();
         assert_eq!(count, 5);
-        assert_eq!(validate_source(&source), Ok(5));
+        assert_eq!(validate_source(&source), Ok((5, true)));
         let value: serde_json::Value = serde_json::from_slice(&source).unwrap();
         assert_eq!(value["rules"][0]["domain_suffix"][0], "chatgpt.com");
         assert_eq!(value["rules"][0]["process_name"][0], "ChatGPT.exe");
@@ -722,6 +781,6 @@ payload:
         std::fs::write(&path, SRS).unwrap();
         let result = decompile_srs(&core, &path).and_then(|bytes| validate_source(&bytes));
         let _ = std::fs::remove_file(path);
-        assert_eq!(result, Ok(1));
+        assert_eq!(result, Ok((1, false)));
     }
 }

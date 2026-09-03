@@ -8,6 +8,7 @@ mod conn_journal;
 mod core;
 mod domain;
 mod error;
+mod log_listener;
 mod log_retention;
 mod portable;
 mod proxy;
@@ -176,6 +177,7 @@ pub fn run() {
 
             app.manage(app_state);
             window_ctrl::apply_main_window_icon(app.handle());
+            window_ctrl::apply_window_theme(app.handle());
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(status) = state.proxy_status() {
                     app_log::info(
@@ -206,6 +208,10 @@ pub fn run() {
                         resource_dir.as_deref(),
                         store,
                     );
+                    // Backfill content metadata for caches written before
+                    // `contains_ip` existed. This must run before an
+                    // auto-started proxy builds its first sing-box config.
+                    crate::remote_rule_auto::heal_contains_ip(store);
                     Ok(())
                 }) {
                     app_log::warn(
@@ -228,6 +234,10 @@ pub fn run() {
             // Connection journal: WebSocket snapshots @100ms + ring history.
             // Clash API only yields live sockets; low-interval stream reduces misses.
             conn_journal::spawn_connection_journal(app.handle().clone());
+
+            // Mihomo's `/connections` omits failed outbound dials. Its
+            // warning/error log stream supplies those passive health samples.
+            log_listener::spawn_log_listener(app.handle().clone());
 
             // Profile auto-update (per-subscription interval, default 1440 min).
             subscription_auto::spawn(app.handle().clone());
@@ -402,6 +412,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_settings,
             commands::diagnose_network,
+            commands::check_exit_ip,
             commands::regenerate_api_secret,
             commands::set_current_node,
             commands::rename_node,
@@ -421,6 +432,7 @@ pub fn run() {
             commands::download_core,
             commands::fetch_core_latest,
             commands::refresh_geodata,
+            commands::reset_core_to_bundled,
             commands::set_core_type,
             commands::test_nodes_latency,
             commands::ping_nodes_latency,

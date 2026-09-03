@@ -94,9 +94,15 @@ const MAX_LIVE_REMOVAL_HISTORY: usize = 10_000;
 /// trim runs after the WebView has already parsed whatever we sent, so the
 /// bound must live here, at the payload source.
 const MAX_LIVE_BATCH_ROWS: usize = 1000;
+/// Base startup wait for elevated TUN sessions. It must exceed sing-tun's
+/// own slow-interface warning threshold so the warning can be observed.
+const STARTUP_WAIT_TUN_BASE: Duration = Duration::from_secs(12);
+/// Do not keep a wedged Wintun adapter alive indefinitely. Once this evidence
+/// window expires, return a useful startup error instead of hanging the UI.
+const TUN_STARTUP_STALL_CAP: Duration = Duration::from_secs(45);
 
 /// Passive connection-journal stats for one outbound tag (smart switch Level 0).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PassiveNodeStats {
     /// Closed connections in the lookback window on this node.
     pub total: u32,
@@ -108,6 +114,16 @@ pub struct PassiveNodeStats {
     pub sus_dests: u32,
     /// Trailing consecutive suspicious closes (most recent first).
     pub consecutive_recent_sus: u32,
+}
+
+/// One kernel-log dial failure attributed to an outbound tag (Mihomo mode).
+/// Mihomo creates its connection tracker only after a dial succeeds, so a
+/// failed dial never reaches the normal connection journal.
+#[derive(Debug, Clone)]
+pub struct DialFailureEvent {
+    pub at_ms: i64,
+    pub tag: String,
+    pub dest: String,
 }
 
 impl PassiveNodeStats {
@@ -151,6 +167,9 @@ pub struct Runtime {
     traffic_speed: (u64, u64),
     /// Live connections (last poll)
     live_connections: Vec<ConnectionInfo>,
+    /// History keys for `live_connections`, in the same order. Keeping them
+    /// avoids rebuilding every key repeatedly for large TUN snapshots.
+    live_connection_keys: Vec<String>,
     live_revision: u64,
     /// Bumped only when the live id SET changes (adds/removes), not on plain
     /// traffic-counter updates — lets `live_connection_batch` skip the O(N)
@@ -163,6 +182,8 @@ pub struct Runtime {
     request_by_id: HashMap<String, RequestRecord>,
     /// Newest ids at the front.
     request_order: VecDeque<String>,
+    /// Bounded Mihomo log failures used by passive smart switching.
+    proxy_dial_failures: VecDeque<DialFailureEvent>,
     /// When journal / sample last applied a snapshot.
     last_sample_at: Option<Instant>,
     /// Monotonic journal sequence (opens).
@@ -209,6 +230,7 @@ impl Runtime {
             traffic_prev: None,
             traffic_speed: (0, 0),
             live_connections: Vec::new(),
+            live_connection_keys: Vec::new(),
             live_revision: 0,
             live_order_revision: 0,
             live_item_revisions: HashMap::new(),
@@ -216,6 +238,7 @@ impl Runtime {
             live_diff_floor: 0,
             request_by_id: HashMap::new(),
             request_order: VecDeque::new(),
+            proxy_dial_failures: VecDeque::new(),
             last_sample_at: None,
             journal_seq: 0,
             core_started_at: None,
@@ -410,14 +433,83 @@ impl Runtime {
             .unwrap_or_default()
     }
 
-    /// Passive health for smart switch from connection journal (no MITM / no HTTP codes).
-    ///
-    /// Heuristic "suspicious": closed within 3s with almost no bytes — proxy path often
-    /// dies before useful transfer. Multi-destination and consecutive tail reduce
-    /// single-site false positives (docs/auto.md).
+    /// Check the active core log for a warning that the TUN adapter is still
+    /// opening. The warning is emitted by sing-tun and is not necessarily
+    /// promoted to `last_error`.
+    fn core_log_contains(&self, needle: &str) -> bool {
+        self.core
+            .log_path()
+            .and_then(|path| std::fs::read(path).ok())
+            .map(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+            .unwrap_or(false)
+    }
+
+    /// Shared readiness wait for generated and custom sing-box profiles.
+    /// TUN starts get a short base window, then an evidence-gated extension if
+    /// the core reports a slow Wintun adapter. This avoids killing a healthy
+    /// but slow boot and immediately retrying against the same half-created
+    /// adapter.
+    fn wait_clash_api_ready(
+        &mut self,
+        elevated: bool,
+        api: &ClashApi,
+        mixed_port: Option<u16>,
+    ) -> (bool, bool) {
+        let base = if elevated {
+            STARTUP_WAIT_TUN_BASE
+        } else {
+            Duration::from_secs(6)
+        };
+        let started = Instant::now();
+        let mut deadline = started + base;
+        let mut ticks = 0u32;
+        let mut api_seen_ok = false;
+
+        while Instant::now() < deadline {
+            if api.health_ok() {
+                api_seen_ok = true;
+                if mixed_port.map(dial_mixed_ok).unwrap_or(true) {
+                    return (true, api_seen_ok);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            self.core.poll();
+            if !self.core.is_running() {
+                break;
+            }
+            ticks = ticks.saturating_add(1);
+            if elevated
+                && ticks % 5 == 0
+                && self.core_log_contains(crate::core::manager::SLOW_TUN_WARN_NEEDLE)
+            {
+                deadline = started + TUN_STARTUP_STALL_CAP;
+            }
+        }
+        (false, api_seen_ok)
+    }
+
+    /// Passive health for one outbound tag — backed by the same single-pass
+    /// implementation used when smart-switch ranks many candidates.
     pub fn passive_node_stats(&self, node_tag: &str, lookback_ms: i64) -> PassiveNodeStats {
+        let tag = node_tag.to_string();
+        self.passive_stats_for_tags(std::slice::from_ref(&tag), lookback_ms)
+            .remove(&tag)
+            .unwrap_or_default()
+    }
+
+    /// Passive health for several outbound tags in one scan over the journal
+    /// and Mihomo dial-failure ring. This avoids O(nodes × history) work while
+    /// smart-switch candidates are being ranked.
+    pub fn passive_stats_for_tags(
+        &self,
+        tags: &[String],
+        lookback_ms: i64,
+    ) -> HashMap<String, PassiveNodeStats> {
         let now = now_unix_ms();
-        let mut samples: Vec<(i64, bool, String)> = Vec::new(); // closed_at, sus, dest_key
+        let mut wanted: HashSet<&str> = tags.iter().map(String::as_str).collect();
+        wanted.retain(|tag| !tag.is_empty());
+        let mut by_tag: HashMap<&str, Vec<(i64, bool, String)>> =
+            HashMap::with_capacity(wanted.len());
 
         for rec in self.request_by_id.values() {
             if !rec.closed {
@@ -427,14 +519,20 @@ impl Runtime {
             if now.saturating_sub(closed_at) > lookback_ms {
                 continue;
             }
-            let matches = rec.node == node_tag
-                || rec.chains.iter().any(|c| c == node_tag)
-                || (!node_tag.is_empty() && rec.node.contains(node_tag));
-            if !matches {
+            let mut hits: Vec<&str> = Vec::new();
+            if wanted.contains(rec.node.as_str()) {
+                hits.push(rec.node.as_str());
+            }
+            for chain in &rec.chains {
+                if wanted.contains(chain.as_str()) && !hits.contains(&chain.as_str()) {
+                    hits.push(chain.as_str());
+                }
+            }
+            if hits.is_empty() {
                 continue;
             }
-            let dur = closed_at.saturating_sub(rec.first_seen);
-            let sus = dur <= 3000 && rec.download < 1024 && rec.upload < 1024;
+            let duration = closed_at.saturating_sub(rec.first_seen);
+            let suspicious = request_looks_failed(duration, rec.upload, rec.download);
             let dest = if !rec.host.is_empty() {
                 rec.host.clone()
             } else if !rec.destination.is_empty() && rec.destination != "—" {
@@ -442,39 +540,62 @@ impl Runtime {
             } else {
                 "unknown".into()
             };
-            samples.push((closed_at, sus, dest));
-        }
-
-        samples.sort_by_key(|(t, _, _)| *t);
-
-        let mut all_dests = HashSet::new();
-        let mut sus_dests = HashSet::new();
-        let mut suspicious = 0u32;
-        for (_, sus, dest) in &samples {
-            all_dests.insert(dest.clone());
-            if *sus {
-                suspicious = suspicious.saturating_add(1);
-                sus_dests.insert(dest.clone());
+            for tag in hits {
+                by_tag
+                    .entry(tag)
+                    .or_default()
+                    .push((closed_at, suspicious, dest.clone()));
             }
         }
 
-        // Consecutive suspicious at the most recent end of the window.
-        let mut consecutive_recent_sus = 0u32;
-        for (_, sus, _) in samples.iter().rev() {
-            if *sus {
-                consecutive_recent_sus = consecutive_recent_sus.saturating_add(1);
+        // Mihomo does not expose failed outbound dials in /connections, so
+        // the /logs listener contributes them as explicit suspicious samples.
+        for event in &self.proxy_dial_failures {
+            if now.saturating_sub(event.at_ms) > lookback_ms {
+                continue;
+            }
+            if wanted.contains(event.tag.as_str()) {
+                by_tag.entry(event.tag.as_str()).or_default().push((
+                    event.at_ms,
+                    true,
+                    event.dest.clone(),
+                ));
+            }
+        }
+
+        let mut result = HashMap::with_capacity(wanted.len());
+        for tag in wanted {
+            let Some(samples) = by_tag.get_mut(tag) else {
+                result.insert(tag.to_string(), PassiveNodeStats::default());
+                continue;
+            };
+            samples.sort_by_key(|(at, _, _)| *at);
+            result.insert(tag.to_string(), passive_stats_from_samples(samples));
+        }
+        result
+    }
+
+    /// Record a Mihomo kernel-log dial failure. The ring is deliberately
+    /// bounded by both age and count so a noisy unavailable endpoint cannot
+    /// grow the app indefinitely.
+    pub fn record_proxy_dial_failure(&mut self, tag: &str, dest: &str) {
+        const KEEP_MS: i64 = 120_000;
+        const MAX_EVENTS: usize = 512;
+        let now = now_unix_ms();
+        while let Some(front) = self.proxy_dial_failures.front() {
+            if now.saturating_sub(front.at_ms) > KEEP_MS
+                || self.proxy_dial_failures.len() >= MAX_EVENTS
+            {
+                self.proxy_dial_failures.pop_front();
             } else {
                 break;
             }
         }
-
-        PassiveNodeStats {
-            total: samples.len() as u32,
-            suspicious,
-            dests: all_dests.len() as u32,
-            sus_dests: sus_dests.len() as u32,
-            consecutive_recent_sus,
-        }
+        self.proxy_dial_failures.push_back(DialFailureEvent {
+            at_ms: now,
+            tag: tag.to_string(),
+            dest: dest.to_string(),
+        });
     }
 
     /// Apply a pre-fetched snapshot (journal / HTTP fallback). Prefer calling I/O outside the lock.
@@ -499,13 +620,19 @@ impl Runtime {
     }
 
     /// Diff-based journal: upsert live, mark disappeared as closed.
+    ///
+    /// Build each connection history key once per frame. TUN snapshots can
+    /// contain thousands of rows, so reusing the previous-frame keys avoids
+    /// repeated hashing/allocation in the close and diff passes.
     fn ingest_connections(&mut self, connections: Vec<ConnectionInfo>) {
         let now_ms = now_unix_ms();
         let mut seen: HashSet<String> = HashSet::with_capacity(connections.len());
+        let mut incoming_keys: Vec<String> = Vec::with_capacity(connections.len());
 
         for c in &connections {
             let id = connection_history_key(c);
             seen.insert(id.clone());
+            incoming_keys.push(id.clone());
             if let Some(rec) = self.request_by_id.get_mut(&id) {
                 rec.last_seen = now_ms;
                 rec.closed = false;
@@ -545,10 +672,9 @@ impl Runtime {
         }
 
         // Connections that left the live snapshot → Closed event in journal.
-        for prev in &self.live_connections {
-            let id = connection_history_key(prev);
-            if !seen.contains(&id) {
-                if let Some(rec) = self.request_by_id.get_mut(&id) {
+        for id in &self.live_connection_keys {
+            if !seen.contains(id) {
+                if let Some(rec) = self.request_by_id.get_mut(id) {
                     if !rec.closed {
                         self.journal_seq = self.journal_seq.saturating_add(1);
                         rec.history_seq = self.journal_seq;
@@ -563,27 +689,30 @@ impl Runtime {
         if self.live_connections != connections {
             self.live_revision = self.live_revision.saturating_add(1);
             let revision = self.live_revision;
-            let previous: HashMap<String, &ConnectionInfo> = self
+            let previous: HashMap<&str, &ConnectionInfo> = self
                 .live_connections
                 .iter()
-                .map(|connection| (connection_history_key(connection), connection))
+                .zip(self.live_connection_keys.iter())
+                .map(|(connection, id)| (id.as_str(), connection))
                 .collect();
             let mut membership_changed = false;
-            for connection in &connections {
-                let id = connection_history_key(connection);
-                let is_new = previous.get(&id).is_none();
-                if previous.get(&id).is_none_or(|old| *old != connection) {
-                    self.live_item_revisions.insert(id, revision);
+            for (connection, id) in connections.iter().zip(&incoming_keys) {
+                let is_new = !previous.contains_key(id.as_str());
+                if previous
+                    .get(id.as_str())
+                    .is_none_or(|old| *old != connection)
+                {
+                    self.live_item_revisions.insert(id.clone(), revision);
                     if is_new {
                         membership_changed = true;
                     }
                 }
             }
             for id in previous.keys() {
-                if !seen.contains(id) {
+                if !seen.contains(*id) {
                     membership_changed = true;
-                    self.live_item_revisions.remove(id);
-                    self.live_removals.push_back((revision, id.clone()));
+                    self.live_item_revisions.remove(*id);
+                    self.live_removals.push_back((revision, id.to_string()));
                 }
             }
             if membership_changed {
@@ -595,6 +724,7 @@ impl Runtime {
                 }
             }
             self.live_connections = connections;
+            self.live_connection_keys = incoming_keys;
         }
     }
 
@@ -713,7 +843,7 @@ impl Runtime {
             }
             let closed_at = record.closed_at.unwrap_or(record.last_seen);
             let duration = closed_at.saturating_sub(record.first_seen);
-            duration <= 3000 && record.download < 1024 && record.upload < 1024
+            request_looks_failed(duration, record.upload, record.download)
         };
 
         if let Some(after_seq) = after_seq {
@@ -882,6 +1012,14 @@ impl Runtime {
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
+        #[cfg(target_os = "windows")]
+        if nodes.iter().any(|node| node.protocol == Protocol::Naive) {
+            // Naive is the only generated sing-box outbound with an external
+            // Windows DLL dependency. Fail before replacing a running proxy
+            // if the dependency cannot be repaired from bundled resources.
+            crate::core::ensure_libcronet(app_data_dir, resource_dir)?;
+        }
+
         // The toggle controls whether the Clash API is authenticated. Existing
         // persisted secrets migrate safely, while a disabled toggle clears the
         // stale value instead of leaving a hidden credential behind.
@@ -955,33 +1093,11 @@ impl Runtime {
         self.last_binary_path = Some(bin.clone());
 
         let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
-        // TUN start can take a few seconds (utun + routes). Health uses a short
-        // per-try timeout so we do not block the runtime lock for minutes.
-        let max_wait = if elevated {
-            Duration::from_secs(10)
-        } else {
-            Duration::from_secs(6)
-        };
-        let wait_started = Instant::now();
-        let mut ok = false;
-        let mut api_seen_ok = false;
-        while wait_started.elapsed() < max_wait {
-            if api.health_ok() {
-                api_seen_ok = true;
-                // The control API responding is not enough to claim success —
-                // the mixed inbound must accept connections too (a core whose
-                // inbound never bound would otherwise be reported running).
-                if dial_mixed_ok(store.settings.mixed_port) {
-                    ok = true;
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            self.core.poll();
-            if !self.core.is_running() {
-                break;
-            }
-        }
+        // A slow Wintun adapter needs an evidence-gated extension; otherwise
+        // killing the core at the old 10s deadline makes the next attempt
+        // contend with the same half-created adapter.
+        let (ok, api_seen_ok) =
+            self.wait_clash_api_ready(elevated, &api, Some(store.settings.mixed_port));
         if !ok {
             let log_hint = self
                 .core
@@ -1022,7 +1138,9 @@ impl Runtime {
             } else {
                 format!("{what}\n--- log ---\n{log_hint}")
             };
-            return Err(AppError::Core(detail));
+            return Err(AppError::Core(
+                crate::core::manager::map_slow_tun_start_hint(&detail),
+            ));
         }
         self.api = Some(api);
         self.core_started_at = Some(now_unix_secs());
@@ -1596,6 +1714,14 @@ impl Runtime {
         let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::SingBox);
         let bin = bin.ok_or_else(|| AppError::Core("sing-box binary not found".into()))?;
 
+        // Custom profiles may contain a Naive outbound that is not represented
+        // by the generated node list. Repair the DLL opportunistically; the
+        // core can still start for profiles that do not use Naive.
+        #[cfg(target_os = "windows")]
+        if let Err(error) = crate::core::ensure_libcronet(app_data_dir, resource_dir) {
+            crate::app_log::warn("core_assets", format!("sing-box libcronet: {error}"));
+        }
+
         let log_dir = app_data_dir.join("logs");
         let elevated = insight.has_tun;
         self.core.start_with_ports(
@@ -1620,29 +1746,20 @@ impl Runtime {
             let port = insight.clash_api_port.unwrap_or(9090);
             let secret = insight.clash_api_secret.clone().unwrap_or_default();
             let api = ClashApi::new(host, port, &secret);
-            let max_wait = if elevated {
-                Duration::from_secs(10)
-            } else {
-                Duration::from_secs(6)
-            };
-            let wait_started = Instant::now();
-            let mut ok = false;
-            while wait_started.elapsed() < max_wait {
-                if api.health_ok() {
-                    ok = true;
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                self.core.poll();
-                if !self.core.is_running() {
-                    break;
-                }
-            }
+            let (ok, _) = self.wait_clash_api_ready(elevated, &api, None);
             if !ok {
+                let log_hint = self.core_startup_log_hint();
                 let _ = self.core.stop();
-                return Err(AppError::Core(format!(
-                    "sing-box started but clash_api not responding at {host}:{port}"
-                )));
+                let detail = if log_hint.trim().is_empty() {
+                    format!("sing-box started but clash_api not responding at {host}:{port}")
+                } else {
+                    format!(
+                        "sing-box started but clash_api not responding at {host}:{port}\n--- log ---\n{log_hint}"
+                    )
+                };
+                return Err(AppError::Core(
+                    crate::core::manager::map_slow_tun_start_hint(&detail),
+                ));
             }
             self.api = Some(api);
             store.settings.clash_api_secret = if secret.is_empty() {
@@ -1735,8 +1852,7 @@ impl Runtime {
         }
         self.live_revision = self.live_revision.saturating_add(1);
         let revision = self.live_revision;
-        for connection in &self.live_connections {
-            let id = connection_history_key(connection);
+        for id in self.live_connection_keys.drain(..) {
             self.live_item_revisions.remove(&id);
             self.live_removals.push_back((revision, id));
         }
@@ -2087,6 +2203,46 @@ fn now_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Identify both quick proxy-path deaths and zero-byte dial timeouts. The
+/// latter often live around five seconds, so the historical three-second-only
+/// heuristic could never feed them into smart switching.
+fn request_looks_failed(duration_ms: i64, upload: u64, download: u64) -> bool {
+    if upload >= 1024 || download >= 1024 {
+        return false;
+    }
+    duration_ms <= 3_000 || (upload == 0 && download == 0 && duration_ms <= 15_000)
+}
+
+fn passive_stats_from_samples(samples: &[(i64, bool, String)]) -> PassiveNodeStats {
+    let mut all_dests = HashSet::new();
+    let mut suspicious_dests = HashSet::new();
+    let mut suspicious = 0u32;
+    for (_, is_suspicious, dest) in samples {
+        all_dests.insert(dest.as_str());
+        if *is_suspicious {
+            suspicious = suspicious.saturating_add(1);
+            suspicious_dests.insert(dest.as_str());
+        }
+    }
+
+    let mut consecutive_recent_sus = 0u32;
+    for (_, is_suspicious, _) in samples.iter().rev() {
+        if *is_suspicious {
+            consecutive_recent_sus = consecutive_recent_sus.saturating_add(1);
+        } else {
+            break;
+        }
+    }
+
+    PassiveNodeStats {
+        total: samples.len() as u32,
+        suspicious,
+        dests: all_dests.len() as u32,
+        sus_dests: suspicious_dests.len() as u32,
+        consecutive_recent_sus,
+    }
 }
 
 fn now_unix_secs() -> i64 {

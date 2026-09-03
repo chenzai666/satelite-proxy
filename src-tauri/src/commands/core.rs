@@ -32,6 +32,8 @@ pub struct CoreInfo {
     /// `bundled` | `downloaded` | `missing`
     pub source: String,
     pub bundled_version: Option<String>,
+    /// 固定的出厂版本；未内置的核心恢复出厂时按此版本重新下载。
+    pub factory_version: Option<String>,
 }
 
 /// Local core status only (no network). Prefer this for page load.
@@ -68,6 +70,7 @@ pub fn get_core_info(
             CoreSource::Missing => "missing".into(),
         },
         bundled_version,
+        factory_version: Some(kind.fallback_version().into()),
     })
 }
 
@@ -397,6 +400,37 @@ pub async fn set_core_type(
     .map_err(|e| format!("core type switch task: {e}"))?
 }
 
+/// Restore a downloaded core to the copy bundled with the installer. Only a
+/// running core of the same kind is restarted; restoring an inactive core
+/// must not interrupt the currently active proxy.
+#[tauri::command(async)]
+pub async fn reset_core_to_bundled(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    kind: Option<String>,
+) -> Result<(), String> {
+    let kind = parse_kind(kind);
+    let app_data_dir = state.app_data_dir.clone();
+    let resource_dir = app.path().resource_dir().ok();
+    let worker_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::core::reset_core_to_bundled(&app_data_dir, resource_dir.as_deref(), kind)
+            .map_err(|error| error.to_string())?;
+        let state = worker_app
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        let active_kind = state
+            .with_store(|store| Ok(store.settings.core_type.clone()))
+            .unwrap_or_else(|_| "singbox".into());
+        if active_kind == kind.as_str() && state.is_core_running() {
+            crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("core reset task: {error}"))?
+}
+
 #[derive(Debug, Serialize)]
 pub struct GeodataFileInfo {
     pub present: bool,
@@ -482,7 +516,7 @@ fn geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
     }
 }
 
-/// Same card shape for the mihomo pair (geosite.dat = .mrs, geoip =
+/// Same card shape for the mihomo pair (GeoSite.dat = .mrs, geoip =
 /// Country.mmdb — file states are keyed by their on-disk names).
 fn mihomo_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
     let states = crate::core::mihomo_geodata_state(app_data_dir);
@@ -502,7 +536,7 @@ fn mihomo_geodata_info(app_data_dir: &std::path::Path) -> GeodataInfo {
             })
     };
     GeodataInfo {
-        geosite: find("geosite.dat"),
+        geosite: find("GeoSite.dat"),
         geoip: find("Country.mmdb"),
     }
 }
@@ -544,24 +578,57 @@ fn parse_version(v: &str) -> Vec<u32> {
         .collect()
 }
 
-/// The machine's LAN IPv4 (of the default-route interface), for the
-/// dashboard's listen card. The UDP "connect" trick only makes the OS pick
-/// a route — no packet is sent — so it works offline as long as an
-/// interface with a default route exists. `None` when there is no such
-/// address (e.g. fully offline).
+/// The machine's LAN IPv4, for the dashboard's listen card.
+///
+/// Enumerate interfaces instead of using the UDP "connect" trick. Once TUN
+/// mode owns the default route, that trick can return the TUN adapter address
+/// (for example 172.19.0.1/198.18.0.1) rather than the actual LAN address.
+/// Skip loopback and known TUN/TAP adapter names and return the first private
+/// IPv4 address. `None` means no suitable LAN address was found.
 #[tauri::command]
 pub fn get_lan_ip() -> Option<String> {
-    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("8.8.8.8:80").ok()?;
-    match sock.local_addr().ok()?.ip() {
-        std::net::IpAddr::V4(v4) if !v4.is_loopback() => Some(v4.to_string()),
-        _ => None,
-    }
+    let ifaces = if_addrs::get_if_addrs().ok()?;
+    ifaces.into_iter().find_map(|iface| {
+        if is_virtual_interface(&iface.name) {
+            return None;
+        }
+        match iface.ip() {
+            std::net::IpAddr::V4(v4) if !v4.is_loopback() && v4.is_private() => {
+                Some(v4.to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
+fn is_virtual_interface(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ["utun", "tun", "tap", "ppp", "meta", "wintun"]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{cache_for_current_source, is_newer_version, AppUpdateCache, APP_UPDATE_SOURCE};
+    use super::{
+        cache_for_current_source, is_newer_version, is_virtual_interface, AppUpdateCache,
+        APP_UPDATE_SOURCE,
+    };
+
+    #[test]
+    fn recognizes_known_tun_interface_names() {
+        assert!(is_virtual_interface("utun7"));
+        assert!(is_virtual_interface("tun0"));
+        assert!(is_virtual_interface("Meta"));
+        assert!(is_virtual_interface("wintun"));
+    }
+
+    #[test]
+    fn does_not_flag_real_nics() {
+        assert!(!is_virtual_interface("en0"));
+        assert!(!is_virtual_interface("eth0"));
+        assert!(!is_virtual_interface("Wi-Fi"));
+    }
 
     #[test]
     fn update_cache_from_previous_repository_is_invalidated() {

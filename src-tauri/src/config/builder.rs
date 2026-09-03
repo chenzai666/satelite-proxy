@@ -3,9 +3,9 @@
 use crate::config::dns_build::{build_dns_section, build_hosts_route_rules};
 use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
-    AutoSelectMode, DirectIpStrategy, DnsSettings, ExtraInbound, OutboundMode, Protocol,
-    ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetStrategy, RuleTarget, RuleType, TlsConfig,
-    Transport,
+    builtin_remote_ip_only, AutoSelectMode, DirectIpStrategy, DnsSettings, ExtraInbound,
+    OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleSet, RuleSetStrategy, RuleTarget,
+    RuleType, TlsConfig, Transport,
 };
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -722,6 +722,18 @@ fn build_grouped_rule_sets_with_chains(
     let mut dns_rules = Vec::new();
 
     for set in sets.iter().filter(|set| set.enabled) {
+        // Sing-box 1.14 rejects DNS-side references to rule-sets containing
+        // destination ip_cidr fields when FakeIP is enabled. Static metadata
+        // handles bundled GeoIP even for old stores; downloaded sets use the
+        // classification persisted by the validator. Unknown content keeps
+        // the existing domain-DNS behavior.
+        let skip_dns_rule = match &set.remote {
+            Some(remote) => builtin_remote_ip_only(&set.id).or(remote.contains_ip) == Some(true),
+            None => set
+                .rules
+                .iter()
+                .any(|rule| rule.rule_type == RuleType::IpCidr),
+        };
         if let Some(remote) = &set.remote {
             let Some(path) = remote
                 .local_path
@@ -775,88 +787,21 @@ fn build_grouped_rule_sets_with_chains(
             route_rules.push(remote_set_route_rule(set, nodes, tags, chain_entry_tags));
         }
 
-        push_dns_rule_set_rule(&mut dns_rules, set, rule_set_has_address_filter(set));
+        if skip_dns_rule {
+            continue;
+        }
+        if set.strategy == RuleSetStrategy::Block {
+            dns_rules.push(json!({ "rule_set": [set.id], "action": "reject" }));
+        } else {
+            dns_rules.push(json!({
+                "rule_set": [set.id],
+                "action": "route",
+                "server": set.dns_strategy.server_tag(),
+            }));
+        }
     }
 
     (definitions, route_rules, dns_rules)
-}
-
-/// Add the DNS-side reference for a rule-set.
-///
-/// sing-box 1.14 no longer accepts a DNS rule that directly uses a rule-set
-/// containing destination `ip_cidr` fields. Those fields describe the answer
-/// addresses, so the modern form first resolves the query with `evaluate` and
-/// then applies the rule-set with `match_response`. Domain-only sets retain the
-/// shorter form because they match the query name itself.
-fn push_dns_rule_set_rule(dns_rules: &mut Vec<Value>, set: &RuleSet, has_address_filter: bool) {
-    if has_address_filter {
-        dns_rules.push(json!({
-            "action": "evaluate",
-            "server": set.dns_strategy.server_tag(),
-        }));
-    }
-
-    if set.strategy == RuleSetStrategy::Block {
-        let mut rule = json!({ "rule_set": [set.id], "action": "reject" });
-        if has_address_filter {
-            rule["match_response"] = json!(true);
-        }
-        dns_rules.push(rule);
-    } else {
-        let mut rule = json!({
-            "rule_set": [set.id],
-            "action": "route",
-            "server": set.dns_strategy.server_tag(),
-        });
-        if has_address_filter {
-            rule["match_response"] = json!(true);
-        }
-        dns_rules.push(rule);
-    }
-}
-
-/// Detect whether the same rule-set definition is an address filter from the
-/// DNS rule engine's perspective. Route rules may still use `ip_cidr` directly;
-/// this check is only for the DNS reference emitted above.
-fn rule_set_has_address_filter(set: &RuleSet) -> bool {
-    match &set.remote {
-        None => set
-            .rules
-            .iter()
-            .any(|rule| inline_rule_is_effective(rule) && rule.rule_type == RuleType::IpCidr),
-        Some(remote) => {
-            let Some(path) = remote
-                .local_path
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-            else {
-                return false;
-            };
-            let Ok(bytes) = std::fs::read(path) else {
-                return false;
-            };
-            if remote.format.eq_ignore_ascii_case("binary") {
-                return crate::srs::parse(&bytes)
-                    .map(|parsed| parsed.has_ip_cidr)
-                    .unwrap_or(false);
-            }
-            serde_json::from_slice::<Value>(&bytes)
-                .map(|source| json_contains_non_empty_ip_cidr(&source))
-                .unwrap_or(false)
-        }
-    }
-}
-
-fn json_contains_non_empty_ip_cidr(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            (key == "ip_cidr" && value.as_array().is_some_and(|items| !items.is_empty()))
-                || json_contains_non_empty_ip_cidr(value)
-        }),
-        Value::Array(items) => items.iter().any(json_contains_non_empty_ip_cidr),
-        _ => false,
-    }
 }
 
 /// Whole-set route rule for a remote set. Node pins and Filter pools fall
@@ -2416,7 +2361,7 @@ mod tests {
     }
 
     #[test]
-    fn address_rule_set_uses_response_matching_for_dns_rules() {
+    fn address_rule_set_has_no_dns_side_reference_under_singbox_114() {
         let mut set = RuleSet::new_user(
             "地址规则",
             vec![Rule::new(
@@ -2441,22 +2386,11 @@ mod tests {
                 "outbound": "proxy"
             })]
         );
-        assert_eq!(
-            dns,
-            vec![
-                json!({ "action": "evaluate", "server": "dns-remote" }),
-                json!({
-                    "rule_set": [tag],
-                    "match_response": true,
-                    "action": "route",
-                    "server": "dns-remote"
-                })
-            ]
-        );
+        assert!(dns.is_empty(), "IP rule-set must not be referenced by DNS");
     }
 
     #[test]
-    fn source_address_rule_set_uses_response_matching_for_dns_rules() {
+    fn source_address_rule_set_has_no_dns_side_reference_under_singbox_114() {
         let path = std::env::temp_dir().join(format!(
             "satelite-test-rule-set-{}.json",
             std::process::id()
@@ -2477,18 +2411,7 @@ mod tests {
         let (_, _, dns) = build_grouped_rule_sets(&[set], &[], &[]);
 
         let _ = std::fs::remove_file(path);
-        assert_eq!(
-            dns,
-            vec![
-                json!({ "action": "evaluate", "server": "dns-local" }),
-                json!({
-                    "rule_set": [tag],
-                    "match_response": true,
-                    "action": "route",
-                    "server": "dns-local"
-                })
-            ]
-        );
+        assert!(dns.is_empty(), "IP rule-set must not be referenced by DNS");
     }
 
     #[test]

@@ -396,6 +396,12 @@ pub fn prefetch_runtime_assets(
         }
         crate::core::CoreKind::SingBox => {}
     }
+    #[cfg(target_os = "windows")]
+    if kind == crate::core::CoreKind::SingBox {
+        if let Err(error) = ensure_libcronet(app_data_dir, resource_dir) {
+            warnings.push(format!("sing-box libcronet prefetch failed: {error}"));
+        }
+    }
     // wintun.dll (Windows TUN) is shared by Xray and mihomo — prefetch it for
     // both so enabling TUN never triggers a download on core start.
     #[cfg(target_os = "windows")]
@@ -408,6 +414,34 @@ pub fn prefetch_runtime_assets(
         }
     }
     warnings
+}
+
+/// Windows sing-box Naive outbounds load Cronet from the executable
+/// directory. Official sing-box archives ship `libcronet.dll` beside the
+/// binary; repair older staged installations from the bundled copy before a
+/// Naive configuration is started.
+#[cfg(target_os = "windows")]
+pub fn ensure_libcronet(app_data_dir: &Path, resource_dir: Option<&Path>) -> AppResult<()> {
+    let bin = crate::core::paths::core_dir(app_data_dir);
+    let dest = bin.join("libcronet.dll");
+    if dest.is_file() {
+        return Ok(());
+    }
+    let bundled =
+        crate::core::paths::find_bundled_core(resource_dir, crate::core::kind::CoreKind::SingBox);
+    if let Some(parent) = bundled.as_deref().and_then(Path::parent) {
+        let source = parent.join("libcronet.dll");
+        if source.is_file() {
+            std::fs::create_dir_all(&bin)?;
+            std::fs::copy(&source, &dest).map_err(|error| {
+                AppError::Core(format!("copy libcronet.dll to {}: {error}", dest.display()))
+            })?;
+            return Ok(());
+        }
+    }
+    Err(AppError::Core(
+        "sing-box Naive 节点需要 libcronet.dll；当前内核目录未找到该文件，请重新下载/更新 sing-box 内核".into(),
+    ))
 }
 
 /// Xray's native tun inbound loads wintun.dll on Windows (not shipped in the

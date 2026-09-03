@@ -594,7 +594,7 @@ fn staged_core_path(kind: CoreKind, dest: &Path) -> PathBuf {
     return dest.with_file_name(format!("{stem}.new"));
 }
 
-fn previous_core_path(kind: CoreKind, dest: &Path) -> PathBuf {
+pub(crate) fn previous_core_path(kind: CoreKind, dest: &Path) -> PathBuf {
     let stem = kind.binary_name().trim_end_matches(".exe");
     #[cfg(target_os = "windows")]
     return dest.with_file_name(format!("{stem}.previous.exe"));
@@ -695,9 +695,9 @@ fn extract_binary_from_tar_gz(kind: CoreKind, archive: &Path, dest: &Path) -> Ap
 }
 
 /// Extract the core binary from a release zip. Xray zips additionally ship
-/// `geosite.dat` / `geoip.dat` next to the binary — stage them into `bin_dir`
-/// so `geosite:` / `geoip:` routing works after a user-initiated download
-/// (bundled installs stage them via `paths::stage_bundled_core`).
+/// `geosite.dat` / `geoip.dat`, and Windows sing-box zips ship
+/// `libcronet.dll`; stage these next to the installed binary so runtime
+/// dependencies are available after a user-initiated download.
 fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path) -> AppResult<()> {
     let file = File::open(archive).map_err(|e| AppError::Core(format!("open zip: {e}")))?;
     let mut zip =
@@ -718,6 +718,11 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
         } else if kind == CoreKind::Xray && (file_name == "geosite.dat" || file_name == "geoip.dat")
         {
             dat_indexes.push((i, file_name.to_string()));
+        } else if cfg!(target_os = "windows")
+            && kind == CoreKind::SingBox
+            && file_name.eq_ignore_ascii_case("libcronet.dll")
+        {
+            dat_indexes.push((i, "libcronet.dll".to_string()));
         }
     }
     let idx = target_index.ok_or_else(|| {

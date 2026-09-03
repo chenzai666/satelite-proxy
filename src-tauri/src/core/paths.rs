@@ -194,6 +194,27 @@ fn stage_bundled_core(app_data_dir: &Path, bundled: &Path, kind: CoreKind) -> Ap
             }
         }
     }
+    // Windows sing-box archives include libcronet.dll beside sing-box.exe.
+    // Keep it in the same stable app-data directory as the staged binary so
+    // Naive outbounds continue to work after a bundled install. The startup
+    // fallback in assets.rs also repairs installs where the binary was
+    // already staged before this dependency was added.
+    #[cfg(target_os = "windows")]
+    if kind == CoreKind::SingBox {
+        if let Some(parent) = bundled.parent() {
+            let src = parent.join("libcronet.dll");
+            if src.is_file() {
+                let target = core_dir(app_data_dir).join("libcronet.dll");
+                let needs_copy = match (std::fs::metadata(&target), std::fs::metadata(&src)) {
+                    (Ok(target), Ok(source)) => target.len() != source.len(),
+                    _ => true,
+                };
+                if needs_copy {
+                    let _ = std::fs::copy(src, target);
+                }
+            }
+        }
+    }
     // Xray: stage geosite/geoip data files shipped alongside the binary so
     // geosite:/geoip: routing works from the app-data asset location, plus
     // wintun.dll (Windows tun adapter driver, not in the Xray release zip).
@@ -269,6 +290,36 @@ pub fn inspect_core_bin(
         Some(bundled) => (Some(bundled), CoreSource::Bundled),
         None => (None, CoreSource::Missing),
     }
+}
+
+/// Remove the user-downloaded copy so the next resolution stages the bundled
+/// factory core. The bundled copy is checked first, so this never removes the
+/// only usable core. If Windows keeps the executable open, retire it with the
+/// same `.previous` convention used by the download swap.
+pub fn reset_core_to_bundled(
+    app_data_dir: &Path,
+    resource_dir: Option<&Path>,
+    kind: CoreKind,
+) -> AppResult<()> {
+    if find_bundled_core(resource_dir, kind).is_none() {
+        return Err(AppError::Core(format!(
+            "no bundled {} in this installation",
+            kind.display_name()
+        )));
+    }
+    let dest = core_bin_path(app_data_dir, kind);
+    if dest.is_file() && std::fs::remove_file(&dest).is_err() {
+        let previous = super::download::previous_core_path(kind, &dest);
+        let _ = std::fs::remove_file(&previous);
+        std::fs::rename(&dest, &previous).map_err(|error| {
+            AppError::Core(format!(
+                "retire downloaded {} binary: {error}",
+                kind.display_name()
+            ))
+        })?;
+    }
+    let _ = std::fs::remove_file(version_file_path(app_data_dir, kind));
+    Ok(())
 }
 
 pub fn installed_core_version(app_data_dir: &Path, kind: CoreKind) -> Option<String> {
@@ -424,5 +475,40 @@ mod tests {
                 || p.asset_suffix_for(CoreKind::Xray).starts_with("macos")
                 || p.asset_suffix_for(CoreKind::Xray).starts_with("linux")
         );
+    }
+
+    #[test]
+    fn reset_removes_downloaded_core_and_version_file() {
+        let root = std::env::temp_dir().join(format!(
+            "satelite-core-reset-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let app_data = root.join("app-data");
+        let resources = root.join("resources-root");
+        let platform = detect_platform().expect("supported test platform");
+        let bundled_dir = resources.join("bin").join(platform.asset_suffix);
+        std::fs::create_dir_all(&bundled_dir).expect("create bundled dir");
+        std::fs::write(
+            bundled_dir.join(CoreKind::SingBox.binary_name()),
+            b"bundled",
+        )
+        .expect("write bundled core");
+        std::fs::create_dir_all(core_dir(&app_data)).expect("create app bin dir");
+        std::fs::write(core_bin_path(&app_data, CoreKind::SingBox), b"downloaded")
+            .expect("write downloaded core");
+        write_version_file(&app_data, CoreKind::SingBox, "1.14.0").expect("write version");
+
+        reset_core_to_bundled(&app_data, Some(&resources), CoreKind::SingBox)
+            .expect("reset bundled core");
+        let (path, source) = inspect_core_bin(&app_data, Some(&resources), CoreKind::SingBox);
+        assert!(path.is_some());
+        assert_eq!(source, CoreSource::Bundled);
+        assert!(!core_bin_path(&app_data, CoreKind::SingBox).exists());
+        assert!(!version_file_path(&app_data, CoreKind::SingBox).exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -4,7 +4,7 @@ use crate::error::{AppError, AppResult};
 use crate::runtime::{ConnectionView, LiveConnectionBatch, ProxyStatus, RequestBatch, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -578,6 +578,12 @@ pub struct AppState {
     traffic_view_cache: Mutex<TrafficViewCache>,
     /// Main WebView is visible (affects journal sampling rate).
     pub ui_visible: AtomicBool,
+    /// Recent connection-data IPC demand. The journal can sample slowly when
+    /// no traffic/requests page is reading the connection stream.
+    last_conn_query: Mutex<Option<Instant>>,
+    /// Number of connections in the latest Clash snapshot. TUN may expose
+    /// thousands of rows, so the journal backs off for very large frames.
+    last_snapshot_connections: AtomicUsize,
     /// Only true when user explicitly quits (tray Quit / close without tray).
     /// Destroying the last WebView would otherwise kill tray + sing-box.
     pub exit_allowed: AtomicBool,
@@ -634,6 +640,8 @@ impl AppState {
             status_cache: Mutex::new(status_cache),
             traffic_view_cache: Mutex::new(TrafficViewCache::default()),
             ui_visible: AtomicBool::new(true),
+            last_conn_query: Mutex::new(None),
+            last_snapshot_connections: AtomicUsize::new(0),
             exit_allowed: AtomicBool::new(false),
             core_transitioning: AtomicBool::new(false),
             pending_import_urls: Mutex::new(None),
@@ -684,6 +692,27 @@ impl AppState {
 
     pub fn is_ui_visible(&self) -> bool {
         self.ui_visible.load(Ordering::Relaxed)
+    }
+
+    /// Mark that a page has requested live or historical connection data.
+    pub fn note_conn_query(&self) {
+        *recover_lock(&self.last_conn_query, "last_conn_query") = Some(Instant::now());
+    }
+
+    /// Whether connection data was requested recently enough to justify the
+    /// fast WebSocket sampling interval.
+    pub fn conn_query_recent(&self, window: Duration) -> bool {
+        recover_lock(&self.last_conn_query, "last_conn_query")
+            .is_some_and(|at| at.elapsed() < window)
+    }
+
+    pub fn set_last_snapshot_connections(&self, count: usize) {
+        self.last_snapshot_connections
+            .store(count, Ordering::Relaxed);
+    }
+
+    pub fn snapshot_connections(&self) -> usize {
+        self.last_snapshot_connections.load(Ordering::Relaxed)
     }
 
     pub fn allow_exit(&self) {
@@ -804,6 +833,7 @@ impl AppState {
                 }
             }
         }
+        self.set_last_snapshot_connections(snapshot.connections.len());
         runtime.apply_snapshot(snapshot);
         true
     }
@@ -1086,6 +1116,7 @@ impl AppState {
     }
 
     pub fn live_connection_views(&self) -> Vec<ConnectionView> {
+        self.note_conn_query();
         if self.is_core_transitioning() {
             return recover_lock(&self.traffic_view_cache, "traffic_view_cache")
                 .live
@@ -1119,6 +1150,7 @@ impl AppState {
         since_revision: Option<u64>,
         last_order_revision: Option<u64>,
     ) -> LiveConnectionBatch {
+        self.note_conn_query();
         let cached = || {
             let cache = recover_lock(&self.traffic_view_cache, "traffic_view_cache");
             if since_revision == Some(cache.live_revision) {
@@ -1206,6 +1238,7 @@ impl AppState {
         failures_only: bool,
         after_seq: Option<u64>,
     ) -> RequestBatch {
+        self.note_conn_query();
         let query = query.unwrap_or("").trim().to_string();
         let cached = || {
             if let Some(cursor) = after_seq {

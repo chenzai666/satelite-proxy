@@ -388,6 +388,12 @@ pub struct RemoteRuleSetConfig {
     /// Number of expanded display entries in the latest validated cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule_count: Option<u32>,
+    /// Whether the latest validated cache contains destination `ip_cidr`
+    /// conditions. Sing-box 1.14 rejects a DNS-side reference to such a
+    /// rule-set when FakeIP is enabled. `None` is retained for old or
+    /// never-downloaded caches and is treated conservatively as unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contains_ip: Option<bool>,
 }
 
 fn default_remote_format() -> String {
@@ -471,6 +477,7 @@ impl RuleSet {
             last_update: None,
             last_attempt: None,
             rule_count: None,
+            contains_ip: None,
         });
         set.strategy = RuleSetStrategy::from_target(target);
         if let Some(dns_strategy) = set.strategy.recommended_dns_strategy() {
@@ -570,6 +577,10 @@ pub struct BuiltinRemoteRuleSpec {
     pub url: &'static str,
     /// Whole-set route strategy.
     pub target: RuleTarget,
+    /// Static content classification for bundled rule sets. The GeoIP set is
+    /// IP-only and must never be referenced from DNS rules under sing-box
+    /// 1.14+.
+    pub ip_only: bool,
 }
 
 /// Factory remote rule sets, in match-priority order (store order wins).
@@ -584,6 +595,7 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
         url:
             "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
         target: RuleTarget::Proxy,
+        ip_only: false,
     },
     BuiltinRemoteRuleSpec {
         id: "system-geoip-cn",
@@ -591,6 +603,7 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
         file: "system-geoip-cn.srs",
         url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs",
         target: RuleTarget::Direct,
+        ip_only: true,
     },
     BuiltinRemoteRuleSpec {
         id: "system-geosite-cn",
@@ -598,6 +611,7 @@ pub const BUILTIN_REMOTE_RULE_SETS: [BuiltinRemoteRuleSpec; 3] = [
         file: "system-geosite-cn.srs",
         url: "https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/cn.srs",
         target: RuleTarget::Direct,
+        ip_only: false,
     },
 ];
 
@@ -761,6 +775,11 @@ pub fn build_user_rule_preset(spec: &UserRulePresetSpec) -> RuleSet {
 
 pub fn is_builtin_remote_id(id: &str) -> bool {
     BUILTIN_REMOTE_RULE_SETS.iter().any(|spec| spec.id == id)
+}
+
+/// Return the compile-time content classification for a factory set.
+pub fn builtin_remote_ip_only(id: &str) -> Option<bool> {
+    builtin_remote_spec(id).map(|spec| spec.ip_only)
 }
 
 pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {

@@ -14,6 +14,7 @@
 use crate::app_log;
 use crate::config::{outbound_tag, smart_pool_nodes};
 use crate::domain::{ProxyNode, Rule, RuleSetStrategy, RuleTarget};
+use crate::runtime::PassiveNodeStats;
 use crate::services::latency::{probe_nodes, probe_nodes_ranked};
 use crate::state::AppState;
 use serde::Serialize;
@@ -807,15 +808,23 @@ async fn tick(state: &AppState) -> Result<(), String> {
         .collect();
     // Weight ranking by each candidate's own recent passive fail rate so a
     // chronically-flaky node doesn't out-rank a merely-slower one just
-    // because its last active probe happened to land low.
+    // because its last active probe happened to land low. Query all tags in
+    // one journal scan; doing one scan per candidate makes a large node list
+    // unnecessarily expensive while the runtime lock is held.
     let fail_rates: HashMap<String, f64> = {
         let rt = state.lock_runtime();
-        candidates
-            .iter()
-            .map(|n| {
-                let tag = outbound_tag(n);
-                let stats = rt.passive_node_stats(&tag, PASSIVE_LOOKBACK_MS);
-                (n.id.clone(), stats.fail_rate())
+        let tags: Vec<String> = candidates.iter().map(outbound_tag).collect();
+        let stats = rt.passive_stats_for_tags(&tags, PASSIVE_LOOKBACK_MS);
+        tags.iter()
+            .zip(candidates.iter())
+            .map(|(tag, node)| {
+                (
+                    node.id.clone(),
+                    stats
+                        .get(tag)
+                        .map(PassiveNodeStats::fail_rate)
+                        .unwrap_or(0.0),
+                )
             })
             .collect()
     };

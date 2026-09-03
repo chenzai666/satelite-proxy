@@ -8,7 +8,8 @@ use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{
-    image::Image, AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    image::Image, window::Color, AppHandle, Manager, Runtime, Theme, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
 };
 
 #[cfg(windows)]
@@ -79,6 +80,47 @@ const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
 const SIMPLE_MIN: (f64, f64) = (320.0, 480.0);
 /// …but never grow past the default simple strip.
 const SIMPLE_MAX: (f64, f64) = SIMPLE_SIZE;
+const BG_AEROSPACE: (u8, u8, u8) = (0x11, 0x14, 0x1c);
+const BG_DAY: (u8, u8, u8) = (0xee, 0xf0, 0xf4);
+
+fn is_dark_theme<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.try_state::<AppState>()
+        .and_then(|state| {
+            state
+                .with_store(|store| {
+                    Ok(store
+                        .settings
+                        .theme
+                        .trim()
+                        .eq_ignore_ascii_case("aerospace"))
+                })
+                .ok()
+        })
+        .unwrap_or(false)
+}
+
+fn theme_bg_color<R: Runtime>(app: &AppHandle<R>) -> Color {
+    let (r, g, b) = if is_dark_theme(app) {
+        BG_AEROSPACE
+    } else {
+        BG_DAY
+    };
+    Color(r, g, b, 255)
+}
+
+/// 将原生窗口标题栏固定为应用主题，而不是让它跟随系统明暗模式漂移。
+pub fn apply_window_theme<R: Runtime>(app: &AppHandle<R>) {
+    let theme = if is_dark_theme(app) {
+        Theme::Dark
+    } else {
+        Theme::Light
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(error) = window.set_theme(Some(theme)) {
+            eprintln!("[satelite] set native window theme failed: {error}");
+        }
+    }
+}
 
 fn set_main_window_icon<R: Runtime>(window: &WebviewWindow<R>) {
     let icon = match Image::from_bytes(include_bytes!("../icons/128x128.png")) {
@@ -162,6 +204,11 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
 
     if let Some(w) = app.get_webview_window("main") {
         set_main_window_icon(&w);
+        let _ = w.set_theme(Some(if is_dark_theme(app) {
+            Theme::Dark
+        } else {
+            Theme::Light
+        }));
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -176,6 +223,12 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             .title("Satelite")
             .inner_size(w, h)
             .fullscreen(false)
+            .background_color(theme_bg_color(app))
+            .theme(Some(if is_dark_theme(app) {
+                Theme::Dark
+            } else {
+                Theme::Light
+            }))
             // Important on macOS: without activation policy / visible, Dock reopen
             // can recreate a window that never becomes key.
             .visible(true)

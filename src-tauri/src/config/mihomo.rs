@@ -250,7 +250,8 @@ fn url_test_group(name: &str, members: Vec<String>, probe_url: &str) -> Mapping 
 /// mihomo tun block. mihomo works best with fake-ip DNS for tun —
 /// `build_dns` forces fake-ip whenever tun is on. Mixed stack keeps UDP-heavy
 /// applications such as games inside the user-space path while TCP uses the
-/// system stack.
+/// system stack. Exclude loopback so Clash API, mixed listeners and other
+/// local tools are not redirected into the TUN interface.
 fn tun_block(opts: &BuildOptions) -> Mapping {
     let mut t = Mapping::new();
     t.insert(str_yaml("enable"), Yaml::Bool(true));
@@ -258,6 +259,10 @@ fn tun_block(opts: &BuildOptions) -> Mapping {
     t.insert(str_yaml("auto-route"), Yaml::Bool(true));
     t.insert(str_yaml("auto-detect-interface"), Yaml::Bool(true));
     t.insert(str_yaml("strict-route"), Yaml::Bool(true));
+    t.insert(
+        str_yaml("route-exclude-address"),
+        Yaml::Sequence(vec![str_yaml("127.0.0.0/8"), str_yaml("::1/128")]),
+    );
     t.insert(
         str_yaml("dns-hijack"),
         Yaml::Sequence(vec![str_yaml("any:53"), str_yaml("tcp://any:53")]),
@@ -1973,6 +1978,14 @@ mod tests {
         assert_eq!(doc["tun"]["auto-route"].as_bool(), Some(true));
         assert_eq!(doc["tun"]["auto-detect-interface"].as_bool(), Some(true));
         assert_eq!(doc["tun"]["strict-route"].as_bool(), Some(true));
+        assert_eq!(
+            doc["tun"]["route-exclude-address"][0].as_str(),
+            Some("127.0.0.0/8")
+        );
+        assert_eq!(
+            doc["tun"]["route-exclude-address"][1].as_str(),
+            Some("::1/128")
+        );
         assert_eq!(doc["tun"]["dns-hijack"][0].as_str(), Some("any:53"));
         assert_eq!(doc["tun"]["dns-hijack"][1].as_str(), Some("tcp://any:53"));
         assert_eq!(doc["ipv6"].as_bool(), Some(false));
