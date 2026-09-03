@@ -221,6 +221,16 @@ export interface LatencyBatchResult {
   method?: string;
 }
 
+/** Winner of the dashboard exit-IP probe race. */
+export interface ExitIpInfo {
+  ip: string;
+  countryCode?: string | null;
+  /** Fetched through the core mixed inbound; false means direct probe. */
+  viaProxy: boolean;
+  /** Public endpoint that answered, for diagnostics. */
+  source: string;
+}
+
 export type AddSourceKind = "url" | "file" | "text" | "node" | "singbox";
 
 export type ProfileKind = "subscription" | "local" | "singbox";
@@ -419,6 +429,8 @@ export interface CoreInfo {
   /** bundled | downloaded | missing */
   source: string;
   bundled_version?: string | null;
+  /** Fixed factory version used when this install does not bundle the core. */
+  factory_version?: string | null;
 }
 
 export interface CoreDownloadResult {

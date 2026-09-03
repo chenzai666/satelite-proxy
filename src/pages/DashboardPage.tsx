@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
+  checkExitIp,
   getCoreInfo,
   getLanIp,
   getProxyStatus,
@@ -39,6 +40,7 @@ import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import type {
   AutoSelectMode,
   CoreKind,
+  ExitIpInfo,
   GenerateConfigResult,
   OutboundMode,
   ProxyNode,
@@ -133,6 +135,18 @@ function latencyClass(ms?: number | null) {
   return "lat-slow";
 }
 
+/** Country code to a localized name, with the labels used by node grouping. */
+function countryDisplayName(cc: string, locale: string): string {
+  const code = cc.toUpperCase();
+  if (locale !== "en" && code === "HK") return "中国香港";
+  if (locale !== "en" && code === "TW") return "中国台湾";
+  try {
+    return new Intl.DisplayNames([locale], { type: "region" }).of(code) || cc;
+  } catch {
+    return cc;
+  }
+}
+
 /** Uptime from core_started_at (unix secs) to now, as "HH:MM:SS". */
 function fmtUptime(startedAt?: number | null) {
   if (startedAt == null) return "—";
@@ -177,7 +191,7 @@ export function DashboardPage({
   onGoNodes,
   onGoTraffic,
 }: Props) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [subs, setSubs] = useState<SubscriptionView[]>([]);
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentNode, setCurrentNode] = useState<ProxyNode | null>(null);
@@ -228,6 +242,11 @@ export function DashboardPage({
   const smartGenRef = useRef(0);
   const [modeBusy, setModeBusy] = useState(false);
   const [latencyProbing, setLatencyProbing] = useState(false);
+  /** Exit-IP half of the dashboard network probe. */
+  const [exitIp, setExitIp] = useState<ExitIpInfo | null>(null);
+  const [exitIpProbing, setExitIpProbing] = useState(false);
+  const exitIpVersionRef = useRef(0);
+  const autoProbeKeyRef = useRef<string | null>(null);
   const [envCopied, setEnvCopied] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [showSystemRestartNotice, setShowSystemRestartNotice] = useState(false);
@@ -723,6 +742,38 @@ function coreDisplayName(kind: string | null | undefined): string {
     }
   }
 
+  /** Probe the actual public exit through the running core when applicable. */
+  const onProbeExitIp = useCallback(async () => {
+    const version = ++exitIpVersionRef.current;
+    setExitIpProbing(true);
+    try {
+      const info = await checkExitIp();
+      if (version === exitIpVersionRef.current) setExitIp(info);
+    } catch {
+      // An IP API can be unavailable without meaning the proxy is broken;
+      // keep the card quiet and show an empty result instead of a modal.
+      if (version === exitIpVersionRef.current) setExitIp(null);
+    } finally {
+      if (version === exitIpVersionRef.current) setExitIpProbing(false);
+    }
+  }, []);
+
+  /** Refresh latency and exit IP together from the network-probe card. */
+  function onProbeNetwork() {
+    void onProbeLatency();
+    void onProbeExitIp();
+  }
+
+  // Re-probe when the core starts/stops, routing mode changes, or the
+  // selected node changes. The version stamp above prevents a slower earlier
+  // request from replacing a newer answer.
+  const autoProbeKey = `${proxy?.running ?? false}:${proxy?.outbound_mode ?? "rule"}:${proxy?.mixed_port ?? settingsPorts.mixed}:${currentNodeId ?? ""}`;
+  useEffect(() => {
+    if (!statusReady || autoProbeKeyRef.current === autoProbeKey) return;
+    autoProbeKeyRef.current = autoProbeKey;
+    void onProbeExitIp();
+  }, [autoProbeKey, onProbeExitIp, statusReady]);
+
   const running = proxy?.running ?? false;
   const stateLabel = proxy?.core_state ?? "stopped";
   const outboundMode = (proxy?.outbound_mode ?? "rule") as OutboundMode;
@@ -798,19 +849,6 @@ function coreDisplayName(kind: string | null | undefined): string {
 
   // Long node names shrink to one line instead of wrapping the hero.
   const heroTitleRef = useSingleLineFit<HTMLHeadingElement>(heroTitle ?? "");
-
-  /** Best / avg among nodes that have a successful latency sample. */
-  const latencyStats = useMemo(() => {
-    const samples: number[] = nodes
-      .map((n) => n.latency_ms)
-      .filter((ms): ms is number => ms != null && ms >= 0);
-    if (samples.length === 0) {
-      return { best: null as number | null, avg: null as number | null, n: 0 };
-    }
-    const best = Math.min(...samples);
-    const avg = Math.round(samples.reduce((a, b) => a + b, 0) / samples.length);
-    return { best, avg, n: samples.length };
-  }, [nodes]);
 
   async function onCopyEnv() {
     const proxyUrl = `http://127.0.0.1:${mixedPort}`;
@@ -1514,37 +1552,68 @@ function coreDisplayName(kind: string | null | undefined): string {
           className="instrument accent-cyan instrument-click"
           role="button"
           tabIndex={0}
-          title={t("dashboard.probeLatencyHint")}
-          onClick={() => void onProbeLatency()}
+          title={t("dashboard.probeNetworkHint")}
+          onClick={onProbeNetwork}
           onKeyDown={(e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              void onProbeLatency();
+              onProbeNetwork();
             }
           }}
         >
           <header className="instrument-head">
             <span className="instrument-label">
-              {t("dashboard.cardQuality")}
+              {t("dashboard.cardProbe")}
             </span>
           </header>
           <div
             className={`instrument-value readout mono ${latencyClass(currentLatency)}`}
           >
             {latencyProbing ? (
-              <span className="lat-spinner" aria-label={t("dashboard.probeLatencyRunning")} />
+              <span
+                className="lat-spinner"
+                aria-label={t("dashboard.probeNetworkRunning")}
+              />
             ) : (
               fmtLatency(currentLatency)
             )}
           </div>
           <div className="instrument-kv mono">
             <div>
-              <span className="kv-k">{t("dashboard.latencyAvg")}</span>
-              <span className="kv-v">{fmtLatency(latencyStats.avg)}</span>
+              <span className="kv-k">{t("dashboard.exitIp")}</span>
+              <span
+                className={`kv-v exit-ip${exitIp ? "" : " lat-none"}`}
+                title={exitIp?.ip ?? undefined}
+              >
+                {exitIpProbing ? (
+                  <span
+                    className="lat-spinner"
+                    aria-label={t("dashboard.probeNetworkRunning")}
+                  />
+                ) : exitIp ? (
+                  <>
+                    {exitIp.ip}
+                    {!exitIp.viaProxy && (
+                      <span className="exit-ip-direct">
+                        {t("dashboard.exitIpDirect")}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  "—"
+                )}
+              </span>
             </div>
             <div>
-              <span className="kv-k">{t("dashboard.latencyBest")}</span>
-              <span className="kv-v">{fmtLatency(latencyStats.best)}</span>
+              <span className="kv-k">{t("dashboard.exitCountry")}</span>
+              <span
+                className={`kv-v${exitIp?.countryCode ? "" : " lat-none"}`}
+                title={exitIp?.source ?? undefined}
+              >
+                {exitIp?.countryCode
+                  ? countryDisplayName(exitIp.countryCode, locale)
+                  : "—"}
+              </span>
             </div>
           </div>
         </article>

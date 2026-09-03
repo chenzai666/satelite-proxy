@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 interface VirtualRangeOptions {
   itemCount: number;
@@ -79,8 +80,14 @@ export function useVirtualRange({
           : { startRow, endRow },
       );
     };
+    // Apply scroll-window changes in the same frame as the scroll event. A
+    // deferred React update briefly paints the wrong window and makes large
+    // node lists appear to jump or accelerate while scrolling.
+    const updateSync = () => {
+      flushSync(update);
+    };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(update);
+      if (!frame) frame = requestAnimationFrame(updateSync);
     };
 
     update();

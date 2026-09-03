@@ -24,6 +24,7 @@ import type {
   SubscriptionView,
   DnsSettings,
   DnsTestResult,
+  ExitIpInfo,
   HostsEntry,
   ChainDiagnosis,
   ChainHop,
@@ -306,6 +307,11 @@ export function diagnoseNetwork() {
   return invoke<import("./types").NetworkDiagnosticsResult>("diagnose_network");
 }
 
+/** Probe latency/exit-IP state through the running core when applicable. */
+export function checkExitIp() {
+  return invoke<ExitIpInfo>("check_exit_ip");
+}
+
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */
@@ -564,6 +570,12 @@ export function downloadCore(kind?: CoreKind | null, tag?: string | null) {
     kind: kind ?? null,
     tag: tag ?? null,
   });
+}
+
+/** Restore a core to the bundled factory copy. A running core of that kind
+ * is restarted by the backend after the downloaded copy is retired. */
+export function resetCoreToBundled(kind?: CoreKind | null) {
+  return invoke<void>("reset_core_to_bundled", { kind: kind ?? null });
 }
 
 export function fetchCoreLatest(kind?: CoreKind | null) {

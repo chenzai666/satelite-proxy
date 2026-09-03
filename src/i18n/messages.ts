@@ -51,6 +51,8 @@ const en = {
   "simple.sparkApps": "Apps",
   "simple.sparkNodes": "Nodes",
   "simple.sparkDirect": "Direct",
+  "simple.sparkExpand": "Open fullscreen",
+  "simple.sparkShrink": "Exit fullscreen",
 
   // dashboard
   "dashboard.title": "Overview",
@@ -142,6 +144,12 @@ const en = {
   "dashboard.cardQuality": "Network latency",
   "dashboard.probeLatencyHint": "Click to test latency for the current node",
   "dashboard.probeLatencyRunning": "Testing latency…",
+  "dashboard.cardProbe": "Network probe",
+  "dashboard.probeNetworkHint": "Click to probe current-node latency and exit IP",
+  "dashboard.probeNetworkRunning": "Probing…",
+  "dashboard.exitIp": "Exit IP",
+  "dashboard.exitCountry": "Country",
+  "dashboard.exitIpDirect": "Direct",
   "dashboard.cardSub": "Enabled subscription",
   "dashboard.cardCustom": "Selected config",
   "dashboard.cardSystem": "System port",
@@ -318,6 +326,15 @@ const en = {
   "settings.coreDownload": "Download to app data",
   "settings.coreUpdate": "Update core",
   "settings.coreRedownload": "Re-download",
+  "settings.coreRestore": "Restore",
+  "settings.coreRestoreHint":
+    "Discard the downloaded core and use the bundled factory version ({v}). A running core restarts automatically.",
+  "settings.coreRestoreConfirm":
+    "Discard the downloaded core and restore the bundled version ({v})? A running core restarts automatically.",
+  "settings.coreRestoreDlHint":
+    "This install has no bundled copy; restore downloads the factory version ({v}) from GitHub.",
+  "settings.coreRestoreDlConfirm":
+    "This install has no bundled copy. Download the factory version ({v}) from GitHub?",
   "settings.coreDownloadPreview": "Install preview",
   "settings.corePreviewHint":
     "Installs the newest Xray pre-release. Preview builds are opt-in and may be less stable than the latest stable release.",
@@ -446,8 +463,12 @@ const en = {
   "nodes.groupCountry": "Country",
   "nodes.groupOther": "Other",
   "nodes.groupNoSub": "No subscription",
+  "nodes.groupToggleHint": "Click to collapse / expand",
+  "nodes.collapseAll": "Collapse all",
+  "nodes.expandAll": "Expand all",
   "nodes.clickTest": "Spot test",
   "nodes.clickTestHint": "When enabled, clicking a node tests its latency instead of selecting it",
+  "nodes.clickTestActive": "Click a node to test latency · turn off via the toggle above",
   "nodes.clickTestLatency": "Click to test latency",
   "nodes.testing": "Testing…",
   "nodes.empty": "No nodes. Import a profile first.",
@@ -939,6 +960,8 @@ const zh: Record<MessageKey, string> = {
   "simple.sparkApps": "程序",
   "simple.sparkNodes": "节点",
   "simple.sparkDirect": "直连",
+  "simple.sparkExpand": "全屏查看",
+  "simple.sparkShrink": "退出全屏",
 
   "dashboard.title": "概览",
   "dashboard.desc": "启动代理后通过所选节点转发流量",
@@ -1027,6 +1050,12 @@ const zh: Record<MessageKey, string> = {
   "dashboard.cardQuality": "网络延迟",
   "dashboard.probeLatencyHint": "点击测试当前节点延迟",
   "dashboard.probeLatencyRunning": "正在测速…",
+  "dashboard.cardProbe": "网络探测",
+  "dashboard.probeNetworkHint": "点击探测当前节点延迟与出口 IP",
+  "dashboard.probeNetworkRunning": "探测中…",
+  "dashboard.exitIp": "出口IP",
+  "dashboard.exitCountry": "国家",
+  "dashboard.exitIpDirect": "直连",
   "dashboard.cardSub": "启用订阅",
   "dashboard.cardCustom": "指定配置",
   "dashboard.cardSystem": "系统端口",
@@ -1195,6 +1224,15 @@ const zh: Record<MessageKey, string> = {
   "settings.coreDownload": "下载到数据目录",
   "settings.coreUpdate": "更新内核",
   "settings.coreRedownload": "重新下载",
+  "settings.coreRestore": "恢复出厂",
+  "settings.coreRestoreHint":
+    "删除已下载的内核，改用内置出厂版本（{v}）。内核运行中会自动重启。",
+  "settings.coreRestoreConfirm":
+    "确定删除已下载的内核并恢复内置版本（{v}）吗？内核运行中会自动重启。",
+  "settings.coreRestoreDlHint":
+    "当前安装包未内置该核心，恢复出厂会从 GitHub 下载固定版本（{v}）。",
+  "settings.coreRestoreDlConfirm":
+    "当前安装包未内置该核心，确定从 GitHub 下载固定版本（{v}）吗？",
   "settings.coreDownloadPreview": "安装预发布版",
   "settings.corePreviewHint": "安装最新 Xray 预发布版。预发布版本需要手动选择，稳定性可能低于最新稳定版。",
   "settings.coreDownloading": "下载中…",
@@ -1319,8 +1357,12 @@ const zh: Record<MessageKey, string> = {
   "nodes.groupCountry": "国家",
   "nodes.groupOther": "其他",
   "nodes.groupNoSub": "未分组",
+  "nodes.groupToggleHint": "点击折叠 / 展开",
+  "nodes.collapseAll": "全部折叠",
+  "nodes.expandAll": "全部展开",
   "nodes.clickTest": "单点测试",
   "nodes.clickTestHint": "启用后，点击节点改为测试该节点延迟，而不再选用",
+  "nodes.clickTestActive": "点击节点测试延迟 · 点击上方开关关闭",
   "nodes.clickTestLatency": "点击测试延迟",
   "nodes.testing": "测试中…",
   "nodes.empty": "暂无节点，请先导入配置",

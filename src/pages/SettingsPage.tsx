@@ -12,6 +12,7 @@ import {
   getProxyStatus,
   getSettings,
   regenerateApiSecret,
+  resetCoreToBundled,
   restartProxy,
   setCoreType,
   updateSettings,
@@ -594,7 +595,10 @@ export function SettingsPage() {
     }
   }
 
-  async function onDownloadCore(kind: CoreKind, tag: string | null = null) {
+  async function onDownloadCore(
+    kind: CoreKind,
+    tag: string | null = null,
+  ): Promise<boolean> {
     setCoreBusyKind(kind);
     setCoreError(null);
     const status = await getProxyStatus().catch(() => null);
@@ -611,11 +615,41 @@ export function SettingsPage() {
     try {
       await downloadCore(kind, tag);
       await reloadCore();
+      return true;
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
+      return false;
     } finally {
       setCoreBusyKind(null);
       setCoreProgress(null);
+    }
+  }
+
+  /** Restore a bundled core, or re-download its fixed factory version when
+   * this installer does not ship that core. */
+  async function onRestoreCore(kind: CoreKind) {
+    const info = cores[kind];
+    if (info?.bundled_version) {
+      if (!confirm(t("settings.coreRestoreConfirm", { v: info.bundled_version }))) return;
+      setCoreBusyKind(kind);
+      setCoreError(null);
+      try {
+        await resetCoreToBundled(kind);
+        await reloadCore();
+      } catch (e) {
+        setCoreError(typeof e === "string" ? e : String(e));
+      } finally {
+        setCoreBusyKind(null);
+      }
+      return;
+    }
+    const factory = info?.factory_version;
+    if (!factory) return;
+    if (!confirm(t("settings.coreRestoreDlConfirm", { v: factory }))) return;
+    const ok = await onDownloadCore(kind, factory);
+    if (ok && (settings?.core_type ?? "singbox") === kind) {
+      const status = await getProxyStatus().catch(() => null);
+      if (status?.running) await restartProxy();
     }
   }
 
@@ -651,6 +685,7 @@ export function SettingsPage() {
       coreProgress && (coreProgress.kind ?? "singbox") === kind
         ? coreProgress
         : null;
+    const restoreTarget = info?.bundled_version ?? info?.factory_version ?? null;
     return (
       <div
         className={`kernel-row${active ? " core-active" : ""}`}
@@ -745,6 +780,20 @@ export function SettingsPage() {
                 ? t("settings.coreChecking")
                 : t("settings.coreCheck")}
             </GlassButton>
+            {info?.installed && restoreTarget ? (
+              <GlassButton
+                icon="⟲"
+                disabled={busy || checking}
+                title={
+                  info.bundled_version
+                    ? t("settings.coreRestoreHint", { v: info.bundled_version })
+                    : t("settings.coreRestoreDlHint", { v: restoreTarget })
+                }
+                onClick={() => void onRestoreCore(kind)}
+              >
+                {t("settings.coreRestore")}
+              </GlassButton>
+            ) : null}
             {kind === "xray" && info?.latest_prerelease_version ? (
               <GlassButton
                 variant="primary"

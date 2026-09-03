@@ -180,6 +180,7 @@ export function SimpleTrafficSpark({
   const [rows, setRows] = useState<ConnectionView[]>([]);
   const revisionRef = useRef<number | null>(null);
   const orderRevRef = useRef<number | null>(null);
+  const [expanded, setExpanded] = useState(false);
 
   const reloadLinks = useCallback(async () => {
     if (!running) {
@@ -205,6 +206,20 @@ export function SimpleTrafficSpark({
   }, [reloadLinks]);
 
   useVisibleInterval(() => reloadLinks(), 2000);
+
+  // Escape closes the overlay and the class freezes the page behind it.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    document.addEventListener("keydown", onKey);
+    document.documentElement.classList.add("spark-fullscreen-open");
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.documentElement.classList.remove("spark-fullscreen-open");
+    };
+  }, [expanded]);
 
   const downs = samples.map((s) => s.down);
   const ups = samples.map((s) => s.up);
@@ -288,19 +303,31 @@ export function SimpleTrafficSpark({
   }, [measureArcs]);
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      className={`simple-spark${hasTraffic ? " live" : ""}${quiet ? " quiet" : ""}`}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen?.();
+    <>
+      {expanded && (
+        <div
+          className="simple-spark-backdrop"
+          onClick={() => setExpanded(false)}
+          aria-hidden
+        />
+      )}
+      <div
+        role="button"
+        tabIndex={0}
+        className={`simple-spark${hasTraffic ? " live" : ""}${quiet ? " quiet" : ""}${expanded ? " expanded" : ""}`}
+        onClick={expanded ? undefined : onOpen}
+        onKeyDown={
+          expanded
+            ? undefined
+            : (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpen?.();
+                }
+              }
         }
-      }}
-      aria-label={label}
-    >
+        aria-label={label}
+      >
       <header className="simple-spark-head">
         <span className="instrument-label">
           {label}
@@ -308,10 +335,42 @@ export function SimpleTrafficSpark({
             <span className="simple-spark-tag muted">{idleConnsLabel}</span>
           ) : null}
         </span>
-        <span className="simple-spark-legend mono">
-          <span className="simple-spark-conns">{connsLabel}</span>
-          <span className="tr-dir down">↓ {fmtRate(down)}</span>
-          <span className="tr-dir up">↑ {fmtRate(up)}</span>
+        <span className="simple-spark-head-right">
+          <span className="simple-spark-legend mono">
+            <span className="simple-spark-conns">{connsLabel}</span>
+            <span className="tr-dir down">↓ {fmtRate(down)}</span>
+            <span className="tr-dir up">↑ {fmtRate(up)}</span>
+          </span>
+          <button
+            type="button"
+            className="icon-btn simple-spark-fs"
+            aria-label={expanded ? t("simple.sparkShrink") : t("simple.sparkExpand")}
+            title={expanded ? t("simple.sparkShrink") : t("simple.sparkExpand")}
+            aria-pressed={expanded}
+            onClick={(event) => {
+              event.stopPropagation();
+              setExpanded((value) => !value);
+            }}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <svg
+              viewBox="0 0 16 16"
+              width="12"
+              height="12"
+              aria-hidden
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              {expanded ? (
+                <path d="M6.5 2v4.5H2M9.5 2v4.5H14M6.5 14V9.5H2M9.5 14V9.5H14" />
+              ) : (
+                <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" />
+              )}
+            </svg>
+          </button>
         </span>
       </header>
       <div className="simple-spark-plot">
@@ -386,6 +445,8 @@ export function SimpleTrafficSpark({
           </svg>
         </div>
       </div>
-    </div>
+      </div>
+      {expanded && <div className="simple-spark-placeholder" aria-hidden />}
+    </>
   );
 }

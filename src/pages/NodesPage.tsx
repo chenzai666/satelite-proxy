@@ -31,19 +31,37 @@ import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 const VIRTUALIZE_AFTER = 200;
 const LIST_ROW_HEIGHT = 49;
 const GRID_ROW_HEIGHT = 94;
+const NODE_GROUP_H = 30;
+const NODE_LIST_COLS = "40px minmax(0,1.44fr) 90px minmax(0,1fr) 70px 90px";
+const GRID_GAP = 10;
 
 /** Flat render items for the grouped list (headers share the row height so
  *  the fixed-size virtualizer math stays exact). */
 type ListItem =
-  | { type: "group"; key: string; label: string; flag?: string; count: number }
-  | { type: "node"; n: ProxyNode };
-/** Grid variant: a full-width header occupies one cell slot and pads the rest
- *  of its row with fillers so subsequent cards stay aligned. */
-type GridItem = ListItem | { type: "filler" };
+  | {
+      type: "group";
+      key: string;
+      label: string;
+      flag?: string;
+      count: number;
+      h: number;
+    }
+  | { type: "node"; n: ProxyNode; h: number };
+/** Grid items are row-granular: one item is one visual row of cards. */
+type GridItem =
+  | {
+      type: "group";
+      key: string;
+      label: string;
+      flag?: string;
+      count: number;
+      h: number;
+    }
+  | { type: "row"; nodes: ProxyNode[]; h: number };
 
 function gridColumns() {
   if (window.innerWidth <= 720) return 2;
-  if (window.innerWidth <= 960) return 3;
+  if (window.innerWidth <= 900) return 3;
   return 4;
 }
 
@@ -129,7 +147,9 @@ export function NodesPage() {
   const [delegatedProtocols, setDelegatedProtocols] = useState<Set<string>>(
     new Set(),
   );
-  const [columnCount, setColumnCount] = useState(gridColumns);
+  // Keep the chunk size in sync with the CSS grid breakpoints so virtualized
+  // rows remain aligned after a window resize.
+  const [gridCols, setGridCols] = useState(gridColumns);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
@@ -138,7 +158,7 @@ export function NodesPage() {
   const [shareNotice, setShareNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    const update = () => setColumnCount(gridColumns());
+    const update = () => setGridCols(gridColumns());
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, []);
@@ -231,24 +251,37 @@ export function NodesPage() {
     [displayed, groupBy, locale, t],
   );
 
-  // Collapsed group keys (session-only — collapse is a browsing gesture).
-  // Starts every group collapsed when grouping is (re)enabled or the
-  // dimension changes; subsequent data reloads under the same dimension
-  // don't reset groups the user has already opened.
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const collapsedForGroupByRef = useRef<GroupBy | null>(null);
-  useEffect(() => {
-    if (groupBy === "default") {
-      collapsedForGroupByRef.current = null;
-      return;
+  // Collapse state is kept per grouping dimension. Changing from protocol to
+  // country must not reuse keys from the previous dimension, and reopening a
+  // page should preserve the user's browsing choice.
+  function collapsedStorageKey(by: GroupBy) {
+    return `nodes.collapsedGroups.${by}`;
+  }
+  function loadCollapsed(by: GroupBy): Set<string> {
+    if (by === "default") return new Set();
+    try {
+      const raw = localStorage.getItem(collapsedStorageKey(by));
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+    } catch {
+      return new Set();
     }
-    if (collapsedForGroupByRef.current === groupBy) return;
-    if (groups.length === 0) return; // wait for data before collapsing
-    collapsedForGroupByRef.current = groupBy;
-    setCollapsedGroups(new Set(groups.map((g) => g.key)));
-  }, [groupBy, groups]);
+  }
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() =>
+    loadCollapsed(groupBy),
+  );
+  const previousGroupBy = useRef<GroupBy>(groupBy);
+  useEffect(() => {
+    if (previousGroupBy.current === groupBy) return;
+    previousGroupBy.current = groupBy;
+    setCollapsedGroups(loadCollapsed(groupBy));
+  }, [groupBy]);
+  useEffect(() => {
+    if (groupBy === "default") return;
+    localStorage.setItem(
+      collapsedStorageKey(groupBy),
+      JSON.stringify([...collapsedGroups]),
+    );
+  }, [groupBy, collapsedGroups]);
   function toggleGroup(key: string) {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -256,6 +289,12 @@ export function NodesPage() {
       else next.add(key);
       return next;
     });
+  }
+  function collapseAll() {
+    setCollapsedGroups(new Set(groups.map((group) => group.key)));
+  }
+  function expandAll() {
+    setCollapsedGroups(new Set());
   }
 
   const listItems = useMemo(() => {
@@ -269,10 +308,11 @@ export function NodesPage() {
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
+          h: NODE_GROUP_H,
         });
       }
       if (!grouped || !collapsedGroups.has(g.key)) {
-        for (const n of g.nodes) out.push({ type: "node", n });
+        for (const n of g.nodes) out.push({ type: "node", n, h: LIST_ROW_HEIGHT });
       }
     }
     return out;
@@ -280,6 +320,15 @@ export function NodesPage() {
 
   const gridItems = useMemo(() => {
     const out: GridItem[] = [];
+    const pushRows = (list: ProxyNode[]) => {
+      for (let i = 0; i < list.length; i += gridCols) {
+        out.push({
+          type: "row",
+          nodes: list.slice(i, i + gridCols),
+          h: GRID_ROW_HEIGHT,
+        });
+      }
+    };
     for (const g of groups) {
       const grouped = groupBy !== "default";
       if (grouped) {
@@ -289,28 +338,86 @@ export function NodesPage() {
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
+          h: NODE_GROUP_H + GRID_GAP,
         });
-        for (let i = 1; i < columnCount; i++) out.push({ type: "filler" });
       }
       if (!grouped || !collapsedGroups.has(g.key)) {
-        for (const n of g.nodes) out.push({ type: "node", n });
+        pushRows(g.nodes);
       }
     }
     return out;
-  }, [groups, groupBy, columnCount, collapsedGroups]);
+  }, [groups, groupBy, gridCols, collapsedGroups]);
 
   const virtualized = displayed.length > VIRTUALIZE_AFTER;
-  const listRange = useVirtualRange({
-    itemCount: listItems.length,
-    itemSize: LIST_ROW_HEIGHT,
+  // Pixel-space windows keep the 30px group headers and 49px node rows
+  // exact. The hook's itemSize=1 turns its range into a pixel interval; the
+  // prefix offsets below map that interval back to item indexes.
+  function offsetsOf(items: { h: number }[]) {
+    const offsets = new Array<number>(items.length + 1);
+    offsets[0] = 0;
+    for (let i = 0; i < items.length; i++) offsets[i + 1] = offsets[i] + items[i].h;
+    return offsets;
+  }
+  function visibleWindow<T extends { h: number }>(
+    items: T[],
+    offsets: number[],
+    startPx: number,
+    endPx: number,
+  ) {
+    let low = 0;
+    let high = items.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (offsets[mid + 1] <= startPx) low = mid + 1;
+      else high = mid;
+    }
+    const first = low;
+    let last = first;
+    while (last < items.length && offsets[last] < endPx) last++;
+    const total = offsets[items.length] ?? 0;
+    const bottom = offsets[last] ?? total;
+    return {
+      first,
+      last,
+      top: offsets[first] ?? 0,
+      bottom,
+      bottomPad: Math.max(0, total - bottom),
+    };
+  }
+  const listOffsets = useMemo(() => offsetsOf(listItems), [listItems]);
+  const gridOffsets = useMemo(() => offsetsOf(gridItems), [gridItems]);
+  const listPixels = useVirtualRange({
+    itemCount: Math.max(1, listOffsets[listOffsets.length - 1] ?? 0),
+    itemSize: 1,
     enabled: virtualized,
+    overscanRows: 400,
   });
-  const gridRange = useVirtualRange({
-    itemCount: gridItems.length,
-    itemSize: GRID_ROW_HEIGHT,
-    itemsPerRow: columnCount,
+  const gridPixels = useVirtualRange({
+    itemCount: Math.max(1, gridOffsets[gridOffsets.length - 1] ?? 0),
+    itemSize: 1,
     enabled: virtualized,
+    overscanRows: 400,
   });
+  const listWindow = useMemo(
+    () =>
+      visibleWindow(
+        listItems,
+        listOffsets,
+        Math.max(0, listPixels.start),
+        Math.min(listPixels.end, listOffsets[listOffsets.length - 1] ?? 0),
+      ),
+    [listItems, listOffsets, listPixels],
+  );
+  const gridWindow = useMemo(
+    () =>
+      visibleWindow(
+        gridItems,
+        gridOffsets,
+        Math.max(0, gridPixels.start),
+        Math.min(gridPixels.end, gridOffsets[gridOffsets.length - 1] ?? 0),
+      ),
+    [gridItems, gridOffsets, gridPixels],
+  );
 
   async function onSelect(id: string) {
     if (busyId || switching || batchBusy) return;
@@ -559,21 +666,20 @@ export function NodesPage() {
   function renderGroupRow(item: Extract<ListItem, { type: "group" }>) {
     const open = !collapsedGroups.has(item.key);
     return (
-      <tr
+      <div
         key={item.key}
-        className="node-group-row"
+        className="node-list-group-row"
+        style={{ height: NODE_GROUP_H }}
         onClick={() => toggleGroup(item.key)}
-        title="点击展开或收起分组"
+        title={t("nodes.groupToggleHint")}
       >
-        <td colSpan={6}>
-          <span className={`node-group-caret${open ? "" : " closed"}`}>▾</span>
-          <span className="node-group-label">
-            {item.flag ? <span className="node-group-flag">{item.flag}</span> : null}
-            {item.label}
-          </span>
-          <span className="node-group-count mono">{item.count}</span>
-        </td>
-      </tr>
+        <span className={`node-group-caret${open ? "" : " closed"}`} />
+        <span className="node-group-label">
+          {item.flag ? <span className="node-group-flag">{item.flag}</span> : null}
+          {item.label}
+        </span>
+        <span className="node-group-count mono">{item.count}</span>
+      </div>
     );
   }
 
@@ -584,11 +690,11 @@ export function NodesPage() {
       <div
         key={item.key}
         className="node-group-head"
-        style={{ height: GRID_ROW_HEIGHT }}
+        style={{ height: NODE_GROUP_H }}
         onClick={() => toggleGroup(item.key)}
-        title="点击展开或收起分组"
+        title={t("nodes.groupToggleHint")}
       >
-        <span className={`node-group-caret${open ? "" : " closed"}`}>▾</span>
+        <span className={`node-group-caret${open ? "" : " closed"}`} />
         <span className="node-group-label">
           {item.flag ? <span className="node-group-flag">{item.flag}</span> : null}
           {item.label}
@@ -603,9 +709,13 @@ export function NodesPage() {
     const isTesting = testingIds.has(n.id);
     const selected = selectedIds.has(n.id);
     return (
-      <tr
+      <div
         key={n.id}
-        className={`node-virtual-row ${active ? "row-active" : ""} ${selected ? "row-selected" : ""}`}
+        className={`node-list-row node-virtual-row ${active ? "row-active" : ""} ${selected ? "row-selected" : ""}`}
+        style={{
+          gridTemplateColumns: NODE_LIST_COLS,
+          cursor: customRuntime ? "default" : "pointer",
+        }}
         onClick={(event) => {
           if (customRuntime) return;
           if (event.ctrlKey || event.metaKey) {
@@ -614,7 +724,6 @@ export function NodesPage() {
             void onTestOne(n.id);
           }
         }}
-        style={{ cursor: customRuntime ? "default" : clickTest ? "pointer" : undefined }}
         title={!customRuntime && clickTest ? t("nodes.clickTestLatency") : undefined}
         onContextMenu={(event) => {
           if (customRuntime) return;
@@ -622,7 +731,7 @@ export function NodesPage() {
           setContextMenu({ node: n, x: event.clientX, y: event.clientY });
         }}
       >
-        <td>
+        <span>
           <button
             type="button"
             className="node-select-dot"
@@ -636,24 +745,24 @@ export function NodesPage() {
           >
             {active ? "●" : "○"}
           </button>
-        </td>
-        <td>
+        </span>
+        <span>
           <div className="node-list-name">{n.name}</div>
           {n.subscription_name ? (
             <div className="node-sub-label" title={n.subscription_name}>
               {n.subscription_name}
             </div>
           ) : null}
-        </td>
-        <td>
+        </span>
+        <span>
           <code>{n.protocol}</code>
           {delegatedProtocols.has(n.protocol) ? (
             <span className="pill sidecar-tag">Xray</span>
           ) : null}
-        </td>
-        <td>{n.server}</td>
-        <td>{n.port}</td>
-        <td className="node-list-latency">
+        </span>
+        <span>{n.server}</span>
+        <span>{n.port}</span>
+        <span className="node-list-latency">
           <button
             type="button"
             className="node-latency-action"
@@ -673,8 +782,8 @@ export function NodesPage() {
               unsupportedLabel={pingNote}
             />
           </button>
-        </td>
-      </tr>
+        </span>
+      </div>
     );
   }
 
@@ -777,17 +886,6 @@ export function NodesPage() {
           </p>
         </div>
         <div className="header-actions nodes-toolbar">
-          <GlassSeg
-            value={groupBy}
-            ariaLabel={t("nodes.groupBy")}
-            onChange={(v) => setGroupBy(v as GroupBy)}
-            options={[
-              { value: "default", label: t("nodes.groupDefault") },
-              { value: "sub", label: t("nodes.groupSub") },
-              { value: "proto", label: t("nodes.groupProto") },
-              { value: "country", label: t("nodes.groupCountry") },
-            ]}
-          />
           <input
             autoCapitalize="off"
             autoCorrect="off"
@@ -851,6 +949,37 @@ export function NodesPage() {
             </GlassButton>
           )}
 
+          <div className="nodes-view-segs">
+            {!customRuntime && clickTest && (
+              <span className="nodes-clicktest-active">
+                {t("nodes.clickTestActive")}
+              </span>
+            )}
+            <GlassSeg
+              value={groupBy}
+              ariaLabel={t("nodes.groupBy")}
+              onChange={(v) => setGroupBy(v as GroupBy)}
+              options={[
+                { value: "default", label: t("nodes.groupDefault") },
+                { value: "sub", label: t("nodes.groupSub") },
+                { value: "proto", label: t("nodes.groupProto") },
+                { value: "country", label: t("nodes.groupCountry") },
+              ]}
+            />
+            <div className="node-group-fold" role="group" aria-label={t("nodes.groupBy")}>
+              <span
+                className={`node-group-fold-label minus${groupBy === "default" ? " disabled" : ""}`}
+                onClick={groupBy === "default" ? undefined : collapseAll}
+                title={t("nodes.collapseAll")}
+              />
+              <span
+                className={`node-group-fold-label plus${groupBy === "default" ? " disabled" : ""}`}
+                onClick={groupBy === "default" ? undefined : expandAll}
+                title={t("nodes.expandAll")}
+              />
+            </div>
+          </div>
+
           <GlassSeg
             value={viewMode}
             ariaLabel="视图"
@@ -910,58 +1039,58 @@ export function NodesPage() {
         </div>
       ) : viewMode === "list" ? (
         <div className={`card table-wrap${clickTest ? " spot-armed" : ""}`}>
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: 40 }}></th>
-                <th>{t("nodes.sortName")}</th>
-                <th>proto</th>
-                <th>host</th>
-                <th>port</th>
-                <th style={{ width: 90 }}>{t("nodes.sortLatency")}</th>
-              </tr>
-            </thead>
-            <tbody ref={listRange.containerRef as React.RefObject<HTMLTableSectionElement>}>
-              {listRange.paddingTop > 0 && (
-                <tr className="node-virtual-spacer" aria-hidden="true">
-                  <td colSpan={6} style={{ height: listRange.paddingTop }} />
-                </tr>
+          <div className="node-list">
+            <div className="node-list-head" style={{ gridTemplateColumns: NODE_LIST_COLS }}>
+              <span />
+              <span>{t("nodes.sortName")}</span>
+              <span>proto</span>
+              <span>host</span>
+              <span>port</span>
+              <span>{t("nodes.sortLatency")}</span>
+            </div>
+            <div ref={listPixels.containerRef as React.RefObject<HTMLDivElement>}>
+              {listWindow.top > 0 && (
+                <div
+                  className="node-virtual-spacer"
+                  aria-hidden="true"
+                  style={{ height: listWindow.top }}
+                />
               )}
               {listItems
-                .slice(listRange.start, listRange.end)
+                .slice(listWindow.first, listWindow.last)
                 .map((item) =>
                   item.type === "group" ? renderGroupRow(item) : renderNodeRow(item.n),
                 )}
-              {listRange.paddingBottom > 0 && (
-                <tr className="node-virtual-spacer" aria-hidden="true">
-                  <td colSpan={6} style={{ height: listRange.paddingBottom }} />
-                </tr>
+              {listWindow.bottomPad > 0 && (
+                <div
+                  className="node-virtual-spacer"
+                  aria-hidden="true"
+                  style={{ height: listWindow.bottomPad }}
+                />
               )}
-            </tbody>
-          </table>
+            </div>
+          </div>
         </div>
       ) : (
         <div
           className={virtualized ? "node-grid-window" : undefined}
-          ref={gridRange.containerRef as React.RefObject<HTMLDivElement>}
+          ref={gridPixels.containerRef as React.RefObject<HTMLDivElement>}
         >
-          {gridRange.paddingTop > 0 && (
-            <div style={{ height: gridRange.paddingTop }} aria-hidden="true" />
+          {gridWindow.top > 0 && (
+            <div style={{ height: gridWindow.top }} aria-hidden="true" />
           )}
           <div
             className={`node-grid ${virtualized ? "node-grid-virtual" : ""}${clickTest ? " spot-armed" : ""}`}
           >
             {gridItems
-              .slice(gridRange.start, gridRange.end)
-              .map((item, i) => {
+              .slice(gridWindow.first, gridWindow.last)
+              .map((item) => {
                 if (item.type === "group") return renderGroupHead(item);
-                if (item.type === "filler")
-                  return <div key={`f-${gridRange.start + i}`} aria-hidden />;
-                return renderNodeCard(item.n);
+                return item.nodes.map((node) => renderNodeCard(node));
               })}
           </div>
-          {gridRange.paddingBottom > 0 && (
-            <div style={{ height: gridRange.paddingBottom }} aria-hidden="true" />
+          {gridWindow.bottomPad > 0 && (
+            <div style={{ height: gridWindow.bottomPad }} aria-hidden="true" />
           )}
         </div>
       )}

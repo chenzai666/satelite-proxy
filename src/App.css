@@ -1086,7 +1086,7 @@ button {
   padding: 0 1px;
 }
 
-tr.row-active {
+.row-active {
   background: var(--primary-muted);
 }
 
@@ -2055,6 +2055,73 @@ tr.row-active {
   justify-content: flex-end;
 }
 
+.nodes-view-segs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.nodes-clicktest-active {
+  align-self: center;
+  color: var(--success);
+  font-size: 0.68rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.node-group-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0 0.3rem;
+}
+
+.node-group-fold-label {
+  position: relative;
+  box-sizing: border-box;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  color: var(--accent, #5eb89a);
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.node-group-fold-label::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 55%;
+  height: 1.5px;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+}
+
+.node-group-fold-label.plus::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 1.5px;
+  height: 55%;
+  background: currentColor;
+  transform: translate(-50%, -50%);
+}
+
+.node-group-fold-label:hover:not(.disabled) {
+  opacity: 0.75;
+}
+
+.node-group-fold-label.disabled {
+  color: var(--muted);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .segmented.compact {
   display: inline-grid;
   grid-auto-flow: column;
@@ -2168,10 +2235,75 @@ tr.row-active {
   height: 49px;
 }
 
+/* —— Nodes page list view ——
+   Use a shared CSS grid instead of native table layout. Long subscription
+   names can then ellipsize inside their own column without squeezing the
+   group header or changing neighbouring columns.
+ */
+.node-list {
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.node-list-head {
+  display: grid;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  font-family: var(--mono);
+  border-bottom: 1px solid var(--border);
+}
+
+.node-list-head > span {
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+}
+
+.node-list-row {
+  display: grid;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.node-list-row > span {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-list-row > span > .node-list-name,
+.node-list-row > span > .node-sub-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-list-group-row {
+  display: flex;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--muted) 7%, transparent);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
 /* —— Nodes page grouping (subscription / protocol / country) ——
-   Header rows share the node row height so the fixed-size virtualizer
-   math stays exact; the grid header spans all columns at card height and
-   is padded with filler cells to keep the per-cell indexing aligned. */
+   Grid headers span all columns and are followed by row-granular cards. */
 .node-group-row > td {
   height: 49px;
   padding: 0 0.75rem;
@@ -2194,7 +2326,12 @@ tr.row-active {
 }
 
 .node-group-caret {
-  display: inline-block;
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--muted);
   transition: transform 0.16s ease;
 }
 
@@ -2206,22 +2343,26 @@ tr.row-active {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
+  text-align: left;
 }
 
 .node-group-flag {
   font-size: 1.05em;
+  flex-shrink: 0;
 }
 
 .node-group-count {
   color: var(--muted);
   font-size: 0.75rem;
+  flex-shrink: 0;
+  margin-left: 0.35rem;
 }
 
 
 /* —— 单点测试 armed: every node wears a green outline so the
    click-to-test affordance stays visible across the whole list/grid.
-   Cards take a real border + soft glow; table rows draw theirs via the
-   cells (tr can't carry borders reliably under border-collapse). */
+   Cards and div-based list rows take a real border + soft glow. */
 .spot-armed .node-card {
   border-color: var(--success-border);
   box-shadow:
@@ -2229,23 +2370,14 @@ tr.row-active {
     0 0 10px color-mix(in srgb, var(--success) 20%, transparent);
 }
 
-.spot-armed .node-virtual-row > td {
+.spot-armed .node-list-row {
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius);
   border-top: 1px solid var(--success-border);
   border-bottom: 1px solid var(--success-border);
 }
 
-.spot-armed .node-virtual-row > td:first-child {
-  border-left: 1px solid var(--success-border);
-  border-radius: var(--radius) 0 0 var(--radius);
-}
-
-.spot-armed .node-virtual-row > td:last-child {
-  border-right: 1px solid var(--success-border);
-  border-radius: 0 var(--radius) var(--radius) 0;
-}
-
-
-.node-virtual-spacer > td {
+.node-virtual-spacer {
   padding: 0;
   border: 0;
 }
@@ -2301,7 +2433,7 @@ button.node-card.active,
 }
 
 .node-card.selected,
-.node-virtual-row.row-selected > td {
+.node-list-row.row-selected {
   background: var(--primary-muted) !important;
 }
 
@@ -5669,6 +5801,35 @@ button.check.on {
   color: var(--muted);
 }
 
+/* Exit-IP row of the network-probe card. Keep IPv6 answers on one line and
+   leave room for the optional direct-probe badge. */
+.instrument-kv .kv-v.exit-ip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  max-width: calc(100% - 4.55rem);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.instrument-kv .kv-v.exit-ip .lat-spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+}
+
+.exit-ip-direct {
+  flex: none;
+  font-size: 0.6rem;
+  line-height: 1;
+  padding: 0.14rem 0.3rem;
+  border-radius: 0.3rem;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  color: var(--warning);
+}
+
 .instrument-traffic {
   font-size: 1.05rem;
   font-weight: 600;
@@ -7853,6 +8014,141 @@ button.active-soft {
   border-color: var(--border-strong) !important;
   background: var(--surface-2) !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+}
+
+/* Fullscreen toggle for the compact activity card. */
+.simple-spark-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.simple-spark-fs {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  font-size: 0;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+.simple-spark-fs:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.simple-spark-fs svg {
+  display: block;
+}
+
+.simple-spark-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 46;
+  background: var(--overlay);
+}
+
+.instrument-grid > .simple-spark.expanded {
+  position: fixed;
+  inset: 1.1rem;
+  z-index: 47;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 1rem 1.25rem 0.9rem !important;
+  cursor: default;
+  background: var(--panel-solid) !important;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38) !important;
+  animation: spark-expand-in var(--page-enter-ms, 240ms)
+    cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes spark-expand-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .instrument-grid > .simple-spark.expanded {
+    animation: none;
+  }
+}
+
+.simple-spark-placeholder {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+html.spark-fullscreen-open .main {
+  overflow: hidden;
+}
+
+.instrument-grid > .simple-spark.expanded .instrument-label {
+  font-size: 0.82rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-tag {
+  font-size: 0.7rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-legend {
+  font-size: 0.78rem;
+  gap: 0.35rem 0.55rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-conns {
+  font-size: 0.85rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-fs {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-fs svg {
+  width: 15px;
+  height: 15px;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-flow {
+  grid-template-columns: auto minmax(0, 1fr) 11rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-rail.left {
+  max-width: 11rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-rail-kicker {
+  font-size: 0.64rem;
+  padding-bottom: 0.3rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-col {
+  padding: 0.1rem 0 0.2rem;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-col li {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  padding: 0.12rem 0;
+}
+
+.instrument-grid > .simple-spark.expanded .simple-spark-idle {
+  font-size: 0.95rem;
 }
 
 .simple-spark-head {
