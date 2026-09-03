@@ -786,6 +786,25 @@ pub fn builtin_remote_spec(id: &str) -> Option<&'static BuiltinRemoteRuleSpec> {
     BUILTIN_REMOTE_RULE_SETS.iter().find(|spec| spec.id == id)
 }
 
+/// 判断规则数组在任意嵌套层级是否包含 `ip_cidr` 条件。
+///
+/// sing-box 1.14 之后，DNS 规则不能引用包含旧式地址过滤字段的规则集。
+/// 规则集可能包含嵌套的 `logical` / `rules`，因此这里按 JSON 结构递归扫描，
+/// 不对 headless-rule 的语义做额外假设。
+pub fn rules_contain_ip_cidr(rules: &[serde_json::Value]) -> bool {
+    fn value_contains_ip_cidr(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(object) => object
+                .iter()
+                .any(|(field, nested)| field == "ip_cidr" || value_contains_ip_cidr(nested)),
+            serde_json::Value::Array(items) => items.iter().any(value_contains_ip_cidr),
+            _ => false,
+        }
+    }
+
+    rules.iter().any(value_contains_ip_cidr)
+}
+
 /// Ids used by the first (unreleased) iteration of the system sets; the v9
 /// migration renames lingering entries to the `system-` ids above.
 pub const LEGACY_BUILTIN_REMOTE_IDS: [(&str, &str); 3] = [
