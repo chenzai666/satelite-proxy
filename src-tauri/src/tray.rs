@@ -1,13 +1,13 @@
 //! System tray: open window, start/stop, quit (with cleanup).
 
-use crate::domain::TrayIconStyle;
+use crate::domain::{CaptureMode, TrayIconStyle};
 use crate::state::AppState;
 use crate::window_ctrl;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Runtime as TauriRuntime,
 };
@@ -115,6 +115,63 @@ fn copy_proxy_env(app: &AppHandle<impl TauriRuntime>) {
 
 const TRAY_ID: &str = "main";
 
+/// Handles to tray items whose checked state depends on runtime settings.
+/// Tauri's tray menu does not expose a getter from `TrayIcon`, so keep the
+/// handles in managed state and refresh them whenever the icon is refreshed.
+struct CaptureMenuHandles<R: TauriRuntime> {
+    off: CheckMenuItem<R>,
+    system: CheckMenuItem<R>,
+    tun: CheckMenuItem<R>,
+}
+
+/// Single start/stop item whose label follows the live core state.
+struct ToggleMenuHandle<R: TauriRuntime>(MenuItem<R>);
+
+/// Low-memory checkbox mirrored from `settings.unload_ui_on_tray`.
+struct LowMemoryMenuHandle<R: TauriRuntime>(CheckMenuItem<R>);
+
+const TOGGLE_START_LABEL: &str = "启动代理";
+const TOGGLE_STOP_LABEL: &str = "停止代理";
+
+fn current_capture_mode(app: &AppHandle<impl TauriRuntime>) -> CaptureMode {
+    app.try_state::<AppState>()
+        .and_then(|s| s.with_store(|st| Ok(st.settings.capture_mode)).ok())
+        .unwrap_or_default()
+}
+
+fn refresh_capture_menu<R: TauriRuntime>(app: &AppHandle<R>) {
+    let Some(handles) = app.try_state::<CaptureMenuHandles<R>>() else {
+        return;
+    };
+    let mode = current_capture_mode(app);
+    let _ = handles.off.set_checked(mode == CaptureMode::Off);
+    let _ = handles.system.set_checked(mode == CaptureMode::System);
+    let _ = handles.tun.set_checked(mode == CaptureMode::Tun);
+}
+
+fn refresh_toggle_menu<R: TauriRuntime>(app: &AppHandle<R>, running: bool) {
+    let Some(handle) = app.try_state::<ToggleMenuHandle<R>>() else {
+        return;
+    };
+    let label = if running {
+        TOGGLE_STOP_LABEL
+    } else {
+        TOGGLE_START_LABEL
+    };
+    let _ = handle.0.set_text(label);
+}
+
+fn refresh_low_memory_menu<R: TauriRuntime>(app: &AppHandle<R>) {
+    let Some(handle) = app.try_state::<LowMemoryMenuHandle<R>>() else {
+        return;
+    };
+    let enabled = app
+        .try_state::<AppState>()
+        .and_then(|s| s.with_store(|st| Ok(st.settings.unload_ui_on_tray)).ok())
+        .unwrap_or(false);
+    let _ = handle.0.set_checked(enabled);
+}
+
 fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
     match (style, running) {
         (TrayIconStyle::Badge, true) => (include_bytes!("../icons/tray/badge-on.png"), false),
@@ -163,19 +220,95 @@ pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
     // Keep the main taskbar icon explicit. Windows owns a hidden tray helper
     // window and may briefly fall back to its generic icon during NIM_MODIFY.
     window_ctrl::apply_main_window_icon(app);
+    refresh_capture_menu(app);
+    refresh_toggle_menu(app, running);
+    refresh_low_memory_menu(app);
 }
 
 pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let show_i = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
-    let start_i = MenuItem::with_id(app, "start", "启动代理", true, None::<&str>)?;
-    let stop_i = MenuItem::with_id(app, "stop", "停止代理", true, None::<&str>)?;
+    let running_now = app
+        .try_state::<AppState>()
+        .map(|s| s.is_core_running())
+        .unwrap_or(false);
+    let toggle_label = if running_now {
+        TOGGLE_STOP_LABEL
+    } else {
+        TOGGLE_START_LABEL
+    };
+    let toggle_i = MenuItem::with_id(app, "toggle", toggle_label, true, None::<&str>)?;
+    let restart_i = MenuItem::with_id(app, "restart", "重启内核", true, None::<&str>)?;
     let copy_env_i = MenuItem::with_id(app, "copy_env", "复制环境变量", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    app.manage(ToggleMenuHandle::<R>(toggle_i.clone()));
+
+    let low_memory_now = app
+        .try_state::<AppState>()
+        .and_then(|s| s.with_store(|st| Ok(st.settings.unload_ui_on_tray)).ok())
+        .unwrap_or(false);
+    let low_memory_i = CheckMenuItem::with_id(
+        app,
+        "low_memory",
+        "低内存模式",
+        true,
+        low_memory_now,
+        None::<&str>,
+    )?;
+    app.manage(LowMemoryMenuHandle::<R>(low_memory_i.clone()));
+
+    let mode = current_capture_mode(app);
+    let capture_off_i = CheckMenuItem::with_id(
+        app,
+        "capture_off",
+        "关闭",
+        true,
+        mode == CaptureMode::Off,
+        None::<&str>,
+    )?;
+    let capture_system_i = CheckMenuItem::with_id(
+        app,
+        "capture_system",
+        "系统代理",
+        true,
+        mode == CaptureMode::System,
+        None::<&str>,
+    )?;
+    let capture_tun_i = CheckMenuItem::with_id(
+        app,
+        "capture_tun",
+        "TUN（全局）",
+        true,
+        mode == CaptureMode::Tun,
+        None::<&str>,
+    )?;
+    let capture_menu = Submenu::with_id_and_items(
+        app,
+        "capture",
+        "流量接管",
+        true,
+        &[&capture_off_i, &capture_system_i, &capture_tun_i],
+    )?;
+    app.manage(CaptureMenuHandles::<R> {
+        off: capture_off_i,
+        system: capture_system_i,
+        tun: capture_tun_i,
+    });
 
     let menu = Menu::with_items(
         app,
-        &[&show_i, &sep, &start_i, &stop_i, &copy_env_i, &sep, &quit_i],
+        &[
+            &show_i,
+            &sep,
+            &toggle_i,
+            &restart_i,
+            &capture_menu,
+            &copy_env_i,
+            &sep,
+            &low_memory_i,
+            &sep,
+            &quit_i,
+        ],
     )?;
 
     // Prefer app icon; fall back to default tray without custom image if load fails.
@@ -186,25 +319,63 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
             "show" => {
                 window_ctrl::show_main(app);
             }
-            "start" => {
+            "toggle" => {
                 if let Some(state) = app.try_state::<AppState>() {
-                    let res = app.path().resource_dir().ok();
-                    if let Err(error) = state.start_proxy(res.as_deref(), true) {
-                        crate::app_log::error("core", format!("tray start failed: {error}"));
+                    if state.is_core_running() {
+                        if let Err(error) = state.stop_proxy() {
+                            crate::app_log::error("core", format!("tray stop failed: {error}"));
+                        }
+                    } else {
+                        let res = app.path().resource_dir().ok();
+                        if let Err(error) = state.start_proxy(res.as_deref(), true) {
+                            crate::app_log::error("core", format!("tray start failed: {error}"));
+                        }
                     }
                 }
                 refresh_icon(app);
             }
-            "stop" => {
+            "restart" => {
                 if let Some(state) = app.try_state::<AppState>() {
-                    if let Err(error) = state.stop_proxy() {
-                        crate::app_log::error("core", format!("tray stop failed: {error}"));
+                    let res = app.path().resource_dir().ok();
+                    if let Err(error) = state.restart_proxy(res.as_deref()) {
+                        crate::app_log::error("core", format!("tray restart failed: {error}"));
+                    }
+                }
+                refresh_icon(app);
+            }
+            "capture_off" | "capture_system" | "capture_tun" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    let mode = match event.id.as_ref() {
+                        "capture_off" => "off",
+                        "capture_system" => "system",
+                        _ => "tun",
+                    };
+                    let res = app.path().resource_dir().ok();
+                    if let Err(error) = state.set_capture_mode(mode, res.as_deref()) {
+                        crate::app_log::error(
+                            "system_proxy",
+                            format!("tray capture mode {mode} failed: {error}"),
+                        );
                     }
                 }
                 refresh_icon(app);
             }
             "copy_env" => {
                 copy_proxy_env(app);
+            }
+            "low_memory" => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Err(error) = state.with_store_mut(|store| {
+                        store.settings.unload_ui_on_tray = !store.settings.unload_ui_on_tray;
+                        Ok(())
+                    }) {
+                        crate::app_log::error(
+                            "settings",
+                            format!("tray low-memory toggle failed: {error}"),
+                        );
+                    }
+                }
+                refresh_low_memory_menu(app);
             }
             "quit" => {
                 window_ctrl::quit_app(app);

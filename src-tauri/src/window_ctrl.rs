@@ -83,6 +83,19 @@ const SIMPLE_MAX: (f64, f64) = SIMPLE_SIZE;
 const BG_AEROSPACE: (u8, u8, u8) = (0x11, 0x14, 0x1c);
 const BG_DAY: (u8, u8, u8) = (0xee, 0xf0, 0xf4);
 
+/// Accent presets mirrored from `src/theme/accents.ts` — (aerospace, day).
+#[cfg(target_os = "windows")]
+const ACCENT_PRESETS: &[(&str, (u8, u8, u8), (u8, u8, u8))] = &[
+    ("green", (0x55, 0xc8, 0x9a), (0x1f, 0x9a, 0x72)),
+    ("blue", (0x6b, 0xb6, 0xe8), (0x2e, 0x86, 0xc8)),
+    ("purple", (0xb1, 0x9c, 0xd9), (0x8e, 0x5b, 0xb8)),
+    ("pink", (0xf4, 0xa6, 0xb8), (0xd6, 0x5a, 0x7e)),
+    ("orange", (0xf5, 0xb9, 0x7a), (0xd8, 0x8a, 0x3d)),
+    ("cyan", (0x7a, 0xd7, 0xd7), (0x2f, 0xa9, 0xa9)),
+];
+#[cfg(target_os = "windows")]
+const DEFAULT_ACCENT_RGB: (u8, u8, u8) = (0x55, 0xc8, 0x9a);
+
 fn is_dark_theme<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.try_state::<AppState>()
         .and_then(|state| {
@@ -120,7 +133,85 @@ pub fn apply_window_theme<R: Runtime>(app: &AppHandle<R>) {
             eprintln!("[satelite] set native window theme failed: {error}");
         }
     }
+    apply_titlebar_accent(app);
 }
+
+/// Resolve a stored glow/accent id to an RGB value for the active theme.
+#[cfg(target_os = "windows")]
+fn resolve_glow_rgb(id: &str, dark: bool) -> (u8, u8, u8) {
+    let id = id.trim();
+    if id.len() == 7 && id.starts_with('#') {
+        if let Ok(n) = u32::from_str_radix(&id[1..], 16) {
+            return (
+                ((n >> 16) & 0xff) as u8,
+                ((n >> 8) & 0xff) as u8,
+                (n & 0xff) as u8,
+            );
+        }
+    }
+    ACCENT_PRESETS
+        .iter()
+        .find(|(preset, _, _)| *preset == id)
+        .map(|(_, dark_rgb, light_rgb)| if dark { *dark_rgb } else { *light_rgb })
+        .unwrap_or(DEFAULT_ACCENT_RGB)
+}
+
+#[cfg(target_os = "windows")]
+fn blend_over(bg: (u8, u8, u8), glow: (u8, u8, u8), alpha: f64) -> (u8, u8, u8) {
+    let mix = |base: u8, overlay: u8| -> u8 {
+        (base as f64 * (1.0 - alpha) + overlay as f64 * alpha).round() as u8
+    };
+    (mix(bg.0, glow.0), mix(bg.1, glow.1), mix(bg.2, glow.2))
+}
+
+#[cfg(target_os = "windows")]
+fn titlebar_accent_color<R: Runtime>(app: &AppHandle<R>) -> (u8, u8, u8) {
+    let dark = is_dark_theme(app);
+    let (glow_id, accent_id) = app
+        .try_state::<AppState>()
+        .and_then(|s| {
+            s.with_store(|st| Ok((st.settings.glow_color.clone(), st.settings.accent.clone())))
+                .ok()
+        })
+        .unwrap_or_else(|| ("accent".to_string(), "green".to_string()));
+    let effective_id = if glow_id.trim() == "accent" {
+        accent_id
+    } else {
+        glow_id
+    };
+    let glow_rgb = resolve_glow_rgb(&effective_id, dark);
+    let bg = if dark { BG_AEROSPACE } else { BG_DAY };
+    let alpha = if dark { 0.12 } else { 0.10 };
+    blend_over(bg, glow_rgb, alpha)
+}
+
+/// Windows 11 (build 22000+) title-bar tint matching the dashboard glow.
+/// Older Windows versions and non-Windows targets silently keep native chrome.
+#[cfg(target_os = "windows")]
+pub fn apply_titlebar_accent<R: Runtime>(app: &AppHandle<R>) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR};
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    let (r, g, b) = titlebar_accent_color(app);
+    let colorref = COLORREF((b as u32) << 16 | (g as u32) << 8 | r as u32);
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            HWND(hwnd.0),
+            DWMWA_CAPTION_COLOR,
+            &colorref as *const _ as *const _,
+            std::mem::size_of::<COLORREF>() as u32,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn apply_titlebar_accent<R: Runtime>(_app: &AppHandle<R>) {}
 
 fn set_main_window_icon<R: Runtime>(window: &WebviewWindow<R>) {
     let icon = match Image::from_bytes(include_bytes!("../icons/128x128.png")) {
@@ -209,6 +300,7 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         } else {
             Theme::Light
         }));
+        apply_titlebar_accent(app);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -258,6 +350,7 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         match builder.build() {
             Ok(win) => {
                 set_main_window_icon(&win);
+                apply_titlebar_accent(app);
                 let _ = win.show();
                 let _ = win.unminimize();
                 let _ = win.set_focus();

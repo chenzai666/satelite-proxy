@@ -1,6 +1,6 @@
 [package]
 name = "satelite-proxy"
-version = "1.0.18"
+version = "1.0.20"
 description = "Satelite — lightweight sing-box desktop client"
 authors = ["chenzai666"]
 edition = "2021"
@@ -53,4 +53,5 @@ windows = { version = "0.61", features = [
     "Wdk_System_SystemInformation",
     "Win32_System_WindowsProgramming",
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
 ] }

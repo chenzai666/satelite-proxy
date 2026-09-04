@@ -114,6 +114,9 @@ pub fn update_settings(
     let mut close_connections_changed = false;
     let mut multi_core_changed = false;
     let theme_changed = theme.is_some();
+    // The native Windows caption also depends on accent/glow_color. Re-apply
+    // only the caption when either value changes without a theme change.
+    let mut titlebar_tint_changed = false;
     let settings = state
         .with_store_mut(|store| {
             if let Some(p) = mixed_port {
@@ -242,7 +245,10 @@ pub fn update_settings(
                     "green" | "blue" | "purple" | "pink" | "orange" | "cyan"
                 ) || is_hex
                 {
-                    store.settings.accent = ac;
+                    if store.settings.accent != ac {
+                        titlebar_tint_changed = true;
+                        store.settings.accent = ac;
+                    }
                 }
             }
             if let Some(gl) = glow_color {
@@ -259,7 +265,10 @@ pub fn update_settings(
                     )
                     || is_hex
                 {
-                    store.settings.glow_color = gl;
+                    if store.settings.glow_color != gl {
+                        titlebar_tint_changed = true;
+                        store.settings.glow_color = gl;
+                    }
                 }
             }
             if let Some(hs) = hero_style {
@@ -393,6 +402,8 @@ pub fn update_settings(
     crate::tray::refresh_icon(&app);
     if theme_changed {
         crate::window_ctrl::apply_window_theme(&app);
+    } else if titlebar_tint_changed {
+        crate::window_ctrl::apply_titlebar_accent(&app);
     }
 
     // route.final must restart: sing-box Clash PUT /configs often returns OK without
