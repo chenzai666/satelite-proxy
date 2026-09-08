@@ -243,6 +243,7 @@ export function NodesPage() {
 
   useEffect(() => {
     localStorage.setItem("nodes.favoritesOnly", showFavoritesOnly ? "1" : "0");
+    setSelectedIds(new Set());
   }, [showFavoritesOnly]);
 
   const displayed = useMemo(
@@ -823,7 +824,7 @@ export function NodesPage() {
             ) : null}
           </div>
         </div>
-        <button type="button" className="node-card-menu" aria-label={t("nodes.contextEdit")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>
+        {!customRuntime && <button type="button" className="node-card-menu" aria-label={t("nodes.contextMenu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>}
         <div className="node-card-name" title={n.name}>{n.favorite ? "♥ " : ""}{n.name}</div>
         <div className="node-card-footer">
           <span className="node-sub-label" title={n.subscription_name ?? ""}>

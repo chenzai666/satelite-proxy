@@ -761,6 +761,20 @@ impl AppStore {
                     .as_bytes(),
                 )[..16],
             );
+            // 删除标记优先，不能将已删除节点按相同后端匹配成另一个存量节点。
+            if self
+                .deleted_node_ids
+                .contains(&Self::node_override_key(&id, &node.id))
+            {
+                continue;
+            }
+            if self
+                .deleted_node_ids
+                .contains(&Self::node_override_key(&id, &legacy))
+            {
+                node.id = legacy;
+                continue;
+            }
             let found = previous
                 .iter()
                 .position(|entry| entry.node.id == node.id || entry.node.id == legacy)
@@ -776,11 +790,6 @@ impl AppStore {
                 });
             if let Some(index) = found {
                 node.id = previous.remove(index).node.id.clone();
-            } else if self
-                .deleted_node_ids
-                .contains(&Self::node_override_key(&id, &legacy))
-            {
-                node.id = legacy;
             }
             let base = node.id.clone();
             let mut salt = 0;
@@ -3581,7 +3590,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_preserves_legacy_selection_favorite_and_override() {
+    fn refresh_preserves_legacy_selection_and_favorite_after_rename() {
         let mut store = AppStore::default();
         let source = sample_hy2("legacy", "HK-01");
         store
@@ -3640,14 +3649,11 @@ mod tests {
             .unwrap();
         assert!(store.favorite_nodes.contains("a"));
 
-        // Node's backend identity actually changed (simulated by a new id, as
-        // would happen if ip/port/credentials rotated) — the old favorite id
-        // no longer matches any node and must be purged, not kept forever.
+        // 同时改变实际后端和 ID，避免被旧 ID 迁移逻辑正确地视为同一节点。
+        let mut moved = sample_hy2("a-new-ip", "HK-01-Renamed");
+        moved.server = "203.0.113.20".into();
         store
-            .upsert_subscription(
-                sample_url_sub("s"),
-                vec![sample_hy2("a-new-ip", "HK-01-Renamed")],
-            )
+            .upsert_subscription(sample_url_sub("s"), vec![moved])
             .unwrap();
         assert!(!store.favorite_nodes.contains("a"));
     }
