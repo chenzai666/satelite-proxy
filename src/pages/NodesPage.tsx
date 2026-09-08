@@ -32,7 +32,12 @@ const VIRTUALIZE_AFTER = 200;
 const LIST_ROW_HEIGHT = 49;
 const GRID_ROW_HEIGHT = 94;
 const NODE_GROUP_H = 30;
-const NODE_LIST_COLS = "40px minmax(0,1.44fr) 90px minmax(0,1fr) 70px 90px";
+// Keep the identity column as the primary flexible column. The previous
+// ratio gave the host column almost the same space as the node name, so long
+// subscription names were truncated even when the window still had room.
+// The minimums also make the list horizontally scrollable instead of
+// squeezing every cell into unreadable slivers on a narrow window.
+const NODE_LIST_COLS = "38px minmax(300px,3fr) 104px minmax(140px,1fr) 82px 100px";
 const GRID_GAP = 10;
 
 /** Flat render items for the grouped list (headers share the row height so
@@ -747,21 +752,21 @@ export function NodesPage() {
           </button>
         </span>
         <span className="node-list-identity">
-          <div className="node-list-name">{n.name}</div>
+          <div className="node-list-name" title={n.name}>{n.name}</div>
           {n.subscription_name ? (
             <div className="node-sub-label" title={n.subscription_name}>
               {n.subscription_name}
             </div>
           ) : null}
         </span>
-        <span>
+        <span title={n.protocol}>
           <code>{n.protocol}</code>
           {delegatedProtocols.has(n.protocol) ? (
             <span className="pill sidecar-tag">Xray</span>
           ) : null}
         </span>
-        <span>{n.server}</span>
-        <span>{n.port}</span>
+        <span title={n.server}>{n.server}</span>
+        <span title={String(n.port)}>{n.port}</span>
         <span className="node-list-latency">
           <button
             type="button"

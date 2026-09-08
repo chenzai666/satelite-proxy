@@ -2242,6 +2242,7 @@ button {
  */
 .node-list {
   width: 100%;
+  min-width: 764px;
   font-size: 0.875rem;
 }
 
