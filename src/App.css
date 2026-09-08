@@ -2232,7 +2232,7 @@ button {
 }
 
 .node-virtual-row {
-  height: 49px;
+  height: 64px;
 }
 
 /* —— Nodes page list view ——
@@ -2305,13 +2305,13 @@ button {
 .node-list-identity .node-sub-label {
   width: 100%;
   max-width: 100%;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
 }
 
 .node-list-identity .node-list-name {
   font-size: 0.9rem;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.45;
 }
 
 .node-list-identity .node-sub-label {

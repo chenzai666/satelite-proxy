@@ -1417,10 +1417,6 @@ function coreDisplayName(kind: string | null | undefined): string {
         </div>
       )}
 
-      {proxy?.core_type === "mihomo" ? (
-        <MihomoGroupsPage embedded compact showMode={false} />
-      ) : null}
-
       {/* —— 6 cards: core / spark / traffic+conns · quality / sub / system —— */}
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">
         <article className="instrument accent-green">
@@ -1745,6 +1741,10 @@ function coreDisplayName(kind: string | null | undefined): string {
           </div>
         </article>
       </section>
+
+      {proxy?.core_type === "mihomo" ? (
+        <MihomoGroupsPage embedded compact showMode={false} />
+      ) : null}
 
       {showPreview && result && (
         <div

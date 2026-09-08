@@ -29,7 +29,7 @@ import { createLatencyResultBuffer } from "../latencyStream";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
-const LIST_ROW_HEIGHT = 49;
+const LIST_ROW_HEIGHT = 64;
 const GRID_ROW_HEIGHT = 94;
 const NODE_GROUP_H = 30;
 // Keep the identity column as the primary flexible column. The previous
@@ -719,6 +719,7 @@ export function NodesPage() {
         className={`node-list-row node-virtual-row ${active ? "row-active" : ""} ${selected ? "row-selected" : ""}`}
         style={{
           gridTemplateColumns: NODE_LIST_COLS,
+          height: LIST_ROW_HEIGHT,
           cursor: customRuntime ? "default" : "pointer",
         }}
         onClick={(event) => {
