@@ -688,7 +688,16 @@ fn persist_import_replacing(
         .with_store_mut(|store| {
             let mut outcome = outcome;
             let node_ids_before = store.enabled_node_ids_sorted();
-            let nodes_before = serde_json::to_value(store.enabled_nodes()).ok();
+            let config_snapshot = |nodes: Vec<crate::domain::ProxyNode>| {
+                let mut nodes = nodes;
+                for node in &mut nodes {
+                    node.latency_ms = None;
+                    node.latency_at = None;
+                }
+                nodes.sort_by(|a, b| a.id.cmp(&b.id));
+                serde_json::to_value(nodes).ok()
+            };
+            let nodes_before = config_snapshot(store.enabled_nodes());
             let policy_before = store.enabled_clash_configs();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
                 store
@@ -716,7 +725,7 @@ fn persist_import_replacing(
             Ok((
                 view,
                 node_ids_before != node_ids_after
-                    || nodes_before != serde_json::to_value(store.enabled_nodes()).ok(),
+                    || nodes_before != config_snapshot(store.enabled_nodes()),
                 policy_before != policy_after,
             ))
         })

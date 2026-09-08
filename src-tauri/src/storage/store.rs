@@ -3609,6 +3609,70 @@ mod tests {
     }
 
     #[test]
+    fn legacy_deleted_node_is_not_reintroduced_with_new_hash() {
+        use sha2::{Digest, Sha256};
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let mut source = sample_hy2("unused", "HK-01");
+        source.id = hex::encode(
+            &Sha256::digest(
+                format!(
+                    "{}|{}|{}|{}|{}",
+                    sub.id,
+                    source.name,
+                    source.server,
+                    source.port,
+                    source.protocol.as_str()
+                )
+                .as_bytes(),
+            )[..16],
+        );
+        store
+            .upsert_subscription(sub.clone(), vec![source.clone()])
+            .unwrap();
+        store.delete_node(&source.id).unwrap();
+        store
+            .upsert_subscription(sub, vec![source.with_computed_id()])
+            .unwrap();
+        assert!(store.nodes.is_empty());
+    }
+
+    #[test]
+    fn legacy_override_survives_new_hash_import() {
+        use sha2::{Digest, Sha256};
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let mut source = sample_hy2("unused", "HK-01");
+        source.id = hex::encode(
+            &Sha256::digest(
+                format!(
+                    "{}|{}|{}|{}|{}",
+                    sub.id,
+                    source.name,
+                    source.server,
+                    source.port,
+                    source.protocol.as_str()
+                )
+                .as_bytes(),
+            )[..16],
+        );
+        let old_id = source.id.clone();
+        store
+            .upsert_subscription(sub.clone(), vec![source.clone()])
+            .unwrap();
+        let mut edited = source.clone();
+        edited.server = "edited.example.com".into();
+        store.update_node(&old_id, edited).unwrap();
+        store
+            .upsert_subscription(sub, vec![source.with_computed_id()])
+            .unwrap();
+        assert_eq!(
+            store.find_node(&old_id).unwrap().server,
+            "edited.example.com"
+        );
+    }
+
+    #[test]
     fn same_backend_across_subscriptions_keeps_unique_stable_ids() {
         let mut store = AppStore::default();
         let source = sample_hy2("shared", "HK-01").with_computed_id();

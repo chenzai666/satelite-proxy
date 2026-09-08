@@ -247,9 +247,17 @@ export function NodesPage() {
   }, [showFavoritesOnly]);
 
   const displayed = useMemo(
-    () => (showFavoritesOnly ? nodes.filter((n) => n.favorite) : nodes),
-    [nodes, showFavoritesOnly],
+    () => (showFavoritesOnly && !customRuntime ? nodes.filter((n) => n.favorite) : nodes),
+    [nodes, showFavoritesOnly, customRuntime],
   );
+
+  useEffect(() => {
+    const visible = new Set(displayed.map((node) => node.id));
+    setSelectedIds((current) => {
+      const next = new Set([...current].filter((id) => visible.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [displayed]);
 
   // Flat render items: group headers interleave with nodes at the same fixed
   // heights the virtualizer assumes (headers in the grid span the full row,
@@ -923,13 +931,13 @@ export function NodesPage() {
             </GlassButton>
           )}
           <div className="nodes-view-segs">
-            <GlassSwitch
+            {!customRuntime && <GlassSwitch
               checked={showFavoritesOnly}
               onChange={setShowFavoritesOnly}
               label={`♥ ${t("nodes.favoritesOnly")}`}
               title={t("nodes.favoritesOnlyHint")}
               capsule
-            />
+            />}
             <GlassSeg
               value={groupBy}
               ariaLabel={t("nodes.groupBy")}
