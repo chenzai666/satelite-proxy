@@ -1352,9 +1352,12 @@ impl AppState {
         &self,
     ) -> AppResult<Vec<crate::api::ClashProxyGroup>> {
         let _operation = self.begin_core_transition()?;
-        let is_mihomo = self.with_store(|store| {
-            Ok(crate::core::CoreKind::parse(&store.settings.core_type)
-                == crate::core::CoreKind::Mihomo)
+        let (is_mihomo, outbound_mode) = self.with_store(|store| {
+            Ok((
+                crate::core::CoreKind::parse(&store.settings.core_type)
+                    == crate::core::CoreKind::Mihomo,
+                store.settings.outbound_mode,
+            ))
         })?;
         if !is_mihomo {
             return Err(crate::error::AppError::Core(
@@ -1366,6 +1369,7 @@ impl AppState {
             .clash_api_clone()
             .ok_or_else(|| crate::error::AppError::Core("Mihomo 内核尚未启动".into()))?;
         let mut groups = api.list_proxy_groups()?;
+        Self::filter_mihomo_groups(&mut groups, outbound_mode);
         self.attach_mihomo_group_labels(&mut groups)?;
         Ok(groups)
     }
@@ -1378,11 +1382,12 @@ impl AppState {
         member: &str,
     ) -> AppResult<Vec<crate::api::ClashProxyGroup>> {
         let _operation = self.begin_core_transition()?;
-        let (is_mihomo, close_after_switch) = self.with_store(|store| {
+        let (is_mihomo, close_after_switch, outbound_mode) = self.with_store(|store| {
             Ok((
                 crate::core::CoreKind::parse(&store.settings.core_type)
                     == crate::core::CoreKind::Mihomo,
                 store.settings.close_connections_on_switch,
+                store.settings.outbound_mode,
             ))
         })?;
         if !is_mihomo {
@@ -1394,7 +1399,8 @@ impl AppState {
             .lock_runtime()
             .clash_api_clone()
             .ok_or_else(|| crate::error::AppError::Core("Mihomo 内核尚未启动".into()))?;
-        let groups = api.list_proxy_groups()?;
+        let mut groups = api.list_proxy_groups()?;
+        Self::filter_mihomo_groups(&mut groups, outbound_mode);
         let target = groups
             .iter()
             .find(|item| item.name == group)
@@ -1448,8 +1454,24 @@ impl AppState {
             format!("mihomo policy group {group} switched to {member}"),
         );
         let mut groups = api.list_proxy_groups()?;
+        Self::filter_mihomo_groups(&mut groups, outbound_mode);
         self.attach_mihomo_group_labels(&mut groups)?;
         Ok(groups)
+    }
+
+    /// Mihomo always exposes a built-in GLOBAL group through the Clash API,
+    /// even when the generated config is in rule mode. It is a mode control
+    /// surface, not one of the subscription's rule groups, so keep it hidden
+    /// unless the application is actually in global mode.
+    fn filter_mihomo_groups(
+        groups: &mut Vec<crate::api::ClashProxyGroup>,
+        outbound_mode: crate::domain::OutboundMode,
+    ) {
+        match outbound_mode {
+            crate::domain::OutboundMode::Rule => groups.retain(|group| group.name != "GLOBAL"),
+            crate::domain::OutboundMode::Global => groups.retain(|group| group.name == "GLOBAL"),
+            crate::domain::OutboundMode::Direct => groups.clear(),
+        }
     }
 
     fn attach_mihomo_group_labels(
