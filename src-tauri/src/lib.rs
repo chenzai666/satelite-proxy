@@ -421,6 +421,7 @@ pub fn run() {
             commands::update_node,
             commands::delete_node,
             commands::delete_nodes,
+            commands::toggle_favorite_node,
             commands::generate_singbox_config,
             commands::preview_singbox_config,
             commands::get_active_config_path,

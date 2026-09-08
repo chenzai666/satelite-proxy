@@ -58,6 +58,15 @@ pub struct AppStore {
     /// Tombstones keep remote subscription refreshes from restoring them.
     #[serde(default)]
     pub deleted_node_ids: std::collections::BTreeSet<String>,
+    /// User-favorited node ids. Keyed by `ProxyNode.id` (a content hash of
+    /// server/port/protocol/credentials — stable across renames and
+    /// resubscribes, see `ProxyNode::compute_id`). Garbage-collected
+    /// whenever the node set shrinks (`remove_subscription`,
+    /// `upsert_subscription`) so a favorite that can no longer be matched
+    /// to any node (ip/port/credential changed, or the subscription/node is
+    /// gone) doesn't linger forever.
+    #[serde(default)]
+    pub favorite_nodes: std::collections::BTreeSet<String>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -722,9 +731,65 @@ impl AppStore {
     pub fn upsert_subscription(
         &mut self,
         mut sub: Subscription,
-        nodes: Vec<ProxyNode>,
+        mut nodes: Vec<ProxyNode>,
     ) -> AppResult<()> {
         let id = sub.id.clone();
+        // 保留存量标识，避免升级/订阅改名使手选、规则引用和本地编辑失效。
+        let mut previous: Vec<_> = self
+            .nodes
+            .iter()
+            .filter(|entry| entry.subscription_id == id)
+            .collect();
+        let mut used: std::collections::HashSet<String> = self
+            .nodes
+            .iter()
+            .filter(|entry| entry.subscription_id != id)
+            .map(|entry| entry.node.id.chars().take(16).collect())
+            .collect();
+        for node in &mut nodes {
+            use sha2::{Digest, Sha256};
+            let legacy = hex::encode(
+                &Sha256::digest(
+                    format!(
+                        "{}|{}|{}|{}|{}",
+                        id,
+                        node.name,
+                        node.server,
+                        node.port,
+                        node.protocol.as_str()
+                    )
+                    .as_bytes(),
+                )[..16],
+            );
+            let found = previous
+                .iter()
+                .position(|entry| entry.node.id == node.id || entry.node.id == legacy)
+                .or_else(|| {
+                    previous
+                        .iter()
+                        .position(|entry| entry.node.instance_key() == node.instance_key())
+                })
+                .or_else(|| {
+                    previous
+                        .iter()
+                        .position(|entry| entry.node.identity_key() == node.identity_key())
+                });
+            if let Some(index) = found {
+                node.id = previous.remove(index).node.id.clone();
+            } else if self
+                .deleted_node_ids
+                .contains(&Self::node_override_key(&id, &legacy))
+            {
+                node.id = legacy;
+            }
+            let base = node.id.clone();
+            let mut salt = 0;
+            while !used.insert(node.id.chars().take(16).collect()) {
+                salt += 1;
+                node.id =
+                    hex::encode(&Sha256::digest(format!("{id}|{base}|{salt}").as_bytes())[..16]);
+            }
+        }
         self.nodes.retain(|n| n.subscription_id != id);
         let nodes: Vec<_> = nodes
             .into_iter()
@@ -760,6 +825,7 @@ impl AppStore {
                 node,
             });
         }
+        self.gc_favorite_nodes();
         Ok(())
     }
 
@@ -782,6 +848,7 @@ impl AppStore {
             }
         }
         self.ensure_current_node_valid();
+        self.gc_favorite_nodes();
         Ok(())
     }
 
@@ -1017,6 +1084,31 @@ impl AppStore {
         self.nodes.iter().find(|n| n.node.id == id).map(|n| &n.node)
     }
 
+    /// Toggle a node's favorite flag; returns the new state. No-op error if
+    /// the node id doesn't exist (nothing to favorite).
+    pub fn toggle_favorite_node(&mut self, id: &str) -> AppResult<bool> {
+        if !self.nodes.iter().any(|n| n.node.id == id) {
+            return Err(AppError::NotFound(id.to_string()));
+        }
+        let now_favorite = if self.favorite_nodes.remove(id) {
+            false
+        } else {
+            self.favorite_nodes.insert(id.to_string());
+            true
+        };
+        Ok(now_favorite)
+    }
+
+    /// Drop favorites whose node id no longer resolves to a stored node —
+    /// called after any operation that shrinks/replaces `self.nodes`
+    /// (subscription removed, or refreshed and the node's ip/port/
+    /// credentials changed so it hashes to a different id). Keeps
+    /// `favorite_nodes` from growing unboundedly with unreachable ids.
+    fn gc_favorite_nodes(&mut self) {
+        self.favorite_nodes
+            .retain(|id| self.nodes.iter().any(|n| &n.node.id == id));
+    }
+
     pub fn node_alias_key(node: &ProxyNode) -> String {
         node.instance_key()
     }
@@ -1063,6 +1155,7 @@ impl AppStore {
         let key = Self::node_override_key(&stored.subscription_id, id);
         self.node_overrides.remove(&key);
         self.deleted_node_ids.insert(key);
+        self.gc_favorite_nodes();
         if let Some(subscription) = self
             .subscriptions
             .iter_mut()
@@ -1893,6 +1986,26 @@ fn store_from_json(value: Value) -> AppStore {
     store.chains = chains;
     store.retained_chains = retained_chains;
 
+    if let Some(aliases) = obj.get("node_aliases") {
+        match serde_json::from_value::<std::collections::BTreeMap<String, String>>(aliases.clone())
+        {
+            Ok(parsed) => store.node_aliases = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable node_aliases object ({error}); keeping defaults"),
+            ),
+        }
+    }
+
+    if let Some(favorites) = obj.get("favorite_nodes") {
+        match serde_json::from_value::<std::collections::BTreeSet<String>>(favorites.clone()) {
+            Ok(parsed) => store.favorite_nodes = parsed,
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable favorite_nodes array ({error}); keeping defaults"),
+            ),
+        }
+    }
     if let Some(settings) = obj.get("settings") {
         match serde_json::from_value::<AppSettings>(settings.clone()) {
             Ok(parsed) => store.settings = parsed,
@@ -2111,6 +2224,53 @@ mod tests {
                     .is_some_and(|name| name.starts_with("store.corrupt-"))
             })
             .collect()
+    }
+
+    #[test]
+    fn load_self_heals_duplicate_node_ids() {
+        use crate::domain::{Protocol, ProtocolConfig, ProxyNode};
+        let mk = |id: &str, password: &str| StoredNode {
+            subscription_id: "sub-1".into(),
+            node: ProxyNode {
+                id: id.into(),
+                name: "香港 01".into(),
+                protocol: Protocol::Shadowsocks,
+                server: "example.com".into(),
+                port: 8388,
+                tls: None,
+                transport: None,
+                udp: None,
+                config: ProtocolConfig::Shadowsocks {
+                    method: "aes-128-gcm".into(),
+                    password: password.into(),
+                    plugin: None,
+                    plugin_opts: None,
+                    shadow_tls: None,
+                },
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            },
+        };
+        // Legacy collision: same server/port/protocol, different creds, but
+        // manually assigned the same id (simulating stale/corrupt data).
+        let base = ProxyNode::compute_id(
+            "example.com",
+            8388,
+            Protocol::Shadowsocks,
+            "aes-128-gcm|pass-a",
+        );
+        let path = test_store_path("dup-ids");
+        let mut store = AppStore::default();
+        store.nodes.push(mk(&base, "pass-a"));
+        store.nodes.push(mk(&base, "pass-b"));
+        store.save(&path).unwrap();
+
+        let loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(loaded.nodes.len(), 2);
+        assert_ne!(loaded.nodes[0].node.id, loaded.nodes[1].node.id);
+        assert_ne!(loaded.nodes[0].node.id[..16], loaded.nodes[1].node.id[..16]);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -3403,6 +3563,108 @@ mod tests {
 
         store.remove_subscription("id-s").unwrap();
         assert!(store.deleted_node_ids.is_empty());
+    }
+
+    #[test]
+    fn toggle_favorite_node_flips_state_and_rejects_unknown_id() {
+        let mut store = AppStore::default();
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![sample_hy2("a", "HK-01")])
+            .unwrap();
+
+        assert!(store.toggle_favorite_node("a").unwrap());
+        assert!(store.favorite_nodes.contains("a"));
+        assert!(!store.toggle_favorite_node("a").unwrap());
+        assert!(!store.favorite_nodes.contains("a"));
+
+        assert!(store.toggle_favorite_node("does-not-exist").is_err());
+    }
+
+    #[test]
+    fn refresh_preserves_legacy_selection_favorite_and_override() {
+        let mut store = AppStore::default();
+        let source = sample_hy2("legacy", "HK-01");
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![source.clone()])
+            .unwrap();
+        store.settings.current_node_id = Some("legacy".into());
+        store.toggle_favorite_node("legacy").unwrap();
+        let mut refreshed = source.clone().with_computed_id();
+        refreshed.name = "HK-renamed".into();
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![refreshed])
+            .unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("legacy"));
+        assert!(store.favorite_nodes.contains("legacy"));
+        assert_eq!(store.find_node("legacy").unwrap().name, "HK-renamed");
+    }
+
+    #[test]
+    fn same_backend_across_subscriptions_keeps_unique_stable_ids() {
+        let mut store = AppStore::default();
+        let source = sample_hy2("shared", "HK-01").with_computed_id();
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![source.clone()])
+            .unwrap();
+        store
+            .upsert_subscription(sample_url_sub("t"), vec![source.clone()])
+            .unwrap();
+        let second_id = store.nodes[1].node.id.clone();
+        assert_ne!(store.nodes[0].node.id[..16], second_id[..16]);
+        store
+            .upsert_subscription(sample_url_sub("t"), vec![source])
+            .unwrap();
+        assert_eq!(store.nodes[1].node.id, second_id);
+    }
+
+    #[test]
+    fn favorite_survives_rename_and_resubscribe_but_not_a_ip_port_change() {
+        // Business intent: a favorite is keyed on the node's stable content-hash
+        // id (server/port/protocol/credentials), so a subscription refresh that
+        // only changes display name/remark must NOT lose the favorite — but a
+        // refresh where the node's underlying id truly changes (ip/port/cred
+        // rotated) has nothing left to point at and must be garbage-collected,
+        // otherwise `favorite_nodes` grows with ids no node will ever have again.
+        let mut store = AppStore::default();
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![sample_hy2("a", "HK-01")])
+            .unwrap();
+        assert!(store.toggle_favorite_node("a").unwrap());
+
+        // Airport renamed the node under the same subscription refresh — id
+        // ("a") stays the same in this test because id is caller-supplied here,
+        // mirroring how `ProxyNode::compute_id` would keep it stable in
+        // production since name isn't a hash input. Favorite must survive.
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![sample_hy2("a", "HK-01-Renamed")])
+            .unwrap();
+        assert!(store.favorite_nodes.contains("a"));
+
+        // Node's backend identity actually changed (simulated by a new id, as
+        // would happen if ip/port/credentials rotated) — the old favorite id
+        // no longer matches any node and must be purged, not kept forever.
+        store
+            .upsert_subscription(
+                sample_url_sub("s"),
+                vec![sample_hy2("a-new-ip", "HK-01-Renamed")],
+            )
+            .unwrap();
+        assert!(!store.favorite_nodes.contains("a"));
+    }
+
+    #[test]
+    fn favorite_is_gc_ed_when_its_subscription_is_removed() {
+        let mut store = AppStore::default();
+        store
+            .upsert_subscription(sample_url_sub("s"), vec![sample_hy2("a", "HK-01")])
+            .unwrap();
+        assert!(store.toggle_favorite_node("a").unwrap());
+
+        store.remove_subscription("id-s").unwrap();
+        assert!(
+            store.favorite_nodes.is_empty(),
+            "favorite must not linger once its only node is gone"
+        );
     }
 
     #[test]

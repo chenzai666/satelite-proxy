@@ -688,6 +688,7 @@ fn persist_import_replacing(
         .with_store_mut(|store| {
             let mut outcome = outcome;
             let node_ids_before = store.enabled_node_ids_sorted();
+            let nodes_before = serde_json::to_value(store.enabled_nodes()).ok();
             let policy_before = store.enabled_clash_configs();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
                 store
@@ -714,7 +715,8 @@ fn persist_import_replacing(
                 .ok_or_else(|| crate::error::AppError::NotFound(sub_id.clone()))?;
             Ok((
                 view,
-                node_ids_before != node_ids_after,
+                node_ids_before != node_ids_after
+                    || nodes_before != serde_json::to_value(store.enabled_nodes()).ok(),
                 policy_before != policy_after,
             ))
         })

@@ -16,6 +16,8 @@ interface Props {
   onCopyLink: (node: ProxyNode) => void;
   onShowQr: (node: ProxyNode) => void;
   onDelete: (node: ProxyNode) => void;
+  onFavorite?: (node: ProxyNode) => void;
+  onTest?: (node: ProxyNode, kind: "real" | "ping") => void;
 }
 
 /** Local node actions only; the surrounding document suppresses the native menu. */
@@ -26,6 +28,8 @@ export function NodeContextMenu({
   onCopyLink,
   onShowQr,
   onDelete,
+  onFavorite,
+  onTest,
 }: Props) {
   const { t } = useI18n();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -48,7 +52,7 @@ export function NodeContextMenu({
 
   if (!state) return null;
   const x = Math.min(state.x, window.innerWidth - 220);
-  const y = Math.min(state.y, window.innerHeight - 150);
+  const y = Math.min(state.y, window.innerHeight - 330);
   const node = state.node;
 
   return createPortal(
@@ -60,6 +64,15 @@ export function NodeContextMenu({
       style={{ left: Math.max(8, x), top: Math.max(8, y) }}
     >
       <div className="node-context-menu-title" title={node.name}>{node.name}</div>
+      {onFavorite && <button type="button" className="node-context-menu-item" role="menuitem" onClick={() => { onFavorite(node); onClose(); }}>
+        {t(node.favorite ? "nodes.unfavorite" : "nodes.favorite")}
+      </button>}
+      {onTest && <button type="button" className="node-context-menu-item" role="menuitem" onClick={() => { onTest(node, "ping"); onClose(); }}>
+        {t("nodes.ctxTestPing")}
+      </button>}
+      {onTest && <button type="button" className="node-context-menu-item" role="menuitem" onClick={() => { onTest(node, "real"); onClose(); }}>
+        {t("nodes.ctxTestReal")}
+      </button>}
       <button
         type="button"
         className="node-context-menu-item"

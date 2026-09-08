@@ -216,6 +216,11 @@ export function deleteNodes(ids: string[]) {
   return invoke<number>("delete_nodes", { ids });
 }
 
+/** Toggle a node's favorite flag. Returns the new state. */
+export function toggleFavoriteNode(id: string) {
+  return invoke<boolean>("toggle_favorite_node", { id });
+}
+
 /**
  * Cross-mount snapshots of the latest resolved settings / proxy status.
  * Tab switches remount pages (key={nav} page-enter animation), so control

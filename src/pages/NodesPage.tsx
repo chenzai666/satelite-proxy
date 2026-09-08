@@ -12,18 +12,20 @@ import {
   setCurrentNode,
   testCustomNodesLatency,
   testNodesLatency,
+  toggleFavoriteNode,
 } from "../api";
 import { EditLocalNodesModal } from "../components/EditLocalNodesModal";
 import { GlassButton } from "../components/GlassButton";
 import { NodeContextMenu, type NodeContextMenuState } from "../components/NodeContextMenu";
 import { NodeShareModal } from "../components/NodeShareModal";
+import { GlassSwitch } from "../components/GlassSwitch";
 import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { groupNodes, type GroupBy } from "../nodeGroups";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
-import { filterCustomNodes, applyCustomLatency, type CustomLatencyMap } from "../customNodes";
+import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
 import { createLatencyResultBuffer } from "../latencyStream";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
@@ -131,9 +133,9 @@ export function NodesPage() {
   const [sortMode, setSortMode] = useState<SortMode>(() => {
     return (localStorage.getItem("nodes.sortMode") as SortMode) || "default";
   });
-  // Click-test mode: node clicks probe latency instead of selecting.
-  const [clickTest, setClickTest] = useState<boolean>(
-    () => localStorage.getItem("nodes.clickTest") === "1",
+  // "Show favorites only" — persisted like clickTest/viewMode.
+  const [showFavoritesOnly, setShowFavoritesOnly] = useState<boolean>(
+    () => localStorage.getItem("nodes.favoritesOnly") === "1",
   );
 
   const [customRuntime, setCustomRuntime] = useState(false);
@@ -238,11 +240,15 @@ export function NodesPage() {
     localStorage.setItem("nodes.sortMode", sortMode);
   }, [sortMode]);
 
-  useEffect(() => {
-    localStorage.setItem("nodes.clickTest", clickTest ? "1" : "0");
-  }, [clickTest]);
 
-  const displayed = nodes;
+  useEffect(() => {
+    localStorage.setItem("nodes.favoritesOnly", showFavoritesOnly ? "1" : "0");
+  }, [showFavoritesOnly]);
+
+  const displayed = useMemo(
+    () => (showFavoritesOnly ? nodes.filter((n) => n.favorite) : nodes),
+    [nodes, showFavoritesOnly],
+  );
 
   // Flat render items: group headers interleave with nodes at the same fixed
   // heights the virtualizer assumes (headers in the grid span the full row,
@@ -501,8 +507,8 @@ export function NodesPage() {
         for (const id of batch.keys()) next.delete(id);
         return next;
       });
-      setNodes((prev) =>
-        prev.map((n) => {
+      setNodes((prev) => {
+        const next = prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
           return {
@@ -511,8 +517,11 @@ export function NodesPage() {
             latency_ms: r.latency_ms ?? null,
             latency_at: r.tested_at,
           };
-        }),
-      );
+        });
+        // Re-sort in place as results stream in so the latency sort mode
+        // moves faster nodes to the top live, not just after reload.
+        return sortMode === "latency" ? sortNodes(next, sortMode) : next;
+      });
     });
     latencyBufferRef.current = buffer;
 
@@ -542,6 +551,10 @@ export function NodesPage() {
   }
 
   async function onTestLatency(kind: "real" | "ping" = "real") {
+    if (showFavoritesOnly) {
+      await onTestNodes(displayed.map((node) => node.id), kind);
+      return;
+    }
     const ids = customRuntime
       ? nodes.map((n) => n.id)
       : await listNodeIds(query, sortMode);
@@ -561,11 +574,11 @@ export function NodesPage() {
   const selectAllMatching = useCallback(async () => {
     if (customRuntime || batchBusy) return;
     try {
-      setSelectedIds(new Set(await listNodeIds(query)));
+      setSelectedIds(new Set(showFavoritesOnly ? displayed.map((node) => node.id) : await listNodeIds(query)));
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
-  }, [batchBusy, customRuntime, query]);
+  }, [batchBusy, customRuntime, query, showFavoritesOnly, displayed]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -625,49 +638,27 @@ export function NodesPage() {
   // stopped" — swap the cell note accordingly.
   const pingNote = testKind === "ping" ? t("nodes.pingUnsupported") : undefined;
 
-  // Click-test mode: probe one node with the real-latency path (Clash delay
-  // API through the core; TCP fallback when the core is stopped). The backend
-  // persists the result, same as the batch run.
-  async function onTestOne(id: string) {
-    if (testing || testingIds.size > 0 || busyId || switching) return;
-    setTestKind("real");
-    setError(null);
-    setTestingIds(new Set([id]));
+  // Optimistic favorite toggle: flip local state immediately, then confirm
+  // with the backend. Reverts on failure (e.g. node no longer in the store).
+  async function toggleFavorite(id: string) {
+    const prevValue = nodes.find((n) => n.id === id)?.favorite ?? false;
     setNodes((prev) =>
-      prev.map((n) =>
-        n.id === id ? { ...n, latency_ms: undefined, latency_at: undefined } : n,
-      ),
+      prev.map((n) => (n.id === id ? { ...n, favorite: !prevValue } : n)),
     );
     try {
-      const batch = await testNodesLatency([id], 3000);
-      const r = batch.results.find((x) => x.id === id);
-      setUnsupportedIds((prev) => {
-        const next = new Set(prev);
-        if (r?.method === "unsupported") next.add(id);
-        else next.delete(id);
-        return next;
-      });
-      if (r) {
-        setNodes((prev) =>
-          prev.map((n) =>
-            n.id === id
-              ? { ...n, latency_ms: r.latency_ms ?? null, latency_at: r.tested_at }
-              : n,
-          ),
-        );
-      }
+      const next = await toggleFavoriteNode(id);
+      setNodes((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, favorite: next } : n)),
+      );
     } catch (e) {
+      setNodes((prev) =>
+        prev.map((n) => (n.id === id ? { ...n, favorite: prevValue } : n)),
+      );
       setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setTestingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   }
 
-  /** Group header row (list): click to expand or collapse its node set. */
+
   function renderGroupRow(item: Extract<ListItem, { type: "group" }>) {
     const open = !collapsedGroups.has(item.key);
     return (
@@ -726,11 +717,8 @@ export function NodesPage() {
           if (customRuntime) return;
           if (event.ctrlKey || event.metaKey) {
             toggleSelected(n.id);
-          } else if (clickTest) {
-            void onTestOne(n.id);
           }
         }}
-        title={!customRuntime && clickTest ? t("nodes.clickTestLatency") : undefined}
         onContextMenu={(event) => {
           if (customRuntime) return;
           event.preventDefault();
@@ -753,7 +741,7 @@ export function NodesPage() {
           </button>
         </span>
         <span className="node-list-identity">
-          <div className="node-list-name" title={n.name}>{n.name}</div>
+          <div className="node-list-name" title={n.name}>{n.favorite ? "♥ " : ""}{n.name}</div>
           {n.subscription_name ? (
             <div className="node-sub-label" title={n.subscription_name}>
               {n.subscription_name}
@@ -805,12 +793,9 @@ export function NodesPage() {
           if (customRuntime) return;
           if (event.ctrlKey || event.metaKey) {
             toggleSelected(n.id);
-          } else if (clickTest) {
-            void onTestOne(n.id);
           }
         }}
-        style={{ cursor: customRuntime ? "default" : clickTest ? "pointer" : undefined }}
-        title={!customRuntime && clickTest ? t("nodes.clickTestLatency") : undefined}
+        style={{ cursor: customRuntime ? "default" : undefined }}
         onContextMenu={(event) => {
           if (customRuntime) return;
           event.preventDefault();
@@ -838,7 +823,8 @@ export function NodesPage() {
             ) : null}
           </div>
         </div>
-        <div className="node-card-name" title={n.name}>{n.name}</div>
+        <button type="button" className="node-card-menu" aria-label={t("nodes.contextEdit")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>
+        <div className="node-card-name" title={n.name}>{n.favorite ? "♥ " : ""}{n.name}</div>
         <div className="node-card-footer">
           <span className="node-sub-label" title={n.subscription_name ?? ""}>
             {n.subscription_name}
@@ -935,32 +921,14 @@ export function NodesPage() {
               {testing && testKind === "ping" ? t("nodes.pinging") : t("nodes.pingTest")}
             </GlassButton>
           )}
-          {/* 单点测试 toggle: state reads from the LED dot alone — gray
-              while off, green while armed (same LED language as the logs
-              page kernel tabs). Label stays constant in both states.
-              Meaningless in custom mode (rows are not clickable there) —
-              hidden with ping. */}
-          {!customRuntime && (
-            <GlassButton
-              icon={
-                <span
-                  className={`seg-dot${clickTest ? " on" : ""}`}
-                  aria-hidden
-                />
-              }
-              onClick={() => setClickTest((v) => !v)}
-              title={t("nodes.clickTestHint")}
-            >
-              {t("nodes.clickTest")}
-            </GlassButton>
-          )}
-
           <div className="nodes-view-segs">
-            {!customRuntime && clickTest && (
-              <span className="nodes-clicktest-active">
-                {t("nodes.clickTestActive")}
-              </span>
-            )}
+            <GlassSwitch
+              checked={showFavoritesOnly}
+              onChange={setShowFavoritesOnly}
+              label={`♥ ${t("nodes.favoritesOnly")}`}
+              title={t("nodes.favoritesOnlyHint")}
+              capsule
+            />
             <GlassSeg
               value={groupBy}
               ariaLabel={t("nodes.groupBy")}
@@ -1044,7 +1012,7 @@ export function NodesPage() {
             : "—"}
         </div>
       ) : viewMode === "list" ? (
-        <div className={`card table-wrap${clickTest ? " spot-armed" : ""}`}>
+        <div className="card table-wrap">
           <div className="node-list">
             <div className="node-list-head" style={{ gridTemplateColumns: NODE_LIST_COLS }}>
               <span />
@@ -1086,7 +1054,7 @@ export function NodesPage() {
             <div style={{ height: gridWindow.top }} aria-hidden="true" />
           )}
           <div
-            className={`node-grid ${virtualized ? "node-grid-virtual" : ""}${clickTest ? " spot-armed" : ""}`}
+            className={`node-grid ${virtualized ? "node-grid-virtual" : ""}`}
           >
             {gridItems
               .slice(gridWindow.first, gridWindow.last)
@@ -1101,6 +1069,8 @@ export function NodesPage() {
         </div>
       )}
       <NodeContextMenu
+        onFavorite={(node) => void toggleFavorite(node.id)}
+        onTest={(node, kind) => void onTestNodes([node.id], kind)}
         state={contextMenu}
         onClose={() => setContextMenu(null)}
         onEdit={openNodeEditor}
