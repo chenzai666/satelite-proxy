@@ -250,8 +250,9 @@ impl ClashApi {
             .collect::<Vec<_>>();
         groups.sort_by(|left, right| {
             let rank = |name: &str| match name {
-                "proxy" => 0,
-                "auto" => 1,
+                "GLOBAL" => 0,
+                "proxy" => 1,
+                "auto" => 2,
                 _ => 2,
             };
             rank(&left.name)

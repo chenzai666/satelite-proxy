@@ -1028,6 +1028,7 @@ pub fn import_from_singbox(
         nodes: Vec::new(),
         skipped: Vec::new(),
         format: crate::domain::SubscriptionFormat::SingboxJson,
+        clash_config: None,
     };
     let mut outcome = build_outcome(display_name, source, parsed, existing_id, false);
     outcome.subscription.auto_update = false;
@@ -1100,14 +1101,19 @@ fn build_outcome(
     existing_id: Option<String>,
     extract_quota: bool,
 ) -> ImportOutcome {
+    let ParseResult {
+        nodes: parsed_nodes,
+        skipped,
+        format: parsed_format,
+        clash_config,
+    } = parsed;
     let id = existing_id.unwrap_or_else(|| subscription_id(&source));
-    let format = format_label(parsed.format);
-    let skipped = parsed.skipped.len();
+    let format = format_label(parsed_format);
+    let skipped_count = skipped.len();
     let (remark_traffic, real_nodes) = if extract_quota {
-        split_remark_nodes(parsed.nodes)
+        split_remark_nodes(parsed_nodes)
     } else {
-        let nodes: Vec<ProxyNode> = parsed
-            .nodes
+        let nodes: Vec<ProxyNode> = parsed_nodes
             .into_iter()
             .map(|mut n| {
                 if is_remark_name(&n.name) {
@@ -1128,11 +1134,12 @@ fn build_outcome(
         node_count,
         enabled: true,
         format: Some(format),
-        skipped_count: skipped as u32,
+        skipped_count: skipped_count as u32,
         via_proxy: false,
         auto_update: false,
         auto_update_interval_min: 1440,
         traffic: remark_traffic,
+        clash_config,
     };
 
     // Re-hash node ids with subscription scope for multi-sub stability.

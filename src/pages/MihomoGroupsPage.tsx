@@ -15,9 +15,14 @@ import type { MihomoProxyGroup } from "../types";
 
 interface Props {
   embedded?: boolean;
+  /** Use the dashboard card layout instead of the Settings page spacing. */
+  compact?: boolean;
+  /** The dashboard already owns the global/rule/direct switch. */
+  showMode?: boolean;
 }
 
 function groupLabel(group: MihomoProxyGroup) {
+  if (group.name === "GLOBAL") return "🌐 GLOBAL";
   if (group.name === "proxy") return "🚀 节点选择";
   if (group.name === "auto") return "📈 自动选择";
   return group.name;
@@ -27,7 +32,30 @@ function memberLabel(group: MihomoProxyGroup, member: string) {
   return group.labels?.[member] ?? member;
 }
 
-export function MihomoGroupsPage({ embedded = false }: Props) {
+function wait(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+/** Restarting Mihomo replaces its Clash API listener. A successful restart
+ * can therefore be a few hundred milliseconds ahead of GET /proxies. */
+async function loadGroupsWithRetry() {
+  let lastError: unknown = null;
+  for (const delay of [0, 180, 360, 720]) {
+    if (delay) await wait(delay);
+    try {
+      return await listMihomoProxyGroups();
+    } catch (reason) {
+      lastError = reason;
+    }
+  }
+  throw lastError ?? new Error("Mihomo policy groups unavailable");
+}
+
+export function MihomoGroupsPage({
+  embedded = false,
+  compact = false,
+  showMode = true,
+}: Props) {
   const { t } = useI18n();
   const [groups, setGroups] = useState<MihomoProxyGroup[]>([]);
   const [running, setRunning] = useState(false);
@@ -53,7 +81,7 @@ export function MihomoGroupsPage({ embedded = false }: Props) {
         setGroups([]);
         return;
       }
-      setGroups(await listMihomoProxyGroups());
+      setGroups(await loadGroupsWithRetry());
     } catch (reason) {
       if (!quiet) setError(typeof reason === "string" ? reason : String(reason));
     } finally {
@@ -98,11 +126,16 @@ export function MihomoGroupsPage({ embedded = false }: Props) {
     if (next !== "rule" && next !== "global" && next !== "direct") return;
     if (next === mode) return;
     setModeBusy(true);
+    setError(null);
     try {
       const status = await setOutboundMode(next);
       setMode(next);
-      setRunning(status.running && status.core_type === "mihomo");
-      if (status.running) setGroups(await listMihomoProxyGroups());
+      const active = status.running && status.core_type === "mihomo";
+      setRunning(active);
+      // Never leave the old Rule-mode groups painted while the new mode is
+      // being applied. The refreshed list must come from Mihomo's live API.
+      setGroups([]);
+      if (active) setGroups(await loadGroupsWithRetry());
     } catch (reason) {
       setError(typeof reason === "string" ? reason : String(reason));
     } finally {
@@ -123,28 +156,32 @@ export function MihomoGroupsPage({ embedded = false }: Props) {
 
   const body = (
     <>
-      <div className="rules-toolbar page-header mihomo-groups-header">
+      <div className={`rules-toolbar page-header mihomo-groups-header${compact ? " is-compact" : ""}`}>
         <div>
           <h1>{t("mihomoGroups.title")}</h1>
           <p className="muted">{t("mihomoGroups.subtitle")}</p>
         </div>
-        <GlassSeg
-          value={mode}
-          ready={!loading}
-          disabled={modeBusy}
-          ariaLabel={t("mihomoGroups.mode")}
-          options={[
-            { value: "rule", label: t("dashboard.modeRule") },
-            { value: "global", label: t("dashboard.modeGlobal") },
-            { value: "direct", label: t("dashboard.modeDirect") },
-          ]}
-          onChange={(value) => void switchMode(value)}
-        />
+        {showMode ? (
+          <GlassSeg
+            value={mode}
+            ready={!loading}
+            disabled={modeBusy}
+            ariaLabel={t("mihomoGroups.mode")}
+            options={[
+              { value: "rule", label: t("dashboard.modeRule") },
+              { value: "global", label: t("dashboard.modeGlobal") },
+              { value: "direct", label: t("dashboard.modeDirect") },
+            ]}
+            onChange={(value) => void switchMode(value)}
+          />
+        ) : null}
       </div>
 
-      <div className="card mihomo-groups-note">
-        <strong>{t("mihomoGroups.singboxDisabled")}</strong>
-      </div>
+      {!compact ? (
+        <div className="card mihomo-groups-note">
+          <strong>{t("mihomoGroups.singboxDisabled")}</strong>
+        </div>
+      ) : null}
 
       <div className="card mihomo-groups-tools">
         <input
@@ -218,5 +255,11 @@ export function MihomoGroupsPage({ embedded = false }: Props) {
     </>
   );
 
-  return embedded ? <div className="settings-embed rules-embed">{body}</div> : <div className="page rules-page">{body}</div>;
+  return embedded ? (
+    <div className={`settings-embed rules-embed${compact ? " mihomo-groups-dashboard" : ""}`}>
+      {body}
+    </div>
+  ) : (
+    <div className="page rules-page">{body}</div>
+  );
 }

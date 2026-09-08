@@ -37,6 +37,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
+import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import type {
   AutoSelectMode,
   CoreKind,
@@ -1415,6 +1416,10 @@ function coreDisplayName(kind: string | null | undefined): string {
           </button>
         </div>
       )}
+
+      {proxy?.core_type === "mihomo" ? (
+        <MihomoGroupsPage embedded compact showMode={false} />
+      ) : null}
 
       {/* —— 6 cards: core / spark / traffic+conns · quality / sub / system —— */}
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">

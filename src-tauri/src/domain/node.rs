@@ -542,6 +542,12 @@ pub struct ParseResult {
     /// Skipped entries (unsupported type / invalid fields).
     pub skipped: Vec<SkippedProxy>,
     pub format: SubscriptionFormat,
+    /// Original Clash YAML, when the source contained a Clash config. The
+    /// Mihomo generator uses this to preserve that subscription's real
+    /// proxy-groups, rules, and rule-providers instead of inventing a fixed
+    /// set of group names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clash_config: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

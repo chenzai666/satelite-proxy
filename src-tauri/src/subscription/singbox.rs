@@ -135,6 +135,7 @@ pub fn parse_singbox_value(root: &Value) -> AppResult<ParseResult> {
         nodes,
         skipped,
         format: SubscriptionFormat::SingboxJson,
+        clash_config: None,
     })
 }
 

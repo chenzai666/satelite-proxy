@@ -20,11 +20,15 @@ use crate::domain::{
     RuleSetDnsStrategy, RuleSetStrategy, Transport,
 };
 use crate::error::{AppError, AppResult};
+use serde::Deserialize as _;
 use serde_yaml::{Mapping, Value as Yaml};
 
 /// Main group tag — must match the sing-box contract (`state.rs` selects
 /// this group over the Clash API and the kernel-selection sync reads `now`).
 const MAIN_GROUP: &str = "proxy";
+/// Clash's built-in global policy group. It is emitted only when the active
+/// outbound mode is Global; rule mode must not expose a fake GLOBAL selector.
+const GLOBAL_GROUP: &str = "GLOBAL";
 /// Dedicated kernel latency group. The main selector can point to this group
 /// while still remaining manually switchable through the Clash API.
 const AUTO_GROUP: &str = "auto";
@@ -94,34 +98,89 @@ pub fn build_mihomo_config(
 
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
-    // Keep providers/groups present in Global and Direct modes too, so users
-    // can configure policy selections before returning to Rule mode.
-    let (remote_providers, remote_provider_tags) = build_remote_rule_providers(&opts.rule_sets);
+    // A Clash subscription is the source of truth for its own policy groups
+    // and routing rules. URI/base64/sing-box subscriptions have no such
+    // document and continue through Satelite's generated fallback groups.
+    let source_plan = if opts.outbound_mode == OutboundMode::Rule {
+        load_source_policy_plan(opts, &supported, &tags, &selected_tag)
+    } else {
+        None
+    };
+    let use_source_policy = source_plan
+        .as_ref()
+        .is_some_and(|plan| !plan.groups.is_empty() || !plan.rules.is_empty());
+    // Rule providers and policy groups belong to Rule mode. Global mode uses
+    // Clash's real GLOBAL selector, while Direct mode has no proxy policy
+    // group at all. Keeping the mode-specific config small also prevents a
+    // stale rule group from surviving a mode restart in Mihomo's API.
+    let (remote_providers, remote_provider_tags) =
+        if opts.outbound_mode == OutboundMode::Rule && !use_source_policy {
+            build_remote_rule_providers(&opts.rule_sets)
+        } else {
+            (Mapping::new(), std::collections::HashMap::new())
+        };
 
     // —— proxy-groups ——
-    // Mihomo is exposed as a Clash-native policy engine: the main selector is
-    // always manually switchable, with a separate url-test member for kernel
-    // auto-selection. Category selectors below can choose the main group,
-    // automatic selection, DIRECT/REJECT, or any concrete node.
     let mut groups: Vec<Mapping> = Vec::new();
-    let probe_url = probe_url_or_default(opts);
-    let mut main_members = vec![AUTO_GROUP.to_string()];
-    main_members.extend(tags.clone());
-    main_members.push(DIRECT_PROXY.into());
-    let main_default = if opts.auto_select.is_kernel() {
-        AUTO_GROUP
-    } else {
-        selected_tag.as_str()
-    };
-    groups.push(select_group(MAIN_GROUP, main_members, Some(main_default)));
-    groups.push(url_test_group(AUTO_GROUP, tags.clone(), &probe_url));
+    let remote_policy_group_tags = match opts.outbound_mode {
+        OutboundMode::Rule => {
+            if let Some(plan) = source_plan.as_ref().filter(|plan| !plan.groups.is_empty()) {
+                // The names/order/member relations came from this enabled
+                // subscription. No screenshot-specific group names are
+                // compiled into Satelite.
+                groups.extend(plan.groups.clone());
+                std::collections::HashMap::new()
+            } else {
+                // Mihomo is exposed as a Clash-native policy engine in Rule mode:
+                // the main selector is manually switchable, with a separate
+                // url-test member for kernel auto-selection. Category selectors
+                // below are built from the enabled rule-set data.
+                let probe_url = probe_url_or_default(opts);
+                let mut main_members = vec![AUTO_GROUP.to_string()];
+                main_members.extend(tags.clone());
+                main_members.push(DIRECT_PROXY.into());
+                let main_default = if opts.auto_select.is_kernel() {
+                    AUTO_GROUP
+                } else {
+                    selected_tag.as_str()
+                };
+                groups.push(select_group(MAIN_GROUP, main_members, Some(main_default)));
+                groups.push(url_test_group(AUTO_GROUP, tags.clone(), &probe_url));
 
-    let (policy_groups, remote_policy_group_tags) =
-        build_remote_policy_groups(&opts.rule_sets, &remote_provider_tags, &supported, &tags);
-    groups.extend(policy_groups);
+                let (policy_groups, policy_tags) = build_remote_policy_groups(
+                    &opts.rule_sets,
+                    &remote_provider_tags,
+                    &supported,
+                    &tags,
+                );
+                groups.extend(policy_groups);
+                policy_tags
+            }
+        }
+        OutboundMode::Global => {
+            // Global mode is the real Clash global mode. It must have exactly
+            // one policy group named GLOBAL; do not expose proxy/auto or the
+            // rule-set selectors here. Members come from the currently
+            // supported nodes, so subscriptions with different node counts
+            // and names work without hardcoded group data.
+            let mut members = tags.clone();
+            members.push(DIRECT_PROXY.into());
+            groups.push(select_group(
+                GLOBAL_GROUP,
+                members,
+                Some(selected_tag.as_str()),
+            ));
+            std::collections::HashMap::new()
+        }
+        OutboundMode::Direct => std::collections::HashMap::new(),
+    };
 
     // —— rules ——
-    let rules = build_rules(opts, &remote_provider_tags, &remote_policy_group_tags);
+    let rules = if let Some(plan) = source_plan.as_ref().filter(|plan| use_source_policy) {
+        build_source_rules(opts, &plan.rules, &plan.rewrites)
+    } else {
+        build_rules(opts, &remote_provider_tags, &remote_policy_group_tags)
+    };
 
     // —— document ——
     let mut root = Mapping::new();
@@ -130,11 +189,7 @@ pub fn build_mihomo_config(
     if opts.allow_lan {
         root.insert(str_yaml("bind-address"), str_yaml("*"));
     }
-    // Mode stays `rule` even for Global/Direct outbound modes: mihomo's
-    // global mode routes through the GLOBAL group (whose selection we do not
-    // manage); our Global semantic is "everything via the main group", which
-    // the MATCH final expresses directly.
-    root.insert(str_yaml("mode"), str_yaml("rule"));
+    root.insert(str_yaml("mode"), str_yaml(opts.outbound_mode.as_str()));
     root.insert(str_yaml("log-level"), str_yaml("info"));
     // Keep Clash selector choices across Mihomo restarts. The file contains
     // group names and selected members only; credentials remain in active.yaml.
@@ -179,7 +234,14 @@ pub fn build_mihomo_config(
         str_yaml("proxy-groups"),
         Yaml::Sequence(groups.into_iter().map(Yaml::Mapping).collect()),
     );
-    if !remote_providers.is_empty() {
+    if let Some(plan) = source_plan.as_ref().filter(|plan| use_source_policy) {
+        if !plan.providers.is_empty() {
+            root.insert(
+                str_yaml("rule-providers"),
+                Yaml::Mapping(plan.providers.clone()),
+            );
+        }
+    } else if !remote_providers.is_empty() {
         root.insert(str_yaml("rule-providers"), Yaml::Mapping(remote_providers));
     }
     root.insert(
@@ -297,6 +359,298 @@ fn listeners_block(opts: &BuildOptions) -> Yaml {
     )
 }
 
+#[derive(Clone)]
+struct SourcePolicyPlan {
+    groups: Vec<Mapping>,
+    rules: Vec<String>,
+    providers: Mapping,
+    rewrites: std::collections::HashMap<String, String>,
+}
+
+/// Read one enabled Clash subscription as policy metadata. The normalized
+/// node list remains Satelite's source for credentials and local edits; this
+/// function only imports the subscription's group/rule topology.
+fn load_source_policy_plan(
+    opts: &BuildOptions,
+    supported: &[ProxyNode],
+    tags: &[String],
+    selected_tag: &str,
+) -> Option<SourcePolicyPlan> {
+    if opts.mihomo_configs.len() != 1 {
+        if opts.mihomo_configs.len() > 1 {
+            crate::app_log::warn(
+                "mihomo_config",
+                "检测到多个 Clash 订阅，暂不合并不同订阅的策略组，回退到 Satelite 规则组",
+            );
+        }
+        return None;
+    }
+
+    let mut raw_groups: Vec<Mapping> = Vec::new();
+    let mut raw_rules: Vec<String> = Vec::new();
+    let mut providers = Mapping::new();
+    for document in serde_yaml::Deserializer::from_str(&opts.mihomo_configs[0]) {
+        let root = match Yaml::deserialize(document) {
+            Ok(root) => root,
+            Err(error) => {
+                crate::app_log::warn(
+                    "mihomo_config",
+                    format!("Clash 订阅策略解析失败，回退到 Satelite 规则组：{error}"),
+                );
+                return None;
+            }
+        };
+        let Some(map) = root.as_mapping() else {
+            continue;
+        };
+        if let Some(groups) = map
+            .get(Yaml::String("proxy-groups".into()))
+            .and_then(Yaml::as_sequence)
+        {
+            raw_groups.extend(groups.iter().filter_map(Yaml::as_mapping).cloned());
+        }
+        if let Some(rules) = map
+            .get(Yaml::String("rules".into()))
+            .and_then(Yaml::as_sequence)
+        {
+            raw_rules.extend(rules.iter().filter_map(Yaml::as_str).map(str::to_string));
+        }
+        if let Some(source) = map
+            .get(Yaml::String("rule-providers".into()))
+            .and_then(Yaml::as_mapping)
+        {
+            for (key, value) in source {
+                providers.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    if raw_groups.is_empty() {
+        return None;
+    }
+
+    let node_tags: std::collections::HashMap<String, String> = supported
+        .iter()
+        .zip(tags.iter())
+        .map(|(node, tag)| (node.name.clone(), tag.clone()))
+        .collect();
+    let group_names: Vec<String> = raw_groups
+        .iter()
+        .filter_map(|group| yaml_string(group, "name"))
+        .collect();
+    if group_names.is_empty() {
+        return None;
+    }
+
+    let main_index = raw_groups
+        .iter()
+        .position(|group| {
+            let name = yaml_string(group, "name").unwrap_or_default();
+            let group_type = yaml_string(group, "type").unwrap_or_default();
+            group_type.eq_ignore_ascii_case("select")
+                && (name.eq_ignore_ascii_case(MAIN_GROUP) || name.contains("节点选择"))
+        })
+        .or_else(|| {
+            raw_groups.iter().position(|group| {
+                yaml_string(group, "type").is_some_and(|kind| kind.eq_ignore_ascii_case("select"))
+            })
+        })
+        .unwrap_or(0);
+    let auto_index = raw_groups.iter().position(|group| {
+        let name = yaml_string(group, "name").unwrap_or_default();
+        let group_type = yaml_string(group, "type").unwrap_or_default();
+        group_type.eq_ignore_ascii_case("url-test") || name.contains("自动")
+    });
+
+    let mut used = std::collections::HashSet::from([
+        MAIN_GROUP.to_string(),
+        AUTO_GROUP.to_string(),
+        GLOBAL_GROUP.to_string(),
+        DIRECT_PROXY.to_string(),
+        "REJECT".to_string(),
+    ]);
+    used.extend(tags.iter().cloned());
+    let mut group_rewrites = std::collections::HashMap::new();
+    for (index, raw) in raw_groups.iter().enumerate() {
+        let Some(name) = yaml_string(raw, "name") else {
+            continue;
+        };
+        let emitted = if index == main_index {
+            MAIN_GROUP.to_string()
+        } else if Some(index) == auto_index {
+            AUTO_GROUP.to_string()
+        } else {
+            unique_policy_group_name(&name, index, &mut used)
+        };
+        group_rewrites.insert(name, emitted);
+    }
+
+    let mut rewrites = group_rewrites.clone();
+    for (name, tag) in &node_tags {
+        // Clash shares one namespace for nodes and groups. A group name wins
+        // if a provider happens to use the same display string.
+        rewrites.entry(name.clone()).or_insert_with(|| tag.clone());
+    }
+    rewrites.insert("DIRECT".into(), DIRECT_PROXY.into());
+    rewrites.insert("direct".into(), DIRECT_PROXY.into());
+    rewrites.insert("REJECT".into(), "REJECT".into());
+
+    let mut groups = Vec::new();
+    for (index, raw) in raw_groups.iter().enumerate() {
+        let Some(source_name) = yaml_string(raw, "name") else {
+            continue;
+        };
+        let Some(name) = group_rewrites.get(&source_name) else {
+            continue;
+        };
+        let members = yaml_string_list(raw, "proxies")
+            .into_iter()
+            .filter_map(|member| {
+                group_rewrites
+                    .get(&member)
+                    .cloned()
+                    .or_else(|| node_tags.get(&member).cloned())
+                    .or_else(|| rewrites.get(&member).cloned())
+                    .or_else(|| {
+                        if member == DIRECT_PROXY || member == "REJECT" {
+                            Some(member)
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect::<Vec<_>>();
+        if members.is_empty() {
+            continue;
+        }
+
+        let mut group = raw.clone();
+        group.insert(Yaml::String("name".into()), str_yaml(name));
+        group.insert(
+            Yaml::String("proxies".into()),
+            Yaml::Sequence(members.iter().map(|member| str_yaml(member)).collect()),
+        );
+        if index == main_index {
+            let default = if opts.auto_select.is_kernel()
+                && members.iter().any(|member| member == AUTO_GROUP)
+            {
+                AUTO_GROUP
+            } else if members.iter().any(|member| member == selected_tag) {
+                selected_tag
+            } else {
+                members.first().map(String::as_str).unwrap_or(DIRECT_PROXY)
+            };
+            group.insert(Yaml::String("default".into()), str_yaml(default));
+        }
+        groups.push(group);
+    }
+
+    let providers = match rewrite_yaml_names(&Yaml::Mapping(providers), &rewrites) {
+        Yaml::Mapping(mapping) => mapping,
+        _ => Mapping::new(),
+    };
+    crate::app_log::info(
+        "mihomo_config",
+        format!(
+            "loaded Clash subscription policy: {} groups, {} rules, {} providers",
+            groups.len(),
+            raw_rules.len(),
+            providers.len()
+        ),
+    );
+    Some(SourcePolicyPlan {
+        groups,
+        rules: raw_rules,
+        providers,
+        rewrites,
+    })
+}
+
+fn yaml_string(map: &Mapping, key: &str) -> Option<String> {
+    map.get(Yaml::String(key.into()))
+        .and_then(Yaml::as_str)
+        .map(str::to_string)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn yaml_string_list(map: &Mapping, key: &str) -> Vec<String> {
+    map.get(Yaml::String(key.into()))
+        .and_then(Yaml::as_sequence)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Yaml::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn rewrite_yaml_names(value: &Yaml, rewrites: &std::collections::HashMap<String, String>) -> Yaml {
+    match value {
+        Yaml::String(value) => rewrites
+            .get(value)
+            .cloned()
+            .map(Yaml::String)
+            .unwrap_or_else(|| Yaml::String(value.clone())),
+        Yaml::Sequence(values) => Yaml::Sequence(
+            values
+                .iter()
+                .map(|value| rewrite_yaml_names(value, rewrites))
+                .collect(),
+        ),
+        Yaml::Mapping(mapping) => Yaml::Mapping(
+            mapping
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        rewrite_yaml_names(key, rewrites),
+                        rewrite_yaml_names(value, rewrites),
+                    )
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn build_source_rules(
+    opts: &BuildOptions,
+    source_rules: &[String],
+    rewrites: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    let mut rules = source_rules
+        .iter()
+        .filter(|rule| !rule.trim_start().to_ascii_uppercase().starts_with("MATCH,"))
+        .map(|rule| {
+            rule.split(',')
+                .map(|part| {
+                    let token = part.trim();
+                    rewrites
+                        .get(token)
+                        .cloned()
+                        .unwrap_or_else(|| part.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>();
+    if opts.bypass_lan {
+        rules.extend(bypass_lan_rules());
+    }
+    if opts.block_quic {
+        rules.push("AND,((NETWORK,udp),(DST-PORT,443)),REJECT".into());
+    }
+    let final_target = match opts.normalized_route_final() {
+        "direct" => DIRECT_PROXY.to_string(),
+        "block" => "REJECT".to_string(),
+        _ => MAIN_GROUP.to_string(),
+    };
+    rules.push(format!("MATCH,{final_target}"));
+    rules
+}
+
 // —— rules ——
 
 /// Build one Clash selector for every enabled remote rule category that can
@@ -400,6 +754,12 @@ fn build_rules(
     remote_provider_tags: &std::collections::HashMap<String, String>,
     remote_policy_group_tags: &std::collections::HashMap<String, String>,
 ) -> Vec<String> {
+    // Mihomo's native global/direct modes do not consult Clash rule lists.
+    // Returning no rules makes the generated YAML agree with the mode shown
+    // in the UI and avoids leaving a stale MATCH rule behind after a restart.
+    if opts.outbound_mode != OutboundMode::Rule {
+        return Vec::new();
+    }
     let mut rules = Vec::new();
     // Mihomo rule mode is Clash-native: only remote providers/geodata enter
     // routing. Satelite's local sing-box RuleSet rows are not compiled here.
@@ -433,8 +793,9 @@ fn build_rules(
             "block" => "REJECT".to_string(),
             _ => MAIN_GROUP.to_string(),
         },
-        OutboundMode::Global => MAIN_GROUP.to_string(),
-        OutboundMode::Direct => DIRECT_PROXY.to_string(),
+        OutboundMode::Global | OutboundMode::Direct => {
+            unreachable!("non-rule modes return before building Clash rules")
+        }
     };
     rules.push(format!("MATCH,{final_target}"));
     rules
@@ -855,7 +1216,7 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet]) -> Mapping {
 
     let use_fakeip = opts.tun_enabled || opts.dns.fake_ip.enabled;
     let dns_final = opts.dns.normalize_dns_final();
-    // Remote DoH egress goes through the main proxy group (mihomo's `#adapter`
+    // Remote DoH egress goes through the active proxy group (mihomo's `#adapter`
     // fragment on DNS entries) — mirroring sing-box's remote-resolver detour
     // and Xray's dns-module routing. Direct egress hits the classic
     // chicken-and-egg: the DoH endpoints are unreachable without a proxy,
@@ -863,13 +1224,16 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet]) -> Mapping {
     // (plain UDP, always direct), which breaks the loop. Direct outbound
     // mode is the one exception — everything egresses direct there, DNS
     // included.
-    let remote_pool: Vec<String> = if opts.outbound_mode == OutboundMode::Direct {
-        REMOTE_DNS_POOL.iter().map(|s| (*s).to_string()).collect()
-    } else {
-        REMOTE_DNS_POOL
+    let remote_pool: Vec<String> = match opts.outbound_mode {
+        OutboundMode::Direct => REMOTE_DNS_POOL.iter().map(|s| (*s).to_string()).collect(),
+        OutboundMode::Global => REMOTE_DNS_POOL
+            .iter()
+            .map(|s| format!("{s}#{GLOBAL_GROUP}"))
+            .collect(),
+        OutboundMode::Rule => REMOTE_DNS_POOL
             .iter()
             .map(|s| format!("{s}#{MAIN_GROUP}"))
-            .collect()
+            .collect(),
     };
     let domestic_pool: Vec<String> = DOMESTIC_DNS_POOL.iter().map(|s| (*s).to_string()).collect();
     // mihomo supports the `system` resolver natively — local-classified
@@ -1436,6 +1800,7 @@ mod tests {
             bypass_lan: true,
             direct_ip_strategy: crate::domain::DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         }
     }
@@ -1945,24 +2310,79 @@ mod tests {
         opts.rule_sets = vec![set.clone()];
         opts.outbound_mode = OutboundMode::Global;
         let built = build_mihomo_config(&[node.clone()], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert_eq!(rules.last().unwrap(), "MATCH,proxy");
-        assert!(
-            !rules.iter().any(|r| r.contains("a.com")),
-            "Global ignores user rules"
+        let doc = parse(&built);
+        assert_eq!(doc["mode"].as_str(), Some("global"));
+        assert_eq!(groups_of(&doc).len(), 1);
+        assert_eq!(groups_of(&doc)[0]["name"].as_str(), Some("GLOBAL"));
+        assert!(rules_of(&doc).is_empty(), "Global ignores user rules");
+        assert_eq!(
+            doc["dns"]["nameserver"][0].as_str(),
+            Some("https://1.1.1.1/dns-query#GLOBAL")
         );
 
         let mut opts = default_opts();
         opts.rule_sets = vec![set];
         opts.outbound_mode = OutboundMode::Direct;
         let built = build_mihomo_config(&[node], &opts).expect("build");
-        let rules = rules_of(&parse(&built));
-        assert_eq!(rules.last().unwrap(), &format!("MATCH,{DIRECT_PROXY}"));
+        let doc = parse(&built);
+        assert_eq!(doc["mode"].as_str(), Some("direct"));
+        assert!(groups_of(&doc).is_empty());
+        assert!(rules_of(&doc).is_empty());
 
         let mut opts = default_opts();
         opts.route_final = "block".into();
         let built = build_mihomo_config(&[ss_node("x")], &opts).expect("build");
         assert_eq!(rules_of(&parse(&built)).last().unwrap(), "MATCH,REJECT");
+    }
+
+    #[test]
+    fn clash_subscription_policy_groups_and_rules_are_preserved() {
+        let node = plain_node("node-a");
+        let mut opts = default_opts();
+        opts.mihomo_configs = vec![r#"
+proxy-groups:
+  - name: 🚀 节点选择
+    type: select
+    proxies: [🚀 手动选择, 📈 自动选择, node-a, DIRECT]
+  - name: 🚀 手动选择
+    type: select
+    proxies: [node-a]
+  - name: 📈 自动选择
+    type: url-test
+    url: https://www.gstatic.com/generate_204
+    interval: 60
+    tolerance: 50
+    proxies: [node-a]
+  - name: 🔍 搜索引擎
+    type: select
+    proxies: [🚀 节点选择, DIRECT]
+rule-providers:
+  Search:
+    type: http
+    behavior: classical
+    url: https://example.com/search.yaml
+    path: ./providers/search.yaml
+rules:
+  - RULE-SET,Search,🔍 搜索引擎
+  - MATCH,🚀 节点选择
+"#
+        .into()];
+        let built = build_mihomo_config(&[node], &opts).expect("build");
+        let doc = parse(&built);
+        let groups = groups_of(&doc);
+        let names: Vec<&str> = groups
+            .iter()
+            .filter_map(|group| group["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["proxy", "🚀 手动选择", "auto", "🔍 搜索引擎"]);
+        assert!(!names.contains(&"GLOBAL"));
+        assert_eq!(
+            doc["rule-providers"]["Search"]["type"].as_str(),
+            Some("http")
+        );
+        let rules = rules_of(&doc);
+        assert!(rules.contains(&"RULE-SET,Search,🔍 搜索引擎".to_string()));
+        assert_eq!(rules.last().map(String::as_str), Some("MATCH,proxy"));
     }
 
     #[test]

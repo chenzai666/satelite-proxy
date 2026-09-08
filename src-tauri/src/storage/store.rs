@@ -825,6 +825,24 @@ impl AppStore {
             .collect()
     }
 
+    /// Cached Clash YAML from enabled node-producing subscriptions. Mihomo
+    /// can preserve a source's real policy groups/rules when exactly one such
+    /// config is active; URI/base64/sing-box profiles simply return no entry.
+    pub fn enabled_clash_configs(&self) -> Vec<String> {
+        let enabled: Vec<&Subscription> = self
+            .subscriptions
+            .iter()
+            .filter(|s| s.enabled && s.source.contributes_nodes())
+            .collect();
+        if enabled.len() != 1 {
+            return Vec::new();
+        }
+        enabled
+            .into_iter()
+            .filter_map(|s| s.clash_config.clone())
+            .collect()
+    }
+
     /// Sorted ids of the nodes the generated config would include (same filter
     /// as [`Self::enabled_nodes`]). Subscription imports compare this before
     /// and after to decide whether the running core needs a rebuild — node ids
@@ -2465,6 +2483,7 @@ mod tests {
             auto_update: false,
             auto_update_interval_min: 1440,
             traffic: None,
+            clash_config: None,
         }
     }
 

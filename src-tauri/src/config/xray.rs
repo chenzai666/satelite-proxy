@@ -1690,6 +1690,7 @@ mod tests {
             bypass_lan: true,
             direct_ip_strategy: crate::domain::DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         }
     }

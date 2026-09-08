@@ -3558,6 +3558,34 @@ body.ruleset-dragging .ruleset-item:not(.selected):hover {
   font-size: 0.78rem;
 }
 
+.mihomo-rules-notice {
+  padding: 1rem;
+}
+
+.mihomo-rules-notice h2 {
+  margin: 0;
+}
+
+.mihomo-rules-notice p {
+  margin: 0.45rem 0 0;
+}
+
+.mihomo-groups-dashboard {
+  margin: 0.75rem 0 1rem;
+}
+
+.mihomo-groups-dashboard .mihomo-groups-header {
+  margin-bottom: 0.55rem;
+}
+
+.mihomo-groups-dashboard .mihomo-groups-header h1 {
+  font-size: 1.05rem;
+}
+
+.mihomo-groups-dashboard .mihomo-groups-header p {
+  font-size: 0.72rem;
+}
+
 .mihomo-groups-tools {
   display: flex;
   align-items: center;

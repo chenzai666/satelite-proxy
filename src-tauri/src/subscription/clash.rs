@@ -63,6 +63,7 @@ pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
         nodes,
         skipped,
         format: SubscriptionFormat::ClashYaml,
+        clash_config: Some(content.to_string()),
     })
 }
 

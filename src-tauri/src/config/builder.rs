@@ -66,6 +66,10 @@ pub struct BuildOptions {
     pub rules: Vec<Rule>,
     /// Enabled unified sets in match-priority order.
     pub rule_sets: Vec<RuleSet>,
+    /// Cached Clash YAML from enabled subscriptions. Mihomo uses at most one
+    /// source config to preserve that subscription's real groups and rules;
+    /// other cores ignore this field.
+    pub mihomo_configs: Vec<String>,
     /// Enable TUN inbound (global capture).
     pub tun_enabled: bool,
     /// system | gvisor | mixed
@@ -2220,6 +2224,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -2766,6 +2771,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -2880,6 +2886,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -2926,6 +2933,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
 
@@ -2975,6 +2983,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
         let built = build_singbox_config(&nodes, &options).unwrap();
@@ -3092,6 +3101,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3134,6 +3144,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3181,6 +3192,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3236,6 +3248,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3302,6 +3315,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
 
@@ -3349,6 +3363,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3386,6 +3401,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
 
@@ -3453,6 +3469,7 @@ mod tests {
             bypass_lan,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
 
@@ -3610,6 +3627,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3645,6 +3663,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3681,6 +3700,7 @@ mod tests {
                     bypass_lan: false,
                     direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                     tun_interface_name: None,
+                    mihomo_configs: Vec::new(),
                     sidecar: None,
                 },
             )
@@ -3723,6 +3743,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3771,6 +3792,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3820,6 +3842,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3873,6 +3896,7 @@ mod tests {
                 bypass_lan: false,
                 direct_ip_strategy: DirectIpStrategy::PreferIpv4,
                 tun_interface_name: None,
+                mihomo_configs: Vec::new(),
                 sidecar: None,
             },
         )
@@ -3987,6 +4011,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: None,
         };
         let built =
@@ -4041,6 +4066,7 @@ mod tests {
             bypass_lan: false,
             direct_ip_strategy: DirectIpStrategy::PreferIpv4,
             tun_interface_name: None,
+            mihomo_configs: Vec::new(),
             sidecar: plan,
         }
     }

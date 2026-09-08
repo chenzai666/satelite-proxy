@@ -42,7 +42,6 @@ import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { ErrorModal } from "../components/ErrorModal";
 import { useI18n } from "../i18n";
 import { extractDomainSuffix } from "./FailuresPage";
-import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import type {
   ProxyNode,
   ProxyChain,
@@ -129,9 +128,24 @@ export function RulesPage({ embedded = false }: Props) {
     };
   }, []);
   return coreType === "mihomo" ? (
-    <MihomoGroupsPage embedded={embedded} />
+    <MihomoRulesNotice embedded={embedded} />
   ) : (
     <SingboxRulesPage embedded={embedded} />
+  );
+}
+
+function MihomoRulesNotice({ embedded = false }: Props) {
+  const { t } = useI18n();
+  const body = (
+    <div className="card mihomo-rules-notice">
+      <h2>{t("mihomoGroups.title")}</h2>
+      <p className="muted">{t("mihomoGroups.dashboardNotice")}</p>
+    </div>
+  );
+  return embedded ? (
+    <div className="settings-embed rules-embed">{body}</div>
+  ) : (
+    <div className="page rules-page">{body}</div>
   );
 }
 

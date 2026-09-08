@@ -684,10 +684,11 @@ fn persist_import_replacing(
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
-    let (view, node_set_changed) = state
+    let (view, node_set_changed, policy_changed) = state
         .with_store_mut(|store| {
             let mut outcome = outcome;
             let node_ids_before = store.enabled_node_ids_sorted();
+            let policy_before = store.enabled_clash_configs();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
                 store
                     .subscriptions
@@ -706,23 +707,33 @@ fn persist_import_replacing(
             store.ensure_subscription_enable_policy();
             store.ensure_current_node_valid();
             let node_ids_after = store.enabled_node_ids_sorted();
+            let policy_after = store.enabled_clash_configs();
             let view = store
                 .get_subscription(&sub_id)
                 .map(|s| s.to_view())
                 .ok_or_else(|| crate::error::AppError::NotFound(sub_id.clone()))?;
-            Ok((view, node_ids_before != node_ids_after))
+            Ok((
+                view,
+                node_ids_before != node_ids_after,
+                policy_before != policy_after,
+            ))
         })
         .map_err(|e| e.to_string())?;
-    if node_set_changed {
+    if node_set_changed || policy_changed {
         // Node ids are content hashes, so a refreshed subscription may rename
         // or rotate nodes. The running core still holds outbounds built from
         // the old ids: without a rebuild, traffic rows lose their display
         // names (raw node-… tags) and stale outbounds can dial servers the
-        // provider has already retired. Same debounced queue rule edits use —
-        // several subscriptions updating together produce one rebuild.
+        // provider has already retired. A Clash policy update also requires a
+        // rebuild even when the node ids stay identical; otherwise the live
+        // core keeps the previous groups/rules/providers. Same debounced queue
+        // rule edits use — several subscriptions updating together produce one
+        // rebuild.
         crate::app_log::info(
             "subscription",
-            format!("{sub_id}: enabled node set changed; queued core rebuild"),
+            format!(
+                "{sub_id}: subscription data changed (nodes={node_set_changed}, policy={policy_changed}); queued core rebuild"
+            ),
         );
         crate::rule_apply::request_restart(app.clone(), Vec::new());
     }

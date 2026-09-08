@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 const KERNEL_SELECTION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const KERNEL_SELECTION_HTTP_TIMEOUT: Duration = Duration::from_millis(800);
 const MAIN_PROXY_GROUP: &str = "proxy";
+const MIHOMO_GLOBAL_GROUP: &str = "GLOBAL";
 
 /// Synchronize the generated main selector with the application's persisted
 /// node choice. sing-box persists a selector's last `now` in cache.db, which
@@ -19,12 +20,12 @@ const MAIN_PROXY_GROUP: &str = "proxy";
 /// the running core still routes through an older cached selection.
 fn sync_main_selector(
     api: &crate::api::ClashApi,
+    group: &str,
     node_tag: &str,
     close_connections: bool,
     context: &str,
 ) -> AppResult<bool> {
-    let before =
-        api.proxy_group_now_with_timeout(MAIN_PROXY_GROUP, KERNEL_SELECTION_HTTP_TIMEOUT)?;
+    let before = api.proxy_group_now_with_timeout(group, KERNEL_SELECTION_HTTP_TIMEOUT)?;
     if before.as_deref() == Some(node_tag) {
         app_log::info(
             "selector",
@@ -33,9 +34,8 @@ fn sync_main_selector(
         return Ok(false);
     }
 
-    api.select_proxy(MAIN_PROXY_GROUP, node_tag)?;
-    let after =
-        api.proxy_group_now_with_timeout(MAIN_PROXY_GROUP, KERNEL_SELECTION_HTTP_TIMEOUT)?;
+    api.select_proxy(group, node_tag)?;
+    let after = api.proxy_group_now_with_timeout(group, KERNEL_SELECTION_HTTP_TIMEOUT)?;
     if after.as_deref() != Some(node_tag) {
         return Err(AppError::Core(format!(
             "{context}: main selector confirmation failed (expected {node_tag}, got {})",
@@ -57,7 +57,7 @@ fn sync_main_selector(
     }
     app_log::info(
         "selector",
-        format!("{context}: main selector synchronized to {node_tag}"),
+        format!("{context}: selector {group} synchronized to {node_tag}"),
     );
     Ok(true)
 }
@@ -285,7 +285,10 @@ mod kernel_selection_poll_tests {
         });
 
         let api = crate::api::ClashApi::new("127.0.0.1", port, "test");
-        assert!(sync_main_selector(&api, "node-new", true, "test sync").expect("sync selector"));
+        assert!(
+            sync_main_selector(&api, MAIN_PROXY_GROUP, "node-new", true, "test sync")
+                .expect("sync selector")
+        );
         server.join().expect("fake api server");
     }
 
@@ -318,6 +321,7 @@ mod kernel_selection_poll_tests {
                         auto_update: false,
                         auto_update_interval_min: 1440,
                         traffic: None,
+                        clash_config: None,
                     },
                     vec![crate::domain::ProxyNode {
                         id: "node-a".into(),
@@ -979,7 +983,13 @@ impl AppState {
         drop(store);
         drop(runtime);
         if let Some((api, tag, close_connections)) = selector_sync {
-            sync_main_selector(&api, &tag, close_connections, "proxy start")?;
+            sync_main_selector(
+                &api,
+                MAIN_PROXY_GROUP,
+                &tag,
+                close_connections,
+                "proxy start",
+            )?;
         }
         log_proxy_status("proxy started", &status);
         Ok(status)
@@ -1036,7 +1046,13 @@ impl AppState {
         drop(store);
         drop(runtime);
         if let Some((api, tag, close_connections)) = selector_sync {
-            sync_main_selector(&api, &tag, close_connections, "proxy restart")?;
+            sync_main_selector(
+                &api,
+                MAIN_PROXY_GROUP,
+                &tag,
+                close_connections,
+                "proxy restart",
+            )?;
         }
         log_proxy_status("proxy restarted", &status);
         Ok(status)
@@ -1394,7 +1410,31 @@ impl AppState {
                 "目标不属于该策略组，已拒绝切换".into(),
             ));
         }
+        let selected_node_id = if group == MAIN_PROXY_GROUP || group == MIHOMO_GLOBAL_GROUP {
+            self.with_store(|store| {
+                Ok(store
+                    .nodes
+                    .iter()
+                    .find(|stored| crate::config::outbound_tag(&stored.node) == member)
+                    .map(|stored| stored.node.id.clone()))
+            })?
+        } else {
+            None
+        };
         api.select_proxy(group, member)?;
+        if let Some(node_id) = selected_node_id {
+            if let Err(error) = self.with_store_mut(|store| {
+                apply_selected_node(&mut store.settings, node_id, true);
+                Ok(())
+            }) {
+                app_log::warn(
+                    "connections",
+                    format!(
+                        "mihomo policy group {group} switched to {member}, but selected node persistence failed: {error}"
+                    ),
+                );
+            }
+        }
         if close_after_switch {
             if let Err(error) = api.close_all_connections() {
                 app_log::warn(
@@ -1418,6 +1458,7 @@ impl AppState {
     ) -> AppResult<()> {
         let labels = self.with_store(|store| {
             let mut labels = std::collections::BTreeMap::from([
+                ("GLOBAL".to_string(), "🌐 GLOBAL".to_string()),
                 ("proxy".to_string(), "🚀 节点选择".to_string()),
                 ("auto".to_string(), "📈 自动选择".to_string()),
                 ("DIRECT".to_string(), "DIRECT · 直连".to_string()),
@@ -1497,46 +1538,58 @@ impl AppState {
             );
             kind
         };
-        let (tag, kernel_auto, close_after_switch, fallback_core) = self.with_store(|store| {
-            if store.settings.runtime_source().is_custom() {
-                return Err(crate::error::AppError::Core(
-                    "自写配置模式下无法切换节点".into(),
-                ));
-            }
-            if !manual && !store.settings.auto_select.is_smart() {
-                return Err(crate::error::AppError::Core("智能切换已关闭".into()));
-            }
-            let node = store
-                .find_node(node_id)
-                .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
-            // v2rayN-style compatibility handoff: Xray does not serve
-            // AnyTLS/TUIC (or a few incompatible transport shapes), but the
-            // bundled sing-box generated-config path does. A *manual* user
-            // selection may therefore switch cores; background smart
-            // selection remains constrained to the currently chosen core.
-            let fallback_core = if manual {
-                core_kind.manual_node_fallback(node)
-            } else {
-                None
-            };
-            if !core_kind.supports_node(node) && fallback_core.is_none() {
-                return Err(crate::error::AppError::Core(format!(
-                    "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
-                    core_kind.display_name()
-                )));
-            }
-            Ok((
-                crate::config::outbound_tag(node),
-                fallback_core.is_none() && manual && store.settings.auto_select.is_kernel(),
-                fallback_core.is_none()
-                    && matches!(
-                        core_kind,
-                        crate::core::CoreKind::SingBox | crate::core::CoreKind::Mihomo
-                    )
-                    && store.settings.close_connections_on_switch,
-                fallback_core,
-            ))
-        })?;
+        let (tag, selector_group, kernel_auto, close_after_switch, fallback_core) = self
+            .with_store(|store| {
+                if store.settings.runtime_source().is_custom() {
+                    return Err(crate::error::AppError::Core(
+                        "自写配置模式下无法切换节点".into(),
+                    ));
+                }
+                if !manual && !store.settings.auto_select.is_smart() {
+                    return Err(crate::error::AppError::Core("智能切换已关闭".into()));
+                }
+                let node = store
+                    .find_node(node_id)
+                    .ok_or_else(|| crate::error::AppError::NotFound(node_id.to_string()))?;
+                // v2rayN-style compatibility handoff: Xray does not serve
+                // AnyTLS/TUIC (or a few incompatible transport shapes), but the
+                // bundled sing-box generated-config path does. A *manual* user
+                // selection may therefore switch cores; background smart
+                // selection remains constrained to the currently chosen core.
+                let fallback_core = if manual {
+                    core_kind.manual_node_fallback(node)
+                } else {
+                    None
+                };
+                if !core_kind.supports_node(node) && fallback_core.is_none() {
+                    return Err(crate::error::AppError::Core(format!(
+                        "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
+                        core_kind.display_name()
+                    )));
+                }
+                let selector_group = if core_kind == crate::core::CoreKind::Mihomo
+                    && store.settings.outbound_mode == crate::domain::OutboundMode::Global
+                {
+                    MIHOMO_GLOBAL_GROUP
+                } else {
+                    MAIN_PROXY_GROUP
+                };
+                Ok((
+                    crate::config::outbound_tag(node),
+                    selector_group,
+                    fallback_core.is_none()
+                        && manual
+                        && store.settings.auto_select.is_kernel()
+                        && selector_group == MAIN_PROXY_GROUP,
+                    fallback_core.is_none()
+                        && matches!(
+                            core_kind,
+                            crate::core::CoreKind::SingBox | crate::core::CoreKind::Mihomo
+                        )
+                        && store.settings.close_connections_on_switch,
+                    fallback_core,
+                ))
+            })?;
         let (api, core_running) = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
@@ -1550,7 +1603,13 @@ impl AppState {
             if fallback_core.is_some() || core_kind == crate::core::CoreKind::Xray || kernel_auto {
                 false
             } else if let Some(api) = api {
-                sync_main_selector(&api, &tag, close_after_switch, "manual node selection")?;
+                sync_main_selector(
+                    &api,
+                    selector_group,
+                    &tag,
+                    close_after_switch,
+                    "manual node selection",
+                )?;
                 true
             } else {
                 false
@@ -1614,11 +1673,21 @@ impl AppState {
         use crate::config::outbound_tag;
         use crate::domain::AutoSelectMode;
 
-        let mode = match self.with_store(|s| Ok(s.settings.auto_select)) {
-            Ok(m) => m,
+        let (auto_select, selector_group) = match self.with_store(|store| {
+            let core_kind = crate::core::CoreKind::parse(&store.settings.core_type);
+            let selector_group = if core_kind == crate::core::CoreKind::Mihomo
+                && store.settings.outbound_mode == crate::domain::OutboundMode::Global
+            {
+                MIHOMO_GLOBAL_GROUP
+            } else {
+                MAIN_PROXY_GROUP
+            };
+            Ok((store.settings.auto_select, selector_group))
+        }) {
+            Ok(value) => value,
             Err(_) => return,
         };
-        if mode != AutoSelectMode::Kernel {
+        if auto_select != AutoSelectMode::Kernel {
             return;
         }
 
@@ -1636,7 +1705,7 @@ impl AppState {
         // whose counters grow between polls; idle polls keep the last pick).
         // XrayMetrics only exists in Xray mode, so its presence is the check.
         let now_tag = if let Some(api) = api {
-            match api.proxy_group_now_with_timeout("proxy", KERNEL_SELECTION_HTTP_TIMEOUT) {
+            match api.proxy_group_now_with_timeout(selector_group, KERNEL_SELECTION_HTTP_TIMEOUT) {
                 Ok(Some(group)) if group == "auto" => api
                     .proxy_group_now_with_timeout("auto", KERNEL_SELECTION_HTTP_TIMEOUT)
                     .ok()
@@ -1883,7 +1952,50 @@ impl AppState {
         runtime.core.poll();
         if runtime.core.is_running() {
             self.mark_cached_core_state(CoreState::Starting);
-            let status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+            let status = match runtime.restart_core(&self.app_data_dir, resource_dir, &mut store) {
+                Ok(status) => status,
+                Err(error) => {
+                    // A mode change rewrites the generated config and then
+                    // restarts the core. Do not leave the requested mode
+                    // persisted when validation/startup fails: the UI would
+                    // show the new mode while the old core is gone, and the
+                    // next retry would keep using the broken config.
+                    let apply_error = error.to_string();
+                    store.settings.outbound_mode = previous_mode;
+                    let restore_error = store.save(&self.store_path).err();
+
+                    // Rebuild the last known-good mode so a failed switch
+                    // does not strand system proxy/TUN on a stopped core.
+                    match runtime.restart_core(&self.app_data_dir, resource_dir, &mut store) {
+                        Ok(rollback_status) => {
+                            if let Err(save_error) = store.save(&self.store_path) {
+                                app_log::warn(
+                                    "settings",
+                                    format!("outbound mode rollback save failed: {save_error}"),
+                                );
+                            }
+                            self.cache_status(&rollback_status);
+                            let detail = restore_error
+                                .map(|save_error| format!("；恢复设置也失败：{save_error}"))
+                                .unwrap_or_default();
+                            return Err(crate::error::AppError::Core(format!(
+                                "切换出站模式失败：{apply_error}；已恢复 {} 模式{detail}",
+                                previous_mode.as_str()
+                            )));
+                        }
+                        Err(rollback_error) => {
+                            self.mark_cached_core_error(&rollback_error.to_string());
+                            let detail = restore_error
+                                .map(|save_error| format!("；恢复设置也失败：{save_error}"))
+                                .unwrap_or_default();
+                            return Err(crate::error::AppError::Core(format!(
+                                "切换出站模式失败：{apply_error}；恢复 {} 模式也失败：{rollback_error}{detail}",
+                                previous_mode.as_str()
+                            )));
+                        }
+                    }
+                }
+            };
             store.save(&self.store_path)?;
             self.cache_status(&status);
             app_log::info(

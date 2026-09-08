@@ -273,6 +273,10 @@ pub struct Subscription {
     /// Traffic / expire from last URL fetch (`subscription-userinfo`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic: Option<SubscriptionTraffic>,
+    /// Cached Clash YAML for Mihomo. Node normalization still happens as
+    /// before, but this preserves the source-specific policy groups/rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clash_config: Option<String>,
 }
 
 fn default_auto_update_interval_min() -> u32 {

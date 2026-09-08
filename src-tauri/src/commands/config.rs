@@ -881,13 +881,14 @@ pub async fn generate_singbox_config(
 ) -> Result<GenerateConfigResult, String> {
     let app_data_dir = state.app_data_dir.clone();
 
-    let (mut nodes, settings, rules, remote_rule_sets, dns, chains) = state
+    let (mut nodes, settings, rules, remote_rule_sets, mihomo_configs, dns, chains) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
                 store.settings.clone(),
                 store.enabled_rules_sorted(),
                 store.enabled_rule_sets(),
+                store.enabled_clash_configs(),
                 store.dns.clone(),
                 store.chains.clone(),
             ))
@@ -918,6 +919,7 @@ pub async fn generate_singbox_config(
             log_level: "info".into(),
             rules,
             rule_sets: remote_rule_sets,
+            mihomo_configs,
             tun_enabled: settings.tun_enabled,
             tun_stack: settings.tun_stack.clone(),
             dns,
@@ -1012,13 +1014,14 @@ pub fn get_active_config_path(state: State<'_, AppState>) -> Result<Option<Strin
 pub async fn preview_singbox_config(
     state: State<'_, AppState>,
 ) -> Result<GenerateConfigResult, String> {
-    let (mut nodes, settings, rules, remote_rule_sets, dns, chains) = state
+    let (mut nodes, settings, rules, remote_rule_sets, mihomo_configs, dns, chains) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
                 store.settings.clone(),
                 store.enabled_rules_sorted(),
                 store.enabled_rule_sets(),
+                store.enabled_clash_configs(),
                 store.dns.clone(),
                 store.chains.clone(),
             ))
@@ -1050,6 +1053,7 @@ pub async fn preview_singbox_config(
             log_level: "info".into(),
             rules,
             rule_sets: remote_rule_sets,
+            mihomo_configs,
             tun_enabled: settings.tun_enabled,
             tun_stack: settings.tun_stack.clone(),
             dns,
