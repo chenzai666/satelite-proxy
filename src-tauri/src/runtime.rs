@@ -259,6 +259,18 @@ impl Runtime {
         self.xray_metrics.clone()
     }
 
+    /// PIDs owned by Satelite's main and companion core processes.
+    ///
+    /// The Windows proxy-bypass detector excludes these processes because
+    /// their public TCP connections are the expected outbound leg of the
+    /// proxy, not an application bypass.
+    pub fn managed_process_ids(&self) -> Vec<u32> {
+        [self.core.pid(), self.sidecar.pid()]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
     /// Tail of the log file for a specific core kind. Under multi-core mode
     /// the two cores write to separate hourly files — the sidecar manager
     /// owns the companion's file, the main manager everyone else's. Whichever

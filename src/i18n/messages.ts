@@ -114,6 +114,10 @@ const en = {
   "dashboard.restartAppsAcknowledge": "Got it",
   "dashboard.captureTunHint":
     "Global capture via utun (admin once for service install)",
+  "dashboard.proxyBypassTitle": "Possible system-proxy bypass detected ({n})",
+  "dashboard.proxyBypassDesc":
+    "These apps opened public TCP connections without going through Satelite. They may not support the Windows system proxy.",
+  "dashboard.proxyBypassEnableTun": "Enable TUN",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
     "On enable: probe and pick best node. Then passive watch + on-demand probe.",
@@ -1029,6 +1033,10 @@ const zh: Record<MessageKey, string> = {
     "只关闭窗口可能仍有后台进程；请从托盘或任务管理器彻底退出后再重新打开。",
   "dashboard.restartAppsAcknowledge": "我知道了",
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
+  "dashboard.proxyBypassTitle": "发现疑似绕过系统代理的程序（{n}）",
+  "dashboard.proxyBypassDesc":
+    "这些程序直接连接公网，可能不支持 Windows 系统代理。需要接管时可开启 TUN。",
+  "dashboard.proxyBypassEnableTun": "开启 TUN",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
     "开启时立即探测并切到最佳节点；之后被动观测 + 按需探测",

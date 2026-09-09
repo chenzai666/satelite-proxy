@@ -1,11 +1,12 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-09-07（应用版本为 1.0.21，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托，以及端口就绪验证和异常内核恢复）。
+最后核对：2026-09-09（应用版本为 1.0.21，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托、端口就绪验证、异常内核恢复，以及 Windows 系统代理绕过感知）。
 
 ## 0. 阅读与维护规则（必读）
 
 2026-09-08 分支整合上游 v1.0.23 功能，应用版本继续固定 1.0.21：
+- Windows 下新增代理绕过感知：系统代理开启且 TUN 关闭时，只读采样公网 TCP 连接，排除 Satelite/内核进程后在首页提示疑似不支持系统代理的程序；用户可手动开启 TUN，不自动改系统网络。
 - `AppStore.favorite_nodes` 持久化收藏；`toggle_favorite_node` 经 `commands/config.rs`、`lib.rs`、`api.ts` 注册。删除节点/订阅、刷新订阅后清理失效收藏。
 - `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记按原算法匹配。
 - 节点页收藏筛选、右键收藏/单点测速并入原有编辑/删除/分享菜单，卡片角落菜单复用 portal；去除整行单点测速开关，圆点切节点、延迟按钮测速。收藏筛选下批量测速和 Ctrl+A 仅操作可见节点。
@@ -136,6 +137,7 @@ satelite-proxy/
 │   ├── src/config/          # 配置生成：builder.rs（sing-box）+ xray.rs（Xray）+ mihomo.rs（mihomo/Clash YAML）+ dns_build/write/…
 │   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 三内核描述）、manager/download/assets/paths/提权/Job Object
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
+│   ├── src/proxy_bypass.rs  # Windows 系统代理绕过感知（只读 TCP 表 + 进程信息）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
 │   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
 │   ├── src/subscription/    # 订阅解析（clash/singbox/uri/manual）
@@ -259,6 +261,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.7 系统集成
 
+- proxy_bypass.rs 与 commands/diagnostics.rs 提供 Windows 系统代理绕过感知：只读读取 TCP owner-PID 表，过滤私有/回环/特殊地址与 Satelite 内核进程，供 Dashboard 给出 TUN 建议；不修改系统代理、不自动启用 TUN。
+
 - `proxy/windows.rs|macos.rs|stub.rs` — 系统代理设置（注册表 / networksetup），含 owned-proxy 标记与崩溃残留清理（启动时 `cleanup_stale_system_proxy`）。
 - `tray.rs` — 托盘菜单 + 图标状态刷新（8 种托盘图标，`src-tauri/icons/tray/`）。
 - `window_ctrl.rs` — 窗口 show/hide/destroy（托盘内存管理）、ui_mode 偏好持久化；尺寸常量与前端 `windowLayout.ts` 对应。
@@ -282,6 +286,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `UiModeContext.tsx`（`src/ui/`）— localStorage `satelite.uiMode` 先行渲染防闪烁；切模式先调 `set_ui_mode_pref` 让 Rust 调窗口尺寸再换 shell。`UiModeMenu.tsx` — 工具栏 "⋯" 菜单（模式切换/切换内核 sing-box|Xray|mihomo/重启内核/复制代理环境变量）。
 
 ### 6.2 桥接层 ★
+
+- api.ts 新增 detectProxyBypasses，只读调用 Windows 代理绕过探测；Dashboard 在系统代理开启、TUN 关闭且连续两次采样发现公网 TCP 直连时显示提示。
 
 - `api.ts` — 全部 `invoke()` 封装。要点：
   - `updateSettings` 是 **60ms 批量合并写入器**；
@@ -367,6 +373,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - **内核版本**：macOS 预取脚本默认 sing-box v1.13.18，Windows v1.13.15，两者独立演进，升级时分别改脚本；Xray 各平台统一 v26.3.27（`scripts/fetch-bundled-xray-*` + `core/kind.rs::fallback_version` 两处同步）；mihomo 各平台统一 v1.19.30（`scripts/fetch-bundled-mihomo-*` + `core/kind.rs::fallback_version` 两处同步）。
 
 ## 9. 约定与坑（agent 必读）
+
+新增约定（23）：Windows 系统代理绕过感知是只读建议：detect_proxy_bypasses 只在系统代理运行、TUN 关闭且非直连出站时采样公网 TCP 连接；排除 Satelite/内核 PID 与私有地址，连续采样后 Dashboard 才提示。它不等价于证明某个应用一定绕过代理，也不自动切换 TUN；UDP、已关闭的短连接及使用其他代理链路的进程不会被完整覆盖。
 
 1. **Clash API 客户端禁用 `reqwest::blocking`** — 嵌套 Tokio runtime 会在 Tauri async worker panic；用 `ureq`（`api/clash_api.rs` 文件头有说明）。reqwest 仅用于异步下载内核。
 2. **`resources/bin/**/sing-box*`、`xray*`、`mihomo*`、`*.dat`、`wintun.dll`、`libcronet.dll`、`resources/rule-sets/*.srs`、`mihomo-geodata/` 不入库** — 本地没有属正常，dev 首次运行自动下载。

@@ -12,6 +12,7 @@ mod log_listener;
 mod log_retention;
 mod portable;
 mod proxy;
+mod proxy_bypass;
 mod remote_rule_auto;
 mod rule_apply;
 mod runtime;
@@ -413,6 +414,7 @@ pub fn run() {
             commands::update_settings,
             commands::diagnose_network,
             commands::check_exit_ip,
+            commands::detect_proxy_bypasses,
             commands::regenerate_api_secret,
             commands::set_current_node,
             commands::rename_node,

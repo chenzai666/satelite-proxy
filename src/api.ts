@@ -10,6 +10,7 @@ import type {
   LatencyResult,
   ConnectionView,
   ProxyNode,
+  ProxyBypassReport,
   ProxyStatus,
   MihomoProxyGroup,
   Rule,
@@ -672,6 +673,11 @@ export function testCustomNodesLatency(
 
 export function getProxyStatus() {
   return keepProxy(invoke<ProxyStatus>("get_proxy_status"));
+}
+
+/** Read-only Windows hint for apps that bypass the system proxy. */
+export function detectProxyBypasses() {
+  return invoke<ProxyBypassReport>("detect_proxy_bypasses");
 }
 
 export function startProxy(enableSystemProxy = false) {

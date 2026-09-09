@@ -46,3 +46,24 @@ pub async fn check_exit_ip(state: State<'_, AppState>) -> Result<ExitIpInfo, Str
     let via_proxy = status.running && status.outbound_mode != "direct";
     probe(status.mixed_port, via_proxy).await
 }
+
+/// Detect public TCP connections that are owned by another process instead
+/// of Satelite's core.  This is a read-only hint for applications that do not
+/// consume the Windows system proxy (for example some updaters and games).
+/// It never changes the capture mode or any OS network setting.
+#[tauri::command(async)]
+pub async fn detect_proxy_bypasses(
+    state: State<'_, AppState>,
+) -> Result<crate::proxy_bypass::ProxyBypassReport, String> {
+    if state.is_core_transitioning() {
+        return Ok(crate::proxy_bypass::empty_report(false));
+    }
+
+    let status = state.proxy_status().map_err(|error| error.to_string())?;
+    let managed_pids = state.lock_runtime().managed_process_ids();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::proxy_bypass::detect(&status, &managed_pids)
+    })
+    .await
+    .map_err(|error| format!("proxy bypass detection task: {error}"))
+}
