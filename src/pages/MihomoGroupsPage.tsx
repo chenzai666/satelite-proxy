@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   closeAllConnections,
   getProxyStatus,
   listMihomoProxyGroups,
+  onProxySnapshot,
   selectMihomoProxyGroup,
   setOutboundMode,
 } from "../api";
@@ -66,6 +67,17 @@ export function MihomoGroupsPage({
   const [modeBusy, setModeBusy] = useState(false);
   const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const liveStatusKeyRef = useRef<string | null>(null);
+  const groupRequestRef = useRef(0);
+
+  const statusKey = (status: Awaited<ReturnType<typeof getProxyStatus>>) =>
+    `${status.running ? "running" : "stopped"}:${status.core_type ?? ""}:${status.outbound_mode ?? ""}`;
+
+  const loadLiveGroups = useCallback(async () => {
+    const request = ++groupRequestRef.current;
+    const next = await loadGroupsWithRetry();
+    if (request === groupRequestRef.current) setGroups(next);
+  }, []);
 
   const reload = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -76,23 +88,63 @@ export function MihomoGroupsPage({
         setMode(outbound);
       }
       const active = status.running && status.core_type === "mihomo";
+      liveStatusKeyRef.current = statusKey(status);
       setRunning(active);
       if (!active) {
+        ++groupRequestRef.current;
         setGroups([]);
         return;
       }
-      setGroups(await loadGroupsWithRetry());
+      await loadLiveGroups();
     } catch (reason) {
       if (!quiet) setError(typeof reason === "string" ? reason : String(reason));
     } finally {
       if (!quiet) setLoading(false);
     }
-  }, []);
+  }, [loadLiveGroups]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
-  useVisibleInterval(() => reload(true), running ? 5000 : null);
+
+  // The dashboard and this embedded page are mounted together. Starting the
+  // core updates the shared proxy snapshot, but used to leave this page's
+  // `running=false` state untouched until navigation remounted it. React to
+  // lifecycle/mode/core changes directly so the live Clash API is queried as
+  // soon as Mihomo is ready. The request counter prevents a late response
+  // from an old core session from repainting the current page.
+  useEffect(() => {
+    let disposed = false;
+    const unsubscribe = onProxySnapshot((status) => {
+      if (disposed) return;
+      const key = statusKey(status);
+      if (key === liveStatusKeyRef.current) return;
+      liveStatusKeyRef.current = key;
+
+      const outbound = status.outbound_mode?.toLowerCase();
+      if (outbound === "global" || outbound === "direct" || outbound === "rule") {
+        setMode(outbound);
+      }
+      const active = status.running && status.core_type === "mihomo";
+      setRunning(active);
+      if (!active) {
+        ++groupRequestRef.current;
+        setGroups([]);
+        return;
+      }
+
+      void loadLiveGroups().catch(() => undefined);
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [loadLiveGroups]);
+
+  // Keep a small fallback window for a start that completes between the
+  // initial status request and listener registration. Once running, the
+  // normal five-second live refresh remains in effect.
+  useVisibleInterval(() => reload(true), running ? 5000 : 1000);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
