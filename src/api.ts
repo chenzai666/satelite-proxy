@@ -54,6 +54,7 @@ export function addSubscriptionUrl(
   viaProxy = false,
   autoUpdate = false,
   autoUpdateIntervalMin = 1440,
+  userAgent?: string | null,
 ) {
   return invoke<ImportResult>("add_subscription_url", {
     name,
@@ -61,6 +62,7 @@ export function addSubscriptionUrl(
     viaProxy,
     autoUpdate,
     autoUpdateIntervalMin,
+    userAgent: userAgent ?? null,
   });
 }
 
@@ -125,6 +127,7 @@ export function updateSubscription(input: {
   viaProxy?: boolean | null;
   autoUpdate?: boolean | null;
   autoUpdateIntervalMin?: number | null;
+  userAgent?: string | null;
 }) {
   return invoke<ImportResult>("update_subscription", {
     id: input.id,
@@ -138,6 +141,7 @@ export function updateSubscription(input: {
     viaProxy: input.viaProxy ?? null,
     autoUpdate: input.autoUpdate ?? null,
     autoUpdateIntervalMin: input.autoUpdateIntervalMin ?? null,
+    userAgent: input.userAgent ?? null,
   });
 }
 

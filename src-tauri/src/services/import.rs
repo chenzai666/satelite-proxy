@@ -44,12 +44,12 @@ pub struct SubscriptionProxy {
     pub password: String,
 }
 
-fn subscription_client(proxy: Option<&SubscriptionProxy>) -> AppResult<reqwest::Client> {
+fn subscription_client(proxy: Option<&SubscriptionProxy>, user_agent: &str) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(45))
         .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent(subscription_user_agent());
+        .user_agent(user_agent);
 
     if let Some(proxy) = proxy {
         let proxy_url = format!("http://127.0.0.1:{}", proxy.port);
@@ -71,8 +71,9 @@ fn subscription_client(proxy: Option<&SubscriptionProxy>) -> AppResult<reqwest::
 async fn send_subscription_request(
     url: &str,
     proxy: Option<&SubscriptionProxy>,
+    user_agent: &str,
 ) -> AppResult<reqwest::Response> {
-    subscription_client(proxy)?
+    subscription_client(proxy, user_agent)?
         .get(url)
         .header(reqwest::header::ACCEPT, "*/*")
         .send()
@@ -96,23 +97,24 @@ async fn fetch_subscription_response(
     url: &str,
     via_proxy: bool,
     proxy: Option<&SubscriptionProxy>,
+    user_agent: &str,
 ) -> AppResult<reqwest::Response> {
     if via_proxy {
         let proxy = proxy.ok_or_else(|| {
             AppError::Fetch("代理核心未启动，或当前为自写配置，无法使用订阅专用代理通道".into())
         })?;
-        return send_subscription_request(url, Some(proxy))
+        return send_subscription_request(url, Some(proxy), user_agent)
             .await
             .map_err(|error| AppError::Fetch(format!("经代理下载失败：{error}")));
     }
 
-    let first_error = match send_subscription_request(url, None).await {
+    let first_error = match send_subscription_request(url, None, user_agent).await {
         Ok(response) => return Ok(response),
         Err(error) => error,
     };
 
     tokio::time::sleep(Duration::from_millis(150)).await;
-    let second_error = match send_subscription_request(url, None).await {
+    let second_error = match send_subscription_request(url, None, user_agent).await {
         Ok(response) => return Ok(response),
         Err(error) => error,
     };
@@ -130,7 +132,7 @@ async fn fetch_subscription_response(
             subscription_host(url)
         ),
     );
-    send_subscription_request(url, Some(proxy))
+    send_subscription_request(url, Some(proxy), user_agent)
         .await
         .map_err(|proxy_error| {
             AppError::Fetch(format!(
@@ -147,6 +149,7 @@ pub async fn import_from_url_with_id(
     existing_id: Option<String>,
     via_proxy: bool,
     proxy: Option<SubscriptionProxy>,
+    user_agent: Option<String>,
 ) -> AppResult<ImportOutcome> {
     let url = url.trim().to_string();
     if url.is_empty() {
@@ -158,7 +161,9 @@ pub async fn import_from_url_with_id(
         ));
     }
 
-    let response = fetch_subscription_response(&url, via_proxy, proxy.as_ref()).await?;
+    let custom_ua = user_agent.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let ua = custom_ua.clone().unwrap_or_else(subscription_user_agent);
+    let response = fetch_subscription_response(&url, via_proxy, proxy.as_ref(), &ua).await?;
 
     if !response.status().is_success() {
         return Err(AppError::Fetch(format!(
@@ -204,6 +209,7 @@ pub async fn import_from_url_with_id(
     .await
     .map_err(|error| AppError::Fetch(format!("subscription parse task: {error}")))??;
     outcome.subscription.via_proxy = via_proxy;
+    outcome.subscription.user_agent = custom_ua;
     // Priority: HTTP header > body comment > remark node names
     outcome.subscription.traffic =
         SubscriptionTraffic::merge(traffic, outcome.subscription.traffic);
@@ -1241,6 +1247,7 @@ fn build_outcome(
         auto_update_interval_min: 1440,
         traffic: remark_traffic,
         clash_config,
+        user_agent: None,
     };
 
     // Re-hash node ids on backend identity (server/port/protocol/credentials)

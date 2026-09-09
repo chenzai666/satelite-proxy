@@ -277,6 +277,10 @@ pub struct Subscription {
     /// before, but this preserves the source-specific policy groups/rules.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clash_config: Option<String>,
+    /// Custom User-Agent for URL fetches. Empty/absent falls back to the
+    /// built-in Clash-like default (see `subscription_user_agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 fn default_auto_update_interval_min() -> u32 {
@@ -336,6 +340,9 @@ pub struct SubscriptionDetail {
     pub auto_update_interval_min: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traffic: Option<SubscriptionTraffic>,
+    /// Custom User-Agent for URL fetches (empty = built-in default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
 }
 
 impl Subscription {
@@ -399,6 +406,7 @@ impl Subscription {
             auto_update: self.auto_update,
             auto_update_interval_min: self.auto_update_interval_min.max(1),
             traffic: self.traffic.clone(),
+            user_agent: self.user_agent.clone(),
         };
         match &self.source {
             SubscriptionSource::Url { url } => SubscriptionDetail {
