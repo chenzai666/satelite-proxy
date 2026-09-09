@@ -360,6 +360,7 @@ export function DashboardPage({
       try {
         const report = await detectProxyBypasses();
         if (generation !== bypassProbeGenerationRef.current) return;
+        if (Date.now() < bypassProbeDismissedUntilRef.current) return;
         if (!report.supported || !report.active || report.entries.length === 0) {
           bypassProbeStreakRef.current = 0;
           bypassProbeCandidatesRef.current = new Set();
@@ -441,6 +442,8 @@ export function DashboardPage({
   );
 
   const dismissProxyBypass = useCallback(() => {
+    // Invalidate a probe that may currently be awaiting the backend result.
+    bypassProbeGenerationRef.current += 1;
     bypassProbeDismissedUntilRef.current = Date.now() + PROXY_BYPASS_DISMISS_MS;
     bypassProbeShownAtRef.current = 0;
     bypassProbeEmptyStreakRef.current = 0;
