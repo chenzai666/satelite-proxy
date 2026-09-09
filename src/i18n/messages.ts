@@ -114,9 +114,9 @@ const en = {
   "dashboard.restartAppsAcknowledge": "Got it",
   "dashboard.captureTunHint":
     "Global capture via utun (admin once for service install)",
-  "dashboard.proxyBypassTitle": "Possible system-proxy bypass detected ({n})",
+  "dashboard.proxyBypassTitle": "Possible stalled direct connections ({n})",
   "dashboard.proxyBypassDesc":
-    "These apps opened public TCP connections without going through Satelite. They may not support the Windows system proxy.",
+    "Only the same app-to-target public TCP connection that stays in the connecting state is shown. This is a hint, not proof that the app bypassed the Windows system proxy.",
   "dashboard.proxyBypassEnableTun": "Enable TUN",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
@@ -1033,9 +1033,9 @@ const zh: Record<MessageKey, string> = {
     "只关闭窗口可能仍有后台进程；请从托盘或任务管理器彻底退出后再重新打开。",
   "dashboard.restartAppsAcknowledge": "我知道了",
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
-  "dashboard.proxyBypassTitle": "发现疑似绕过系统代理的程序（{n}）",
+  "dashboard.proxyBypassTitle": "发现疑似未走系统代理且连接未建立（{n}）",
   "dashboard.proxyBypassDesc":
-    "这些程序直接连接公网，可能不支持 Windows 系统代理。需要接管时可开启 TUN。",
+    "仅提示同一程序到同一公网目标持续处于连接建立状态的 TCP 连接；已建立的浏览器后台连接不计入。这只是线索，不代表程序一定绕过了系统代理。",
   "dashboard.proxyBypassEnableTun": "开启 TUN",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":

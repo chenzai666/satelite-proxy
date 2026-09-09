@@ -285,6 +285,7 @@ export function DashboardPage({
   const bypassProbeInFlightRef = useRef(false);
   const bypassProbeGenerationRef = useRef(0);
   const bypassProbeStreakRef = useRef(0);
+  const bypassProbeCandidatesRef = useRef<Set<string>>(new Set());
 
   const pushSpark = useCallback((s: ProxyStatus | null) => {
     setSpark((prev) => {
@@ -313,6 +314,7 @@ export function DashboardPage({
       if (!active) {
         bypassProbeGenerationRef.current += 1;
         bypassProbeStreakRef.current = 0;
+        bypassProbeCandidatesRef.current = new Set();
         setProxyBypass(null);
         return;
       }
@@ -333,14 +335,43 @@ export function DashboardPage({
         if (generation !== bypassProbeGenerationRef.current) return;
         if (!report.supported || !report.active || report.entries.length === 0) {
           bypassProbeStreakRef.current = 0;
+          bypassProbeCandidatesRef.current = new Set();
           setProxyBypass(null);
           return;
         }
-        // Require two consecutive samples so a short-lived browser socket
-        // does not flash a warning during ordinary page loads.
+        // Keep only process/remote pairs that survive across samples. A
+        // browser can have a changing set of ordinary background sockets;
+        // one matching pending target is stronger evidence than two merely
+        // non-empty snapshots.
+        const currentCandidates = new Set(
+          report.entries.map((entry) => `${entry.pid}:${entry.remote}`),
+        );
+        const previousCandidates = bypassProbeCandidatesRef.current;
+        const stableCandidates =
+          previousCandidates.size === 0
+            ? new Set<string>()
+            : new Set(
+                [...currentCandidates].filter((key) =>
+                  previousCandidates.has(key),
+                ),
+              );
+        bypassProbeCandidatesRef.current = currentCandidates;
+        if (stableCandidates.size === 0) {
+          bypassProbeStreakRef.current = 1;
+          setProxyBypass(null);
+          return;
+        }
+
         bypassProbeStreakRef.current += 1;
-        if (bypassProbeStreakRef.current >= 2) {
-          setProxyBypass(report);
+        // Require three samples (about 5 seconds at the normal probe rate)
+        // with the same target still pending before showing the hint.
+        if (bypassProbeStreakRef.current >= 3) {
+          setProxyBypass({
+            ...report,
+            entries: report.entries.filter((entry) =>
+              stableCandidates.has(`${entry.pid}:${entry.remote}`),
+            ),
+          });
         }
       } catch {
         // This is an advisory probe; a failed sample must not interrupt proxy

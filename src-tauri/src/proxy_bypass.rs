@@ -1,10 +1,10 @@
 //! Detect applications that bypass the Windows system proxy.
 //!
-//! This module is deliberately read-only.  It samples the OS TCP table when
-//! the generated proxy is running in system-proxy mode and reports public TCP
-//! connections owned by processes other than Satelite and its cores.  A
-//! process making such a connection may not understand the Windows system
-//! proxy; the UI can then suggest TUN, but this module never enables it.
+//! This module is deliberately read-only. It samples the OS TCP table when
+//! the generated proxy is running in system-proxy mode and reports persistent
+//! public TCP connection attempts owned by processes other than Satelite and
+//! its cores. A process making such an attempt may not understand the Windows
+//! system proxy; the UI can then suggest TUN, but this module never enables it.
 
 use crate::runtime::ProxyStatus;
 use serde::Serialize;
@@ -52,9 +52,19 @@ pub fn empty_report(active: bool) -> ProxyBypassReport {
 }
 
 /// Sample the OS connection table when a system-proxy bypass can matter.
-pub fn detect(status: &ProxyStatus, managed_pids: &[u32]) -> ProxyBypassReport {
+///
+/// `system_proxy_matches` is obtained from the platform's actual proxy
+/// settings, rather than only from Satelite's in-memory state. This prevents
+/// stale state (or another proxy manager) from turning ordinary connections
+/// into false bypass warnings.
+pub fn detect(
+    status: &ProxyStatus,
+    managed_pids: &[u32],
+    system_proxy_matches: bool,
+) -> ProxyBypassReport {
     let active = status.running
         && status.system_proxy
+        && system_proxy_matches
         && !status.tun_enabled
         && status.capture_mode.eq_ignore_ascii_case("system")
         && !status.outbound_mode.eq_ignore_ascii_case("direct")
@@ -92,7 +102,6 @@ mod windows {
     const AF_INET6: u32 = 23;
     const TCP_TABLE_OWNER_PID_ALL: u32 = 5;
     const MIB_TCP_STATE_SYN_SENT: u32 = 3;
-    const MIB_TCP_STATE_ESTAB: u32 = 5;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
     #[repr(C)]
@@ -228,8 +237,21 @@ mod windows {
     fn is_ignored_process(process: &str) -> bool {
         matches!(
             process.to_ascii_lowercase().as_str(),
-            "system" | "system idle process" | "registry" | "memory compression"
+            "system"
+                | "system idle process"
+                | "registry"
+                | "memory compression"
+                // These are OS/developer helper processes whose sockets are
+                // not useful evidence about a user-facing app's proxy path.
+                | "svchost.exe"
+                | "node_repl.exe"
+                | "python.exe"
+                | "pythonw.exe"
         )
+    }
+
+    fn is_web_port(port: u16) -> bool {
+        matches!(port, 80 | 443 | 8080 | 8443)
     }
 
     fn is_public_ipv4(ip: Ipv4Addr) -> bool {
@@ -300,11 +322,16 @@ mod windows {
                     .cast::<Tcp4Row>()
                     .read_unaligned()
             };
-            if !matches!(row.state, MIB_TCP_STATE_SYN_SENT | MIB_TCP_STATE_ESTAB) {
+            // Established sockets are intentionally ignored: browsers and
+            // embedded webviews keep many auxiliary connections open, and an
+            // established public socket alone cannot tell us that the app is
+            // malfunctioning. A pending SYN is actionable evidence for the
+            // updater/download failure this hint is intended to explain.
+            if row.state != MIB_TCP_STATE_SYN_SENT {
                 continue;
             }
             let remote_port = tcp_port(row.remote_port);
-            if remote_port == 0 {
+            if !is_web_port(remote_port) {
                 continue;
             }
             let local = IpAddr::V4(Ipv4Addr::from(row.local_addr.to_ne_bytes()));
@@ -331,11 +358,11 @@ mod windows {
                     .cast::<Tcp6Row>()
                     .read_unaligned()
             };
-            if !matches!(row.state, MIB_TCP_STATE_SYN_SENT | MIB_TCP_STATE_ESTAB) {
+            if row.state != MIB_TCP_STATE_SYN_SENT {
                 continue;
             }
             let remote_port = tcp_port(row.remote_port);
-            if remote_port == 0 {
+            if !is_web_port(remote_port) {
                 continue;
             }
             let local = IpAddr::V6(Ipv6Addr::from(row.local_addr));
@@ -376,6 +403,12 @@ mod windows {
                 .or_insert_with(|| process_info(pid))
                 .clone();
             if is_ignored_process(&process) {
+                continue;
+            }
+            // If Windows denies image-path lookup, the result is only a PID
+            // and cannot be acted on safely from the UI. Do not present that
+            // as a named application bypass.
+            if path.is_none() {
                 continue;
             }
             let remote = format_endpoint(remote_ip, remote_port);
@@ -441,13 +474,17 @@ mod tests {
             core_elevated: false,
             sidecar_running: false,
         };
-        let report = detect(&status, &[]);
+        let report = detect(&status, &[], true);
         assert!(!report.active);
         assert!(report.entries.is_empty());
 
         status.outbound_mode = "rule".into();
         status.tun_enabled = true;
-        let report = detect(&status, &[]);
+        let report = detect(&status, &[], true);
+        assert!(!report.active);
+
+        status.tun_enabled = false;
+        let report = detect(&status, &[], false);
         assert!(!report.active);
     }
 

@@ -6,7 +6,7 @@
 ## 0. 阅读与维护规则（必读）
 
 2026-09-08 分支整合上游 v1.0.23 功能，应用版本继续固定 1.0.21：
-- Windows 下新增代理绕过感知：系统代理开启且 TUN 关闭时，只读采样公网 TCP 连接，排除 Satelite/内核进程后在首页提示疑似不支持系统代理的程序；用户可手动开启 TUN，不自动改系统网络。
+- Windows 下新增代理绕过感知：系统代理开启且 TUN 关闭时，先校验 WinINet 仍指向 Satelite 混合端口，再只读采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核及不可识别的辅助进程，并由 Dashboard 交叉采样后提示疑似未走系统代理的卡住连接；用户可手动开启 TUN，不自动改系统网络。
 - `AppStore.favorite_nodes` 持久化收藏；`toggle_favorite_node` 经 `commands/config.rs`、`lib.rs`、`api.ts` 注册。删除节点/订阅、刷新订阅后清理失效收藏。
 - `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记按原算法匹配。
 - 节点页收藏筛选、右键收藏/单点测速并入原有编辑/删除/分享菜单，卡片角落菜单复用 portal；去除整行单点测速开关，圆点切节点、延迟按钮测速。收藏筛选下批量测速和 Ctrl+A 仅操作可见节点。
@@ -261,7 +261,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.7 系统集成
 
-- proxy_bypass.rs 与 commands/diagnostics.rs 提供 Windows 系统代理绕过感知：只读读取 TCP owner-PID 表，过滤私有/回环/特殊地址与 Satelite 内核进程，供 Dashboard 给出 TUN 建议；不修改系统代理、不自动启用 TUN。
+- proxy_bypass.rs 与 commands/diagnostics.rs 提供 Windows 系统代理绕过感知：先核对真实 WinINet 代理端点，再只读读取 TCP owner-PID 表，仅保留公网 Web 端口的 `SYN_SENT` 连接，过滤私有/回环/特殊地址、辅助进程与 Satelite 内核进程，供 Dashboard 给出 TUN 建议；不修改系统代理、不自动启用 TUN。
 
 - `proxy/windows.rs|macos.rs|stub.rs` — 系统代理设置（注册表 / networksetup），含 owned-proxy 标记与崩溃残留清理（启动时 `cleanup_stale_system_proxy`）。
 - `tray.rs` — 托盘菜单 + 图标状态刷新（8 种托盘图标，`src-tauri/icons/tray/`）。
@@ -287,7 +287,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 6.2 桥接层 ★
 
-- api.ts 新增 detectProxyBypasses，只读调用 Windows 代理绕过探测；Dashboard 在系统代理开启、TUN 关闭且连续两次采样发现公网 TCP 直连时显示提示。
+- api.ts 新增 detectProxyBypasses，只读调用 Windows 代理绕过探测；Dashboard 在系统代理开启、TUN 关闭且同一进程到同一目标连续约 5 秒保持 `SYN_SENT` 时显示提示，已建立的浏览器后台连接不计入。
 
 - `api.ts` — 全部 `invoke()` 封装。要点：
   - `updateSettings` 是 **60ms 批量合并写入器**；
@@ -374,7 +374,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 9. 约定与坑（agent 必读）
 
-新增约定（23）：Windows 系统代理绕过感知是只读建议：detect_proxy_bypasses 只在系统代理运行、TUN 关闭且非直连出站时采样公网 TCP 连接；排除 Satelite/内核 PID 与私有地址，连续采样后 Dashboard 才提示。它不等价于证明某个应用一定绕过代理，也不自动切换 TUN；UDP、已关闭的短连接及使用其他代理链路的进程不会被完整覆盖。
+新增约定（23）：Windows 系统代理绕过感知是只读建议：detect_proxy_bypasses 只在真实 WinINet 指向 Satelite、系统代理运行、TUN 关闭且非直连出站时采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核 PID、辅助进程、不可识别路径与私有地址，Dashboard 还要求同一进程/目标跨样本保持后才提示。它不等价于证明某个应用一定绕过代理，也不自动切换 TUN；已建立连接、UDP/QUIC、已关闭的短连接及使用其他代理链路的进程不会被完整覆盖。
 
 1. **Clash API 客户端禁用 `reqwest::blocking`** — 嵌套 Tokio runtime 会在 Tauri async worker panic；用 `ureq`（`api/clash_api.rs` 文件头有说明）。reqwest 仅用于异步下载内核。
 2. **`resources/bin/**/sing-box*`、`xray*`、`mihomo*`、`*.dat`、`wintun.dll`、`libcronet.dll`、`resources/rule-sets/*.srs`、`mihomo-geodata/` 不入库** — 本地没有属正常，dev 首次运行自动下载。

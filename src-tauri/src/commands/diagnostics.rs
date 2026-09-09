@@ -47,10 +47,11 @@ pub async fn check_exit_ip(state: State<'_, AppState>) -> Result<ExitIpInfo, Str
     probe(status.mixed_port, via_proxy).await
 }
 
-/// Detect public TCP connections that are owned by another process instead
-/// of Satelite's core.  This is a read-only hint for applications that do not
-/// consume the Windows system proxy (for example some updaters and games).
-/// It never changes the capture mode or any OS network setting.
+/// Detect persistent pending public TCP connections that are owned by another
+/// process instead of Satelite's core. This is a read-only hint for
+/// applications that do not consume the Windows system proxy (for example
+/// some updaters and games). It never changes the capture mode or any OS
+/// network setting.
 #[tauri::command(async)]
 pub async fn detect_proxy_bypasses(
     state: State<'_, AppState>,
@@ -61,8 +62,19 @@ pub async fn detect_proxy_bypasses(
 
     let status = state.proxy_status().map_err(|error| error.to_string())?;
     let managed_pids = state.lock_runtime().managed_process_ids();
+    // The runtime flag can be stale when another proxy manager, a script, or
+    // a previous crash changed WinINet after Satelite last updated its state.
+    // Only run the probe when the actual Windows proxy still points at this
+    // instance's mixed port.
+    #[cfg(windows)]
+    let system_proxy_matches = crate::proxy::create_system_proxy()
+        .detect_owned("127.0.0.1", status.mixed_port)
+        .map(|snapshot| snapshot.is_some())
+        .unwrap_or(false);
+    #[cfg(not(windows))]
+    let system_proxy_matches = true;
     tauri::async_runtime::spawn_blocking(move || {
-        crate::proxy_bypass::detect(&status, &managed_pids)
+        crate::proxy_bypass::detect(&status, &managed_pids, system_proxy_matches)
     })
     .await
     .map_err(|error| format!("proxy bypass detection task: {error}"))
