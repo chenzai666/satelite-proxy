@@ -52,6 +52,15 @@ import type {
   SubscriptionView,
 } from "../types";
 
+// The TCP table is a point-in-time view. Keep the advisory detector quiet
+// until the same app/remote pair remains pending for several samples, and do
+// not let a transient empty sample make the banner flicker.
+const PROXY_BYPASS_PROBE_INTERVAL_MS = 1800;
+const PROXY_BYPASS_REQUIRED_SAMPLES = 8;
+const PROXY_BYPASS_CLEAR_SAMPLES = 4;
+const PROXY_BYPASS_MIN_VISIBLE_MS = 20_000;
+const PROXY_BYPASS_DISMISS_MS = 10 * 60_000;
+
 /**
  * Split a config line around (all occurrences of) the filter string and wrap
  * the hits in <mark>. Case-insensitive; the query is always non-empty here.
@@ -286,7 +295,11 @@ export function DashboardPage({
   const bypassProbeInFlightRef = useRef(false);
   const bypassProbeGenerationRef = useRef(0);
   const bypassProbeStreakRef = useRef(0);
+  const bypassProbeEmptyStreakRef = useRef(0);
   const bypassProbeCandidatesRef = useRef<Set<string>>(new Set());
+  const bypassProbeShownAtRef = useRef(0);
+  const bypassProbeDisplayedFingerprintRef = useRef<string | null>(null);
+  const bypassProbeDismissedUntilRef = useRef(0);
 
   const pushSpark = useCallback((s: ProxyStatus | null) => {
     setSpark((prev) => {
@@ -315,16 +328,28 @@ export function DashboardPage({
       if (!active) {
         bypassProbeGenerationRef.current += 1;
         bypassProbeStreakRef.current = 0;
+        bypassProbeEmptyStreakRef.current = 0;
         bypassProbeCandidatesRef.current = new Set();
+        bypassProbeShownAtRef.current = 0;
+        bypassProbeDisplayedFingerprintRef.current = null;
+        bypassProbeDismissedUntilRef.current = 0;
         setProxyBypass(null);
         setProxyBypassExpanded(false);
         return;
       }
 
       const now = Date.now();
+      if (now < bypassProbeDismissedUntilRef.current) return;
+      if (bypassProbeDismissedUntilRef.current > 0) {
+        // The snooze expired. Start a fresh observation window instead of
+        // showing an old candidate immediately.
+        bypassProbeDismissedUntilRef.current = 0;
+        bypassProbeStreakRef.current = 0;
+        bypassProbeCandidatesRef.current = new Set();
+      }
       if (
         bypassProbeInFlightRef.current ||
-        now - bypassProbeAtRef.current < 1600
+        now - bypassProbeAtRef.current < PROXY_BYPASS_PROBE_INTERVAL_MS
       ) {
         return;
       }
@@ -338,10 +363,29 @@ export function DashboardPage({
         if (!report.supported || !report.active || report.entries.length === 0) {
           bypassProbeStreakRef.current = 0;
           bypassProbeCandidatesRef.current = new Set();
-          setProxyBypass(null);
-          setProxyBypassExpanded(false);
+          if (bypassProbeShownAtRef.current === 0) {
+            setProxyBypass(null);
+            setProxyBypassExpanded(false);
+          } else {
+            // Do not make the banner blink because one TCP-table sample was
+            // empty. Clear only after the warning has been visible long
+            // enough and several consecutive samples are empty.
+            bypassProbeEmptyStreakRef.current += 1;
+            if (
+              bypassProbeEmptyStreakRef.current >= PROXY_BYPASS_CLEAR_SAMPLES &&
+              now - bypassProbeShownAtRef.current >=
+                PROXY_BYPASS_MIN_VISIBLE_MS
+            ) {
+              bypassProbeShownAtRef.current = 0;
+              bypassProbeDisplayedFingerprintRef.current = null;
+              bypassProbeEmptyStreakRef.current = 0;
+              setProxyBypass(null);
+              setProxyBypassExpanded(false);
+            }
+          }
           return;
         }
+        bypassProbeEmptyStreakRef.current = 0;
         // Keep only process/remote pairs that survive across samples. A
         // browser can have a changing set of ordinary background sockets;
         // one matching pending target is stronger evidence than two merely
@@ -361,20 +405,30 @@ export function DashboardPage({
         bypassProbeCandidatesRef.current = currentCandidates;
         if (stableCandidates.size === 0) {
           bypassProbeStreakRef.current = 1;
-          setProxyBypass(null);
           return;
         }
 
         bypassProbeStreakRef.current += 1;
-        // Require three samples (about 5 seconds at the normal probe rate)
-        // with the same target still pending before showing the hint.
-        if (bypassProbeStreakRef.current >= 3) {
-          setProxyBypass({
-            ...report,
-            entries: report.entries.filter((entry) =>
-              stableCandidates.has(`${entry.pid}:${entry.remote}`),
-            ),
-          });
+        // Require roughly 15 seconds of the same target remaining in
+        // SYN_SENT. A single failed connection attempt is too weak a signal
+        // to interrupt the user's work.
+        if (bypassProbeStreakRef.current >= PROXY_BYPASS_REQUIRED_SAMPLES) {
+          const entries = report.entries.filter((entry) =>
+            stableCandidates.has(`${entry.pid}:${entry.remote}`),
+          );
+          if (entries.length === 0) return;
+          const fingerprint = entries
+            .map((entry) => `${entry.pid}:${entry.remote}`)
+            .join("|");
+          if (bypassProbeShownAtRef.current === 0) {
+            bypassProbeShownAtRef.current = now;
+          }
+          if (
+            fingerprint !== bypassProbeDisplayedFingerprintRef.current
+          ) {
+            bypassProbeDisplayedFingerprintRef.current = fingerprint;
+            setProxyBypass({ ...report, entries });
+          }
         }
       } catch {
         // This is an advisory probe; a failed sample must not interrupt proxy
@@ -385,6 +439,17 @@ export function DashboardPage({
     },
     [],
   );
+
+  const dismissProxyBypass = useCallback(() => {
+    bypassProbeDismissedUntilRef.current = Date.now() + PROXY_BYPASS_DISMISS_MS;
+    bypassProbeShownAtRef.current = 0;
+    bypassProbeEmptyStreakRef.current = 0;
+    bypassProbeDisplayedFingerprintRef.current = null;
+    bypassProbeStreakRef.current = 0;
+    bypassProbeCandidatesRef.current = new Set();
+    setProxyBypass(null);
+    setProxyBypassExpanded(false);
+  }, []);
 
 /** Display name for a core_type token (menu / version card / preview). */
 function coreDisplayName(kind: string | null | undefined): string {
@@ -1525,11 +1590,20 @@ function coreDisplayName(kind: string | null | undefined): string {
             aria-live="polite"
           >
             <div className="dashboard-proxy-bypass-main">
-              <div className="dashboard-proxy-bypass-title">
-                <span aria-hidden>⚠</span>{" "}
-                {t("dashboard.proxyBypassTitle", {
-                  n: proxyBypass.entries.length,
-                })}
+              <div className="dashboard-proxy-bypass-title-row">
+                <div className="dashboard-proxy-bypass-title">
+                  <span aria-hidden>⚠</span>{" "}
+                  {t("dashboard.proxyBypassTitle", {
+                    n: proxyBypass.entries.length,
+                  })}
+                </div>
+                <button
+                  type="button"
+                  className="dashboard-proxy-bypass-dismiss"
+                  onClick={dismissProxyBypass}
+                >
+                  {t("dashboard.proxyBypassDismiss")}
+                </button>
               </div>
               <p className="dashboard-proxy-bypass-desc">
                 {t("dashboard.proxyBypassDesc")}

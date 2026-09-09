@@ -6422,6 +6422,14 @@ button.check.on {
 
 .dashboard-proxy-bypass-main {
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dashboard-proxy-bypass-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .dashboard-proxy-bypass-title {
@@ -6438,6 +6446,23 @@ button.check.on {
   color: var(--muted);
   font-size: 0.74rem;
   line-height: 1.45;
+}
+
+.dashboard-proxy-bypass-dismiss {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-pill);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.66rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.dashboard-proxy-bypass-dismiss:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
 }
 
 .dashboard-proxy-bypass-list {
@@ -6482,6 +6507,12 @@ button.check.on {
   .dashboard-proxy-bypass {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .dashboard-proxy-bypass-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.35rem;
   }
 
   .dashboard-proxy-bypass-action {

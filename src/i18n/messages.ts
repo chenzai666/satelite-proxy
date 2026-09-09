@@ -116,8 +116,9 @@ const en = {
     "Global capture via utun (admin once for service install)",
   "dashboard.proxyBypassTitle": "Possible stalled direct connections ({n})",
   "dashboard.proxyBypassDesc":
-    "Only the same app-to-target public TCP connection that stays in the connecting state is shown. Even if an app has a routing rule, a socket that never enters Satelite cannot match it. This is a hint, not proof that the app bypassed the Windows system proxy.",
+    "Only the same app-to-target public TCP connection that stays in the connecting state for about 15 seconds is shown. Even if an app has a routing rule, a socket that never enters Satelite cannot match it. This is a hint, not proof that the app bypassed the Windows system proxy.",
   "dashboard.proxyBypassEnableTun": "Enable TUN",
+  "dashboard.proxyBypassDismiss": "Ignore for 10 min",
   "dashboard.proxyBypassCollapse": "Show less",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
@@ -1044,8 +1045,9 @@ const zh: Record<MessageKey, string> = {
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
   "dashboard.proxyBypassTitle": "发现疑似未走系统代理且连接未建立（{n}）",
   "dashboard.proxyBypassDesc":
-    "仅提示同一程序到同一公网目标持续处于连接建立状态的 TCP 连接；已建立的浏览器后台连接不计入。程序即使已有分流规则，若连接没有进入 Satelite 内核，也不会匹配这些规则。这只是线索，不代表程序一定绕过了系统代理。",
+    "仅当同一程序到同一公网目标持续约 15 秒处于连接建立状态时提示；已建立的浏览器后台连接不计入。程序即使已有分流规则，若连接没有进入 Satelite 内核，也不会匹配这些规则。这只是线索，不代表程序一定绕过了系统代理。",
   "dashboard.proxyBypassEnableTun": "开启 TUN",
+  "dashboard.proxyBypassDismiss": "忽略 10 分钟",
   "dashboard.proxyBypassCollapse": "收起",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
