@@ -276,7 +276,7 @@ mod windows {
         true
     }
 
-    fn is_public(ip: IpAddr) -> bool {
+    pub(super) fn is_public(ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(ip) => is_public_ipv4(ip),
             IpAddr::V6(ip) => is_public_ipv6(ip),
