@@ -472,6 +472,14 @@ export interface NetworkDiagnosticsResult {
   issues: DiagnosticIssue[];
 }
 
+/** Result of adding current-user UWP packages to Windows LoopbackExempt. */
+export interface UwpLoopbackResult {
+  packages: number;
+  applied: number;
+  failed: number;
+  error?: string | null;
+}
+
 export interface ProxyBypassEntry {
   pid: number;
   process: string;

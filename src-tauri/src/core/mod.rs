@@ -1,7 +1,7 @@
 mod assets;
 mod download;
 #[cfg(target_os = "windows")]
-mod elevate;
+pub(crate) mod elevate;
 #[cfg(target_os = "windows")]
 mod job;
 pub mod kind;

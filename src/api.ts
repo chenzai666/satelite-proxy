@@ -12,6 +12,7 @@ import type {
   ProxyNode,
   ProxyBypassReport,
   ProxyStatus,
+  UwpLoopbackResult,
   MihomoProxyGroup,
   Rule,
   RuleSet,
@@ -311,6 +312,11 @@ export function getSettings() {
  * Never mutates system settings. */
 export function diagnoseNetwork() {
   return invoke<import("./types").NetworkDiagnosticsResult>("diagnose_network");
+}
+
+/** Add installed Windows UWP/AppContainer packages to LoopbackExempt. */
+export function enableUwpLoopback() {
+  return invoke<UwpLoopbackResult>("enable_uwp_loopback");
 }
 
 /** Probe latency/exit-IP state through the running core when applicable. */

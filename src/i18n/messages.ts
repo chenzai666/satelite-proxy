@@ -116,8 +116,9 @@ const en = {
     "Global capture via utun (admin once for service install)",
   "dashboard.proxyBypassTitle": "Possible stalled direct connections ({n})",
   "dashboard.proxyBypassDesc":
-    "Only the same app-to-target public TCP connection that stays in the connecting state is shown. This is a hint, not proof that the app bypassed the Windows system proxy.",
+    "Only the same app-to-target public TCP connection that stays in the connecting state is shown. Even if an app has a routing rule, a socket that never enters Satelite cannot match it. This is a hint, not proof that the app bypassed the Windows system proxy.",
   "dashboard.proxyBypassEnableTun": "Enable TUN",
+  "dashboard.proxyBypassCollapse": "Show less",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
     "On enable: probe and pick best node. Then passive watch + on-demand probe.",
@@ -313,6 +314,14 @@ const en = {
   "settings.allowLan": "Allow LAN",
   "settings.allowLanDesc":
     "Listen on 0.0.0.0; Windows Firewall must allow sing-box on private networks",
+  "settings.uwpLoopback": "UWP loopback exemption",
+  "settings.uwpLoopbackDesc":
+    "Allow Microsoft Store and other packaged apps to reach the local 127.0.0.1 proxy. Adds all installed current-user AppContainers; it does not change the system proxy. Restart the affected app afterward.",
+  "settings.uwpLoopbackEnable": "Allow UWP loopback",
+  "settings.uwpLoopbackBusy": "Applying…",
+  "settings.uwpLoopbackNone": "No AppContainer packages found",
+  "settings.uwpLoopbackResult":
+    "Processed {applied}/{packages} UWP packages; {failed} failed",
   "settings.editInboundTitle": "Edit inbound port",
   "settings.portLabel": "Port",
   "settings.inboundAddr": "Listen address",
@@ -1035,8 +1044,9 @@ const zh: Record<MessageKey, string> = {
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
   "dashboard.proxyBypassTitle": "发现疑似未走系统代理且连接未建立（{n}）",
   "dashboard.proxyBypassDesc":
-    "仅提示同一程序到同一公网目标持续处于连接建立状态的 TCP 连接；已建立的浏览器后台连接不计入。这只是线索，不代表程序一定绕过了系统代理。",
+    "仅提示同一程序到同一公网目标持续处于连接建立状态的 TCP 连接；已建立的浏览器后台连接不计入。程序即使已有分流规则，若连接没有进入 Satelite 内核，也不会匹配这些规则。这只是线索，不代表程序一定绕过了系统代理。",
   "dashboard.proxyBypassEnableTun": "开启 TUN",
+  "dashboard.proxyBypassCollapse": "收起",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
     "开启时立即探测并切到最佳节点；之后被动观测 + 按需探测",
@@ -1224,6 +1234,14 @@ const zh: Record<MessageKey, string> = {
   "settings.allowLan": "允许局域网连接",
   "settings.allowLanDesc":
     "监听 0.0.0.0；Windows 防火墙需允许 sing-box 的专用网络入站",
+  "settings.uwpLoopback": "解除 UWP 回环限制",
+  "settings.uwpLoopbackDesc":
+    "允许 Microsoft Store 等打包应用访问本机 127.0.0.1 代理。为当前用户已安装的 UWP AppContainer 添加豁免，不修改系统代理；完成后请重启受影响的应用。",
+  "settings.uwpLoopbackEnable": "解除限制",
+  "settings.uwpLoopbackBusy": "处理中…",
+  "settings.uwpLoopbackNone": "未发现 UWP 应用包",
+  "settings.uwpLoopbackResult":
+    "已处理 {applied}/{packages} 个 UWP 包；失败 {failed} 个",
   "settings.editInboundTitle": "编辑端口",
   "settings.portLabel": "端口",
   "settings.inboundAddr": "监听地址",

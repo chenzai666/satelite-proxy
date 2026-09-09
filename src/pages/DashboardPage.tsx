@@ -281,6 +281,7 @@ export function DashboardPage({
   const [proxyBypass, setProxyBypass] = useState<ProxyBypassReport | null>(
     null,
   );
+  const [proxyBypassExpanded, setProxyBypassExpanded] = useState(false);
   const bypassProbeAtRef = useRef(0);
   const bypassProbeInFlightRef = useRef(false);
   const bypassProbeGenerationRef = useRef(0);
@@ -316,6 +317,7 @@ export function DashboardPage({
         bypassProbeStreakRef.current = 0;
         bypassProbeCandidatesRef.current = new Set();
         setProxyBypass(null);
+        setProxyBypassExpanded(false);
         return;
       }
 
@@ -337,6 +339,7 @@ export function DashboardPage({
           bypassProbeStreakRef.current = 0;
           bypassProbeCandidatesRef.current = new Set();
           setProxyBypass(null);
+          setProxyBypassExpanded(false);
           return;
         }
         // Keep only process/remote pairs that survive across samples. A
@@ -1532,7 +1535,10 @@ function coreDisplayName(kind: string | null | undefined): string {
                 {t("dashboard.proxyBypassDesc")}
               </p>
               <div className="dashboard-proxy-bypass-list">
-                {proxyBypass.entries.slice(0, 5).map((entry) => (
+                {(proxyBypassExpanded
+                  ? proxyBypass.entries
+                  : proxyBypass.entries.slice(0, 5)
+                ).map((entry) => (
                   <span
                     className="dashboard-proxy-bypass-item mono"
                     key={entry.pid + "-" + entry.remote}
@@ -1548,9 +1554,16 @@ function coreDisplayName(kind: string | null | undefined): string {
                   </span>
                 ))}
                 {proxyBypass.entries.length > 5 && (
-                  <span className="dashboard-proxy-bypass-more mono">
-                    +{proxyBypass.entries.length - 5}
-                  </span>
+                  <button
+                    type="button"
+                    className="dashboard-proxy-bypass-more mono"
+                    aria-expanded={proxyBypassExpanded}
+                    onClick={() => setProxyBypassExpanded((expanded) => !expanded)}
+                  >
+                    {proxyBypassExpanded
+                      ? t("dashboard.proxyBypassCollapse")
+                      : `+${proxyBypass.entries.length - 5}`}
+                  </button>
                 )}
               </div>
             </div>

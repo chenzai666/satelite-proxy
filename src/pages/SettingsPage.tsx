@@ -7,6 +7,7 @@ import {
   checkCoreUpdate,
   diagnoseNetwork,
   downloadCore,
+  enableUwpLoopback,
   getAppInstallPath,
   getCoreInfo,
   getProxyStatus,
@@ -39,6 +40,7 @@ import type {
   ExtraInbound,
   HeroStyle,
   ThemeId,
+  UwpLoopbackResult,
 } from "../types";
 import { RulesPage } from "./RulesPage";
 import { DnsPage } from "./DnsPage";
@@ -137,6 +139,10 @@ export function SettingsPage() {
   /** Detection-only network diagnostics (e.g. system DNS bypassing TUN).
    * Re-checked whenever TUN transitions off → on; never auto-applied. */
   const [netDiagnostics, setNetDiagnostics] = useState<DiagnosticIssue[]>([]);
+  /** UWP loopback exemption is an explicit, additive Windows operation. */
+  const [uwpLoopbackBusy, setUwpLoopbackBusy] = useState(false);
+  const [uwpLoopbackResult, setUwpLoopbackResult] =
+    useState<UwpLoopbackResult | null>(null);
 
   /** Per-core status (sing-box + Xray + mihomo). */
   const [cores, setCores] = useState<Record<CoreKind, CoreInfo | null>>({
@@ -904,6 +910,19 @@ export function SettingsPage() {
     }
   }
 
+  async function onEnableUwpLoopback() {
+    setUwpLoopbackBusy(true);
+    setUwpLoopbackResult(null);
+    setError(null);
+    try {
+      setUwpLoopbackResult(await enableUwpLoopback());
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
+    } finally {
+      setUwpLoopbackBusy(false);
+    }
+  }
+
   /** Protocols a sidecar core can carry (CoreKind=Xray support surface).
    *  Nodes whose exact transport combo Xray rejects (e.g. REALITY+ws) fall
    *  back to native sing-box outbounds at build time. */
@@ -1537,6 +1556,42 @@ export function SettingsPage() {
                   disabled={busy || (settings?.runtime_source ?? "").startsWith("singbox:")}
                   onChange={setAllowLan}
                 />
+              </div>
+              <div className="via-proxy-row field-span-2 settings-uwp-row">
+                <div>
+                  <div className="sys-proxy-title">
+                    {t("settings.uwpLoopback")}
+                  </div>
+                  <div className="sys-proxy-desc">
+                    {t("settings.uwpLoopbackDesc")}
+                  </div>
+                  {uwpLoopbackResult && (
+                    <div
+                      className={`field-hint ${uwpLoopbackResult.failed > 0 ? "sidecar-warn" : ""}`}
+                    >
+                      {uwpLoopbackResult.packages === 0
+                        ? t("settings.uwpLoopbackNone")
+                        : t("settings.uwpLoopbackResult", {
+                            applied: uwpLoopbackResult.applied,
+                            packages: uwpLoopbackResult.packages,
+                            failed: uwpLoopbackResult.failed,
+                          })}
+                      {uwpLoopbackResult.error
+                        ? ` · ${uwpLoopbackResult.error}`
+                        : ""}
+                    </div>
+                  )}
+                </div>
+                <GlassButton
+                  icon="▣"
+                  disabled={busy || uwpLoopbackBusy}
+                  onClick={() => void onEnableUwpLoopback()}
+                  title={t("settings.uwpLoopback")}
+                >
+                  {uwpLoopbackBusy
+                    ? t("settings.uwpLoopbackBusy")
+                    : t("settings.uwpLoopbackEnable")}
+                </GlassButton>
               </div>
               <label className="field field-span-2">
                 <span>{t("settings.probeUrl")}</span>

@@ -24,6 +24,18 @@ mod storage;
 mod subscription;
 mod subscription_auto;
 mod tray;
+#[cfg(target_os = "windows")]
+pub(crate) mod uwp_loopback;
+#[cfg(not(target_os = "windows"))]
+pub(crate) mod uwp_loopback {
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct UwpLoopbackResult {
+        pub packages: usize,
+        pub applied: usize,
+        pub failed: usize,
+        pub error: Option<String>,
+    }
+}
 mod url_scheme;
 mod window_ctrl;
 
@@ -103,6 +115,10 @@ pub async fn download_core_to(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if let Some(code) = uwp_loopback::try_run_helper() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "windows")]
     if let Some(code) = core::manager::try_run_elevated_log_helper() {
         std::process::exit(code);
@@ -415,6 +431,7 @@ pub fn run() {
             commands::diagnose_network,
             commands::check_exit_ip,
             commands::detect_proxy_bypasses,
+            commands::enable_uwp_loopback,
             commands::regenerate_api_secret,
             commands::set_current_node,
             commands::rename_node,

@@ -29,6 +29,8 @@ type LPCWSTR = *const u16;
 const SEE_MASK_NOCLOSEPROCESS: DWORD = 0x0000_0040;
 const SW_HIDE: i32 = 0;
 const STILL_ACTIVE: DWORD = 259;
+const WAIT_OBJECT_0: DWORD = 0;
+const WAIT_TIMEOUT: DWORD = 258;
 const SYNCHRONIZE: DWORD = 0x0010_0000;
 const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
 
@@ -65,6 +67,7 @@ extern "system" {
     fn GetExitCodeProcess(hProcess: HANDLE, lpExitCode: *mut DWORD) -> BOOL;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
     fn GetProcessId(Process: HANDLE) -> DWORD;
+    fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) -> DWORD;
     fn OpenProcess(dwDesiredAccess: DWORD, bInheritHandle: BOOL, dwProcessId: DWORD) -> HANDLE;
     fn TerminateProcess(hProcess: HANDLE, uExitCode: u32) -> BOOL;
 }
@@ -101,6 +104,23 @@ pub fn run_elevated(
     args: &str,
     working_dir: Option<&Path>,
 ) -> AppResult<ElevatedChild> {
+    run_elevated_with_cancel_message(
+        binary,
+        args,
+        working_dir,
+        "已取消管理员授权。TUN 模式需要管理员权限以创建虚拟网卡。",
+    )
+}
+
+/// Launch an elevated child with a caller-specific UAC cancellation message.
+/// The same elevation path is used for TUN and small Windows helpers so the
+/// helper can reuse the app's existing UAC/error handling without a console.
+pub fn run_elevated_with_cancel_message(
+    binary: &Path,
+    args: &str,
+    working_dir: Option<&Path>,
+    cancel_message: &str,
+) -> AppResult<ElevatedChild> {
     let verb = wide("runas");
     let file = wide(&binary.to_string_lossy());
     let params = wide(args);
@@ -130,7 +150,7 @@ pub fn run_elevated(
         // ERROR_CANCELLED (1223) = user clicked No on the UAC prompt.
         let cancelled = err.raw_os_error() == Some(1223);
         let msg = if cancelled {
-            "已取消管理员授权。TUN 模式需要管理员权限以创建虚拟网卡。".to_string()
+            cancel_message.to_string()
         } else {
             format!("请求管理员权限失败 (UAC): {err}")
         };
@@ -147,6 +167,28 @@ pub fn run_elevated(
         handle: info.hProcess,
         pid,
     })
+}
+
+impl ElevatedChild {
+    /// Wait for the elevated helper and return its exit code.  The wait runs
+    /// on the Tauri blocking worker, never on the webview thread.
+    pub fn wait_for_exit(&self, timeout_ms: u32) -> AppResult<u32> {
+        let result = unsafe { WaitForSingleObject(self.handle, timeout_ms) };
+        if result == WAIT_TIMEOUT {
+            return Err(AppError::Core("等待 Windows UWP 回环助手超时".into()));
+        }
+        if result != WAIT_OBJECT_0 {
+            return Err(AppError::Core(format!(
+                "等待 Windows UWP 回环助手失败（错误码 {result}）"
+            )));
+        }
+        let mut exit_code = 1;
+        let ok = unsafe { GetExitCodeProcess(self.handle, &mut exit_code) };
+        if ok == 0 {
+            return Err(AppError::Core("读取 Windows UWP 回环助手退出码失败".into()));
+        }
+        Ok(exit_code)
+    }
 }
 
 /// Poll whether a process PID is still running (Windows).

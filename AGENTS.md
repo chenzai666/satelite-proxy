@@ -1,12 +1,13 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-09-09（应用版本为 1.0.21，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托、端口就绪验证、异常内核恢复，以及 Windows 系统代理绕过感知）。
+最后核对：2026-09-09（应用版本为 1.0.21，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托、端口就绪验证、异常内核恢复、Windows 系统代理绕过感知，以及 UWP 回环兼容）。
 
 ## 0. 阅读与维护规则（必读）
 
 2026-09-08 分支整合上游 v1.0.23 功能，应用版本继续固定 1.0.21：
 - Windows 下新增代理绕过感知：系统代理开启且 TUN 关闭时，先校验 WinINet 仍指向 Satelite 混合端口，再只读采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核及不可识别的辅助进程，并由 Dashboard 交叉采样后提示疑似未走系统代理的卡住连接；用户可手动开启 TUN，不自动改系统网络。
+- Windows 设置 → 端口提供“解除 UWP 回环限制”：经现有 UAC 提权链调用系统 `CheckNetIsolation.exe`，为当前用户已安装的 AppContainer 包追加 `LoopbackExempt`；操作幂等、只追加、不改系统代理、不清空既有豁免。
 - `AppStore.favorite_nodes` 持久化收藏；`toggle_favorite_node` 经 `commands/config.rs`、`lib.rs`、`api.ts` 注册。删除节点/订阅、刷新订阅后清理失效收藏。
 - `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记按原算法匹配。
 - 节点页收藏筛选、右键收藏/单点测速并入原有编辑/删除/分享菜单，卡片角落菜单复用 portal；去除整行单点测速开关，圆点切节点、延迟按钮测速。收藏筛选下批量测速和 Ctrl+A 仅操作可见节点。
@@ -138,6 +139,7 @@ satelite-proxy/
 │   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 三内核描述）、manager/download/assets/paths/提权/Job Object
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
 │   ├── src/proxy_bypass.rs  # Windows 系统代理绕过感知（只读 TCP 表 + 进程信息）
+│   ├── src/uwp_loopback.rs  # Windows UWP/AppContainer 回环豁免（CheckNetIsolation + UAC helper）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
 │   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
 │   ├── src/subscription/    # 订阅解析（clash/singbox/uri/manual）
@@ -178,7 +180,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.1 入口与生命周期
 
-- `lib.rs` — `run()`：插件注册（opener/dialog/deep-link/single-instance）→ setup（加载 store 失败则弹窗退出）→ 托盘 → 启动 6 个后台任务 → 深链处理 → 静默启动/自动代理恢复。**全部 ~80 个 command 在 `lib.rs:348-431` 注册**，实现在 `commands/*.rs`（`commands/mod.rs` re-export）。
+- `lib.rs` — `run()`：插件注册（opener/dialog/deep-link/single-instance）→ setup（加载 store 失败则弹窗退出）→ 托盘 → 启动 6 个后台任务 → 深链处理 → 静默启动/自动代理恢复；Windows 在 Tauri 初始化前还处理内核提权 helper 与 UWP 回环 helper。**全部 ~80 个 command 在 `lib.rs:348-431` 注册**，实现在 `commands/*.rs`（`commands/mod.rs` re-export）。
 - 后台任务（均在 setup 中 spawn）：
   - `conn_journal.rs` — 轮询/WS 订阅 Clash 连接快照（UI 可见时 100ms，托盘时降频），维护活跃+历史连接环形日志
   - `subscription_auto.rs` — 按 `auto_update` 间隔定时刷新订阅（默认 1440 分钟）
@@ -262,6 +264,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 ### 5.7 系统集成
 
 - proxy_bypass.rs 与 commands/diagnostics.rs 提供 Windows 系统代理绕过感知：先核对真实 WinINet 代理端点，再只读读取 TCP owner-PID 表，仅保留公网 Web 端口的 `SYN_SENT` 连接，过滤私有/回环/特殊地址、辅助进程与 Satelite 内核进程，供 Dashboard 给出 TUN 建议；不修改系统代理、不自动启用 TUN。
+- `uwp_loopback.rs` 与 commands/proxy.rs 提供 Windows UWP 回环兼容：列举当前用户 AppContainer 映射中的包 SID，经一次 UAC 提权启动同一 exe helper，逐个调用 `CheckNetIsolation.exe LoopbackExempt -a -p=<SID>`；结果回传设置页，已有豁免不会被清除。
 
 - `proxy/windows.rs|macos.rs|stub.rs` — 系统代理设置（注册表 / networksetup），含 owned-proxy 标记与崩溃残留清理（启动时 `cleanup_stale_system_proxy`）。
 - `tray.rs` — 托盘菜单 + 图标状态刷新（8 种托盘图标，`src-tauri/icons/tray/`）。
@@ -273,7 +276,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.8 commands/ 分层（前端 invoke 的直接实现）
 
-`config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发三生成器，mihomo 返回 YAML 文本；节点列表按 `CoreKind::supports_node` 过滤）、`core.rs`（启停/重启/capture_mode/三内核下载更新/`set_core_type` 切内核/`refresh_geodata` 带 kind 参数——xray 刷 Loyalsoldier .dat、mihomo 刷 MetaCubeX mmdb/GeoSite.dat）、`chain.rs`（节点池/代理链 CRUD、链路诊断）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts+诊断）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
+`config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发三生成器，mihomo 返回 YAML 文本；节点列表按 `CoreKind::supports_node` 过滤）、`core.rs`（启停/重启/capture_mode/三内核下载更新/`set_core_type` 切内核/`refresh_geodata` 带 kind 参数——xray 刷 Loyalsoldier .dat、mihomo 刷 MetaCubeX mmdb/GeoSite.dat）、`chain.rs`（节点池/代理链 CRUD、链路诊断）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts+诊断）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN/UWP 回环）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 `config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发三生成器，mihomo 返回 YAML 文本；节点列表按 `CoreKind::supports_node` 过滤）、`core.rs`（启停/重启/capture_mode/三内核下载更新/`set_core_type` 切内核/`refresh_geodata` 带 kind 参数——xray 刷 Loyalsoldier .dat、mihomo 刷 MetaCubeX mmdb/GeoSite.dat）、`chain.rs`（节点池/链路 CRUD + `list_chain_usage` 规则集引用计数 + `diagnose_chain` 逐跳诊断（单跳/链前缀探测，仅 sing-box、经 Clash delay API），编辑走防抖重启同 rules）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts 设置 CRUD、`diagnose_dns` 内核级 DNS 诊断→services/dns_diag）、`latency.rs`、`logs.rs`（`list/clear_app_logs` + `get_core_log_tail(limit, kind)`——按 kind 读对应内核的 `logs/<prefix>-<hour>.log`，多核模式主核/副进程分开，`Runtime::core_log_tail_for`）、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 
 ## 6. 前端模块详解（src/）
@@ -287,7 +290,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 6.2 桥接层 ★
 
-- api.ts 新增 detectProxyBypasses，只读调用 Windows 代理绕过探测；Dashboard 在系统代理开启、TUN 关闭且同一进程到同一目标连续约 5 秒保持 `SYN_SENT` 时显示提示，已建立的浏览器后台连接不计入。
+- api.ts 新增 detectProxyBypasses（只读绕过探测）和 enableUwpLoopback（Windows UWP 回环豁免）；Dashboard 在系统代理开启、TUN 关闭且同一进程到同一目标连续约 5 秒保持 `SYN_SENT` 时显示提示，已建立的浏览器后台连接不计入。
 
 - `api.ts` — 全部 `invoke()` 封装。要点：
   - `updateSettings` 是 **60ms 批量合并写入器**；
@@ -347,6 +350,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 |---|---|
 | 新增设置项 | `domain/settings.rs`（`AppSettings`）→ `storage/store.rs`（迁移如需）→ `config/builder.rs` **和/或 `config/xray.rs` / `config/mihomo.rs`**（生成如需，多内核都要考虑）→ `src/types.ts`（`AppSettings`）→ 页面 UI + `i18n/messages.ts` 双语 |
 | 新增 command | `src-tauri/src/commands/<域>.rs` → `commands/mod.rs` re-export → `lib.rs` `generate_handler![]` 注册 → `src/api.ts` 加封装 |
+| 修 UWP/微软商店无法访问本机代理 | `commands/proxy.rs::enable_uwp_loopback` + `uwp_loopback.rs`（一次 UAC、逐包 `CheckNetIsolation LoopbackExempt`）；只追加当前用户豁免，不清空、不自动改系统代理 |
 | 新增订阅格式/协议解析 | `src-tauri/src/subscription/`（clash/singbox/uri/manual）+ `domain/node.rs`（新协议记得看 `Protocol::xray_supported`/`mihomo_supported` 与 `supports_node`） |
 | 改 sing-box 配置生成 | `config/builder.rs`（路由/inbound/outbound）、`config/dns_build.rs`（DNS） |
 | 改 Xray 配置生成 | `config/xray.rs`（改动后用 `xray run -test -c` 手工验证，失败退出码 23；副进程配置 `build_xray_sidecar_config` 有专属 live 测试） |
@@ -375,6 +379,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 ## 9. 约定与坑（agent 必读）
 
 新增约定（23）：Windows 系统代理绕过感知是只读建议：detect_proxy_bypasses 只在真实 WinINet 指向 Satelite、系统代理运行、TUN 关闭且非直连出站时采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核 PID、辅助进程、不可识别路径与私有地址，Dashboard 还要求同一进程/目标跨样本保持后才提示。它不等价于证明某个应用一定绕过代理，也不自动切换 TUN；已建立连接、UDP/QUIC、已关闭的短连接及使用其他代理链路的进程不会被完整覆盖。
+
+新增约定（24）：Windows UWP 回环操作是显式的设置页动作，不绑定系统代理开关。`enable_uwp_loopback` 仅枚举当前用户 AppContainer 映射并追加 `LoopbackExempt`，通过 UAC 启动的同 exe helper 在 Tauri 初始化前执行；不可改成清空豁免，也不要把它误认为分流规则或 TUN。
 
 1. **Clash API 客户端禁用 `reqwest::blocking`** — 嵌套 Tokio runtime 会在 Tauri async worker panic；用 `ureq`（`api/clash_api.rs` 文件头有说明）。reqwest 仅用于异步下载内核。
 2. **`resources/bin/**/sing-box*`、`xray*`、`mihomo*`、`*.dat`、`wintun.dll`、`libcronet.dll`、`resources/rule-sets/*.srs`、`mihomo-geodata/` 不入库** — 本地没有属正常，dev 首次运行自动下载。

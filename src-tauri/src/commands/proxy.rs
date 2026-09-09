@@ -57,6 +57,44 @@ pub async fn set_system_proxy(app: AppHandle, enabled: bool) -> Result<ProxyStat
     result
 }
 
+/// Add the current user's installed UWP/AppContainer packages to Windows'
+/// loopback exemption list.  This is the same compatibility step exposed by
+/// v2rayN for Microsoft Store applications; it does not change proxy routing.
+#[tauri::command]
+pub async fn enable_uwp_loopback(
+    state: State<'_, AppState>,
+) -> Result<crate::uwp_loopback::UwpLoopbackResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // AppState already uses portable::resolve_app_data_dir, so the
+        // helper result also lands in the correct installed/portable data
+        // root rather than accidentally escaping to %LOCALAPPDATA%.
+        let app_data_dir = state.app_data_dir.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            crate::uwp_loopback::enable(&app_data_dir).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("UWP loopback task: {error}"))?;
+        match &result {
+            Ok(summary) => crate::app_log::info(
+                "system_proxy",
+                format!(
+                    "UWP loopback exemptions processed: {}/{} applied, {} failed",
+                    summary.applied, summary.packages, summary.failed
+                ),
+            ),
+            Err(error) => crate::app_log::error("system_proxy", error.clone()),
+        }
+        return result;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = state;
+        Err("UWP 回环豁免仅支持 Windows".into())
+    }
+}
+
 /// Enable/disable TUN. Persists setting; restarts core if currently running so config applies.
 #[tauri::command]
 pub async fn set_tun_enabled(app: AppHandle, enabled: bool) -> Result<ProxyStatus, String> {

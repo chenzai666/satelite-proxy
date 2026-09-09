@@ -3018,6 +3018,19 @@ button.node-card:disabled,
   padding-top: 0.75rem;
 }
 
+.settings-uwp-row {
+  align-items: flex-start;
+}
+
+.settings-uwp-row > div:first-child {
+  min-width: 0;
+}
+
+.settings-uwp-row .glass-btn {
+  flex-shrink: 0;
+  margin-top: 0.05rem;
+}
+
 .sys-proxy-title {
   font-weight: 500;
   font-size: 0.82rem;
@@ -6451,6 +6464,13 @@ button.check.on {
 
 .dashboard-proxy-bypass-more {
   color: var(--danger);
+  cursor: pointer;
+  font: inherit;
+  background: transparent;
+}
+
+.dashboard-proxy-bypass-more:hover {
+  background: var(--danger-bg);
 }
 
 .dashboard-proxy-bypass-action {
