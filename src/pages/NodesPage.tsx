@@ -20,6 +20,7 @@ import { NodeContextMenu, type NodeContextMenuState } from "../components/NodeCo
 import { NodeShareModal } from "../components/NodeShareModal";
 import { GlassSwitch } from "../components/GlassSwitch";
 import { ErrorModal } from "../components/ErrorModal";
+import { NodeDetailModal } from "../components/NodeDetailModal";
 import { useI18n } from "../i18n";
 import { groupNodes, type GroupBy } from "../nodeGroups";
 import { GlassSeg } from "../components/GlassSeg";
@@ -137,6 +138,7 @@ export function NodesPage() {
   const [showFavoritesOnly, setShowFavoritesOnly] = useState<boolean>(
     () => localStorage.getItem("nodes.favoritesOnly") === "1",
   );
+  const [detailNode, setDetailNode] = useState<ProxyNode | null>(null);
 
   const [customRuntime, setCustomRuntime] = useState(false);
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
@@ -1078,6 +1080,7 @@ export function NodesPage() {
         </div>
       )}
       <NodeContextMenu
+        onDetails={setDetailNode}
         onFavorite={(node) => void toggleFavorite(node.id)}
         onTest={(node, kind) => void onTestNodes([node.id], kind)}
         state={contextMenu}
@@ -1096,6 +1099,10 @@ export function NodesPage() {
         onClose={() => setEditNode(null)}
         onNodesChanged={() => void reload()}
       />
+
+      {detailNode && (
+        <NodeDetailModal node={detailNode} onClose={() => setDetailNode(null)} />
+      )}
     </div>
   );
 }
