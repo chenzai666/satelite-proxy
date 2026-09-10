@@ -12,6 +12,7 @@ pub mod macos_net;
 pub mod manager;
 mod memory;
 mod paths;
+pub mod system_proxy;
 
 pub use assets::ensure_geodata;
 #[cfg(target_os = "windows")]

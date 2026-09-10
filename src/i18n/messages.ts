@@ -336,6 +336,7 @@ const en = {
   "settings.coreStableShort": "stable",
   "settings.corePreviewShort": "preview",
   "settings.coreCheck": "Check for updates",
+  "settings.coreInstalledAt": "installed",
   "settings.coreChecking": "Checking…",
   "settings.coreDownload": "Download to app data",
   "settings.coreUpdate": "Update core",
@@ -1260,8 +1261,9 @@ const zh: Record<MessageKey, string> = {
   "settings.coreChecking": "检测中…",
   "settings.coreDownload": "下载到数据目录",
   "settings.coreUpdate": "更新内核",
+  "settings.coreInstalledAt": "安装于",
   "settings.coreRedownload": "重新下载",
-  "settings.coreRestore": "恢复出厂",
+  "settings.coreRestore": "重置",
   "settings.coreRestoreHint":
     "删除已下载的内核，改用内置出厂版本（{v}）。内核运行中会自动重启。",
   "settings.coreRestoreConfirm":

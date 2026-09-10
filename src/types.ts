@@ -435,6 +435,8 @@ export interface CoreInfo {
   bundled_version?: string | null;
   /** Fixed factory version used when this install does not bundle the core. */
   factory_version?: string | null;
+  /** Unix seconds, from the installed binary's mtime — "last installed". */
+  installed_at?: number | null;
 }
 
 export interface CoreDownloadResult {
