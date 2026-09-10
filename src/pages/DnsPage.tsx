@@ -42,6 +42,9 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
   const [diagReport, setDiagReport] = useState<DnsDiagReport | null>(null);
   const [testBusy, setTestBusy] = useState(false);
   const [bypassText, setBypassText] = useState("");
+  const [remoteOpen, setRemoteOpen] = useState(false);
+  const [remoteText, setRemoteText] = useState("");
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -77,6 +80,22 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
   function patch(partial: Partial<DnsSettings>) {
     if (!dns) return;
     void save({ ...dns, ...partial });
+  }
+
+  function openRemoteModal() {
+    if (!dns) return;
+    setRemoteText((dns.remote_dns || []).join("\n"));
+    setRemoteError(null);
+    setRemoteOpen(true);
+  }
+  async function saveRemoteModal() {
+    if (!dns) return;
+    const entries = [...new Set(remoteText.split(/[\n,]/).map(s => s.trim()).filter(Boolean))];
+    if (entries.length > 8) { setRemoteError(t("dns.remoteDnsMax")); return; }
+    const invalid = entries.find(s => !s.startsWith("https://"));
+    if (invalid) { setRemoteError(t("dns.remoteDnsInvalid", { v: invalid })); return; }
+    await save({ ...dns, remote_dns: entries });
+    setRemoteOpen(false);
   }
 
   function saveFakeIp() {
@@ -178,6 +197,9 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
               </SettingRow>
             </div>
 
+            <SettingRow title={t("dns.remoteDns")} desc={t("dns.remoteDnsDesc")}>
+              <GlassButton disabled={busy} onClick={openRemoteModal}>{t("dns.remoteDnsOptions")}</GlassButton>
+            </SettingRow>
             <div className="dns-general-toggles">
               <SettingRow title={t("dns.cache")} desc={t("dns.cacheDesc")}>
                 <GlassSwitchControl
@@ -345,6 +367,58 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
             )}
           </div>
         </section>
+        {remoteOpen && (
+          <div className="modal-backdrop" onClick={() => setRemoteOpen(false)}>
+            <div
+              className="modal dns-fakeip-modal"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="modal-header">
+                <h2>{t("dns.remoteDnsOptions")}</h2>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => setRemoteOpen(false)}
+                >
+                  ×
+                </button>
+              </header>
+              <div className="modal-body">
+                <label className="field dns-field">
+                  <span>{t("dns.remoteDns")}</span>
+                  <textarea
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    rows={4}
+                    value={remoteText}
+                    onChange={(e) => {
+                      setRemoteText(e.target.value);
+                      setRemoteError(null);
+                    }}
+                    placeholder={"https://9.9.9.9/dns-query\nhttps://94.140.14.14/dns-query"}
+                  />
+                </label>
+                <p className="dns-remote-hint">{t("dns.remoteDnsHint")}</p>
+                {remoteError && (
+                  <p className="dns-remote-error">{remoteError}</p>
+                )}
+                <div className="dns-fakeip-modal-actions">
+                  <GlassButton disabled={busy} onClick={() => setRemoteOpen(false)}>
+                    {t("common.cancel")}
+                  </GlassButton>
+                  <GlassButton
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => void saveRemoteModal()}
+                  >
+                    {t("common.save")}
+                  </GlassButton>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

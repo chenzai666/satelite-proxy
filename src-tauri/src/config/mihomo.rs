@@ -1224,13 +1224,14 @@ fn build_dns(opts: &BuildOptions, sets: &[RuleSet]) -> Mapping {
     // (plain UDP, always direct), which breaks the loop. Direct outbound
     // mode is the one exception — everything egresses direct there, DNS
     // included.
+    let effective_remote = opts.dns.effective_remote_pool();
     let remote_pool: Vec<String> = match opts.outbound_mode {
-        OutboundMode::Direct => REMOTE_DNS_POOL.iter().map(|s| (*s).to_string()).collect(),
-        OutboundMode::Global => REMOTE_DNS_POOL
+        OutboundMode::Direct => effective_remote.clone(),
+        OutboundMode::Global => effective_remote
             .iter()
             .map(|s| format!("{s}#{GLOBAL_GROUP}"))
             .collect(),
-        OutboundMode::Rule => REMOTE_DNS_POOL
+        OutboundMode::Rule => effective_remote
             .iter()
             .map(|s| format!("{s}#{MAIN_GROUP}"))
             .collect(),
@@ -2480,6 +2481,30 @@ rules:
         let nameserver = direct["dns"]["nameserver"].as_sequence().unwrap();
         assert_eq!(nameserver[0].as_str(), Some("https://1.1.1.1/dns-query"));
         assert_eq!(nameserver[1].as_str(), Some("https://8.8.8.8/dns-query"));
+    }
+
+    /// A user-configured remote pool replaces the built-in addresses and
+    /// keeps the per-entry proxy-egress fragment (whole pool races).
+    #[test]
+    fn custom_remote_dns_pool_overrides_builtin() {
+        let node = vless_node("n1", None);
+        let mut opts = default_opts();
+        opts.dns.remote_dns = vec![
+            "https://9.9.9.9/dns-query".into(),
+            "https://94.140.14.14/dns-query".into(),
+        ];
+        let built = build_mihomo_config(&[node], &opts).expect("build");
+        let dns = &parse(&built)["dns"];
+        let nameserver = dns["nameserver"].as_sequence().unwrap();
+        assert_eq!(nameserver.len(), 2);
+        assert_eq!(
+            nameserver[0].as_str(),
+            Some("https://9.9.9.9/dns-query#proxy")
+        );
+        assert_eq!(
+            nameserver[1].as_str(),
+            Some("https://94.140.14.14/dns-query#proxy")
+        );
     }
 
     /// mihomo supports the `system` resolver natively —

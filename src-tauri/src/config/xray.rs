@@ -1197,7 +1197,7 @@ fn build_dns(
 
     // Remote resolver (untagged → queries carry dns.tag and route via proxy).
     let mut remote = Map::new();
-    remote.insert("address".into(), json!("1.1.1.1"));
+    remote.insert("address".into(), json!(opts.dns.effective_remote_pool()[0]));
     if !remote_domains.is_empty() {
         remote.insert("domains".into(), json!(remote_domains));
     }
@@ -1631,8 +1631,8 @@ fn stream_settings(node: &ProxyNode) -> Option<Value> {
 mod tests {
     use super::*;
     use crate::domain::{
-        DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType, TlsConfig,
-        Transport,
+        DnsSettings, OutboundMode, Protocol, ProtocolConfig, ProxyNode, Rule, RuleType,
+        REMOTE_DNS_POOL, TlsConfig, Transport,
     };
 
     fn vless_node(name: &str, flow: Option<&str>) -> ProxyNode {

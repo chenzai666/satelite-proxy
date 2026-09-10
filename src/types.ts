@@ -70,6 +70,8 @@ export interface DnsSettings {
   leak_protect: boolean;
   /** Default resolver for domains unmatched by a rule set. */
   dns_final: DnsFinalStrategy;
+  /** User-configured remote DoH pool (proxy-egressed). Empty = built-in. */
+  remote_dns: string[];
 }
 
 export interface DnsTestResult {

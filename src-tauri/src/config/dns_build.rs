@@ -63,7 +63,35 @@ fn dns_final_tag(dns_final: &str) -> &'static str {
     }
 }
 
-/// Hard-coded sing-box server definitions (local + Ali + Tencent + Cloudflare).
+/// Split a DoH pool URL into `(host, port, path)`. sing-box's https server
+/// takes discrete `server` / `server_port` / `path` fields, so pool URLs
+/// (the built-in IP-literal entries and user-configured ones with domains,
+/// ports and custom paths alike) must be decomposed. Port/path are returned
+/// only when the URL carries them; the default path (`/dns-query`) is
+/// normalized away to keep the built-in pool's output unchanged.
+fn doh_parts(url: &str) -> (&str, Option<u16>, Option<String>) {
+    let rest = url.strip_prefix("https://").unwrap_or(url);
+    let (authority, path) = match rest.split_once('/') {
+        Some((a, p)) => (a, Some(format!("/{p}"))),
+        None => (rest, None),
+    };
+    // `[ipv6]:port` keeps the bracketed host; `host:port` splits when the
+    // tail is all digits.
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
+            (h, p.parse().ok())
+        }
+        _ => (authority, None),
+    };
+    // Default path → emit nothing (matches the built-in pool's output).
+    let path = match path {
+        Some(p) if p != "/dns-query" => Some(p),
+        _ => None,
+    };
+    (host, port, path)
+}
+
+/// sing-box server definitions (local + the shared pools).
 ///
 /// Note: only IP-literal server addresses are used here. Domain-name addresses
 /// (e.g. `dns.google`) would require a `domain_resolver`, creating a bootstrap
@@ -73,12 +101,28 @@ fn dns_final_tag(dns_final: &str) -> &'static str {
 /// 1.1.1.1 are commonly blocked on direct connections, and with TUN +
 /// hijack-dns every system query funnels into this server — a dead direct
 /// DoH therefore takes down name resolution for the whole machine.
-fn builtin_servers(fake_ip: &FakeIpConfig) -> Vec<Value> {
+/// Domain-based user endpoints resolve through `route.default_domain_resolver`
+/// (sing-box's implicit bootstrap for https servers without `domain_resolver`).
+fn builtin_servers(settings: &DnsSettings, fake_ip: &FakeIpConfig) -> Vec<Value> {
+    let remote = settings.effective_remote_pool();
+    let (remote_host, remote_port, remote_path) = doh_parts(remote.first().map(String::as_str).unwrap_or(""));
+    let mut dns_remote = json!({
+        "type": "https",
+        "tag": TAG_REMOTE,
+        "server": remote_host,
+        "detour": "proxy"
+    });
+    if let Some(port) = remote_port {
+        dns_remote["server_port"] = json!(port);
+    }
+    if let Some(path) = remote_path {
+        dns_remote["path"] = json!(path);
+    }
     let mut servers = vec![
         json!({ "type": "local", "tag": TAG_LOCAL }),
         json!({ "type": "udp", "tag": TAG_CN, "server": "223.5.5.5" }),
         json!({ "type": "udp", "tag": "dns-cn-tencent", "server": "119.29.29.29" }),
-        json!({ "type": "https", "tag": TAG_REMOTE, "server": "1.1.1.1", "detour": "proxy" }),
+        dns_remote,
     ];
     if fake_ip.enabled {
         let mut fi = json!({
@@ -223,7 +267,7 @@ fn build_default(
     final_tag: &str,
     tun_enabled: bool,
 ) -> BuiltDns {
-    let mut servers = builtin_servers(&settings.fake_ip);
+    let mut servers = builtin_servers(settings, &settings.fake_ip);
     let mut rules: Vec<Value> = Vec::new();
 
     if let Some((host_srv, host_rule)) = hosts_layer(&settings.hosts) {
@@ -316,7 +360,7 @@ fn normalize_suffix(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::DnsSettings;
+    use crate::domain::{DnsSettings, REMOTE_DNS_POOL};
 
     #[test]
     fn dns_remote_detours_through_proxy() {
