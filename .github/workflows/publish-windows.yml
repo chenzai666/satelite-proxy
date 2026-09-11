@@ -1,0 +1,85 @@
+name: 发布已验证的 Windows 构建
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: 已成功的 Windows 构建任务编号
+        required: true
+        type: string
+      release_tag:
+        description: 必须与构建提交一致的现有版本标签
+        required: true
+        default: v1.0.28
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-windows-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 验证构建来源及标签
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          info=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID")
+          jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .status == "completed" and .conclusion == "success"
+            and .head_repository.full_name == $repo
+            and .path == ".github/workflows/build-windows.yml"
+          ' <<< "$info"
+          sha=$(jq -r .head_sha <<< "$info")
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)
+          [[ "$sha" == "$tag_sha" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - name: 获取已验证安装包
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          name: Satelite-Windows-${{ steps.verify.outputs.sha }}
+          path: release
+      - name: 获取已验证便携包
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          name: Satelite-Windows-Portable-${{ steps.verify.outputs.sha }}
+          path: release
+      - name: 更新 Release 资产与发布说明
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_SHA: ${{ steps.verify.outputs.sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 替换前再验证一次标签，避免并发更新后上传错版本。
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" == "$BUILD_SHA" ]]
+          notes="docs/release-${RELEASE_TAG#v}.md"
+          test -f "$notes"
+          test -f "release/Satelite_${RELEASE_TAG#v}_x64-setup.exe"
+          test -f "release/Satelite_${RELEASE_TAG#v}_x64_portable.zip"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$RELEASE_TAG" release/*.exe release/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+          body="$(< "$notes")"
+          body="$body"$'\n\n'"构建提交：$BUILD_SHA"$'\n'"验证任务：https://github.com/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes "$body"
+          sha256sum release/*.exe release/*.zip
