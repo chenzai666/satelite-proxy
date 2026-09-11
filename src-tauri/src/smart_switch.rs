@@ -574,7 +574,9 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
         (outbound_tag(node), node.name.clone())
     };
 
-    match state.select_current_node_serialized(best_id, false) {
+    // Routine optimization preserves working sessions. Only failure recovery
+    // may clear them, and still only when the user enabled that setting.
+    match state.select_current_node_serialized(best_id, false, hard_fail) {
         Ok((_, _, true)) => {}
         Ok((_, _, false)) => return Err("core not running".into()),
         Err(e) => {

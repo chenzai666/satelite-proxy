@@ -350,7 +350,7 @@ mod kernel_selection_poll_tests {
         state.lock_runtime().api = Some(crate::api::ClashApi::new("127.0.0.1", 1, "test"));
 
         let (settings, was_kernel, selected_live) = state
-            .select_current_node_serialized("node-a", true)
+            .select_current_node_serialized("node-a", true, true)
             .expect("kernel-mode manual select must not touch the urltest group");
         assert!(!selected_live);
         assert!(was_kernel);
@@ -358,6 +358,109 @@ mod kernel_selection_poll_tests {
         assert_eq!(settings.current_node_id.as_deref(), Some("node-a"));
 
         let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn selection_connection_cleanup_respects_reason_and_user_setting() {
+        // Exercise the real state/API path, not just the boolean expression.
+        for core in ["singbox", "mihomo"] {
+            for (manual, close_if_enabled, enabled, background_group) in [
+                (true, true, true, false),
+                (true, true, false, false),
+                (false, false, true, false),
+                (false, true, true, false),
+                (false, true, false, false),
+                (false, false, true, true),
+            ] {
+                let test_dir = std::env::temp_dir().join(format!(
+                    "satelite-switch-policy-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("clock")
+                        .as_nanos()
+                ));
+                let state = AppState::load(test_dir.clone(), None).expect("load state");
+                state.with_store_mut(|store| {
+                    store.settings.core_type = core.into();
+                    store.settings.auto_select = crate::domain::AutoSelectMode::Smart;
+                    store.settings.close_connections_on_switch = enabled;
+                    store.upsert_subscription(
+                        serde_json::from_value(serde_json::json!({
+                            "id": "sub", "name": "test", "source": {"kind": "url", "url": "https://example.com/sub"},
+                            "last_update": 1, "node_count": 0, "enabled": true
+                        })).expect("subscription fixture"),
+                        vec![crate::domain::ProxyNode {
+                            id: "node-a".into(), name: "test".into(),
+                            protocol: crate::domain::Protocol::Trojan,
+                            server: "example.com".into(), port: 443,
+                            tls: None, transport: None, udp: None,
+                            config: crate::domain::ProtocolConfig::Trojan { password: "test".into() },
+                            source: None, latency_ms: None, latency_at: None,
+                        }],
+                    )?;
+                    Ok(())
+                }).expect("seed state");
+                let listener = TcpListener::bind("127.0.0.1:0").expect("fake api");
+                let port = listener.local_addr().unwrap().port();
+                listener.set_nonblocking(true).unwrap();
+                let (stop_tx, stop_rx) = mpsc::channel();
+                let server = std::thread::spawn(move || {
+                    let mut paths = Vec::new();
+                    let mut selected = "old-node".to_string();
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while stop_rx.try_recv().is_err() && Instant::now() < deadline {
+                        let (mut socket, _) = match listener.accept() {
+                            Ok(socket) => socket,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(2));
+                                continue;
+                            }
+                            Err(e) => panic!("accept: {e}"),
+                        };
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let request = read_complete_request(&mut socket);
+                        let first = request.lines().next().unwrap().to_string();
+                        let body = if first.starts_with("GET ") {
+                            serde_json::json!({"now": selected}).to_string()
+                        } else {
+                            if first.starts_with("PUT ") {
+                                let value: serde_json::Value =
+                                    serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1)
+                                        .unwrap();
+                                selected = value["name"].as_str().unwrap().to_string();
+                            }
+                            String::new()
+                        };
+                        paths.push(first);
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        socket.write_all(response.as_bytes()).unwrap();
+                    }
+                    paths
+                });
+                state.lock_runtime().api =
+                    Some(crate::api::ClashApi::new("127.0.0.1", port, "test"));
+                let selected = if background_group {
+                    state.select_group_live_serialized("rule-test", "node-a")
+                } else {
+                    state
+                        .select_current_node_serialized("node-a", manual, close_if_enabled)
+                        .map(|(_, _, live)| live)
+                };
+                stop_tx.send(()).unwrap();
+                let paths = server.join().unwrap();
+                assert!(selected.expect("select must succeed"));
+                assert!(paths.iter().any(|p| p.starts_with("PUT /proxies/")));
+                assert_eq!(
+                    paths.iter().filter(|p| p.starts_with("DELETE /connections ")).count(),
+                    usize::from(!background_group && close_if_enabled && enabled),
+                    "core={core} manual={manual} close={close_if_enabled} enabled={enabled} group={background_group}: {paths:?}"
+                );
+                let _ = std::fs::remove_dir_all(test_dir);
+            }
+        }
     }
 
     #[test]
@@ -1504,13 +1607,10 @@ impl AppState {
     /// Run a Clash selector update without holding `runtime` across HTTP I/O.
     /// The transition guard prevents a core restart from replacing the API
     /// endpoint between cloning the handle and applying the selection.
+    /// Background per-rule optimization must not disconnect unrelated traffic.
+    /// Manual group changes use select_mihomo_proxy_group_serialized instead.
     pub fn select_group_live_serialized(&self, group: &str, node_tag: &str) -> AppResult<bool> {
         let _operation = self.begin_core_transition()?;
-        let close_after_switch = self.with_store(|store| {
-            Ok(crate::core::CoreKind::parse(&store.settings.core_type)
-                == crate::core::CoreKind::Mihomo
-                && store.settings.close_connections_on_switch)
-        })?;
         let api = {
             let runtime = self.lock_runtime();
             runtime.clash_api_clone()
@@ -1520,20 +1620,6 @@ impl AppState {
         };
 
         api.select_proxy(group, node_tag)?;
-        if close_after_switch {
-            match api.close_all_connections() {
-                Ok(()) => app_log::info(
-                    "connections",
-                    format!("selector {group} switched; stale mihomo connections closed"),
-                ),
-                Err(error) => app_log::warn(
-                    "connections",
-                    format!(
-                        "selector {group} switched but closing mihomo connections failed: {error}"
-                    ),
-                ),
-            }
-        }
         app_log::info(
             "connections",
             format!("selector {group} switched to {node_tag}"),
@@ -1548,10 +1634,13 @@ impl AppState {
     /// Returns `(settings, restart_needed, switched_live)`. Under Xray there
     /// is no live selection API — the pick is persisted and the caller must
     /// restart the core (`restart_needed = true`).
+    /// `close_if_enabled` is true for manual changes and hard failure recovery,
+    /// false for routine smart optimization; the user's setting remains final.
     pub fn select_current_node_serialized(
         &self,
         node_id: &str,
         manual: bool,
+        close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         let _operation = self.begin_core_transition()?;
         let core_kind = {
@@ -1609,6 +1698,7 @@ impl AppState {
                             core_kind,
                             crate::core::CoreKind::SingBox | crate::core::CoreKind::Mihomo
                         )
+                        && close_if_enabled
                         && store.settings.close_connections_on_switch,
                     fallback_core,
                 ))

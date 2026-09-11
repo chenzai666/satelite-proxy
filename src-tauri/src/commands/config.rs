@@ -437,7 +437,7 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
         let (settings, restart_needed, _) = state
-            .select_current_node_serialized(&node_id, true)
+            .select_current_node_serialized(&node_id, true, true)
             .map_err(|e| e.to_string())?;
         if restart_needed {
             crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
