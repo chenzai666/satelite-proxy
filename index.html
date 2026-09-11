@@ -19,6 +19,18 @@
         }
       } catch (e) {}
     </script>
+    <!-- Inline theme background: the bundled stylesheet is render-blocking, so
+         without this a WebView recreate shows the webview's default white until
+         the CSS parses — a flash for dark-theme users. Values mirror App.css
+         --bg per theme. -->
+    <style>
+      html {
+        background: #eef0f4;
+      }
+      html[data-theme="aerospace"] {
+        background: #11141c;
+      }
+    </style>
   </head>
 
   <body>

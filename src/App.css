@@ -3081,6 +3081,8 @@ button.node-card:disabled,
    without this the badge wraps to a second row and stretches the card. */
 .node-proto-tags {
   display: inline-flex;
+  flex-direction: row;
+  gap: 0.35rem;
   align-items: center;
   min-width: 0;
 }

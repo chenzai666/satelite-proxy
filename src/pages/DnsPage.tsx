@@ -208,14 +208,6 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
                   onChange={(checked) => patch({ cache: checked })}
                 />
               </SettingRow>
-              <SettingRow title={t("dns.leak")} desc={t("dns.leakDesc")}>
-                <GlassSwitchControl
-                  checked={dns.leak_protect}
-                  title={t("dns.leak")}
-                  disabled={busy}
-                  onChange={(checked) => patch({ leak_protect: checked })}
-                />
-              </SettingRow>
             </div>
           </div>
         </section>

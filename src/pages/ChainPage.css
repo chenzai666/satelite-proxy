@@ -1,0 +1,970 @@
+/* ---- Chain page (node pools + multi-hop chains) ------------------------ */
+
+.chain-section {
+  margin-bottom: 1rem;
+}
+
+.chain-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.chain-section-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Pool list: dense two-column row grid — the old card grid spent ~160px per
+   pool on four stacked lines; the 960px pro window fits two ~330px columns,
+   so N pools stack Math.ceil(N/2) visual rows. */
+.chain-pool-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 0.1rem;
+  padding: 0.3rem;
+}
+
+.chain-pool-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: var(--radius);
+  min-width: 0;
+}
+
+.chain-pool-row:hover {
+  background: var(--hover-wash);
+}
+
+.chain-pool-row .chain-pool-name {
+  flex: 0 1 auto;
+  min-width: 3rem;
+  font-size: 0.8rem;
+}
+
+.chain-pool-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chain-pool-glyph {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.35rem;
+  color: var(--accent-purple);
+  vertical-align: -1px;
+}
+
+/* Shared vector-glyph sizing for pool markers (see PoolGlyph). */
+.chain-candidate-glyph,
+.chain-flow-glyph,
+.chain-drag-glyph {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.3rem;
+  color: var(--accent-purple);
+  vertical-align: -1px;
+}
+
+/* Keyword tokens ride inline after the pool name (full string in the row
+   title). Explicit pools have no keywords — the pill's margin-left:auto keeps
+   the metadata cluster right-aligned in both cases. */
+.chain-pool-row-kw {
+  flex: 1 1 auto;
+  min-width: 2rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chain-pool-row .pill {
+  margin-left: auto;
+  flex: none;
+}
+
+/* Shared inline metadata run for pool rows and chain card head badges. */
+.chain-row-meta {
+  flex: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Chain ⋮ menus reuse the rule-menu idiom but open DOWNWARD by default
+   (rows sit mid-page); .up flips for rows in the lower half of a list. */
+.chain-menu-pop {
+  bottom: auto;
+  top: calc(100% + 4px);
+}
+
+.chain-menu-pop.up {
+  bottom: calc(100% + 4px);
+  top: auto;
+}
+
+/* An open ⋮ popover must paint above the cards that follow it: .card's
+   deliberate isolation (navbar-repaint fix, see .card) traps the popover's
+   z-index inside that card's own stacking context, so later sibling cards
+   would cover it. Lift the whole source card while its menu is open — the
+   same :has idiom the DNS panels use. */
+.chain-card:has(.chain-menu-pop),
+.chain-pool-list:has(.chain-menu-pop) {
+  position: relative;
+  z-index: 30;
+}
+
+/* Live keyword-filter feedback in the pool editor: match count + a one-line
+   preview of the first few matched node names (full list in the tooltip). */
+.chain-pool-match {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.6rem;
+}
+
+.chain-pool-match-count {
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.chain-pool-match-names {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chain-pool-node-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: 0.5rem;
+}
+
+.chain-pool-node-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.chain-pool-node-item:last-child {
+  border-bottom: none;
+}
+
+.chain-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chain-card {
+  padding: 0.6rem 0.85rem 0.5rem;
+}
+
+.chain-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+.chain-card-name {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Head-line metadata cluster (hop count + rule usage + ⋮ menu) — absorbed
+   the old bottom meta row so the card is just two rows: head + stepper. */
+.chain-card-badges {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Chain preset card: the pipeline IS the card — a metro-line stepper. Each
+   hop is a station (colored dot + name + type label) sitting on a rail with
+   arrowheads; entry dot green, exit blue, middles neutral, pools carry the
+   layer glyph. No nested cards. */
+.chain-stepper {
+  display: flex;
+  align-items: flex-start;
+  overflow: hidden;
+  margin: 0.15rem 0 0.1rem;
+}
+
+/* Equal-width stations: flex-basis 0 (not auto) so a long hop name can't
+   widen its station — dots stay evenly spaced and line up across cards. */
+.chain-station {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.chain-station-marker {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  margin-bottom: 4px;
+}
+
+.chain-station-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+.chain-station-dot.entry {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-muted);
+}
+
+.chain-station-dot.exit {
+  background: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 16%, transparent);
+}
+
+.chain-rail {
+  flex: 1 1 24px;
+  min-width: 16px;
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent-purple) 35%, transparent);
+  position: relative;
+}
+
+.chain-rail-arrow {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-left: 5px solid color-mix(in srgb, var(--accent-purple) 60%, transparent);
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+}
+
+/* Invisible spacer rail: keeps first/last dots centered over their names. */
+.chain-rail.ghost {
+  background: transparent;
+}
+
+.chain-station-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+}
+
+.chain-flow-glyph {
+  flex: none;
+}
+
+.chain-flow-type {
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.chain-station.stale .chain-station-name {
+  color: var(--danger);
+}
+
+.chain-station.stale .chain-station-dot {
+  background: var(--danger);
+}
+
+/* Usage hints — preset-library info only, no runtime state on this page. */
+.chain-card-usage {
+  color: var(--accent-purple);
+}
+
+.chain-card-usage.none {
+  opacity: 0.75;
+}
+
+/* Chain diagnostics: per-hop probe table. The last row (whole chain) gets a
+   subtle accent emphasis — it is the exit the internet sees. */
+.chain-diag-modal {
+  width: min(560px, 94vw);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 4rem);
+}
+
+.chain-diag-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.chain-diag-table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.chain-diag-row {
+  display: grid;
+  grid-template-columns: 1fr 88px 110px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+}
+
+.chain-diag-row.chain-diag-head {
+  font-size: 0.7rem;
+  color: var(--muted);
+  padding-bottom: 0.15rem;
+}
+
+/* Header labels align with the right-aligned data cells below them. */
+.chain-diag-row.chain-diag-head > span:nth-child(2),
+.chain-diag-row.chain-diag-head > span:nth-child(3) {
+  text-align: right;
+}
+
+.chain-diag-row.whole {
+  background: color-mix(in srgb, var(--accent-purple) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-purple) 22%, transparent);
+}
+
+.chain-diag-hop {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.chain-diag-order {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.64rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+  color: var(--accent-purple);
+}
+
+.chain-diag-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+.chain-diag-label.stale {
+  color: var(--danger);
+}
+
+.chain-diag-exit {
+  flex: none;
+  font-size: 0.62rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  color: var(--accent-blue);
+}
+
+.chain-diag-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.chain-diag-cell.ok {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.chain-diag-cell.bad {
+  color: var(--danger);
+  font-weight: 600;
+  cursor: help;
+}
+
+.chain-diag-hint {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+/* Manual-start diagnostics: idle hint + in-flight spinner, and a footer
+   with balanced, evenly-wide action buttons. */
+.chain-diag-idle {
+  margin: 0;
+  padding: 1.2rem 0.5rem;
+  text-align: center;
+  font-size: 0.78rem;
+}
+
+.chain-diag-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.2rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.chain-diag-spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: lat-spin 0.7s linear infinite;
+}
+
+.chain-diag-modal .modal-footer {
+  gap: 0.75rem;
+  padding: 0.6rem 1rem 0.9rem;
+}
+
+.chain-diag-modal .modal-footer .glass-btn {
+  flex: 1;
+  max-width: 200px;
+}
+
+/* Real-world exit verification block under the hop table. */
+.chain-diag-exit-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+.chain-diag-exit-row {
+  display: grid;
+  grid-template-columns: 1fr 110px;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.chain-diag-exit-label {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chain-diag-exit-via {
+  color: var(--accent-purple);
+}
+
+.chain-diag-exit-ip {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+
+/* Geo/quality facts of the real exit (from api.ip.sb/geoip). */
+.chain-diag-geo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+  font-size: 0.74rem;
+}
+
+.chain-diag-geo-cc {
+  flex: none;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  color: var(--accent-blue);
+}
+
+.chain-diag-geo-place {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.chain-diag-geo-asn {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+}
+
+.chain-diag-geo-tz {
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+/* xyflow custom nodes, network-console style: single nodes are compact
+   entity cards, pools are one-size-bigger aggregate cards (see HopNode).
+   Glass material matches .pill/.chip elsewhere in the app. */
+.chain-hop-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.85rem 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text);
+  box-shadow: var(--shadow-card);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.chain-hop-node.node-card {
+  width: 200px;
+}
+
+.chain-hop-node.pool-card {
+  width: 248px;
+}
+
+.chain-hop-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.chain-hop-glyph {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent-purple);
+}
+
+/* Long names ellipsize; the full name stays available as a tooltip. */
+.chain-hop-node .chain-hop-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* Graph-derived hop order badge (1 = entry, n = exit). */
+.chain-hop-node .chain-hop-badge {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+  color: var(--accent-purple);
+}
+
+.chain-hop-node.entry .chain-hop-badge {
+  background: var(--success-muted);
+  color: var(--success);
+}
+
+.chain-hop-node.exit .chain-hop-badge {
+  background: color-mix(in srgb, var(--accent-blue) 16%, transparent);
+  color: var(--accent-blue);
+}
+
+/* Pool member dot grid — one dot per member (capped, "+n" overflow);
+   references to nodes that no longer exist dye red. */
+.chain-hop-members {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  padding: 1px 0;
+}
+
+.chain-hop-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-purple) 60%, transparent);
+}
+
+.chain-hop-dot.miss {
+  background: var(--danger);
+}
+
+.chain-hop-overflow {
+  font-size: 0.68rem;
+  color: var(--muted);
+}
+
+/* Muted metadata line: protocol · latency for nodes, mode · count for
+   pools. Latency is the emphasized datum, per the topology conventions. */
+.chain-hop-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.chain-hop-latency {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.chain-hop-node.stale {
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+
+/* Hover/drag affordance: soft accent border + lifted shadow. */
+.chain-editor-canvas .react-flow__node:hover .chain-hop-node {
+  border-color: color-mix(in srgb, var(--accent-purple) 35%, var(--border));
+}
+
+.chain-editor-canvas .react-flow__node.dragging .chain-hop-node {
+  border-color: var(--accent-purple);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.16),
+    var(--shadow-card);
+}
+
+.chain-editor-modal {
+  width: min(1000px, 92vw);
+  max-width: 1000px;
+  /* Cap the card to the viewport and let the editor flex inside it — the old
+     fixed 420px canvas row let the whole card grow past the window bottom
+     (flow surface + nodes were cut off). Same pattern as .preview-modal. */
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
+}
+
+.chain-editor-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  /* Very short windows: the canvas floor scrolls instead of pushing
+     the footer off the card (no SolidSelect popovers live in this modal). */
+  overflow-y: auto;
+  padding: 0.75rem 1rem;
+}
+
+/* Inline invalid-field affordance: danger border + message under the input;
+   the chain editor focuses/selects the input itself on save. */
+.field.field-invalid input {
+  border-color: var(--danger);
+}
+
+.field-invalid-msg {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: var(--danger);
+  margin: 0;
+}
+
+.chain-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Single-line hint (full text in the title tooltip) — keeps the editor's
+   fixed overhead minimal so the canvas gets the space. */
+.chain-editor-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chain-editor-layout {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  /* The row must be clamped (minmax(0, 1fr)), not implicit auto: auto rows
+     size to the tallest item's content, so a long candidate list pushed the
+     row past the fixed height (card overflowed the window), and switching
+     node ↔ pool lists of different lengths resized the whole card. With the
+     clamp the card is stable and the sidebar list scrolls internally.
+     Height = viewport minus the editor's compact fixed overhead (header +
+     name row + hint + status + footer), so the canvas takes all the space
+     the shrunk chrome frees up; floors/caps keep extreme windows sane. */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0.75rem;
+  height: clamp(340px, calc(100vh - 15.5rem), 540px);
+  min-height: 0;
+}
+
+.chain-editor-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.chain-editor-sidebar-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.chain-editor-sidebar-actions > * {
+  flex: 1;
+}
+
+/* Quick search over the sidebar candidates (global .search has
+   min-width: 200px, which would overflow the 180px sidebar). */
+.chain-candidate-search {
+  min-width: 0;
+  width: 100%;
+}
+
+.chain-candidate-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem;
+  gap: 0.25rem;
+}
+
+.chain-candidate-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text);
+  cursor: grab;
+  user-select: none;
+  /* Pointer-based drag (App.tsx ChainFlowEditor): without this, WKWebView's
+     built-in touch/scroll gesture handling can swallow the pointer sequence
+     before pointermove/pointerup ever fire. */
+  touch-action: none;
+}
+
+.chain-candidate-item:active {
+  cursor: grabbing;
+}
+
+.chain-candidate-item:hover {
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+}
+
+/* Cursor-following label shown while dragging a candidate onto the canvas
+   (see ChainFlowEditor's pointer-event drag implementation). Fixed to the
+   viewport, not the modal, since dragging can cross the canvas boundary. */
+.chain-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--accent-purple);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  box-shadow: var(--shadow-card);
+  white-space: nowrap;
+}
+
+/* Canvas column: flow surface + the live single-path validity status line. */
+.chain-editor-canvas-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chain-editor-canvas-col .chain-editor-canvas {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+.chain-editor-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-canvas, var(--bg));
+}
+
+.chain-graph-status {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  user-select: none;
+}
+
+.chain-graph-status.ok {
+  color: var(--success);
+}
+
+.chain-graph-status.bad {
+  color: var(--danger);
+}
+
+/* xyflow ships its own light-only default theme; repaint the essentials to
+   follow the app's dark/light tokens instead of the library's white canvas. */
+.chain-editor-canvas .react-flow__background {
+  background: var(--bg-canvas, var(--bg));
+}
+
+.chain-editor-canvas .react-flow__edge-path {
+  stroke: var(--accent-purple);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.chain-editor-canvas .react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3.5;
+}
+
+.chain-editor-canvas .react-flow__node.selected .chain-hop-node {
+  border-color: var(--accent-purple);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent-purple) 30%, transparent),
+    var(--shadow-card);
+}
+
+/* Connection dots on the hop capsules stay hidden until relevant (node hover,
+   node selected, or a connection being dragged nearby) — a row of always-on
+   purple dots at every node edge reads as visual noise. */
+.chain-editor-canvas .chain-hop-node .react-flow__handle {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--panel-solid, var(--surface));
+  border: 2px solid var(--accent-purple);
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+
+.chain-editor-canvas .chain-hop-node:hover .react-flow__handle,
+.chain-editor-canvas .react-flow__node.selected .chain-hop-node .react-flow__handle,
+.chain-editor-canvas .chain-hop-node .react-flow__handle.connectionindicator,
+.chain-editor-canvas .chain-hop-node .react-flow__handle.connecting {
+  opacity: 1;
+}
+
+.chain-editor-canvas .chain-hop-node:hover .react-flow__handle,
+.chain-editor-canvas .chain-hop-node .react-flow__handle.connectionindicator {
+  transform: scale(1.25);
+}
+
+/* Edge arrows follow the accent like the edge paths. xyflow bakes marker
+   colors into inline styles, so the override needs !important to win the
+   cascade — CSS vars keep it themed across dark/light + custom accents. */
+.chain-editor-canvas .react-flow__arrowhead polyline {
+  stroke: var(--accent-purple) !important;
+  fill: var(--accent-purple) !important;
+}
+
+/* Line shown while dragging a new connection — same language as edges. */
+.chain-editor-canvas .react-flow__connection-path {
+  stroke: var(--accent-purple);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* Background dot grid: theme it down to a faint texture instead of the
+   library's fixed gray (CSS beats the SVG presentation attribute). */
+.chain-editor-canvas .react-flow__background pattern circle {
+  fill: color-mix(in srgb, var(--muted) 32%, transparent);
+}
+
+/* Zoom/fit controls use xyflow's standard buttons (library stylesheet) —
+   deliberately NOT re-themed to the app palette. */
+
+/* One compact row (label + input) instead of a stacked field — saves a full
+   line of vertical for the canvas. */
+.chain-editor-name-field {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1rem 0;
+  font-size: 0.8rem;
+}
+
+.chain-editor-name-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.32rem 0.55rem;
+  font-size: 0.82rem;
+}
+
+.chain-editor-name-field .field-invalid-msg {
+  flex: none;
+}
+
+/* The global .modal-footer has no padding, so Cancel/Save hugged the card's
+   bottom-right corner — give them the body's 1rem side rhythm and breathing
+ room below (same pattern as .error-modal .modal-footer). */
+.chain-editor-modal .modal-footer {
+  padding: 0.35rem 1rem 0.9rem;
+  margin-top: 0;
+}

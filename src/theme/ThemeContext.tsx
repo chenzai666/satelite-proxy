@@ -14,6 +14,7 @@ import { applyAccentToDom, applyGlowToDom, normalizeGlowId, resolveAccent } from
 const THEME_KEY = "satelite.theme";
 const ACCENT_KEY = "satelite.accent";
 const GLOW_KEY = "satelite.glow";
+const HERO_KEY = "satelite.heroStyle";
 
 export function normalizeTheme(raw: string | null | undefined): ThemeId {
   const t = (raw ?? "").trim().toLowerCase();
@@ -62,6 +63,23 @@ export function normalizeHeroStyle(raw: string | null | undefined): HeroStyle {
   return "particle";
 }
 
+/** Mirror of the backend default (`default_hero_style`) — see readStoredHeroStyle. */
+export function readStoredHeroStyle(): HeroStyle {
+  try {
+    return normalizeHeroStyle(localStorage.getItem(HERO_KEY));
+  } catch {
+    return "particle";
+  }
+}
+
+function persistHeroStylePref(style: HeroStyle) {
+  try {
+    localStorage.setItem(HERO_KEY, style);
+  } catch {
+    /* ignore */
+  }
+}
+
 export function applyThemeToDom(theme: ThemeId, accent: string, glow: string) {
   document.documentElement.dataset.theme = theme;
   // Drive native <select> / form control chrome (WKWebView) with the UI theme.
@@ -98,7 +116,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<ThemeId>(readStoredTheme);
   const [accent, setAccentState] = useState<string>(readStoredAccent);
   const [glow, setGlowState] = useState<string>(readStoredGlow);
-  const [heroStyle, setHeroStyleState] = useState<HeroStyle>("particle");
+  // Read from localStorage (mirrored on every change) so the FIRST render
+  // already picks the right HeroVisual branch — otherwise a WebView recreate
+  // would default to "particle" and needlessly pull the 530KB three.js chunk
+  // until getSettings() lands.
+  const [heroStyle, setHeroStyleState] = useState<HeroStyle>(readStoredHeroStyle);
   // Mirrors the backend default (default_glass_frost) to avoid a flash of
   // solid controls before settings land.
   const [glassFrost, setGlassFrostState] = useState(true);
@@ -117,6 +139,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         setAccentState(nextAccent);
         setGlowState(nextGlow);
         setHeroStyleState(nextHero);
+        persistHeroStylePref(nextHero);
         setGlassFrostState(s.glass_frost === true);
         applyThemeToDom(nextTheme, nextAccent, nextGlow);
         applyGlassFrostToDom(s.glass_frost === true);
@@ -181,6 +204,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setHeroStyle = useCallback(async (next: HeroStyle) => {
     const style = normalizeHeroStyle(next);
     setHeroStyleState(style);
+    persistHeroStylePref(style);
     try {
       await updateSettings({ heroStyle: style });
     } catch {

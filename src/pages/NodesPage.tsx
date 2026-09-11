@@ -759,10 +759,10 @@ export function NodesPage() {
             </div>
           ) : null}
         </span>
-        <span title={n.protocol}>
+        <span className="node-proto-tags" title={n.protocol}>
           <code>{n.protocol}</code>
           {delegatedProtocols.has(n.protocol) ? (
-            <span className="pill sidecar-tag">Xray</span>
+            <span className="sidecar-tag">Xray</span>
           ) : null}
         </span>
         <span title={n.server}>{n.server}</span>
@@ -827,10 +827,10 @@ export function NodesPage() {
           >
             {active ? "●" : "○"}
           </button>
-          <div className="node-card-meta">
+          <div className="node-card-meta node-proto-tags">
             <code>{n.protocol}</code>
             {delegatedProtocols.has(n.protocol) ? (
-              <span className="pill sidecar-tag">Xray</span>
+              <span className="sidecar-tag">Xray</span>
             ) : null}
           </div>
         </div>

@@ -253,7 +253,7 @@ pub struct DnsSettings {
     /// independent_cache in sing-box DNS.
     #[serde(default = "default_true")]
     pub cache: bool,
-    /// Prefer remote/final over silent system leak (disables strategy fallbacks).
+    /// 旧配置兼容字段；不再控制回退。默认解析池始终是唯一兜底。
     #[serde(default = "default_true")]
     pub leak_protect: bool,
     /// Default resolver for domains that match no rule set.
@@ -509,9 +509,13 @@ impl DnsSettings {
 /// resolution, so plain-UDP/TCP addresses must not slip in silently.
 pub fn validate_remote_dns(entries: &[String]) -> Result<(), String> {
     for entry in entries {
-        let valid = url::Url::parse(entry).is_ok_and(|u| u.scheme() == "https"
-            && u.host_str().is_some() && u.username().is_empty()
-            && u.password().is_none() && u.fragment().is_none());
+        let valid = url::Url::parse(entry).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.host_str().is_some()
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.fragment().is_none()
+        });
         if !valid {
             return Err(format!(
                 "invalid remote DNS entry '{entry}': only https:// (DoH) URLs are supported"
@@ -592,13 +596,22 @@ mod tests {
         s.remote_dns = vec!["  ".into(), String::new()];
         assert_eq!(
             s.effective_remote_pool(),
-            REMOTE_DNS_POOL.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            REMOTE_DNS_POOL
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         );
 
-        s.remote_dns = vec!["  https://9.9.9.9/dns-query  ".into(), "https://94.140.14.14/dns-query".into()];
+        s.remote_dns = vec![
+            "  https://9.9.9.9/dns-query  ".into(),
+            "https://94.140.14.14/dns-query".into(),
+        ];
         assert_eq!(
             s.effective_remote_pool(),
-            vec!["https://9.9.9.9/dns-query", "https://94.140.14.14/dns-query"]
+            vec![
+                "https://9.9.9.9/dns-query",
+                "https://94.140.14.14/dns-query"
+            ]
         );
     }
 

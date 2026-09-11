@@ -6,7 +6,7 @@
 use crate::config::punycode::to_ascii_domain;
 use crate::domain::{
     read_system_hosts_pairs, DnsAction, DnsRule, DnsSettings, DomainMatcher, FakeIpConfig,
-    HostsConfig, Rule,
+    HostsConfig, Rule, DOMESTIC_DNS_POOL,
 };
 use serde_json::{json, Value};
 
@@ -70,8 +70,14 @@ fn dns_final_tag(dns_final: &str) -> &'static str {
 /// only when the URL carries them; the default path (`/dns-query`) is
 /// normalized away to keep the built-in pool's output unchanged.
 fn doh_parts(value: &str) -> (String, Option<u16>, Option<String>) {
-    let parsed = url::Url::parse(value).unwrap_or_else(|_| url::Url::parse("https://1.1.1.1/dns-query").unwrap());
-    let host = parsed.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']').to_string();
+    let parsed = url::Url::parse(value)
+        .unwrap_or_else(|_| url::Url::parse("https://1.1.1.1/dns-query").unwrap());
+    let host = parsed
+        .host_str()
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
     let path = match parsed.query() {
         Some(query) => Some(format!("{}?{}", parsed.path(), query)),
         None if parsed.path() != "/dns-query" => Some(parsed.path().to_string()),
@@ -94,7 +100,8 @@ fn doh_parts(value: &str) -> (String, Option<u16>, Option<String>) {
 /// (sing-box's implicit bootstrap for https servers without `domain_resolver`).
 fn builtin_servers(settings: &DnsSettings, fake_ip: &FakeIpConfig) -> Vec<Value> {
     let remote = settings.effective_remote_pool();
-    let (remote_host, remote_port, remote_path) = doh_parts(remote.first().map(String::as_str).unwrap_or(""));
+    let (remote_host, remote_port, remote_path) =
+        doh_parts(remote.first().map(String::as_str).unwrap_or(""));
     let mut dns_remote = json!({
         "type": "https",
         "tag": TAG_REMOTE,
@@ -109,8 +116,8 @@ fn builtin_servers(settings: &DnsSettings, fake_ip: &FakeIpConfig) -> Vec<Value>
     }
     let mut servers = vec![
         json!({ "type": "local", "tag": TAG_LOCAL }),
-        json!({ "type": "udp", "tag": TAG_CN, "server": "223.5.5.5" }),
-        json!({ "type": "udp", "tag": "dns-cn-tencent", "server": "119.29.29.29" }),
+        json!({ "type": "udp", "tag": TAG_CN, "server": DOMESTIC_DNS_POOL[0] }),
+        json!({ "type": "udp", "tag": "dns-cn-tencent", "server": DOMESTIC_DNS_POOL[1] }),
         dns_remote,
     ];
     if fake_ip.enabled {
@@ -350,7 +357,8 @@ fn normalize_suffix(s: &str) -> String {
 mod tests {
     #[test]
     fn remote_endpoint_preserves_ipv6_port_path_and_query() {
-        let (host, port, path) = super::doh_parts("https://[2606:4700:4700::1111]:8443/profile?key=test");
+        let (host, port, path) =
+            super::doh_parts("https://[2606:4700:4700::1111]:8443/profile?key=test");
         assert_eq!(host, "2606:4700:4700::1111");
         assert_eq!(port, Some(8443));
         assert_eq!(path.as_deref(), Some("/profile?key=test"));
@@ -361,7 +369,12 @@ mod tests {
         let mut settings = crate::domain::DnsSettings::default();
         settings.remote_dns = vec!["https://9.9.9.9:8443/profile".into()];
         let built = super::build_dns_section(&settings, false, &[]);
-        let remote = built.dns["servers"].as_array().unwrap().iter().find(|s| s["tag"] == "dns-remote").unwrap();
+        let remote = built.dns["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["tag"] == "dns-remote")
+            .unwrap();
         assert_eq!(remote["server"], "9.9.9.9");
         assert_eq!(remote["server_port"], 8443);
         assert_eq!(remote["path"], "/profile");
