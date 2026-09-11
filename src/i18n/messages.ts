@@ -114,12 +114,6 @@ const en = {
   "dashboard.restartAppsAcknowledge": "Got it",
   "dashboard.captureTunHint":
     "Global capture via utun (admin once for service install)",
-  "dashboard.proxyBypassTitle": "Possible stalled direct connections ({n})",
-  "dashboard.proxyBypassDesc":
-    "Only the same app-to-target public TCP connection that stays in the connecting state for about 15 seconds is shown. Even if an app has a routing rule, a socket that never enters Satelite cannot match it. This is a hint, not proof that the app bypassed the Windows system proxy.",
-  "dashboard.proxyBypassEnableTun": "Enable TUN",
-  "dashboard.proxyBypassDismiss": "Ignore for 10 min",
-  "dashboard.proxyBypassCollapse": "Show less",
   "dashboard.smartSwitch": "Smart switch",
   "dashboard.smartSwitchDesc":
     "On enable: probe and pick best node. Then passive watch + on-demand probe.",
@@ -1076,12 +1070,6 @@ const zh: Record<MessageKey, string> = {
     "只关闭窗口可能仍有后台进程；请从托盘或任务管理器彻底退出后再重新打开。",
   "dashboard.restartAppsAcknowledge": "我知道了",
   "dashboard.captureTunHint": "utun 全局接管（首次安装服务需管理员授权）",
-  "dashboard.proxyBypassTitle": "发现疑似未走系统代理且连接未建立（{n}）",
-  "dashboard.proxyBypassDesc":
-    "仅当同一程序到同一公网目标持续约 15 秒处于连接建立状态时提示；已建立的浏览器后台连接不计入。程序即使已有分流规则，若连接没有进入 Satelite 内核，也不会匹配这些规则。这只是线索，不代表程序一定绕过了系统代理。",
-  "dashboard.proxyBypassEnableTun": "开启 TUN",
-  "dashboard.proxyBypassDismiss": "忽略 10 分钟",
-  "dashboard.proxyBypassCollapse": "收起",
   "dashboard.smartSwitch": "智能切换",
   "dashboard.smartSwitchDesc":
     "开启时立即探测并切到最佳节点；之后被动观测 + 按需探测",

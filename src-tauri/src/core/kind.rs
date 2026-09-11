@@ -100,7 +100,11 @@ impl CoreKind {
             Self::Xray => format!("Xray-{platform_suffix}.zip"),
             Self::Mihomo => {
                 let ext = if is_windows { "zip" } else { "gz" };
-                format!("mihomo-{platform_suffix}-v{ver_num}.{ext}")
+                if platform_suffix.ends_with("amd64") {
+                    format!("mihomo-{platform_suffix}-compatible-v{ver_num}.{ext}")
+                } else {
+                    format!("mihomo-{platform_suffix}-v{ver_num}.{ext}")
+                }
             }
         }
     }
@@ -388,7 +392,7 @@ mod tests {
         );
         assert_eq!(
             CoreKind::Mihomo.asset_name("1.19.30", "windows-amd64", true),
-            "mihomo-windows-amd64-v1.19.30.zip"
+            "mihomo-windows-amd64-compatible-v1.19.30.zip"
         );
         assert_eq!(
             CoreKind::Mihomo.asset_name("1.19.30", "darwin-arm64", false),

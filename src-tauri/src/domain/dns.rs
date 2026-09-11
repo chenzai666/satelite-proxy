@@ -509,7 +509,10 @@ impl DnsSettings {
 /// resolution, so plain-UDP/TCP addresses must not slip in silently.
 pub fn validate_remote_dns(entries: &[String]) -> Result<(), String> {
     for entry in entries {
-        if !entry.starts_with("https://") {
+        let valid = url::Url::parse(entry).is_ok_and(|u| u.scheme() == "https"
+            && u.host_str().is_some() && u.username().is_empty()
+            && u.password().is_none() && u.fragment().is_none());
+        if !valid {
             return Err(format!(
                 "invalid remote DNS entry '{entry}': only https:// (DoH) URLs are supported"
             ));

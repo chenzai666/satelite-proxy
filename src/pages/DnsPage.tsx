@@ -94,8 +94,7 @@ export function DnsPage({ embedded = false }: { embedded?: boolean }) {
     if (entries.length > 8) { setRemoteError(t("dns.remoteDnsMax")); return; }
     const invalid = entries.find(s => !s.startsWith("https://"));
     if (invalid) { setRemoteError(t("dns.remoteDnsInvalid", { v: invalid })); return; }
-    await save({ ...dns, remote_dns: entries });
-    setRemoteOpen(false);
+    if (await save({ ...dns, remote_dns: entries })) setRemoteOpen(false);
   }
 
   function saveFakeIp() {

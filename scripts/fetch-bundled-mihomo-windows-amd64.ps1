@@ -18,7 +18,7 @@ $DEST = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64"
 $GEO  = Join-Path $DEST "mihomo-geodata"
 $TMP  = Join-Path $env:TEMP "satelite-mihomo-$Version"
 
-$Url = "https://github.com/MetaCubeX/mihomo/releases/download/v$Version/mihomo-windows-amd64-v$Version.zip"
+$Url = "https://github.com/MetaCubeX/mihomo/releases/download/v$Version/mihomo-windows-amd64-compatible-v$Version.zip"
 
 $webParams = @{ UseBasicParsing = $true }
 if ($Proxy) { $webParams.Proxy = $Proxy }

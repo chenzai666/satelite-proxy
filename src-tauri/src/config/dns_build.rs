@@ -69,26 +69,15 @@ fn dns_final_tag(dns_final: &str) -> &'static str {
 /// ports and custom paths alike) must be decomposed. Port/path are returned
 /// only when the URL carries them; the default path (`/dns-query`) is
 /// normalized away to keep the built-in pool's output unchanged.
-fn doh_parts(url: &str) -> (&str, Option<u16>, Option<String>) {
-    let rest = url.strip_prefix("https://").unwrap_or(url);
-    let (authority, path) = match rest.split_once('/') {
-        Some((a, p)) => (a, Some(format!("/{p}"))),
-        None => (rest, None),
-    };
-    // `[ipv6]:port` keeps the bracketed host; `host:port` splits when the
-    // tail is all digits.
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !h.ends_with(']') && !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
-            (h, p.parse().ok())
-        }
-        _ => (authority, None),
-    };
-    // Default path → emit nothing (matches the built-in pool's output).
-    let path = match path {
-        Some(p) if p != "/dns-query" => Some(p),
+fn doh_parts(value: &str) -> (String, Option<u16>, Option<String>) {
+    let parsed = url::Url::parse(value).unwrap_or_else(|_| url::Url::parse("https://1.1.1.1/dns-query").unwrap());
+    let host = parsed.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']').to_string();
+    let path = match parsed.query() {
+        Some(query) => Some(format!("{}?{}", parsed.path(), query)),
+        None if parsed.path() != "/dns-query" => Some(parsed.path().to_string()),
         _ => None,
     };
-    (host, port, path)
+    (host, parsed.port(), path)
 }
 
 /// sing-box server definitions (local + the shared pools).
@@ -359,8 +348,27 @@ fn normalize_suffix(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remote_endpoint_preserves_ipv6_port_path_and_query() {
+        let (host, port, path) = super::doh_parts("https://[2606:4700:4700::1111]:8443/profile?key=test");
+        assert_eq!(host, "2606:4700:4700::1111");
+        assert_eq!(port, Some(8443));
+        assert_eq!(path.as_deref(), Some("/profile?key=test"));
+    }
+
+    #[test]
+    fn remote_pool_applies_to_singbox_without_changing_direct_resolver() {
+        let mut settings = crate::domain::DnsSettings::default();
+        settings.remote_dns = vec!["https://9.9.9.9:8443/profile".into()];
+        let built = super::build_dns_section(&settings, false, &[]);
+        let remote = built.dns["servers"].as_array().unwrap().iter().find(|s| s["tag"] == "dns-remote").unwrap();
+        assert_eq!(remote["server"], "9.9.9.9");
+        assert_eq!(remote["server_port"], 8443);
+        assert_eq!(remote["path"], "/profile");
+        assert_eq!(remote["detour"], "proxy");
+    }
     use super::*;
-    use crate::domain::{DnsSettings, REMOTE_DNS_POOL};
+    use crate::domain::DnsSettings;
 
     #[test]
     fn dns_remote_detours_through_proxy() {

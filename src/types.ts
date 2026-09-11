@@ -615,22 +615,6 @@ export interface UwpLoopbackResult {
   error?: string | null;
 }
 
-export interface ProxyBypassEntry {
-  pid: number;
-  process: string;
-  path?: string | null;
-  local: string;
-  remote: string;
-  network: string;
-}
-
-export interface ProxyBypassReport {
-  active: boolean;
-  supported: boolean;
-  sampled_at: number;
-  entries: ProxyBypassEntry[];
-}
-
 export interface ProxyStatus {
   running: boolean;
   core_state: CoreState;

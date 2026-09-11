@@ -17,6 +17,7 @@ interface Props {
   onShowQr: (node: ProxyNode) => void;
   onDelete: (node: ProxyNode) => void;
   onFavorite?: (node: ProxyNode) => void;
+  onDetails?: (node: ProxyNode) => void;
   onTest?: (node: ProxyNode, kind: "real" | "ping") => void;
 }
 
@@ -29,6 +30,7 @@ export function NodeContextMenu({
   onShowQr,
   onDelete,
   onFavorite,
+  onDetails,
   onTest,
 }: Props) {
   const { t } = useI18n();
@@ -64,6 +66,9 @@ export function NodeContextMenu({
       style={{ left: Math.max(8, x), top: Math.max(8, y) }}
     >
       <div className="node-context-menu-title" title={node.name}>{node.name}</div>
+      {onDetails && <button type="button" className="node-context-menu-item" role="menuitem" onClick={() => { onDetails(node); onClose(); }}>
+        {t("nodes.ctxDetails")}
+      </button>}
       {onFavorite && <button type="button" className="node-context-menu-item" role="menuitem" onClick={() => { onFavorite(node); onClose(); }}>
         {t(node.favorite ? "nodes.unfavorite" : "nodes.favorite")}
       </button>}

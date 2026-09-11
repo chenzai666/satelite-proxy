@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { getVersion } from "@tauri-apps/api/app";
 import {
   checkExitIp,
-  detectProxyBypasses,
   getCoreInfo,
   getLanIp,
   getProxyStatus,
@@ -45,21 +44,12 @@ import type {
   ExitIpInfo,
   GenerateConfigResult,
   OutboundMode,
-  ProxyBypassReport,
   ProxyNode,
   ProxyStatus,
   SubscriptionTraffic,
   SubscriptionView,
 } from "../types";
 
-// The TCP table is a point-in-time view. Keep the advisory detector quiet
-// until the same app/remote pair remains pending for several samples, and do
-// not let a transient empty sample make the banner flicker.
-const PROXY_BYPASS_PROBE_INTERVAL_MS = 1800;
-const PROXY_BYPASS_REQUIRED_SAMPLES = 8;
-const PROXY_BYPASS_CLEAR_SAMPLES = 4;
-const PROXY_BYPASS_MIN_VISIBLE_MS = 20_000;
-const PROXY_BYPASS_DISMISS_MS = 10 * 60_000;
 
 /**
  * Split a config line around (all occurrences of) the filter string and wrap
@@ -286,21 +276,6 @@ export function DashboardPage({
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
   >([]);
-  /** Read-only hint for applications that bypass the Windows system proxy. */
-  const [proxyBypass, setProxyBypass] = useState<ProxyBypassReport | null>(
-    null,
-  );
-  const [proxyBypassExpanded, setProxyBypassExpanded] = useState(false);
-  const bypassProbeAtRef = useRef(0);
-  const bypassProbeInFlightRef = useRef(false);
-  const bypassProbeGenerationRef = useRef(0);
-  const bypassProbeStreakRef = useRef(0);
-  const bypassProbeEmptyStreakRef = useRef(0);
-  const bypassProbeCandidatesRef = useRef<Set<string>>(new Set());
-  const bypassProbeShownAtRef = useRef(0);
-  const bypassProbeDisplayedFingerprintRef = useRef<string | null>(null);
-  const bypassProbeDismissedUntilRef = useRef(0);
-
   const pushSpark = useCallback((s: ProxyStatus | null) => {
     setSpark((prev) => {
       const next = [
@@ -313,145 +288,6 @@ export function DashboardPage({
       ];
       return next.length > 60 ? next.slice(next.length - 60) : next;
     });
-  }, []);
-
-  const refreshProxyBypass = useCallback(
-    async (status: ProxyStatus | null) => {
-      const active =
-        !!status?.running &&
-        !!status.system_proxy &&
-        !status.tun_enabled &&
-        (status.capture_mode ?? "").toLowerCase() === "system" &&
-        (status.outbound_mode ?? "").toLowerCase() !== "direct" &&
-        (status.runtime_source ?? "").toLowerCase() !== "singbox";
-
-      if (!active) {
-        bypassProbeGenerationRef.current += 1;
-        bypassProbeStreakRef.current = 0;
-        bypassProbeEmptyStreakRef.current = 0;
-        bypassProbeCandidatesRef.current = new Set();
-        bypassProbeShownAtRef.current = 0;
-        bypassProbeDisplayedFingerprintRef.current = null;
-        bypassProbeDismissedUntilRef.current = 0;
-        setProxyBypass(null);
-        setProxyBypassExpanded(false);
-        return;
-      }
-
-      const now = Date.now();
-      if (now < bypassProbeDismissedUntilRef.current) return;
-      if (bypassProbeDismissedUntilRef.current > 0) {
-        // The snooze expired. Start a fresh observation window instead of
-        // showing an old candidate immediately.
-        bypassProbeDismissedUntilRef.current = 0;
-        bypassProbeStreakRef.current = 0;
-        bypassProbeCandidatesRef.current = new Set();
-      }
-      if (
-        bypassProbeInFlightRef.current ||
-        now - bypassProbeAtRef.current < PROXY_BYPASS_PROBE_INTERVAL_MS
-      ) {
-        return;
-      }
-
-      bypassProbeAtRef.current = now;
-      bypassProbeInFlightRef.current = true;
-      const generation = ++bypassProbeGenerationRef.current;
-      try {
-        const report = await detectProxyBypasses();
-        if (generation !== bypassProbeGenerationRef.current) return;
-        if (Date.now() < bypassProbeDismissedUntilRef.current) return;
-        if (!report.supported || !report.active || report.entries.length === 0) {
-          bypassProbeStreakRef.current = 0;
-          bypassProbeCandidatesRef.current = new Set();
-          if (bypassProbeShownAtRef.current === 0) {
-            setProxyBypass(null);
-            setProxyBypassExpanded(false);
-          } else {
-            // Do not make the banner blink because one TCP-table sample was
-            // empty. Clear only after the warning has been visible long
-            // enough and several consecutive samples are empty.
-            bypassProbeEmptyStreakRef.current += 1;
-            if (
-              bypassProbeEmptyStreakRef.current >= PROXY_BYPASS_CLEAR_SAMPLES &&
-              now - bypassProbeShownAtRef.current >=
-                PROXY_BYPASS_MIN_VISIBLE_MS
-            ) {
-              bypassProbeShownAtRef.current = 0;
-              bypassProbeDisplayedFingerprintRef.current = null;
-              bypassProbeEmptyStreakRef.current = 0;
-              setProxyBypass(null);
-              setProxyBypassExpanded(false);
-            }
-          }
-          return;
-        }
-        bypassProbeEmptyStreakRef.current = 0;
-        // Keep only process/remote pairs that survive across samples. A
-        // browser can have a changing set of ordinary background sockets;
-        // one matching pending target is stronger evidence than two merely
-        // non-empty snapshots.
-        const currentCandidates = new Set(
-          report.entries.map((entry) => `${entry.pid}:${entry.remote}`),
-        );
-        const previousCandidates = bypassProbeCandidatesRef.current;
-        const stableCandidates =
-          previousCandidates.size === 0
-            ? new Set<string>()
-            : new Set(
-                [...currentCandidates].filter((key) =>
-                  previousCandidates.has(key),
-                ),
-              );
-        bypassProbeCandidatesRef.current = currentCandidates;
-        if (stableCandidates.size === 0) {
-          bypassProbeStreakRef.current = 1;
-          return;
-        }
-
-        bypassProbeStreakRef.current += 1;
-        // Require roughly 15 seconds of the same target remaining in
-        // SYN_SENT. A single failed connection attempt is too weak a signal
-        // to interrupt the user's work.
-        if (bypassProbeStreakRef.current >= PROXY_BYPASS_REQUIRED_SAMPLES) {
-          const entries = report.entries.filter((entry) =>
-            stableCandidates.has(`${entry.pid}:${entry.remote}`),
-          );
-          if (entries.length === 0) return;
-          const fingerprint = entries
-            .map((entry) => `${entry.pid}:${entry.remote}`)
-            .join("|");
-          if (bypassProbeShownAtRef.current === 0) {
-            bypassProbeShownAtRef.current = now;
-          }
-          if (
-            fingerprint !== bypassProbeDisplayedFingerprintRef.current
-          ) {
-            bypassProbeDisplayedFingerprintRef.current = fingerprint;
-            setProxyBypass({ ...report, entries });
-          }
-        }
-      } catch {
-        // This is an advisory probe; a failed sample must not interrupt proxy
-        // controls or produce a modal error.
-      } finally {
-        bypassProbeInFlightRef.current = false;
-      }
-    },
-    [],
-  );
-
-  const dismissProxyBypass = useCallback(() => {
-    // Invalidate a probe that may currently be awaiting the backend result.
-    bypassProbeGenerationRef.current += 1;
-    bypassProbeDismissedUntilRef.current = Date.now() + PROXY_BYPASS_DISMISS_MS;
-    bypassProbeShownAtRef.current = 0;
-    bypassProbeEmptyStreakRef.current = 0;
-    bypassProbeDisplayedFingerprintRef.current = null;
-    bypassProbeStreakRef.current = 0;
-    bypassProbeCandidatesRef.current = new Set();
-    setProxyBypass(null);
-    setProxyBypassExpanded(false);
   }, []);
 
 /** Display name for a core_type token (menu / version card / preview). */
@@ -487,7 +323,6 @@ function coreDisplayName(kind: string | null | undefined): string {
       setCurrentNodeId(settings.current_node_id ?? null);
       setProxy(status);
       pushSpark(status);
-      void refreshProxyBypass(status);
       setStatusReady(true);
 
       const [subList, nodeList, coreSingbox, coreXray, coreMihomo, lan] =
@@ -521,7 +356,7 @@ function coreDisplayName(kind: string | null | undefined): string {
       setStatusReady(true);
       setDetailsReady(true);
     }
-  }, [pushSpark, refreshProxyBypass, t]);
+  }, [pushSpark, t]);
 
   useEffect(() => {
     void reload();
@@ -584,10 +419,9 @@ function coreDisplayName(kind: string | null | undefined): string {
     return onProxySnapshot((s) => {
       setProxy(s);
       pushSpark(s);
-      void refreshProxyBypass(s);
       setPendingCore(peekSettings()?.core_type ?? s.core_type ?? null);
     });
-  }, [pushSpark, refreshProxyBypass]);
+  }, [pushSpark]);
 
   useVisibleInterval(() => {
     // Do not clobber optimistic capture UI while a switch is in flight.
@@ -596,7 +430,6 @@ function coreDisplayName(kind: string | null | undefined): string {
       .then((s) => {
         setProxy(s);
         pushSpark(s);
-        void refreshProxyBypass(s);
         setPendingCore(peekSettings()?.core_type ?? s.core_type ?? null);
         // Kernel auto-select (any core) and app-side smart picks persist the
         // current node in the backend; the status carries it — reflect a
@@ -1584,79 +1417,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         </div>
       )}
 
-      {proxyBypass?.active &&
-        proxyBypass.supported &&
-        proxyBypass.entries.length > 0 && (
-          <section
-            className="dashboard-proxy-bypass"
-            role="status"
-            aria-live="polite"
-          >
-            <div className="dashboard-proxy-bypass-main">
-              <div className="dashboard-proxy-bypass-title-row">
-                <div className="dashboard-proxy-bypass-title">
-                  <span aria-hidden>⚠</span>{" "}
-                  {t("dashboard.proxyBypassTitle", {
-                    n: proxyBypass.entries.length,
-                  })}
-                </div>
-                <button
-                  type="button"
-                  className="dashboard-proxy-bypass-dismiss"
-                  onClick={dismissProxyBypass}
-                >
-                  {t("dashboard.proxyBypassDismiss")}
-                </button>
-              </div>
-              <p className="dashboard-proxy-bypass-desc">
-                {t("dashboard.proxyBypassDesc")}
-              </p>
-              <div className="dashboard-proxy-bypass-list">
-                {(proxyBypassExpanded
-                  ? proxyBypass.entries
-                  : proxyBypass.entries.slice(0, 5)
-                ).map((entry) => (
-                  <span
-                    className="dashboard-proxy-bypass-item mono"
-                    key={entry.pid + "-" + entry.remote}
-                    title={
-                      entry.process +
-                      " (" +
-                      entry.pid +
-                      ") → " +
-                      entry.remote
-                    }
-                  >
-                    {entry.process} · {entry.remote}
-                  </span>
-                ))}
-                {proxyBypass.entries.length > 5 && (
-                  <button
-                    type="button"
-                    className="dashboard-proxy-bypass-more mono"
-                    aria-expanded={proxyBypassExpanded}
-                    onClick={() => setProxyBypassExpanded((expanded) => !expanded)}
-                  >
-                    {proxyBypassExpanded
-                      ? t("dashboard.proxyBypassCollapse")
-                      : `+${proxyBypass.entries.length - 5}`}
-                  </button>
-                )}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn-pill secondary dashboard-proxy-bypass-action"
-              disabled={captureBusy || switching}
-              onClick={() => {
-                setError(null);
-                requestCaptureMode("tun");
-              }}
-            >
-              {t("dashboard.proxyBypassEnableTun")}
-            </button>
-          </section>
-        )}
+
 
       {/* —— 6 cards: core / spark / traffic+conns · quality / sub / system —— */}
       <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">

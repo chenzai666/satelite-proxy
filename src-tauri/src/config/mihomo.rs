@@ -38,7 +38,6 @@ const DIRECT_PROXY: &str = "Satelite-DIRECT";
 /// Built-in remote DoH pool (Clash queries the entries concurrently,
 /// fastest answer wins). Every entry egresses through the main proxy group
 /// — direct DoH is unreachable on censored networks (see build_dns).
-const REMOTE_DNS_POOL: [&str; 2] = ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"];
 /// Built-in domestic plain-UDP pool (bootstrap, node hostnames, cn
 /// classification). 114DNS backs up AliDNS.
 const DOMESTIC_DNS_POOL: [&str; 2] = ["223.5.5.5", "114.114.114.114"];

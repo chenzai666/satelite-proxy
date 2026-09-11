@@ -318,7 +318,12 @@ fn pick_asset(
     let version = normalize_version(&release.tag_name);
     let suffix = platform.asset_suffix_for(kind);
     let expected = kind.asset_name(&version, suffix, platform.is_windows);
-    let ext = if platform.is_windows { "zip" } else { "tar.gz" };
+    let ext = match kind {
+        CoreKind::Xray => "zip",
+        CoreKind::Mihomo if !platform.is_windows => "gz",
+        _ if platform.is_windows => "zip",
+        _ => "tar.gz",
+    };
     // sing-box assets embed the version (`sing-box-1.13.15-darwin-arm64.tar.gz`);
     // Xray assets don't (`Xray-macos-arm64-v8a.zip`); mihomo embeds it too
     // (`mihomo-darwin-arm64-v1.19.30.gz`).
@@ -339,6 +344,8 @@ fn pick_asset(
                     && a.name.contains(suffix)
                     && a.name.ends_with(ext)
                     && !a.name.contains("legacy")
+                    && !a.name.contains("go1")
+                    && (kind != CoreKind::Mihomo || !suffix.ends_with("amd64") || a.name.contains("-compatible-"))
             })
         })
         .ok_or_else(|| {
@@ -357,58 +364,17 @@ fn pick_asset(
     })
 }
 
-/// Public GitHub release-asset mirror. Used only as a last-resort fallback
-/// when a direct `github.com` download fails outright (e.g. blocked network) —
-/// tried without any proxy, since the point of a mirror is reaching the file
-/// through a path that doesn't need one.
-const GITHUB_ASSET_MIRROR_PREFIX: &str = "https://gh-proxy.com/";
-
-/// Fetch a release asset, retrying through a mirror if the direct request
-/// fails outright (connection/DNS error) or comes back with a non-success
-/// status. The mirror attempt never uses `proxy_url` — the whole point of a
-/// mirror is a path that doesn't depend on the user having a working proxy.
-///
-/// When there's no proxy at all, direct GitHub access is unlikely to work
-/// from mainland China — skip straight to the mirror instead of waiting out
-/// a ~120s connection timeout first.
-async fn fetch_asset_with_mirror_fallback(
+/// Download executable cores from the official release endpoint.
+async fn fetch_official_asset(
     download_url: &str,
     proxy_url: Option<&str>,
 ) -> AppResult<reqwest::Response> {
-    crate::app_log::info(
-        "core",
-        format!(
-            "downloading asset (proxy={}): {download_url}",
-            proxy_url.unwrap_or("none")
-        ),
-    );
-
-    let direct_err = if let Some(proxy_url) = proxy_url {
-        match http_client(Some(proxy_url))?.get(download_url).send().await {
-            Ok(resp) if resp.status().is_success() => return Ok(resp),
-            Ok(resp) => format!("download status {}", resp.status()),
-            Err(e) => format!("download: {e}"),
-        }
-    } else {
-        crate::app_log::info("core", "no proxy configured — going straight to mirror");
-        "no proxy configured".into()
-    };
-
-    let mirror_url = format!("{GITHUB_ASSET_MIRROR_PREFIX}{download_url}");
-    crate::app_log::warn(
-        "core",
-        format!("direct download failed ({direct_err}); trying mirror: {mirror_url}"),
-    );
-    match http_client(None)?.get(&mirror_url).send().await {
-        Ok(resp) if resp.status().is_success() => Ok(resp),
-        Ok(resp) => Err(AppError::Core(format!(
-            "{direct_err}; mirror status {}",
-            resp.status()
-        ))),
-        Err(mirror_err) => Err(AppError::Core(format!(
-            "{direct_err}; mirror: {mirror_err}"
-        ))),
+    let response = http_client(proxy_url)?.get(download_url).send().await
+        .map_err(|error| AppError::Core(format!("download: {error}")))?;
+    if !response.status().is_success() {
+        return Err(AppError::Core(format!("download status {}", response.status())));
     }
+    Ok(response)
 }
 
 fn http_client(proxy_url: Option<&str>) -> AppResult<reqwest::Client> {
@@ -513,7 +479,7 @@ where
     let via_proxy = proxy_url.is_some();
     let progress = Arc::new(progress);
 
-    let resp = fetch_asset_with_mirror_fallback(&info.download_url, proxy_url).await?;
+    let resp = fetch_official_asset(&info.download_url, proxy_url).await?;
     let declared_total = (info.size > 0).then_some(info.size);
     let mut last_percent = None;
     let download_progress = Arc::clone(&progress);

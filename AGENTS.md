@@ -1,12 +1,17 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
-最后核对：2026-09-09（应用版本为 1.0.21，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托、端口就绪验证、异常内核恢复、Windows 系统代理绕过感知，以及 UWP 回环兼容）。
+最后核对：2026-09-11（应用版本为 1.0.28，三内核：sing-box / Xray / mihomo；支持代理链、便携版、协议委托、端口就绪验证、异常内核恢复、UWP 回环兼容）。
 
 ## 0. 阅读与维护规则（必读）
 
-2026-09-08 分支整合上游 v1.0.23 功能，应用版本继续固定 1.0.21：
-- Windows 下新增代理绕过感知：系统代理开启且 TUN 关闭时，先校验 WinINet 仍指向 Satelite 混合端口，再只读采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核及不可识别的辅助进程，并由 Dashboard 交叉采样后提示疑似未走系统代理的卡住连接；用户可手动开启 TUN，不自动改系统网络。
+2026-09-11：继续整合上游至 v1.0.28 的订阅自定义 User-Agent、跨页内核下载进度与安装时间、远程 DoH 配置和节点详情。移除 Dashboard 系统代理绕过检测横幅与其后台采样命令；正常 TUN 控制、UWP 回环入口保留。应用及发布版本按用户要求同步到 1.0.28。
+- `coreDownload.ts` 和 `components/CoreDownloadToast.tsx` 保存跨页下载状态。
+- `components/NodeDetailModal.tsx` 从现有节点右键菜单进入详情。
+- `DnsSettings.remote_dns` 为可选远程 HTTPS DNS 列表；空列表使用默认池。
+
+
+2026-09-08 分支整合上游 v1.0.23 功能，当时应用版本为 1.0.21：
 - Windows 设置 → 端口提供“解除 UWP 回环限制”：经现有 UAC 提权链调用系统 `CheckNetIsolation.exe`，为当前用户已安装的 AppContainer 包追加 `LoopbackExempt`；操作幂等、只追加、不改系统代理、不清空既有豁免。
 - `AppStore.favorite_nodes` 持久化收藏；`toggle_favorite_node` 经 `commands/config.rs`、`lib.rs`、`api.ts` 注册。删除节点/订阅、刷新订阅后清理失效收藏。
 - `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记按原算法匹配。
@@ -138,7 +143,6 @@ satelite-proxy/
 │   ├── src/config/          # 配置生成：builder.rs（sing-box）+ xray.rs（Xray）+ mihomo.rs（mihomo/Clash YAML）+ dns_build/write/…
 │   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 三内核描述）、manager/download/assets/paths/提权/Job Object
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
-│   ├── src/proxy_bypass.rs  # Windows 系统代理绕过感知（只读 TCP 表 + 进程信息）
 │   ├── src/uwp_loopback.rs  # Windows UWP/AppContainer 回环豁免（CheckNetIsolation + UAC helper）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
 │   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
@@ -263,7 +267,6 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.7 系统集成
 
-- proxy_bypass.rs 与 commands/diagnostics.rs 提供 Windows 系统代理绕过感知：先核对真实 WinINet 代理端点，再只读读取 TCP owner-PID 表，仅保留公网 Web 端口的 `SYN_SENT` 连接，过滤私有/回环/特殊地址、辅助进程与 Satelite 内核进程，供 Dashboard 给出 TUN 建议；不修改系统代理、不自动启用 TUN。
 - `uwp_loopback.rs` 与 commands/proxy.rs 提供 Windows UWP 回环兼容：列举当前用户 AppContainer 映射中的包 SID，经一次 UAC 提权启动同一 exe helper，逐个调用 `CheckNetIsolation.exe LoopbackExempt -a -p=<SID>`；结果回传设置页，已有豁免不会被清除。
 
 - `proxy/windows.rs|macos.rs|stub.rs` — 系统代理设置（注册表 / networksetup），含 owned-proxy 标记与崩溃残留清理（启动时 `cleanup_stale_system_proxy`）。
@@ -290,7 +293,6 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 6.2 桥接层 ★
 
-- api.ts 新增 detectProxyBypasses（只读绕过探测）和 enableUwpLoopback（Windows UWP 回环豁免）；Dashboard 在系统代理开启、TUN 关闭且同一进程到同一目标连续约 5 秒保持 `SYN_SENT` 时显示提示，已建立的浏览器后台连接不计入。
 
 - `api.ts` — 全部 `invoke()` 封装。要点：
   - `updateSettings` 是 **60ms 批量合并写入器**；
@@ -370,15 +372,14 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 8. 构建细节与产物
 
-- **版本号**：当前应用版本为 `1.0.21`。`scripts/check-fixed-version.ps1` 与 GitHub Actions 同时校验 `package.json`、`Cargo.toml`、`Cargo.lock` 三处一致；发版标签使用 `v1.0.21`，版本变更时必须同步更新这三处、校验脚本和 Actions 标签条件。
-- **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`、`.../portable/Satelite_1.0.21_x64_portable.zip`）。GitHub Actions 会上传安装包与便携版；`v1.0.21` 的 Release 同时附带二者。
+- **版本号**：当前应用版本为 `1.0.28`。`scripts/check-fixed-version.ps1` 与 GitHub Actions 同时校验 `package.json`、`Cargo.toml`、`Cargo.lock` 三处一致；发版标签使用 `v1.0.28`，版本变更时必须同步更新这三处、校验脚本和 Actions 标签条件。
+- **产物路径**：DMG → `src-tauri/target/<aarch64|x86_64>-apple-darwin/release/bundle/dmg/`；Windows → `src-tauri/target/release/bundle/nsis/`（或 `.../msi/`、`.../portable/Satelite_1.0.28_x64_portable.zip`）。GitHub Actions 会上传安装包与便携版；`v1.0.28` 的 Release 同时附带二者。
 - **Rust 测试布局**：集成测试 `src-tauri/tests/parse_subscription.rs`（fixtures 在 `tests/fixtures/`：clash yaml ×2、singbox json ×1）；`download_core_live.rs` 为 `#[ignore]` 真网测试；单测散落各文件 `#[cfg(test)]`。
 - **换行符**：`.gitattributes` 规定源码 eol=lf、`.ps1/.bat/.cmd` 为 CRLF。
 - **内核版本**：macOS 预取脚本默认 sing-box v1.13.18，Windows v1.13.15，两者独立演进，升级时分别改脚本；Xray 各平台统一 v26.3.27（`scripts/fetch-bundled-xray-*` + `core/kind.rs::fallback_version` 两处同步）；mihomo 各平台统一 v1.19.30（`scripts/fetch-bundled-mihomo-*` + `core/kind.rs::fallback_version` 两处同步）。
 
 ## 9. 约定与坑（agent 必读）
 
-新增约定（23）：Windows 系统代理绕过感知是只读建议：detect_proxy_bypasses 只在真实 WinINet 指向 Satelite、系统代理运行、TUN 关闭且非直连出站时采样公网 Web TCP 的 `SYN_SENT` 连接；排除 Satelite/内核 PID、辅助进程、不可识别路径与私有地址，Dashboard 还要求同一进程/目标跨样本保持后才提示。它不等价于证明某个应用一定绕过代理，也不自动切换 TUN；已建立连接、UDP/QUIC、已关闭的短连接及使用其他代理链路的进程不会被完整覆盖。
 
 新增约定（24）：Windows UWP 回环操作是显式的设置页动作，不绑定系统代理开关。`enable_uwp_loopback` 仅枚举当前用户 AppContainer 映射并追加 `LoopbackExempt`，通过 UAC 启动的同 exe helper 在 Tauri 初始化前执行；不可改成清空豁免，也不要把它误认为分流规则或 TUN。
 

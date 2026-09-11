@@ -1233,6 +1233,12 @@ fn build_dns(
             servers.push(Value::Object(domestic));
         }
     }
+    // Additional remote entries stay within the selected remote pool.
+    if dns_final == "remote" {
+        for endpoint in opts.dns.effective_remote_pool().iter().skip(1) {
+            servers.push(json!({ "address": endpoint }));
+        }
+    }
     // When leak protection is off, the system resolver is a last-resort
     // fallback; with it on (default) we never silently fall back to system.
     if !opts.dns.leak_protect {
@@ -2179,7 +2185,7 @@ mod tests {
         assert_eq!(dns["tag"], "dns-module");
         let servers = dns["servers"].as_array().unwrap();
         // default dns_final=remote → remote first, domestic tagged skipFallback
-        assert_eq!(servers[0]["address"], "1.1.1.1");
+        assert_eq!(servers[0]["address"], REMOTE_DNS_POOL[0]);
         assert_eq!(servers[1]["address"], "223.5.5.5");
         assert_eq!(servers[1]["tag"], "direct-dns");
         assert_eq!(servers[1]["skipFallback"], true);
