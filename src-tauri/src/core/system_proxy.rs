@@ -48,7 +48,9 @@ pub fn read_system_proxy() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 pub fn read_system_proxy() -> Option<String> {
+    use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("reg")
+        .creation_flags(0x08000000)
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
@@ -63,6 +65,7 @@ pub fn read_system_proxy() -> Option<String> {
     }
 
     let out = std::process::Command::new("reg")
+        .creation_flags(0x08000000)
         .args([
             "query",
             r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
