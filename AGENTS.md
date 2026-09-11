@@ -11,6 +11,10 @@ Xray 非默认 DNS 池仅作分类；Mihomo 不生成跨池 fallback；旧 leak_
 三个生成器的国内解析地址统一使用 domain/dns.rs 常量；保留 sing-box 的 IPv4/direct_resolver 和 Mihomo 订阅原生策略组。
 应用仍为 1.0.28；发布更新需记录构建提交。macOS 授权及脚本修复未经本机实机运行验证。
 
+发布入口：`.github/workflows/publish-windows.yml` 可复用成功的 Windows 构建，不重复编译。
+手动输入构建任务编号及现有标签；流程核对任务成功、仓库来源、构建工作流路径和标签提交一致后，下载对应 SHA 的两份产物并更新 Release。
+发布说明记录真实构建 SHA 和验证任务。仅修改该发布流程时可使用 [skip ci] 避免触发客户端重编译。
+
 2026-09-11：继续整合上游至 v1.0.28 的订阅自定义 User-Agent、跨页内核下载进度与安装时间、远程 DoH 配置和节点详情。移除 Dashboard 系统代理绕过检测横幅与其后台采样命令；正常 TUN 控制、UWP 回环入口保留。应用及发布版本按用户要求同步到 1.0.28。
 - `coreDownload.ts` 和 `components/CoreDownloadToast.tsx` 保存跨页下载状态。
 - `components/NodeDetailModal.tsx` 从现有节点右键菜单进入详情。

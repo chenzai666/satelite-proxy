@@ -45,3 +45,8 @@
 Windows 编译、安装包、便携包与 Rust 单元测试由 GitHub Actions 执行。
 macOS 修改来自对应上游实现，但仍需要 macOS 实机授权/打包验证。
 本次不修改本地安装目录、订阅、系统代理或正在运行的内核。
+
+本轮应用构建提交：`caaafa8`，GitHub Actions 任务 `34570520712`：
+Windows 安装包与便携包成功；Rust 测试 470 通过、0 失败、4 跳过。
+已测试产物可通过 publish-windows.yml 在 GitHub 内直接发布，避免本地中转下载故障。
+旧版标签保留为 `archive/v1.0.28-b35ae6f`；同版本新发布以正文记录的构建 SHA 为准。
