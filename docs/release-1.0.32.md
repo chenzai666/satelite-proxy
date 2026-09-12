@@ -13,6 +13,8 @@
 
 ## 下载与验证
 
+已验证构建：`8ed63b6`，GitHub Actions `34701349077`。Rust 489 项通过、0 失败、6 项默认跳过，其中剪贴板 Unicode 实测已另行在临时 CI runner 执行并通过；确认弹窗 2 项通过。Windows 安装版与便携版均成功。尚未进行本地安装或 GUI 实机验收，也未连接真实 MASQUE 节点验证。
+
 - 安装版：`Satelite_1.0.32_x64-setup.exe`。
 - 便携版：`Satelite_1.0.32_x64_portable.zip`，保留既有便携数据布局。
 - 构建与 Rust 测试均在 GitHub Actions 执行，发布正文追加真实构建提交和验证任务链接。
