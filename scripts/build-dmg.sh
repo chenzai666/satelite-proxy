@@ -122,14 +122,12 @@ if command -v rustup >/dev/null; then
   fi
 fi
 
-CORE_BIN="$ROOT/src-tauri/resources/bin/$CORE_DIR/sing-box"
-if [[ ! -x "$CORE_BIN" ]]; then
-  echo "sing-box core missing ($CORE_DIR), fetching..."
-  if [[ -n "$CORE_VER" ]]; then
-    "$FETCH_SCRIPT" "$CORE_VER"
-  else
-    "$FETCH_SCRIPT"
-  fi
+# The fetch scripts skip on their own when the pinned version is already
+# staged, so call them unconditionally (a stale staged version is refreshed).
+if [[ -n "$CORE_VER" ]]; then
+  "$FETCH_SCRIPT" "$CORE_VER"
+else
+  "$FETCH_SCRIPT"
 fi
 
 RULE_SETS_DIR="$ROOT/src-tauri/resources/rule-sets"
@@ -147,14 +145,8 @@ if [[ "$ARCH" == "intel" && "$ALL_CORES" == "1" ]]; then
 fi
 if [[ "$ALL_CORES" == "1" ]]; then
   echo "AllCores: bundling Xray + mihomo alongside sing-box..."
-  if [[ ! -x "$ROOT/src-tauri/resources/bin/$CORE_DIR/xray" ]]; then
-    echo "xray core missing ($CORE_DIR), fetching..."
-    "$XRAY_FETCH"
-  fi
-  if [[ ! -x "$ROOT/src-tauri/resources/bin/$CORE_DIR/mihomo" ]]; then
-    echo "mihomo core missing ($CORE_DIR), fetching..."
-    "$MIHOMO_FETCH"
-  fi
+  "$XRAY_FETCH"
+  "$MIHOMO_FETCH"
 else
   echo "Bundling sing-box only (pass --all-cores to include Xray + mihomo)."
   CONFIG_FILE="$SINGBOX_ONLY_CONFIG"

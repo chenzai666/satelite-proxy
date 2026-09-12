@@ -11,6 +11,14 @@ ASSET="Xray-macos-arm64-v8a.zip"
 URL="https://github.com/XTLS/Xray-core/releases/download/v${VER}/${ASSET}"
 
 mkdir -p "$OUT_DIR"
+
+# Skip when the exact pinned version is already staged (keeps CI cache hits
+# and repeat local builds download-free; a version bump refreshes it).
+if [[ -f "$OUT_DIR/xray" && "$(cat "$OUT_DIR/xray-version.txt" 2>/dev/null)" == "v${VER}" ]]; then
+  echo "xray v${VER} already staged, skipping download."
+  exit 0
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

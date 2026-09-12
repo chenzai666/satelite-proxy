@@ -22,36 +22,39 @@ if ($Proxy) { $webParams.Proxy = $Proxy }
 
 if (-not (Test-Path $DEST)) { New-Item -ItemType Directory -Path $DEST | Out-Null }
 
-if (Test-Path (Join-Path $DEST "xray.exe")) {
-  Write-Host "xray.exe already present, skipping download."
-  return
-}
-
-Write-Host "Downloading Xray v$Version from $Url"
-if ($Proxy) { Write-Host "(via proxy $Proxy)" }
+# $TMP is created up front: the wintun fallback below needs it even when the
+# core itself is already staged.
 New-Item -ItemType Directory -Path $TMP -Force | Out-Null
-$Zip = Join-Path $TMP "xray.zip"
-try {
-  Invoke-WebRequest -Uri $Url -OutFile $Zip @webParams
-} catch {
-  # Fall back to curl.exe (ships with Win10+) which honours env proxies
-  Write-Host "Invoke-WebRequest failed, retrying with curl.exe..."
-  & curl.exe -sSL -x "$Proxy" -o "$Zip" "$Url"
-  if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
-}
 
-Write-Host "Extracting..."
-Expand-Archive -Path $Zip -DestinationPath $TMP -Force
+$StagedVersion = "$(Get-Content (Join-Path $DEST "xray-version.txt") -Raw -ErrorAction SilentlyContinue)".Trim()
+if ((Test-Path (Join-Path $DEST "xray.exe")) -and $StagedVersion -eq "v$Version") {
+  Write-Host "xray v$Version already staged, skipping download."
+} else {
+  Write-Host "Downloading Xray v$Version from $Url"
+  if ($Proxy) { Write-Host "(via proxy $Proxy)" }
+  $Zip = Join-Path $TMP "xray.zip"
+  try {
+    Invoke-WebRequest -Uri $Url -OutFile $Zip @webParams
+  } catch {
+    # Fall back to curl.exe (ships with Win10+) which honours env proxies
+    Write-Host "Invoke-WebRequest failed, retrying with curl.exe..."
+    & curl.exe -sSL -x "$Proxy" -o "$Zip" "$Url"
+    if ($LASTEXITCODE -ne 0) { throw "curl download failed (exit $LASTEXITCODE)" }
+  }
 
-# Xray zips keep the payload at the archive root (no inner version dir).
-$Exe = Join-Path $TMP "xray.exe"
-if (-not (Test-Path $Exe)) { throw "xray.exe not found in archive" }
-Copy-Item -Force $Exe (Join-Path $DEST "xray.exe")
-# geodata ships alongside the binary: stage it so geosite:/geoip: routing works
-foreach ($dat in @("geosite.dat", "geoip.dat")) {
-  $src = Join-Path $TMP $dat
-  if (Test-Path $src) { Copy-Item -Force $src (Join-Path $DEST $dat) }
-  else { Write-Warning "$dat missing from archive; geo rules will need a runtime download" }
+  Write-Host "Extracting..."
+  Expand-Archive -Path $Zip -DestinationPath $TMP -Force
+
+  # Xray zips keep the payload at the archive root (no inner version dir).
+  $Exe = Join-Path $TMP "xray.exe"
+  if (-not (Test-Path $Exe)) { throw "xray.exe not found in archive" }
+  Copy-Item -Force $Exe (Join-Path $DEST "xray.exe")
+  # geodata ships alongside the binary: stage it so geosite:/geoip: routing works
+  foreach ($dat in @("geosite.dat", "geoip.dat")) {
+    $src = Join-Path $TMP $dat
+    if (Test-Path $src) { Copy-Item -Force $src (Join-Path $DEST $dat) }
+    else { Write-Warning "$dat missing from archive; geo rules will need a runtime download" }
+  }
 }
 
 # wintun.dll powers the native tun inbound (NOT shipped in the Xray zip).

@@ -26,12 +26,16 @@ if ($Proxy) { $webParams.Proxy = $Proxy }
 if (-not (Test-Path $DEST)) { New-Item -ItemType Directory -Path $DEST | Out-Null }
 if (-not (Test-Path $GEO))  { New-Item -ItemType Directory -Path $GEO  | Out-Null }
 
-if (Test-Path (Join-Path $DEST "mihomo.exe")) {
-  Write-Host "mihomo.exe already present, skipping download."
+# $TMP is created up front: the wintun fallback below needs it even when the
+# core itself is already staged.
+New-Item -ItemType Directory -Path $TMP -Force | Out-Null
+
+$StagedVersion = "$(Get-Content (Join-Path $DEST "mihomo-version.txt") -Raw -ErrorAction SilentlyContinue)".Trim()
+if ((Test-Path (Join-Path $DEST "mihomo.exe")) -and $StagedVersion -eq "v$Version") {
+  Write-Host "mihomo v$Version already staged, skipping download."
 } else {
   Write-Host "Downloading mihomo v$Version from $Url"
   if ($Proxy) { Write-Host "(via proxy $Proxy)" }
-  New-Item -ItemType Directory -Path $TMP -Force | Out-Null
   $Zip = Join-Path $TMP "mihomo.zip"
   try {
     Invoke-WebRequest -Uri $Url -OutFile $Zip @webParams

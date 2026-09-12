@@ -9,6 +9,14 @@ ASSET="sing-box-${VER}-darwin-arm64.tar.gz"
 URL="https://github.com/SagerNet/sing-box/releases/download/v${VER}/${ASSET}"
 
 mkdir -p "$OUT_DIR"
+
+# Skip when the exact pinned version is already staged (keeps CI cache hits
+# and repeat local builds download-free; a version bump refreshes it).
+if [[ -f "$OUT_DIR/sing-box" && "$(cat "$OUT_DIR/version.txt" 2>/dev/null)" == "v${VER}" ]]; then
+  echo "sing-box v${VER} already staged, skipping download."
+  exit 0
+fi
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

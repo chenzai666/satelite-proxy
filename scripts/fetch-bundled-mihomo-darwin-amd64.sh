@@ -20,7 +20,7 @@ mkdir -p "$OUT_DIR/mihomo-geodata"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-if [[ ! -f "$OUT_DIR/mihomo" ]]; then
+if [[ ! -f "$OUT_DIR/mihomo" || "$(cat "$OUT_DIR/mihomo-version.txt" 2>/dev/null)" != "v${VER}" ]]; then
   echo "Downloading $URL …"
   curl -fL --retry 3 -o "$TMP/$ASSET" "$URL"
   # mihomo darwin assets are a bare gzipped binary.
@@ -28,17 +28,24 @@ if [[ ! -f "$OUT_DIR/mihomo" ]]; then
   chmod +x "$OUT_DIR/mihomo"
   echo "v${VER}" > "$OUT_DIR/mihomo-version.txt"
 else
-  echo "mihomo already present, skipping download."
+  echo "mihomo v${VER} already staged, skipping download."
 fi
 
-# mihomo geodata: Country.mmdb + GeoSite.dat (exact casing).
+# mihomo geodata: Country.mmdb + GeoSite.dat (exact casing), staged from the
+# repo-committed snapshot (see resources/geodata/mihomo/ and
+# scripts/fetch-bundled-mihomo-geodata.sh) — upstream meta-rules-dat only
+# ships a rolling "latest" release, so a live fetch here would defeat the
+# pinned-version guarantee.
+SNAPSHOT_DIR="$ROOT/src-tauri/resources/geodata/mihomo"
 for pair in "Country.mmdb country.mmdb" "GeoSite.dat geosite.dat"; do
   set -- $pair
-  local_name="$1"; remote_name="$2"
+  local_name="$1"; snapshot_name="$2"
   if [[ -f "$OUT_DIR/mihomo-geodata/$local_name" ]]; then continue; fi
-  url="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/${remote_name}"
-  echo "Downloading $url …"
-  curl -fL --retry 3 -o "$OUT_DIR/mihomo-geodata/$local_name" "$url"
+  if [[ ! -f "$SNAPSHOT_DIR/$snapshot_name" ]]; then
+    echo "missing $SNAPSHOT_DIR/$snapshot_name — run scripts/fetch-bundled-mihomo-geodata.sh once and commit the result" >&2
+    exit 1
+  fi
+  cp "$SNAPSHOT_DIR/$snapshot_name" "$OUT_DIR/mihomo-geodata/$local_name"
 done
 
 echo "Installed:"

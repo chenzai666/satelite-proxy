@@ -21,8 +21,9 @@ if ($Proxy) { $webParams.Proxy = $Proxy }
 
 if (-not (Test-Path $DEST)) { New-Item -ItemType Directory -Path $DEST | Out-Null }
 
-if (Test-Path (Join-Path $DEST "sing-box.exe")) {
-  Write-Host "sing-box.exe already present, skipping download."
+$StagedVersion = "$(Get-Content (Join-Path $DEST "version.txt") -Raw -ErrorAction SilentlyContinue)".Trim()
+if ((Test-Path (Join-Path $DEST "sing-box.exe")) -and $StagedVersion -eq "v$Version") {
+  Write-Host "sing-box v$Version already staged, skipping download."
   return
 }
 

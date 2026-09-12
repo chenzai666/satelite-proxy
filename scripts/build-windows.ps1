@@ -50,26 +50,16 @@ if ($Proxy) {
 }
 
 # --- 2. Stage bundled sing-box core -----------------------------------------
-$CoreExe = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64\sing-box.exe"
-if (-not (Test-Path $CoreExe)) {
-  Write-Host "sing-box core missing, fetching..."
-  & (Join-Path $PSScriptRoot "fetch-bundled-core-windows-amd64.ps1") -Version $CoreVersion -Proxy $Proxy
-}
+# The fetch scripts skip on their own when the pinned version is already
+# staged, so call them unconditionally (a stale staged version is refreshed).
+& (Join-Path $PSScriptRoot "fetch-bundled-core-windows-amd64.ps1") -Version $CoreVersion -Proxy $Proxy
 
 # --- 2b. Extra cores (Xray + mihomo) or the sing-box-only config overlay -----
 $TauriConfigArgs = @()
 if ($AllCores) {
   Write-Host "AllCores: bundling Xray + mihomo alongside sing-box..."
-  $XrayExe = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64\xray.exe"
-  if (-not (Test-Path $XrayExe)) {
-    Write-Host "xray core missing, fetching..."
-    & (Join-Path $PSScriptRoot "fetch-bundled-xray-windows-amd64.ps1") -Proxy $Proxy
-  }
-  $MihomoExe = Join-Path $ROOT "src-tauri\resources\bin\windows-amd64\mihomo.exe"
-  if (-not (Test-Path $MihomoExe)) {
-    Write-Host "mihomo core missing, fetching..."
-    & (Join-Path $PSScriptRoot "fetch-bundled-mihomo-windows-amd64.ps1") -Proxy $Proxy
-  }
+  & (Join-Path $PSScriptRoot "fetch-bundled-xray-windows-amd64.ps1") -Proxy $Proxy
+  & (Join-Path $PSScriptRoot "fetch-bundled-mihomo-windows-amd64.ps1") -Proxy $Proxy
 } else {
   # The base config lists the Xray/mihomo resources too — a missing file
   # fails the bundler, so switch to the sing-box-only overlay instead.
