@@ -570,7 +570,13 @@ fn tls_from_query(query: &BTreeMap<String, String>, default_enabled: bool) -> Op
 }
 
 fn parse_http_uri(line: &str) -> Result<ProxyNode, String> {
-    let (url, server, port, name, query) = basic_url_parts(line, "http", None)?;
+    // url::Url removes explicit default ports (:80/:443) during normalization.
+    let default_port = if line.split(':').next().is_some_and(|s| s.eq_ignore_ascii_case("https")) {
+        443
+    } else {
+        80
+    };
+    let (url, server, port, name, query) = basic_url_parts(line, "http", Some(default_port))?;
     let username = (!url.username().is_empty()).then(|| percent_decode(url.username()));
     let password = url.password().map(percent_decode);
     let tls = tls_from_query(&query, url.scheme().eq_ignore_ascii_case("https"));
@@ -1857,6 +1863,24 @@ mod tests {
                 assert_eq!(obfs_host.as_deref(), Some("bing.com"));
             }
             _ => panic!("expected Snell config"),
+        }
+    }
+
+    #[test]
+    fn http_default_ports_survive_url_normalization_and_share_roundtrip() {
+        for (uri, expected) in [
+            ("http://proxy.example", 80),
+            ("http://proxy.example:80", 80),
+            ("https://proxy.example", 443),
+            ("https://proxy.example:443", 443),
+            ("https://proxy.example:8443", 8443),
+        ] {
+            let node = parse_uri_line(uri).unwrap();
+            assert_eq!(node.port, expected);
+            let shared = serialize_share_uri(&node).unwrap();
+            let restored = parse_uri_line(&shared).unwrap();
+            assert_eq!(restored.port, expected);
+            assert_eq!(restored.tls, node.tls);
         }
     }
 
