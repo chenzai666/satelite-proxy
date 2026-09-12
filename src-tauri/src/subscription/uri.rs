@@ -335,6 +335,9 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
         ProtocolConfig::WireGuard { .. } => {
             Err("WireGuard 节点没有统一的分享链接格式，请使用导出配置".into())
         }
+        ProtocolConfig::Masque { .. } => {
+            Err("MASQUE 暂不支持分享链接/二维码，请使用 Clash YAML 配置传递节点".into())
+        }
         ProtocolConfig::Tor { .. } => {
             Err("Tor 节点依赖本机程序路径，不能安全地生成分享链接".into())
         }
@@ -1587,6 +1590,21 @@ fn split_host_port(hostport: &str) -> Result<(String, u16), String> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn masque_share_does_not_emit_keys_or_misleading_uri() {
+        let mut node = parse_uri_line("https://proxy.example:443#test").unwrap();
+        node.protocol = Protocol::Masque;
+        node.config = ProtocolConfig::Masque {
+            private_key: "private-test-secret".into(),
+            public_key: "public-test-key".into(),
+            ip: None, ipv6: None, mtu: None, network: None, congestion_controller: None,
+        };
+        let error = serialize_share_uri(&node).unwrap_err();
+        assert!(error.contains("MASQUE"));
+        assert!(!error.contains("private-test-secret"));
+        assert!(!error.contains("public-test-key"));
+    }
 
     #[test]
     fn share_uri_round_trips_common_node_protocols() {
