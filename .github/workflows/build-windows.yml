@@ -70,6 +70,13 @@ jobs:
           $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
 
+      - name: Windows 剪贴板 Unicode 回归测试
+        shell: pwsh
+        run: |
+          # 仅在临时 CI runner 覆盖剪贴板，不在用户机器运行此 ignored 测试。
+          $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib tray::clipboard_tests::clipboard_roundtrip_preserves_unicode -- --ignored
+
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
