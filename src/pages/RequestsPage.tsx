@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearRequestHistory, listRequests } from "../api";
 import { GlassButton } from "../components/GlassButton";
@@ -97,7 +98,7 @@ export function RequestsPage({ embedded = false }: Props) {
   useVisibleInterval(() => loadIncremental(), 2500);
 
   async function onClear() {
-    if (!confirm(t("req.clearConfirm"))) return;
+    if (!(await confirmAction(t("req.clearConfirm")))) return;
     try {
       await clearRequestHistory();
       generationRef.current += 1;

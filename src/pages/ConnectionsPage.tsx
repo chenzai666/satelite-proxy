@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   closeAllConnections,
@@ -115,7 +116,7 @@ export function ConnectionsPage({ embedded = false }: Props) {
   );
 
   async function onCloseAll() {
-    if (!confirm(t("conn.closeAllConfirm"))) return;
+    if (!(await confirmAction(t("conn.closeAllConfirm")))) return;
     setClosing(true);
     try {
       await closeAllConnections();

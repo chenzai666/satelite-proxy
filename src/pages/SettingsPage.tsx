@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
@@ -636,7 +637,7 @@ export function SettingsPage() {
   async function onRestoreCore(kind: CoreKind) {
     const info = cores[kind];
     if (info?.bundled_version) {
-      if (!confirm(t("settings.coreRestoreConfirm", { v: info.bundled_version }))) return;
+      if (!(await confirmAction(t("settings.coreRestoreConfirm", { v: info.bundled_version })))) return;
       setCoreError(null);
       beginCoreDownload(kind);
       try {
@@ -652,7 +653,7 @@ export function SettingsPage() {
     }
     const factory = info?.factory_version;
     if (!factory) return;
-    if (!confirm(t("settings.coreRestoreDlConfirm", { v: factory }))) return;
+    if (!(await confirmAction(t("settings.coreRestoreDlConfirm", { v: factory })))) return;
     const ok = await onDownloadCore(kind, factory);
     if (ok && (settings?.core_type ?? "singbox") === kind) {
       const status = await getProxyStatus().catch(() => null);

@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   deleteNode,
@@ -82,7 +83,7 @@ export function EditLocalNodesModal({
 
   async function selectNode(id: string) {
     if (id === selectedId || busy || loadingDraft) return;
-    if (dirty && !window.confirm(t("nodes.unsavedConfirm"))) return;
+    if (dirty && !(await confirmAction(t("nodes.unsavedConfirm")))) return;
     setSelectedId(id);
     setLoadingDraft(true);
     setStatus(null);
@@ -98,8 +99,8 @@ export function EditLocalNodesModal({
     }
   }
 
-  function closeModal() {
-    if (dirty && !window.confirm(t("nodes.unsavedConfirm"))) return;
+  async function closeModal() {
+    if (dirty && !(await confirmAction(t("nodes.unsavedConfirm")))) return;
     onClose();
   }
 
@@ -135,7 +136,7 @@ export function EditLocalNodesModal({
     if (!selectedId || busy) return;
     const index = nodes.findIndex((node) => node.id === selectedId);
     const selected = nodes[index];
-    if (!selected || !window.confirm(t("nodes.deleteConfirm", { name: selected.name }))) {
+    if (!selected || !(await confirmAction(t("nodes.deleteConfirm", { name: selected.name })))) {
       return;
     }
     setBusy(true);

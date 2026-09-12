@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteNodes,
@@ -605,7 +606,7 @@ export function NodesPage() {
 
   async function deleteSelected(ids: string[]) {
     if (batchBusy || ids.length === 0) return;
-    const confirmed = window.confirm(
+    const confirmed = await confirmAction(
       ids.length === 1
         ? t("nodes.deleteConfirm", { name: nodes.find((node) => node.id === ids[0])?.name ?? ids[0] })
         : t("nodes.deleteSelectedConfirm", { n: ids.length }),

@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   clearRequestHistory,
@@ -128,7 +129,7 @@ export function FailuresPage({ embedded = false }: Props) {
   useVisibleInterval(() => loadIncremental(), 2500);
 
   async function onClear() {
-    if (!confirm(t("req.clearConfirm"))) return;
+    if (!(await confirmAction(t("req.clearConfirm")))) return;
     try {
       await clearRequestHistory();
       generationRef.current += 1;

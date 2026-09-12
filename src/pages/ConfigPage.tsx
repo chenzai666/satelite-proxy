@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   activateSubscription,
@@ -540,7 +541,7 @@ export function ConfigPage() {
   }
 
   async function onRemove(id: string) {
-    if (!confirm(t("config.confirmDelete"))) return;
+    if (!(await confirmAction(t("config.confirmDelete")))) return;
     setActionId(id);
     setListError(null);
     try {

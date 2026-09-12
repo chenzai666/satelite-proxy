@@ -5,6 +5,11 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-09-12：所有确认操作统一 `await confirmAction(...)`（`src/confirmAction.ts`）。
+禁止使用全局/window.confirm：dialog 2.7.2 注入的 shim 调用未注册 confirm 命令，且返回 Promise。
+公共 confirm API 走已授权 message 命令；失败视为取消，同一时间只允许一个确认弹窗。
+回归脚本 `node --test scripts/test-confirm-action.mjs` 检查等待、取消、异常及全库调用点，并在 Windows CI 执行。
+
 2026-09-11 历史补齐：以 `docs/upstream-integration-audit.md` 为追踪记录。
 代理链页面采用上游 xyflow 画布，样式独立在 `src/pages/ChainPage.css`。
 Xray 非默认 DNS 池仅作分类；Mihomo 不生成跨池 fallback；旧 leak_protect 字段仅供存储兼容，界面移除开关。

@@ -58,6 +58,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Bundle portable
 
+      - name: 确认弹窗安全回归测试
+        shell: pwsh
+        run: node --test scripts/test-confirm-action.mjs
+
       - name: 运行 Rust 单元测试
         shell: pwsh
         run: |

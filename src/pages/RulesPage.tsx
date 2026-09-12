@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import {
   useCallback,
   useEffect,
@@ -1026,7 +1027,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
   }
 
   async function onResetAllBuiltin() {
-    if (!confirm(t("rules.resetAllBuiltinConfirm"))) return;
+    if (!(await confirmAction(t("rules.resetAllBuiltinConfirm")))) return;
     setBusy(true);
     setError(null);
     try {
@@ -1187,7 +1188,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
 
   async function onDeleteSet(target: RuleSetSummary | null | undefined = viewSet) {
     if (!target || busy) return;
-    if (!confirm(t("rules.deleteSetConfirm", { name: target.name }))) return;
+    if (!(await confirmAction(t("rules.deleteSetConfirm", { name: target.name })))) return;
     setBusy(true);
     setError(null);
     try {
@@ -1212,9 +1213,9 @@ function SingboxRulesPage({ embedded = false }: Props) {
     if (!target || !isFactorySet(target)) return;
     const name = target.name;
     if (
-      !confirm(
+      !(await confirmAction(
         t("rules.resetSingleConfirm", { name }),
-      )
+      ))
     ) {
       return;
     }
@@ -1238,7 +1239,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
   }
 
   async function onDelete(id: string) {
-    if (!viewSetId || !confirm(t("rules.deleteRuleConfirm"))) return;
+    if (!viewSetId || !(await confirmAction(t("rules.deleteRuleConfirm")))) return;
     try {
       await removeRule(id, viewSetId);
       await reloadRules(viewSetId);

@@ -1,3 +1,4 @@
+import { confirmAction } from "../confirmAction";
 import {
   useCallback,
   useEffect,
@@ -151,7 +152,7 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
 
   async function deleteSet() {
     if (!dns || !viewSet || viewSet.builtin || busy) return;
-    if (!confirm(t("hosts.deleteSetConfirm", { name: viewSet.name }))) return;
+    if (!(await confirmAction(t("hosts.deleteSetConfirm", { name: viewSet.name })))) return;
     const remaining = dns.rule_sets.filter((set) => set.id !== viewSet.id);
     if (await save({ ...dns, rule_sets: remaining })) {
       const next = remaining.find((set) => set.kind === "hosts");
@@ -254,8 +255,8 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
     if (next) void save(next);
   }
 
-  function removeEntry(id: string) {
-    if (!viewSet || !confirm(t("hosts.deleteEntryConfirm"))) return;
+  async function removeEntry(id: string) {
+    if (!viewSet || !(await confirmAction(t("hosts.deleteEntryConfirm")))) return;
     const next = updateSet(viewSet.id, (set) => ({
       ...set,
       hosts: set.hosts.filter((entry) => entry.id !== id),
