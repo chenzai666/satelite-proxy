@@ -2168,8 +2168,13 @@ mod tests {
 
     #[test]
     fn remote_explicit_pool_preserves_members_and_falls_back_when_stale() {
-        let nodes = vec![plain_node("n1"), plain_node("n2"), plain_node("n3")];
+        let nodes: Vec<ProxyNode> = (0..3).map(|i| {
+            let mut node = plain_node(&format!("n{i}"));
+            node.port = 443 + i;
+            node.with_computed_id()
+        }).collect();
         let tags: Vec<String> = nodes.iter().map(outbound_tag).collect();
+        assert_eq!(tags.iter().collect::<std::collections::HashSet<_>>().len(), 3);
         let spec = crate::domain::builtin_remote_spec("system-geosite-cn").unwrap();
         let mut set = crate::domain::build_builtin_remote_set(spec);
         set.strategy = RuleSetStrategy::Node;
