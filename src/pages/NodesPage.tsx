@@ -155,10 +155,10 @@ export function NodesPage() {
   // Node ids whose last test used method "unsupported" (UDP-only protocol,
   // core not running) — shown as "start core to test" instead of "timeout".
   const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
-  // Protocols delegated to the companion Xray sidecar (from settings) —
+  // Protocols delegated to a sidecar core (from settings, protocol → core) —
   // surfaced as a small badge so the egress path is visible per node.
-  const [delegatedProtocols, setDelegatedProtocols] = useState<Set<string>>(
-    new Set(),
+  const [delegatedCores, setDelegatedCores] = useState<Map<string, string>>(
+    new Map(),
   );
   // Keep the chunk size in sync with the CSS grid breakpoints so virtualized
   // rows remain aligned after a window resize.
@@ -207,14 +207,15 @@ export function NodesPage() {
       setCustomRuntime(custom);
       setCurrentId(settings.current_node_id ?? null);
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
-      setDelegatedProtocols(
+      setDelegatedCores(
         settings.multi_core_enabled
-          ? new Set(
-              (settings.protocol_cores ?? [])
-                .filter((e) => e.core === "xray")
-                .map((e) => e.protocol),
+          ? new Map(
+              (settings.protocol_cores ?? []).map((e) => [
+                e.protocol,
+                e.core,
+              ]),
             )
-          : new Set(),
+          : new Map(),
       );
       // Always load the full node set — grouping needs to see everything to
       // classify correctly, and pagination made "load more" ambiguous once
@@ -799,8 +800,8 @@ export function NodesPage() {
         </span>
         <span className="node-proto-tags" title={n.protocol}>
           <code>{n.protocol}</code>
-          {delegatedProtocols.has(n.protocol) ? (
-            <span className="sidecar-tag">Xray</span>
+          {delegatedCores.has(n.protocol) ? (
+            <span className="sidecar-tag">{delegatedCores.get(n.protocol) === "xray" ? "Xray" : "mihomo"}</span>
           ) : null}
         </span>
         <span title={n.server}>{n.server}</span>
@@ -869,8 +870,8 @@ export function NodesPage() {
           </button>
           <div className="node-card-meta node-proto-tags">
             <code>{n.protocol}</code>
-            {delegatedProtocols.has(n.protocol) ? (
-              <span className="sidecar-tag">Xray</span>
+            {delegatedCores.has(n.protocol) ? (
+              <span className="sidecar-tag">{delegatedCores.get(n.protocol) === "xray" ? "Xray" : "mihomo"}</span>
             ) : null}
           </div>
         </div>
