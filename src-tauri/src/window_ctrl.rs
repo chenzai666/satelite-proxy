@@ -8,7 +8,7 @@ use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{
-    image::Image, window::Color, AppHandle, Manager, Runtime, Theme, WebviewUrl, WebviewWindow,
+    image::Image, window::Color, AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
@@ -78,8 +78,6 @@ const PRO_SIZE: (f64, f64) = (960.0, 720.0);
 const SIMPLE_SIZE: (f64, f64) = (420.0, 720.0);
 /// Simple mode lets the user shrink the window; content scrolls below this.
 const SIMPLE_MIN: (f64, f64) = (320.0, 480.0);
-/// …but never grow past the default simple strip.
-const SIMPLE_MAX: (f64, f64) = SIMPLE_SIZE;
 const BG_AEROSPACE: (u8, u8, u8) = (0x11, 0x14, 0x1c);
 const BG_DAY: (u8, u8, u8) = (0xee, 0xf0, 0xf4);
 
@@ -269,6 +267,83 @@ fn size_for_ui_mode(mode: &str) -> (f64, f64) {
     }
 }
 
+fn min_for_ui_mode(mode: &str) -> (f64, f64) {
+    if mode == "simple" {
+        SIMPLE_MIN
+    } else {
+        PRO_SIZE
+    }
+}
+
+fn window_size_file(app_data_dir: &std::path::Path, mode: &str) -> PathBuf {
+    app_data_dir.join("data").join(format!("window_size_{mode}"))
+}
+
+/// Persisted per-mode window size (logical px, "<w> <h>") so a recreated or
+/// restarted window is born directly at its final size — resizing after the
+/// WebView paints reads as a grow animation to the user.
+fn read_window_size(app_data_dir: &std::path::Path, mode: &str) -> Option<(f64, f64)> {
+    let raw = fs::read_to_string(window_size_file(app_data_dir, mode)).ok()?;
+    let mut parts = raw.split_whitespace();
+    let w: f64 = parts.next()?.parse().ok()?;
+    let h: f64 = parts.next()?.parse().ok()?;
+    if !w.is_finite() || !h.is_finite() {
+        return None;
+    }
+    let (min_w, min_h) = min_for_ui_mode(mode);
+    Some((w.clamp(min_w, 8192.0), h.clamp(min_h, 8192.0)))
+}
+
+/// Save the main window's current logical size for its UI mode. Called when
+/// hiding to tray / quitting — the moments the WebView may be destroyed.
+/// Maximized sizes are skipped: restoring one would produce a full-screen
+/// window that is not actually maximized.
+fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let mode = read_ui_mode(&state.app_data_dir);
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    if win.is_maximized().unwrap_or(false) {
+        return;
+    }
+    let Ok(size) = win.inner_size() else {
+        return;
+    };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    if scale <= 0.0 {
+        return;
+    }
+    let path = window_size_file(&state.app_data_dir, mode);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(
+        path,
+        format!("{} {}", size.width as f64 / scale, size.height as f64 / scale),
+    );
+}
+
+/// Resize the just-created main window (born at the design size from config)
+/// to the persisted size before the WebView paints — cold-start companion
+/// to the tray-recreate sizing in `show_main`. Also lowers the config min
+/// (960x720) to the simple-mode floor so a simple window can shrink here.
+pub fn restore_main_window_size<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let mode = read_ui_mode(&state.app_data_dir);
+    let Some((w, h)) = read_window_size(&state.app_data_dir, mode) else {
+        return;
+    };
+    if let Some(win) = app.get_webview_window("main") {
+        let (min_w, min_h) = min_for_ui_mode(mode);
+        let _ = win.set_min_size(Some(LogicalSize::new(min_w, min_h)));
+        let _ = win.set_size(LogicalSize::new(w, h));
+    }
+}
 /// macOS: show Dock icon (foreground app). No-op on other platforms.
 #[cfg(target_os = "macos")]
 pub fn set_dock_visible<R: Runtime>(app: &AppHandle<R>, visible: bool) {
@@ -310,7 +385,12 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             .try_state::<AppState>()
             .map(|s| read_ui_mode(&s.app_data_dir).to_string())
             .unwrap_or_else(|| "pro".into());
-        let (w, h) = size_for_ui_mode(&mode);
+        // Born at the persisted size (persist_main_window_size) so waking
+        // from tray shows the final size directly — no grow animation.
+        let (w, h) = app
+            .try_state::<AppState>()
+            .and_then(|s| read_window_size(&s.app_data_dir, &mode))
+            .unwrap_or_else(|| size_for_ui_mode(&mode));
         let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Satelite")
             .inner_size(w, h)
@@ -338,14 +418,16 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             Some(dir) => builder.data_directory(dir),
             None => builder,
         };
-        // Simple mode: user-resizable strip, shrink-only (frontend restores size).
+        // Both modes resizable; the frontend restores the persisted exact
+        // size (and the simple 320x480 floor) right after the WebView mounts.
         let builder = if mode == "simple" {
             builder
                 .resizable(true)
                 .min_inner_size(SIMPLE_MIN.0, SIMPLE_MIN.1)
-                .max_inner_size(SIMPLE_MAX.0, SIMPLE_MAX.1)
         } else {
-            builder.resizable(false)
+            builder
+                .resizable(true)
+                .min_inner_size(PRO_SIZE.0, PRO_SIZE.1)
         };
         match builder.build() {
             Ok(win) => {
@@ -390,6 +472,10 @@ pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
         // exit_allowed stays false.
     }
 
+    // Capture the size while the window still exists — destroy below may
+    // drop it, and the next recreate needs it at build time.
+    persist_main_window_size(app);
+
     // Hide Dock icon before (or with) hide — matches close-to-tray-and-dock.md.
     set_dock_visible(app, false);
 
@@ -409,6 +495,9 @@ pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
 
 /// Explicit full quit: allow exit, stop core, exit process.
 pub fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    // Keep the window size file fresh for the next launch (no-op when the
+    // WebView was already destroyed — hide_main_to_tray persisted then).
+    persist_main_window_size(app);
     if let Some(state) = app.try_state::<AppState>() {
         state.allow_exit();
         state.shutdown_runtime();

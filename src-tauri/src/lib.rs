@@ -193,6 +193,7 @@ pub fn run() {
 
             app.manage(app_state);
             window_ctrl::apply_main_window_icon(app.handle());
+            window_ctrl::restore_main_window_size(app.handle());
             window_ctrl::apply_window_theme(app.handle());
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(status) = state.proxy_status() {
