@@ -422,6 +422,7 @@ pub fn run() {
             commands::remove_subscription,
             commands::list_subscription_nodes,
             commands::list_all_nodes,
+            commands::reorder_nodes,
             commands::list_nodes_page,
             commands::list_node_ids,
             commands::list_custom_config_nodes,

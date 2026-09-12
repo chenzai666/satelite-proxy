@@ -639,8 +639,8 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
             // select_current_node_serialized performs the safe sing-box
             // handoff instead of making the node disappear from the UI.
             Ok(store
-                .nodes
-                .iter()
+                .ordered_nodes()
+                .into_iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
                 .map(|n| ListedNode {
                     node: n.node.clone(),
@@ -660,6 +660,19 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 /// Shared display sort for node listings. `list_nodes_page` and
 /// `list_node_ids` must agree so the Nodes-page latency test can run in
 /// the exact order the list is showing.
+#[tauri::command(async)]
+pub fn reorder_nodes(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
+    state.with_store_mut(|store| {
+        if store.settings.runtime_source().is_custom() {
+            return Err(crate::error::AppError::Config("自写配置节点为只读".into()));
+        }
+        let all: Vec<_> = store.nodes.iter().map(|n| n.node.id.clone()).collect();
+        store.node_order = crate::storage::node_order::merge_order(&store.node_order, &all, &ids)
+            .map_err(crate::error::AppError::Config)?;
+        Ok(())
+    }).map_err(|e| e.to_string())
+}
+
 fn sort_listed_nodes(nodes: &mut [ListedNode], sort_mode: Option<&str>) {
     match sort_mode {
         Some("name") => nodes.sort_by_cached_key(|n| n.node.name.to_lowercase()),
@@ -700,8 +713,8 @@ pub fn list_nodes_page(
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
             let mut nodes: Vec<ListedNode> = store
-                .nodes
-                .iter()
+                .ordered_nodes()
+                .into_iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
                 .filter(|n| {
                     query.is_empty()
@@ -761,8 +774,8 @@ pub fn list_node_ids(
                 .collect();
             let query = query.unwrap_or_default().trim().to_lowercase();
             let mut nodes: Vec<ListedNode> = store
-                .nodes
-                .iter()
+                .ordered_nodes()
+                .into_iter()
                 .filter(|n| enabled.contains(n.subscription_id.as_str()))
                 .filter(|n| {
                     query.is_empty()

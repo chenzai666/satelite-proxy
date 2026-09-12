@@ -177,6 +177,10 @@ export function listAllNodes() {
   return invoke<ProxyNode[]>("list_all_nodes");
 }
 
+export function reorderNodes(ids: string[]) {
+  return invoke<void>("reorder_nodes", { ids });
+}
+
 export function listNodesPage(query: string, sortMode: string, offset = 0, limit = 200) {
   return invoke<import("./types").NodePage>("list_nodes_page", {
     query,

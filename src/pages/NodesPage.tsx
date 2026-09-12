@@ -9,6 +9,7 @@ import {
   listAllNodes,
   listCustomConfigNodes,
   listNodeIds,
+  reorderNodes,
   pingNodesLatency,
   setCurrentNode,
   testCustomNodesLatency,
@@ -27,6 +28,7 @@ import { groupNodes, type GroupBy } from "../nodeGroups";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
+import { useNodeDragSort } from "../hooks/useNodeDragSort";
 import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
 import { createLatencyResultBuffer } from "../latencyStream";
@@ -194,7 +196,9 @@ export function NodesPage() {
     localStorage.setItem("nodes.groupBy.v2", groupBy);
   }, [groupBy]);
 
+  const loadGeneration = useRef(0);
   const reload = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setError(null);
     try {
       const settings = await getSettings();
@@ -218,6 +222,7 @@ export function NodesPage() {
         ? applyCustomLatency(await listCustomConfigNodes(), customLatency)
         : await listAllNodes();
       const filtered = filterCustomNodes(all, query, sortMode, 0, Number.MAX_SAFE_INTEGER);
+      if (generation !== loadGeneration.current) return;
       setNodes(filtered.nodes);
       setTotal(filtered.total);
     } catch (e) {
@@ -712,6 +717,35 @@ export function NodesPage() {
     );
   }
 
+  const nodeDrag = useNodeDragSort((id, target, after) => {
+    void (async () => {
+      if (customRuntime || batchBusy || testing || loading) return;
+      const sourceGroup = groups.find(g => g.nodes.some(n => n.id === id));
+      if (!sourceGroup?.nodes.some(n => n.id === target)) {
+        setShareNotice(t("nodes.dragSameGroup"));
+        return;
+      }
+      const next = [...sourceGroup.nodes];
+      const index = next.findIndex(n => n.id === id);
+      const targetIndex = next.findIndex(n => n.id === target);
+      if (index < 0 || targetIndex < 0) return;
+      const [moved] = next.splice(index, 1);
+      next.splice(next.findIndex(n => n.id === target) + Number(after), 0, moved);
+      setBatchBusy(true);
+      try {
+        await reorderNodes(next.map(n => n.id));
+        ++loadGeneration.current;
+        const ids = new Set(next.map(n => n.id));
+        let position = 0;
+        setNodes(current => current.map(n => ids.has(n.id) ? next[position++] : n));
+        setSelectedIds(new Set([id]));
+        setSortMode("default");
+      } catch (error) {
+        setError(String(error));
+      } finally { setBatchBusy(false); }
+    })();
+  });
+
   function renderNodeRow(n: ProxyNode) {
     const active = n.id === currentId;
     const isTesting = testingIds.has(n.id);
@@ -719,6 +753,8 @@ export function NodesPage() {
     return (
       <div
         key={n.id}
+        data-node-id={n.id}
+        onPointerDown={event => nodeDrag.onPointerDown(event, n.id, !customRuntime && !batchBusy && !testing && !loading)}
         className={`node-list-row node-virtual-row ${active ? "row-active" : ""} ${selected ? "row-selected" : ""}`}
         style={{
           gridTemplateColumns: NODE_LIST_COLS,
@@ -726,10 +762,10 @@ export function NodesPage() {
           cursor: customRuntime ? "default" : "pointer",
         }}
         onClick={(event) => {
-          if (customRuntime) return;
+          if (customRuntime || nodeDrag.suppressClick.current) return;
           if (event.ctrlKey || event.metaKey) {
             toggleSelected(n.id);
-          }
+          } else setSelectedIds(new Set([n.id]));
         }}
         onContextMenu={(event) => {
           if (customRuntime) return;
@@ -800,12 +836,14 @@ export function NodesPage() {
     return (
       <div
         key={n.id}
+        data-node-id={n.id}
+        onPointerDown={event => nodeDrag.onPointerDown(event, n.id, !customRuntime && !batchBusy && !testing && !loading)}
         className={`node-card ${active ? "active" : ""} ${selected ? "selected" : ""}`}
         onClick={(event) => {
-          if (customRuntime) return;
+          if (customRuntime || nodeDrag.suppressClick.current) return;
           if (event.ctrlKey || event.metaKey) {
             toggleSelected(n.id);
-          }
+          } else setSelectedIds(new Set([n.id]));
         }}
         style={{ cursor: customRuntime ? "default" : undefined }}
         onContextMenu={(event) => {
@@ -1000,6 +1038,7 @@ export function NodesPage() {
         </div>
       )}
 
+      {!customRuntime && <div className="muted" role="note">{t("nodes.dragHint")}</div>}
       {shareNotice && <div className="banner" role="status">{shareNotice}</div>}
 
       {error && (

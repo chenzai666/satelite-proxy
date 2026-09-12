@@ -9298,3 +9298,8 @@ li.virt-pad {
   padding: 0;
   border: none;
 }
+.node-drop-before { box-shadow: inset 0 3px 0 var(--primary) !important; }
+.node-drop-after { box-shadow: inset 0 -3px 0 var(--primary) !important; }
+.node-card.node-drop-before { box-shadow: inset 3px 0 0 var(--primary) !important; }
+.node-card.node-drop-after { box-shadow: inset -3px 0 0 var(--primary) !important; }
+[data-node-id] { touch-action: pan-y; }

@@ -67,6 +67,8 @@ pub struct AppStore {
     /// gone) doesn't linger forever.
     #[serde(default)]
     pub favorite_nodes: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    pub node_order: Vec<String>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -91,6 +93,14 @@ pub struct StoredNode {
 }
 
 impl AppStore {
+    pub fn ordered_nodes(&self) -> Vec<&StoredNode> {
+        let ranks: std::collections::HashMap<&str, usize> = self.node_order.iter()
+            .enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let mut nodes: Vec<_> = self.nodes.iter().collect();
+        nodes.sort_by_key(|n| ranks.get(n.node.id.as_str()).copied().unwrap_or(usize::MAX));
+        nodes
+    }
+
     pub fn load(path: &Path, resource_dir: Option<&Path>) -> AppResult<Self> {
         let (mut store, source_raw) = Self::load_with_recovery(path, resource_dir)?;
         let schema_before = store.schema_version;
@@ -1114,6 +1124,8 @@ impl AppStore {
     /// credentials changed so it hashes to a different id). Keeps
     /// `favorite_nodes` from growing unboundedly with unreachable ids.
     fn gc_favorite_nodes(&mut self) {
+        let valid: std::collections::HashSet<&str> = self.nodes.iter().map(|n| n.node.id.as_str()).collect();
+        self.node_order.retain(|id| valid.contains(id.as_str()));
         self.favorite_nodes
             .retain(|id| self.nodes.iter().any(|n| &n.node.id == id));
     }
@@ -2006,6 +2018,9 @@ fn store_from_json(value: Value) -> AppStore {
         }
     }
 
+    if let Some(order) = obj.get("node_order") {
+        store.node_order = serde_json::from_value(order.clone())?;
+    }
     if let Some(favorites) = obj.get("favorite_nodes") {
         match serde_json::from_value::<std::collections::BTreeSet<String>>(favorites.clone()) {
             Ok(parsed) => store.favorite_nodes = parsed,
@@ -2206,6 +2221,14 @@ pub fn default_store_path(app_data_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn display_order_survives_store_serialization() {
+        let mut store = AppStore::default();
+        store.node_order = vec!["second".into(), "first".into()];
+        let restored = parse_store(&serde_json::to_string(&store).unwrap()).unwrap();
+        assert_eq!(restored.node_order, store.node_order);
+        assert!(parse_store("{}").unwrap().node_order.is_empty());
+    }
     use crate::domain::RuleType;
 
     fn test_store_path(name: &str) -> PathBuf {

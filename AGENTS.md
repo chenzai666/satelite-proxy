@@ -5,6 +5,11 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-09-12 节点排序：`useNodeDragSort` 使用指针事件、5px 阈值、Esc/失焦取消、边缘自动滚动，保留虚拟列表。
+`reorder_nodes` 仅保存 `AppStore.node_order`，不重启内核、不改节点/订阅原文；列表、分页和测速 ID 顺序共用 ordered_nodes。
+手动拖动切回默认排序；组内移动不改变分类，跨组需默认平铺；自写配置仍只读。
+过滤列表按可见节点槽位合并，隐藏节点不丢失；刷新后稳定 ID 保留排序，新增节点追加。
+
 2026-09-12：所有确认操作统一 `await confirmAction(...)`（`src/confirmAction.ts`）。
 禁止使用全局/window.confirm：dialog 2.7.2 注入的 shim 调用未注册 confirm 命令，且返回 Promise。
 公共 confirm API 走已授权 message 命令；失败视为取消，同一时间只允许一个确认弹窗。
