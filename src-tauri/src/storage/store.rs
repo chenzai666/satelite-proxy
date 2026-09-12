@@ -2019,7 +2019,10 @@ fn store_from_json(value: Value) -> AppStore {
     }
 
     if let Some(order) = obj.get("node_order") {
-        store.node_order = serde_json::from_value(order.clone())?;
+        match serde_json::from_value(order.clone()) {
+            Ok(order) => store.node_order = order,
+            Err(error) => crate::app_log::warn("storage", format!("ignored unreadable node_order ({error}); keeping defaults")),
+        }
     }
     if let Some(favorites) = obj.get("favorite_nodes") {
         match serde_json::from_value::<std::collections::BTreeSet<String>>(favorites.clone()) {
