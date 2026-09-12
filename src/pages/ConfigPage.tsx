@@ -49,7 +49,8 @@ interface SkippedReport {
 function skippedEntry(result: ImportResult): SkippedReport {
   return {
     name: result.subscription.name,
-    source: result.subscription.source_display,
+    // Reports may be shared externally; never copy subscription URLs or pasted URIs.
+    source: result.subscription.source_kind,
     format: result.subscription.format ?? null,
     skipped: result.skipped ?? [],
   };

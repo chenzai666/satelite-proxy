@@ -2752,7 +2752,7 @@ mod tests {
             json!({ "rule_set": [tag], "action": "route", "outbound": group })
         );
 
-        let selectors = build_filter_set_selectors(&[set.clone()], &nodes, &tags);
+        let selectors = build_filter_set_selectors(&[set.clone()], &nodes, &tags, true);
         assert_eq!(selectors.len(), 1);
         assert_eq!(selectors[0]["tag"], group);
         assert_eq!(selectors[0]["outbounds"], json!(tags));
@@ -2764,7 +2764,7 @@ mod tests {
         let (_, routes, _) =
             build_grouped_rule_sets(&[stale.clone()], &nodes, &tags);
         assert_eq!(routes[0]["outbound"], "proxy");
-        assert!(build_filter_set_selectors(&[stale], &nodes, &tags).is_empty());
+        assert!(build_filter_set_selectors(&[stale], &nodes, &tags, true).is_empty());
     }
 
     #[test]

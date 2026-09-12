@@ -400,6 +400,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ## 9. 约定与坑（agent 必读）
 
+新增约定（2026-09-12）：节点排序只更新 `AppStore.node_order`，使用指针事件并保留虚拟列表、隐藏节点槽位，不能触发代理切换；破坏性确认必须 `await confirmAction`，禁止全局 `window.confirm`。规则集 `node_ids` 两个及以上为指定节点池，单节点仍兼容 `node_id`；Mihomo 原生订阅策略优先，仅无原生策略时的远程分类采用本地指定节点池。导入跳过报告仅显示来源类型，不复制订阅地址，发布报告前检查节点名与错误详情。前端确认回归由 `scripts/test-confirm-action.mjs` 执行，Rust 测试及客户端构建只在 GitHub Actions 运行。
+
 
 新增约定（24）：Windows UWP 回环操作是显式的设置页动作，不绑定系统代理开关。`enable_uwp_loopback` 仅枚举当前用户 AppContainer 映射并追加 `LoopbackExempt`，通过 UAC 启动的同 exe helper 在 Tauri 初始化前执行；不可改成清空豁免，也不要把它误认为分流规则或 TUN。
 

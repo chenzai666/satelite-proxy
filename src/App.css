@@ -305,7 +305,7 @@ button {
      variation to refract instead of a flat fill. */
   background:
     radial-gradient(
-      ellipse 105% 68% at 50% 18%,
+      ellipse 105% 68% at 50% 28%,
       rgba(var(--glow-deep-rgb), 0.32) 0%,
       rgba(var(--glow-deep-rgb), 0.2) 34%,
       rgba(var(--glow-deep-rgb), 0.08) 58%,
@@ -326,7 +326,7 @@ button {
 [data-theme="day"] .app-shell {
   background:
     radial-gradient(
-      ellipse 105% 68% at 50% 18%,
+      ellipse 105% 68% at 50% 28%,
       rgba(var(--glow-deep-rgb), 0.26) 0%,
       rgba(var(--glow-deep-rgb), 0.16) 36%,
       rgba(var(--glow-deep-rgb), 0.07) 60%,
@@ -369,15 +369,12 @@ button {
       color-mix(in srgb, var(--nav-bg) 92%, #000000 4%) 100%
     );
   border: 1px solid rgba(255, 255, 255, 0.075);
-  box-shadow:
-    0 18px 52px rgba(0, 0, 0, 0.3),
-    0 4px 14px rgba(0, 0, 0, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.018);
-  backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
-  -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
-  /* No overflow: hidden here — it would clip the ⋯ menu popup that drops
-     below the capsule (glow is clipped by .topnav-glow instead). */
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.24);
+  /* No backdrop-filter here and no overflow: hidden — the ⋯ menu popup must
+     drop below the capsule unclipped, and a backdrop-filter on an
+     overflow-visible rounded element bleeds its SQUARE bounds over the page
+     below on hover re-composites (the light band under the navbar). The
+     frost lives on .topnav-glow, which already clips to the pill shape. */
   scrollbar-width: none;
 }
 
@@ -418,6 +415,11 @@ button {
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
+  /* Carries the navbar frost. On .topnav itself the filter's square bounds
+     bleed a light band over the page header on hover re-composites; this
+     layer's overflow clip forces the pill-shaped rounding. */
+  backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
+  -webkit-backdrop-filter: blur(20px) saturate(1.42) brightness(0.96);
 }
 
 /* Soft light source bleeding onto the glass from the upper-left. Clipped by
