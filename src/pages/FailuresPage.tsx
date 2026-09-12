@@ -292,7 +292,6 @@ export function FailuresPage({ embedded = false }: Props) {
         <GlassButton
           icon="↻"
           onClick={() => void reload()}
-          title={t("common.refresh")}
         >
           {t("common.refresh")}
         </GlassButton>
@@ -300,7 +299,6 @@ export function FailuresPage({ embedded = false }: Props) {
           variant="danger"
           icon="⌫"
           onClick={() => void onClear()}
-          title={t("common.clear")}
         >
           {t("common.clear")}
         </GlassButton>

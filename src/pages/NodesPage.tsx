@@ -24,6 +24,7 @@ import { GlassSwitch } from "../components/GlassSwitch";
 import { ErrorModal } from "../components/ErrorModal";
 import { NodeDetailModal } from "../components/NodeDetailModal";
 import { useI18n } from "../i18n";
+import { nodeTip } from "../nodeTooltip";
 import { groupNodes, type GroupBy } from "../nodeGroups";
 import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
@@ -789,7 +790,7 @@ export function NodesPage() {
           </button>
         </span>
         <span className="node-list-identity">
-          <div className="node-list-name" title={n.name}>{n.favorite ? "♥ " : ""}{n.name}</div>
+          <div className="node-list-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
           {n.subscription_name ? (
             <div className="node-sub-label" title={n.subscription_name}>
               {n.subscription_name}
@@ -874,7 +875,7 @@ export function NodesPage() {
           </div>
         </div>
         {!customRuntime && <button type="button" className="node-card-menu" aria-label={t("nodes.contextMenu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>}
-        <div className="node-card-name" title={n.name}>{n.favorite ? "♥ " : ""}{n.name}</div>
+        <div className="node-card-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
         <div className="node-card-footer">
           <span className="node-sub-label" title={n.subscription_name ?? ""}>
             {n.subscription_name}
