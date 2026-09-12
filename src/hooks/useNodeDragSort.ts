@@ -16,6 +16,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
     const origin = event.currentTarget;
     const scroller = origin.closest<HTMLElement>(".main");
     const startX = event.clientX, startY = event.clientY, pointerId = event.pointerId;
+    const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
     let x = startX, y = startY, active = false, frame = 0;
     let preview: HTMLElement | null = null;
     let target: HTMLElement | null = null;
@@ -34,7 +35,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
     }
     function tick() {
       if (!active) return;
-      if (preview) preview.style.transform = `translate(${x - startX}px, ${y - startY}px)`;
+      if (preview) preview.style.transform = `translate(${(x - startX) / zoom}px, ${(y - startY) / zoom}px)`;
       if (scroller) {
         const rect = scroller.getBoundingClientRect();
         const delta = y < rect.top + 36 ? -12 : y > rect.bottom - 36 ? 12 : 0;
@@ -54,8 +55,8 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
         preview.removeAttribute("data-node-id");
         preview.setAttribute("aria-hidden", "true");
         Object.assign(preview.style, {
-          position: "fixed", top: `${rect.top}px`, left: `${rect.left}px`,
-          width: `${rect.width}px`, height: `${rect.height}px`, margin: "0",
+          position: "fixed", top: `${rect.top / zoom}px`, left: `${rect.left / zoom}px`,
+          width: `${rect.width / zoom}px`, height: `${rect.height / zoom}px`, margin: "0",
           pointerEvents: "none", zIndex: "10000", opacity: ".85",
         });
         document.body.append(preview);
@@ -78,6 +79,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", cancel);
       window.removeEventListener("blur", cancel);
+      window.removeEventListener("resize", cancel);
       window.removeEventListener("keydown", key);
       cleanup.current = () => {};
       if (shouldCommit) callback.current(id, targetId, after);
@@ -89,6 +91,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", cancel);
     window.addEventListener("blur", cancel);
+    window.addEventListener("resize", cancel);
     window.addEventListener("keydown", key);
     cleanup.current = cancel;
   }

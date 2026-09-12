@@ -5,6 +5,10 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-09-12 当前版本更新为 **1.0.32**（下方 1.0.28 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.32.md。默认打包目标 app/dmg/nsis/appimage，Windows 脚本仍支持显式 MSI/便携选择。
+
+本轮整合上游31–32：MASQUE 和 Xray/Mihomo 双副内核、窗口放大及分模式记忆、原生注册表/剪贴板、新图标；Windows 剪贴板使用消息专用隐藏窗口作为所有者，不能把 OpenClipboard 的句柄改回空值。节点拖拽预览坐标必须除以根 zoom，窗口缩放时取消在途拖拽。保留分支原生订阅策略、节点交互、UWP、DNS 和失败回滚。新版模块说明优先于下方历史 Xray 单副内核说明。
+
 2026-09-12 节点排序：`useNodeDragSort` 使用指针事件、5px 阈值、Esc/失焦取消、边缘自动滚动，保留虚拟列表。
 `reorder_nodes` 仅保存 `AppStore.node_order`，不重启内核、不改节点/订阅原文；列表、分页和测速 ID 顺序共用 ordered_nodes。
 手动拖动切回默认排序；组内移动不改变分类，跨组需默认平铺；自写配置仍只读。

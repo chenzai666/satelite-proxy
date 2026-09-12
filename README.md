@@ -1,5 +1,11 @@
 # Satelite
 
+## 本分支 1.0.32
+
+已整合上游至 1.0.32：窗口自由放大与尺寸记忆、MASQUE、Xray/Mihomo 双副内核委托、新图标及 Windows 原生代理/剪贴板 API。保留节点拖拽、右键编辑分享、UWP 回环、IPv4/DNS 与订阅原生策略组。安装包和便携包见[本分支发布页](https://github.com/chenzai666/satelite-proxy/releases)，更新说明见 [1.0.32 发布说明](docs/release-1.0.32.md)。
+
+当前发布流程仅验证 Windows x64，默认内置 sing-box，其余内核按需下载；没有改成强制捆绑三内核。上游另有 Linux AppImage 与独立的 Android 项目 [Interstellar](https://github.com/zn0wii/interstellar)，它们不属于本分支的已验证发布包。本分支已接入 Linux DMA-BUF 兼容修复，但尚未补齐和验证 Linux 打包流程。
+
 <p align="center">
   <strong>卫星飞天，连接无限。</strong><br/>
   轻量、好看的 sing-box / Xray / mihomo 桌面客户端<br/>

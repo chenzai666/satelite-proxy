@@ -80,24 +80,37 @@ mod clipboard_tests {
 #[cfg(target_os = "windows")]
 fn set_clipboard_text(text: &str) -> Result<(), String> {
     use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
+    };
+
+    // A non-null owner is required for EmptyClipboard + SetClipboardData.
+    // A message-only STATIC window works even after the main WebView is destroyed.
+    let owner = unsafe {
+        CreateWindowExW(WINDOW_EX_STYLE::default(), w!("STATIC"), w!("Satelite clipboard"),
+            WINDOW_STYLE::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None)
+    }.map_err(|e| format!("Create clipboard owner: {e}"))?;
 
     // The clipboard is shared; a concurrent holder (clipboard manager,
     // another app mid-write) makes OpenClipboard fail — retry briefly
     // before reporting the copy as failed.
     let mut opened = false;
     for _ in 0..5 {
-        if unsafe { OpenClipboard(None) }.is_ok() {
+        if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
             opened = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     if !opened {
+        unsafe { let _ = DestroyWindow(owner); }
         return Err("OpenClipboard stayed busy".into());
     }
     let placed = unsafe { place_text_while_open(text) };
     unsafe {
         let _ = CloseClipboard();
+        let _ = DestroyWindow(owner);
     }
     placed
 }
@@ -114,7 +127,6 @@ unsafe fn place_text_while_open(text: &str) -> Result<(), String> {
     // feature; pulling all of Ole for two constants isn't worth it).
     const CF_UNICODETEXT: u32 = 13;
 
-    EmptyClipboard().map_err(|e| format!("EmptyClipboard: {e}"))?;
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let bytes = wide.len() * std::mem::size_of::<u16>();
     let handle = GlobalAlloc(GMEM_MOVEABLE, bytes).map_err(|e| format!("GlobalAlloc: {e}"))?;
@@ -125,6 +137,10 @@ unsafe fn place_text_while_open(text: &str) -> Result<(), String> {
     }
     std::ptr::copy_nonoverlapping(wide.as_ptr().cast::<u8>(), dst.cast::<u8>(), bytes);
     let _ = GlobalUnlock(handle);
+    if let Err(e) = EmptyClipboard() {
+        let _ = GlobalFree(Some(handle));
+        return Err(format!("EmptyClipboard: {e}"));
+    }
     if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(handle.0))) {
         let _ = GlobalFree(Some(handle));
         return Err(format!("SetClipboardData: {e}"));

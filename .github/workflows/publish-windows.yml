@@ -10,7 +10,7 @@ on:
       release_tag:
         description: 必须与构建提交一致的现有版本标签
         required: true
-        default: v1.0.28
+        default: v1.0.32
         type: string
 
 permissions:
