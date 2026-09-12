@@ -9,6 +9,7 @@ mod write;
 mod xray;
 
 pub use builder::{
+    explicit_set_pool_tags,
     apply_udp_node_compatibility, build_singbox_config_with_chain_context,
     build_singbox_config_with_connection_policy, chain_hop_outbound_tag, generate_api_secret,
     outbound_tag, rule_set_is_empty_for_config, smart_pool_nodes, subscription_proxy_port,

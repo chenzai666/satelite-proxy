@@ -549,6 +549,7 @@ pub fn set_rule_set_strategy(
                 set.chain_name = None;
                 set.node_id = None;
                 set.node_name = None;
+                set.node_ids = Vec::new();
                 set.smart_include = Vec::new();
                 set.smart_exclude = Vec::new();
             }
@@ -579,6 +580,7 @@ pub fn batch_set_rule_targets(
     id: String,
     target: RuleTarget,
     node_id: Option<String>,
+    node_ids: Option<Vec<String>>,
     smart_include: Option<Vec<String>>,
     smart_exclude: Option<Vec<String>>,
     chain_id: Option<String>,
@@ -589,6 +591,7 @@ pub fn batch_set_rule_targets(
                 &id,
                 target,
                 node_id,
+                node_ids.unwrap_or_default(),
                 smart_include.unwrap_or_default(),
                 smart_exclude.unwrap_or_default(),
                 chain_id,
@@ -661,6 +664,7 @@ pub fn create_rule_set(
     target: Option<RuleTarget>,
     update_interval: Option<String>,
     node_id: Option<String>,
+    node_ids: Option<Vec<String>>,
     smart_include: Option<Vec<String>>,
     smart_exclude: Option<Vec<String>>,
     chain_id: Option<String>,
@@ -689,6 +693,7 @@ pub fn create_rule_set(
             }
             let target = target.unwrap_or(RuleTarget::Proxy);
             let node_id = node_id.filter(|v| !v.trim().is_empty());
+            let node_ids = node_ids.unwrap_or_default();
             let smart_include = smart_include.unwrap_or_default();
             let smart_exclude = smart_exclude.unwrap_or_default();
             if let Some(url) = remote_url
@@ -714,6 +719,7 @@ pub fn create_rule_set(
                     target,
                     update_interval,
                     node_id,
+                    node_ids,
                     smart_include,
                     smart_exclude,
                     chain_id,
@@ -726,6 +732,7 @@ pub fn create_rule_set(
                     n,
                     target,
                     node_id,
+                    node_ids,
                     smart_include,
                     smart_exclude,
                     chain_id,
