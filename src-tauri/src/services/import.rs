@@ -1278,7 +1278,7 @@ fn build_outcome(
     ImportOutcome {
         subscription,
         nodes,
-        skipped: parsed.skipped,
+        skipped,
     }
 }
 

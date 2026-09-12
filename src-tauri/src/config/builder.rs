@@ -1499,7 +1499,7 @@ fn build_chain_outbounds(
 pub fn smart_pool_nodes(r: &Rule, nodes: &[ProxyNode]) -> Vec<ProxyNode> {
     nodes
         .iter()
-        .filter(|n| r.smart_name_matches(&n.name))
+        .filter(|n| crate::domain::name_matches_keywords(&n.name, &r.smart_include, &r.smart_exclude))
         .cloned()
         .collect()
 }
