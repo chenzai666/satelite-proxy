@@ -934,6 +934,19 @@ const en = {
   "rules.create": "Create",
   "rules.urlDetectedHint": "Detected a URL — click to replace with",
   "rules.clickToReplace": "Click to replace",
+  "rules.payloadPlaceholder":
+    "One entry per line or separated by spaces (batch add):\ngoogle.com\nyoutube\n10.0.0.0/8",
+  "rules.payloadInvalidDomain":
+    "Entry {i} \"{v}\" is not a valid domain: use the example.com form (no https://, path, or port)",
+  "rules.payloadInvalidIp":
+    "Entry {i} \"{v}\" is not a valid IP / CIDR: use e.g. 192.168.1.0/24 or 2001:db8::/32",
+  "rules.payloadInvalidProcess":
+    "Entry {i} \"{v}\" is not a valid process name: no / \\ : characters",
+  "rules.payloadMoreIssues": "…and {n} more invalid entries",
+  "rules.payloadEditSingle":
+    "Editing accepts a single entry — use Add for batch input",
+  "rules.payloadBatchCount": "Will add {n} rules",
+  "rules.payloadSaveCount": "Add {n} rules",
 
   // dns
   "dns.title": "DNS",
@@ -1949,6 +1962,19 @@ const zh: Record<MessageKey, string> = {
   "rules.create": "创建",
   "rules.urlDetectedHint": "检测到 URL，点击替换为",
   "rules.clickToReplace": "点击替换",
+  "rules.payloadPlaceholder":
+    "每行一条或用空格分隔，支持批量添加：\ngoogle.com\nyoutube\n10.0.0.0/8",
+  "rules.payloadInvalidDomain":
+    "第 {i} 条「{v}」不是合法域名：应为 example.com 形式（不含 https://、路径、端口）",
+  "rules.payloadInvalidIp":
+    "第 {i} 条「{v}」不是合法 IP / CIDR：如 192.168.1.0/24 或 2001:db8::/32",
+  "rules.payloadInvalidProcess":
+    "第 {i} 条「{v}」不是合法进程名：不能包含 / \\ : 字符",
+  "rules.payloadMoreIssues": "…还有 {n} 条无效",
+  "rules.payloadEditSingle":
+    "编辑时仅支持一条匹配内容，批量请用「新增规则」",
+  "rules.payloadBatchCount": "将批量添加 {n} 条规则",
+  "rules.payloadSaveCount": "添加 {n} 条",
 
 
   "dns.title": "DNS",

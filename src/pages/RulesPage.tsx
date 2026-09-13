@@ -61,10 +61,39 @@ import type {
 
 type RouteFinal = "proxy" | "direct" | "block";
 
-/** Top N rule rows open their ⋮ menu downward: the table card clips
- *  overflow (clean rounded corners), so an upward menu from the first rows
- *  would be cut off at the card's top edge. */
-const RULE_MENU_FLIP_ROWS = 4;
+/** Decide the rule-row ⋮ menu direction at open time from real geometry:
+ *  open downward only while the room below the trigger — bounded by the
+ *  table card (overflow: hidden clips the popover, see .rules-table-wrap) —
+ *  fits the menu; otherwise open upward, escaping past the card's top edge
+ *  (the :has() lift in App.css lets it overlay the toolbar band). Replaces
+ *  the old "top 4 rows always flip down": a 1–3 row table has no room below
+ *  the last rows either, so the menu was clipped mid-air by the card. Same
+ *  walk-the-clipping-ancestors idiom as SolidSelect::shouldFlipUp — pure
+ *  getBoundingClientRect math, safe under the root CSS zoom. */
+function rowMenuOpensDown(trigger: HTMLElement): boolean {
+  // 编辑+删除 two items incl. padding/gap/offset; keep in sync with .rule-menu-pop.
+  const estHeight = 78;
+  let bottomLimit = window.innerHeight;
+  let topLimit = 0;
+  let node: HTMLElement | null = trigger.parentElement;
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node);
+    const clips =
+      /(auto|scroll|hidden)/.test(style.overflow) ||
+      /(auto|scroll|hidden)/.test(style.overflowY);
+    if (clips) {
+      const rect = node.getBoundingClientRect();
+      bottomLimit = Math.min(bottomLimit, rect.bottom);
+      topLimit = Math.max(topLimit, rect.top);
+    }
+    node = node.parentElement;
+  }
+  const rect = trigger.getBoundingClientRect();
+  const roomBelow = bottomLimit - rect.bottom - 6;
+  const roomAbove = rect.top - topLimit - 6;
+  // Down when it fits; when neither side fits, pick the roomier one.
+  return roomBelow >= estHeight || roomBelow >= roomAbove;
+}
 
 /**
  * If `payload` is a pasted http(s) URL, suggest what it would actually
@@ -91,6 +120,89 @@ function suggestPayloadFromUrl(payload: string, ruleType: RuleType): string | nu
 }
 
 const REMOTE_PAGE_SIZE = 100;
+
+/** Batch entries for the match-content textarea: whitespace (spaces or
+ *  newlines) separates entries — one rule per entry on save. */
+function parsePayloadEntries(raw: string): string[] {
+  return raw
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Hostname label: alnum (unicode allowed — the backend punycodes it for the
+ *  kernel configs), inner hyphens, no leading/trailing hyphen. */
+const HOSTNAME_LABEL_RE = /^[\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?$/u;
+
+/** Domain / domain-suffix shape: dot-separated labels, no scheme, path,
+ *  port or leading dot ("https://a.b" and ".com" both fail here). */
+function isValidHostnameShape(v: string): boolean {
+  return v.length <= 253 && v.split(".").every((l) => HOSTNAME_LABEL_RE.test(l));
+}
+
+/** IPv4: exactly four 0–255 octets, no leading zeros ("0" alone is fine). */
+function isValidIpv4(ip: string): boolean {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/.test(p));
+}
+
+/** IPv6 via the WHATWG URL parser: `http://[...]` only parses for valid
+ *  literals, in both WebView2 and WKWebView. */
+function isValidIpv6(ip: string): boolean {
+  try {
+    new URL(`http://[${ip}]/`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** IP-CIDR entry: bare IP or CIDR. Returns the normalized value — bare IPs
+ *  gain /32 // /128, since mihomo's IP-CIDR rejects bare IPs — or null when
+ *  invalid. Prefix must fit the address family (≤32 v4 / ≤128 v6). */
+function normalizeIpCidrEntry(v: string): string | null {
+  const slash = v.indexOf("/");
+  if (slash === -1) {
+    if (isValidIpv4(v)) return `${v}/32`;
+    if (isValidIpv6(v)) return `${v}/128`;
+    return null;
+  }
+  if (v.indexOf("/", slash + 1) !== -1) return null;
+  const ip = v.slice(0, slash);
+  const prefix = v.slice(slash + 1);
+  if (!/^\d{1,3}$/.test(prefix)) return null;
+  const bits = Number(prefix);
+  if (isValidIpv4(ip)) return bits <= 32 ? v : null;
+  if (isValidIpv6(ip)) return bits <= 128 ? v : null;
+  return null;
+}
+
+/** One invalid entry from the match-content textarea. */
+interface PayloadIssue {
+  index: number;
+  value: string;
+  kind: "domain" | "ip" | "process";
+}
+
+/** Validate batched match-content entries against the selected rule type;
+ *  domain keywords are free-form and never fail. */
+function validatePayloadEntries(
+  entries: string[],
+  type: RuleType,
+): PayloadIssue[] {
+  const issues: PayloadIssue[] = [];
+  entries.forEach((value, index) => {
+    if (type === "domain" || type === "domain_suffix") {
+      if (!isValidHostnameShape(value)) issues.push({ index, value, kind: "domain" });
+    } else if (type === "ip_cidr") {
+      if (normalizeIpCidrEntry(value) === null) issues.push({ index, value, kind: "ip" });
+    } else if (type === "process") {
+      if (/[/\\:]/.test(value)) issues.push({ index, value, kind: "process" });
+    }
+  });
+  return issues;
+}
 
 /** Builtin remote set id → the geodata matcher the Xray / mihomo generators
  *  emit instead of reading the .srs cache (and which geodata file backs it). */
@@ -245,6 +357,8 @@ function SingboxRulesPage({ embedded = false }: Props) {
   const [editSetBusy, setEditSetBusy] = useState(false);
   /** Row ⋮ menu open for this rule id */
   const [menuRuleId, setMenuRuleId] = useState<string | null>(null);
+  /** Direction of the open row ⋮ menu — decided per open via rowMenuOpensDown. */
+  const [menuRowDown, setMenuRowDown] = useState(false);
   /** Rule-set card ⋮ menu open for this set id. */
   const [menuSetId, setMenuSetId] = useState<string | null>(null);
   const [remoteBusyIds, setRemoteBusyIds] = useState<Set<string>>(new Set());
@@ -604,10 +718,25 @@ function SingboxRulesPage({ embedded = false }: Props) {
     [target, smartInclude, smartExclude],
   );
 
-  const payloadSuggestion = useMemo(
-    () => suggestPayloadFromUrl(payload, ruleType),
-    [payload, ruleType],
+  /** Batched match-content entries + live per-entry validation for the
+   *  textarea (whitespace-separated, see parsePayloadEntries). */
+  const payloadEntries = useMemo(() => parsePayloadEntries(payload), [payload]);
+  const payloadIssues = useMemo(
+    () => validatePayloadEntries(payloadEntries, ruleType),
+    [payloadEntries, ruleType],
   );
+  /** Editing keeps single-entry semantics; batch is an add-time feature. */
+  const payloadEditMulti = editRule !== null && payloadEntries.length > 1;
+
+  /** URL suggestion for the first entry that still looks like a pasted URL,
+   *  kept with its index so the replace button only rewrites that entry. */
+  const payloadSuggestion = useMemo(() => {
+    for (let i = 0; i < payloadEntries.length; i++) {
+      const value = suggestPayloadFromUrl(payloadEntries[i], ruleType);
+      if (value) return { index: i, value };
+    }
+    return null;
+  }, [payloadEntries, ruleType]);
 
   /** Node count matching include/exclude keyword filters. Same semantics as
    *  the backend pool: blacklist OR skips, whitelist OR allows, empty
@@ -1007,9 +1136,15 @@ function SingboxRulesPage({ embedded = false }: Props) {
     void ensureChainsLoaded();
   }
 
-  async function onSave(e: FormEvent) {
-    e.preventDefault();
-    if (!viewSetId || !payload.trim() || plainDiverged) return;
+  /** Save (button-only — the form itself never submits). One textarea entry
+   *  = one rule: entries are saved sequentially so the backend's max-ord+10
+   *  assignment keeps the typed order, duplicates collapse onto the same
+   *  content-addressed rule id, and the 500ms rule-apply debounce merges
+   *  everything into a single core restart. */
+  async function doSave() {
+    if (!viewSetId || plainDiverged) return;
+    // Defensive: the save button is already disabled while any of these hold.
+    if (payloadEntries.length === 0 || payloadIssues.length > 0 || payloadEditMulti) return;
     // Smart sets honor the full target list; plain sets honor the per-rule
     // proxy/direct/block choice (the builder routes each rule separately).
     const effectiveTarget = clampTargetForSet(target);
@@ -1027,22 +1162,36 @@ function SingboxRulesPage({ embedded = false }: Props) {
       );
       return;
     }
+    if (effectiveTarget === "chain" && !pinChainId.trim()) {
+      setError(t("rules.needChain"));
+      return;
+    }
+    // Order-preserving dedupe + per-type normalization (bare IPs → CIDR).
+    const entries = [
+      ...new Set(
+        ruleType === "ip_cidr"
+          ? payloadEntries.map(normalizeIpCidrEntry).filter((v): v is string => v !== null)
+          : payloadEntries,
+      ),
+    ];
     setBusy(true);
     setError(null);
     try {
-      await saveRule({
-        setId: viewSetId,
-        id: editRule?.id ?? null,
-        ruleType,
-        payload: payload.trim(),
-        target: effectiveTarget,
-        ord: editRule?.ord ?? null,
-        enabled,
-        nodeId: effectiveTarget === "node" ? pinNodeId : null,
-        smartInclude: effectiveTarget === "smart" ? parseKeywords(smartInclude) : null,
-        smartExclude: effectiveTarget === "smart" ? parseKeywords(smartExclude) : null,
-        chainId: effectiveTarget === "chain" ? pinChainId : null,
-      });
+      for (const entry of entries) {
+        await saveRule({
+          setId: viewSetId,
+          id: editRule?.id ?? null,
+          ruleType,
+          payload: entry,
+          target: effectiveTarget,
+          ord: editRule?.ord ?? null,
+          enabled,
+          nodeId: effectiveTarget === "node" ? pinNodeId : null,
+          smartInclude: effectiveTarget === "smart" ? parseKeywords(smartInclude) : null,
+          smartExclude: effectiveTarget === "smart" ? parseKeywords(smartExclude) : null,
+          chainId: effectiveTarget === "chain" ? pinChainId : null,
+        });
+      }
       setEditOpen(false);
       await reloadRules(viewSetId);
       await reloadSets();
@@ -2095,7 +2244,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((r, rowIndex) => (
+                  {filtered.map((r) => (
                     <tr
                       key={r.id}
                       className={r.enabled ? "rule-row" : "rule-row row-disabled"}
@@ -2154,9 +2303,12 @@ function SingboxRulesPage({ embedded = false }: Props) {
                             aria-expanded={menuRuleId === r.id}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setMenuRuleId((id) =>
-                                id === r.id ? null : r.id,
-                              );
+                              if (menuRuleId === r.id) {
+                                setMenuRuleId(null);
+                                return;
+                              }
+                              setMenuRowDown(rowMenuOpensDown(e.currentTarget));
+                              setMenuRuleId(r.id);
                             }}
                           >
                             ⋮
@@ -2164,7 +2316,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
                           {menuRuleId === r.id && (
                             <div
                               className={`rule-menu-pop${
-                                rowIndex < RULE_MENU_FLIP_ROWS ? " open-down" : ""
+                                menuRowDown ? " open-down" : ""
                               }`}
                               role="menu"
                             >
@@ -2212,7 +2364,9 @@ function SingboxRulesPage({ embedded = false }: Props) {
                 ×
               </button>
             </header>
-            <form className="modal-body" onSubmit={(e) => void onSave(e)}>
+            {/* Enter inserts a newline in the textarea; saving is click-only
+                (see doSave) so batch typing can never submit mid-entry. */}
+            <form className="modal-body" onSubmit={(e) => e.preventDefault()}>
               <div className="field">
                 <span>{t("rules.type")}</span>
                 <SolidSelect
@@ -2224,13 +2378,15 @@ function SingboxRulesPage({ embedded = false }: Props) {
               </div>
               <label className="field">
                 <span>{t("rules.matchContent")}</span>
-                <input
+                <textarea
+                  className="payload-textarea"
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
                   value={payload}
                   onChange={(e) => setPayload(e.target.value)}
-                  placeholder="google.com / youtube / 10.0.0.0/8"
+                  placeholder={t("rules.payloadPlaceholder")}
+                  rows={3}
                   autoFocus
                 />
                 {payloadSuggestion && (
@@ -2238,12 +2394,43 @@ function SingboxRulesPage({ embedded = false }: Props) {
                     variant="primary"
                     className="payload-suggestion-btn"
                     title={t("rules.clickToReplace")}
-                    onClick={() => setPayload(payloadSuggestion)}
+                    onClick={() =>
+                      setPayload(
+                        payloadEntries
+                          .map((entry, i) =>
+                            i === payloadSuggestion.index ? payloadSuggestion.value : entry,
+                          )
+                          .join("\n"),
+                      )
+                    }
                   >
                     {t("rules.urlDetectedHint")}{" "}
-                    <span className="mono">{payloadSuggestion}</span>
+                    <span className="mono">{payloadSuggestion.value}</span>
                   </GlassButton>
                 )}
+                {payloadIssues.length > 0 ? (
+                  <div className="payload-issues" role="alert">
+                    {payloadIssues.slice(0, 3).map((issue) => (
+                      <div key={issue.index} className="mono">
+                        {issue.kind === "domain"
+                          ? t("rules.payloadInvalidDomain", { i: issue.index + 1, v: issue.value })
+                          : issue.kind === "ip"
+                            ? t("rules.payloadInvalidIp", { i: issue.index + 1, v: issue.value })
+                            : t("rules.payloadInvalidProcess", { i: issue.index + 1, v: issue.value })}
+                      </div>
+                    ))}
+                    {payloadIssues.length > 3 &&
+                      t("rules.payloadMoreIssues", { n: payloadIssues.length - 3 })}
+                  </div>
+                ) : payloadEditMulti ? (
+                  <div className="payload-issues" role="alert">
+                    {t("rules.payloadEditSingle")}
+                  </div>
+                ) : payloadEntries.length > 1 ? (
+                  <div className="payload-count">
+                    {t("rules.payloadBatchCount", { n: payloadEntries.length })}
+                  </div>
+                ) : null}
               </label>
               <div className="field">
                 <span>{t("rules.outbound")}</span>
@@ -2406,20 +2593,27 @@ function SingboxRulesPage({ embedded = false }: Props) {
                   {t("common.cancel")}
                 </GlassButton>
                 <GlassButton
-                  type="submit"
+                  type="button"
                   variant="primary"
                   disabled={
                     busy ||
                     plainDiverged ||
                     !payload.trim() ||
+                    payloadIssues.length > 0 ||
+                    payloadEditMulti ||
                     (viewSet?.strategy === "smart" && target === "node" && !pinNodeId.trim()) ||
                     ((viewSet?.strategy === "smart" || viewSet?.strategy === "chain") &&
                       target === "chain" && !pinChainId.trim()) ||
                     (viewSet?.strategy === "smart" && target === "smart" &&
                       (nodes.length === 0 || smartKeywordOverlap.length > 0))
                   }
+                  onClick={() => void doSave()}
                 >
-                  {busy ? t("common.saving") : t("common.save")}
+                  {busy
+                    ? t("common.saving")
+                    : !editRule && payloadEntries.length > 1
+                      ? t("rules.payloadSaveCount", { n: payloadEntries.length })
+                      : t("common.save")}
                 </GlassButton>
               </footer>
             </form>

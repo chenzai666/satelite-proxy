@@ -4001,8 +4001,9 @@ tr.rule-row:hover {
 .rules-table-wrap.table-wrap {
   /* Clip to the rounded card: overflow visible + backdrop-filter makes the
      frost layer paint SQUARE corners (WebView2 compositing bug) — with the
-     clip, all four corners render clean. Row ⋮ menus escape no longer; the
-     first rows flip their menu downward instead (RULE_MENU_FLIP_ROWS). */
+     clip, all four corners render clean. Row ⋮ menus therefore pick their
+     direction from real geometry (rowMenuOpensDown) to stay inside the card,
+     and the transient un-clip below lets the short-table case escape. */
   overflow: hidden;
 }
 
@@ -4035,14 +4036,17 @@ tr.rule-row:hover {
   border-bottom-right-radius: calc(var(--radius) - 1px);
 }
 
-/* Row ⋮ popovers open UPWARD: for the first rows they escape the table card
-   into the toolbar band, but .card's isolation traps their z-index inside the
-   card while the toolbar sits at z-index:70 (so its own downward popover can
-   overlay the table). Lift the table card above the toolbar while a row menu
-   is open — same :has idiom as the DNS panels / chain cards. */
+/* While a row ⋮ menu is open, lift the table card above the toolbar
+   (z-index:70 — both cards are isolation-isolated stacking contexts painted
+   in DOM order, so without this the later toolbar would frost the popover),
+   and un-clip it: a 1–3 row table can't fit the popover inside the card in
+   either direction, so it flips up and escapes past the card's top edge
+   into the toolbar band. The WebView2 square-corner quirk only shows in
+   this transient menu-open state. */
 .rules-table-wrap:has(.rule-menu-pop) {
   position: relative;
   z-index: 80;
+  overflow: visible;
 }
 
 .rules-table {
@@ -5661,6 +5665,42 @@ button.check.on {
    flex-column layout. */
 .payload-suggestion-btn {
   align-self: flex-start;
+  font-size: 0.72rem;
+}
+
+/* Match-content textarea (RulesPage rule form): batch input — whitespace
+   and newlines separate entries. Styled like .field input but multiline. */
+.field textarea.payload-textarea {
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  outline: none;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 4.2rem;
+  font-family: inherit;
+}
+
+.field textarea.payload-textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-muted);
+}
+
+/* Inline per-entry validation panel under the textarea (red) and the
+   batch-add counter (muted). */
+.payload-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: var(--danger);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.payload-count {
+  color: var(--muted);
   font-size: 0.72rem;
 }
 
