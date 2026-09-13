@@ -2807,12 +2807,14 @@ mod sidecar_plan_tests {
             path: None,
             host: None,
             mode: None,
+            extra: None,
         });
         let mut ss_xhttp = node("ss1", Protocol::Shadowsocks);
         ss_xhttp.transport = Some(crate::domain::Transport::Xhttp {
             path: None,
             host: None,
             mode: None,
+            extra: None,
         });
         let nodes = vec![vl_xhttp, ss_xhttp];
         let plan = compute_sidecar_plan(&store.settings, &store.chains, &nodes).expect("plan");

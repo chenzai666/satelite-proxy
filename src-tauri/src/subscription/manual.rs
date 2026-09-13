@@ -213,12 +213,13 @@ fn build_transport(draft: &ManualNodeDraft, protocol: Protocol) -> Option<Transp
             host: opt_nonempty(&draft.host),
         }),
         // Xray-only: such nodes only work via multi-core Xray delegation
-        // (the manual form's hint says so). No mode field in the draft —
-        // Xray defaults to "auto".
+        // (the manual form's hint says so). No mode/extra fields in the
+        // draft — Xray defaults to "auto" / no tunables.
         "xhttp" | "splithttp" => Some(Transport::Xhttp {
             path: opt_nonempty(&draft.path),
             host: opt_nonempty(&draft.host),
             mode: None,
+            extra: None,
         }),
         _ => Some(Transport::Tcp),
     }

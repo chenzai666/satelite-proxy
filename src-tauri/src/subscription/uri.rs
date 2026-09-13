@@ -980,6 +980,7 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
             path,
             host: host_header,
             mode: transport_mode,
+            extra: None,
         }),
         "tcp" | "" => Some(Transport::Tcp),
         other => return Err(format!("unsupported transport: {other}")),
@@ -1109,6 +1110,7 @@ fn parse_vless_uri(line: &str) -> Result<ProxyNode, String> {
             path: query.get("path").cloned(),
             host: query.get("host").cloned(),
             mode: query.get("mode").cloned(),
+            extra: query.get("extra").and_then(|s| decode_xhttp_extra(s)),
         }),
         "tcp" | "" => Some(Transport::Tcp),
         other => return Err(format!("unsupported transport: {other}")),
@@ -1210,6 +1212,7 @@ fn parse_trojan_uri(line: &str) -> Result<ProxyNode, String> {
             path: query.get("path").cloned(),
             host: query.get("host").cloned(),
             mode: query.get("mode").cloned(),
+            extra: query.get("extra").and_then(|s| decode_xhttp_extra(s)),
         }),
         "tcp" | "" => Some(Transport::Tcp),
         other => return Err(format!("unsupported transport: {other}")),
@@ -1566,6 +1569,39 @@ fn normalize_utls_fp(raw: &str) -> Option<String> {
     }
 }
 
+/// Decode the XHTTP `extra=` share-link parameter into the JSON object string
+/// stored on `Transport::Xhttp`. v2rayN/XHTTP convention is base64url-encoded
+/// JSON; a raw `{...}` payload is accepted too. Anything that doesn't decode
+/// to a non-empty JSON object yields `None` (Xray refuses the whole config
+/// over a bad `extra`, so garbage must never reach the generator).
+pub(super) fn decode_xhttp_extra(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidates: Vec<String> = if trimmed.starts_with('{') {
+        vec![trimmed.to_string()]
+    } else {
+        match decode_base64_flexible(trimmed)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+        {
+            Some(decoded) => vec![decoded, trimmed.to_string()],
+            None => vec![trimmed.to_string()],
+        }
+    };
+    for candidate in candidates {
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_str::<serde_json::Value>(&candidate)
+        {
+            if !map.is_empty() {
+                return Some(serde_json::Value::Object(map).to_string());
+            }
+        }
+    }
+    None
+}
+
 fn split_fragment(s: &str) -> (&str, Option<String>) {
     if let Some((body, frag)) = s.split_once('#') {
         (body, Some(percent_decode(frag)))
@@ -1742,11 +1778,17 @@ mod tests {
         let uri = "vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&sni=cdn.example.com&type=xhttp&path=%2Fupload&mode=stream-up#VL-XHTTP";
         let node = parse_uri_line(uri).unwrap();
         match node.transport {
-            Some(Transport::Xhttp { path, host, mode }) => {
+            Some(Transport::Xhttp {
+                path,
+                host,
+                mode,
+                extra,
+            }) => {
                 assert_eq!(path.as_deref(), Some("/upload"));
                 // No host param in this link (sni ≠ transport host).
                 assert_eq!(host, None);
                 assert_eq!(mode.as_deref(), Some("stream-up"));
+                assert_eq!(extra, None);
             }
             other => panic!("expected xhttp transport, got {other:?}"),
         }
@@ -1790,6 +1832,44 @@ mod tests {
             vmess_restored.transport, vmess.transport,
             "{vmess_exported}"
         );
+    }
+
+    #[test]
+    fn vless_xhttp_extra_decodes_from_share_link() {
+        // v2rayN/XHTTP convention: `extra=` carries base64url-encoded JSON
+        // tunables (xhttpSettings.extra). It must decode into the model;
+        // raw JSON and garbage must never poison the stored node.
+        let b64 = general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"xPaddingBytes":"100-1000","noGRPCHeader":true}"#);
+        let uri = format!("vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&type=xhttp&path=%2Fup&extra={b64}#VL-EXTRA");
+        let node = parse_uri_line(&uri).unwrap();
+        match node.transport {
+            Some(Transport::Xhttp { extra, .. }) => {
+                let v: serde_json::Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();
+                assert_eq!(v["xPaddingBytes"], "100-1000");
+                assert_eq!(v["noGRPCHeader"], true);
+            }
+            other => panic!("expected xhttp transport, got {other:?}"),
+        }
+
+        // Raw JSON object is accepted too (some panels don't base64 it).
+        let uri = "vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&type=xhttp&path=%2Fup&extra=%7B%22scMaxBufferedPosts%22%3A16%7D#VL-EXTRA2";
+        let node = parse_uri_line(uri).unwrap();
+        match node.transport {
+            Some(Transport::Xhttp { extra, .. }) => {
+                assert!(extra.as_deref().unwrap().contains("scMaxBufferedPosts"));
+            }
+            other => panic!("expected xhttp transport, got {other:?}"),
+        }
+
+        // Garbage never becomes extra — Xray refuses the whole config over a
+        // bad `extra`, so it must be dropped at parse time.
+        let uri = "vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&type=xhttp&path=%2Fup&extra=not-json-at-all#VL-BAD";
+        let node = parse_uri_line(uri).unwrap();
+        match node.transport {
+            Some(Transport::Xhttp { extra, .. }) => assert_eq!(extra, None),
+            other => panic!("expected xhttp transport, got {other:?}"),
+        }
     }
 
     #[test]

@@ -319,7 +319,7 @@ export type TransportDetail =
   | { type: "grpc"; service_name?: string }
   | { type: "http"; path?: string; host?: string[] }
   | { type: "httpupgrade"; path?: string; host?: string }
-  | { type: "xhttp"; path?: string; host?: string; mode?: string };
+  | { type: "xhttp"; path?: string; host?: string; mode?: string; extra?: string };
 
 export interface ProxyNode {
   id: string;

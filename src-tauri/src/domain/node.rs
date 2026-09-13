@@ -180,6 +180,14 @@ pub enum Transport {
         /// `auto` | `packet-up` | `stream-up` | `stream-one` (Xray default auto).
         #[serde(skip_serializing_if = "Option::is_none")]
         mode: Option<String>,
+        /// XHTTP tunables as a JSON object string — `xhttpSettings.extra` in
+        /// Xray. v2rayN-style share links carry it base64url-encoded in the
+        /// `extra=` query param; parsers decode it at import time and the
+        /// Xray generator re-embeds it verbatim. JSON that fails to parse is
+        /// dropped at generation time with a warn instead of breaking the
+        /// config (Xray refuses the whole config over a bad `extra`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        extra: Option<String>,
     },
 }
 

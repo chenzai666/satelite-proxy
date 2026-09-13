@@ -951,6 +951,11 @@ fn parse_transport(map: &serde_yaml::Mapping) -> Result<Option<Transport>, Strin
                     .and_then(|m| get_str(m, &["host"]))
                     .or_else(|| opts.and_then(|m| get_str(m, &["Host"]))),
                 mode: opts.and_then(|m| get_str(m, &["mode"])),
+                // `extra` in xhttp-opts is a raw JSON object string (no
+                // base64 layer in YAML); only valid objects pass through.
+                extra: opts
+                    .and_then(|m| get_str(m, &["extra"]))
+                    .and_then(|s| super::uri::decode_xhttp_extra(&s)),
             })
         }
         "tcp" | "" => Some(Transport::Tcp),
@@ -1193,14 +1198,25 @@ proxies:
       path: /upload
       host: cdn.example.com
       mode: stream-up
+      extra: '{"xPaddingBytes":"100-1000"}'
 "#;
         let result = parse_clash_yaml(yaml).expect("parse ok");
         assert_eq!(result.nodes.len(), 1);
         match &result.nodes[0].transport {
-            Some(Transport::Xhttp { path, host, mode }) => {
+            Some(Transport::Xhttp {
+                path,
+                host,
+                mode,
+                extra,
+            }) => {
                 assert_eq!(path.as_deref(), Some("/upload"));
                 assert_eq!(host.as_deref(), Some("cdn.example.com"));
                 assert_eq!(mode.as_deref(), Some("stream-up"));
+                // Raw JSON object string passes through (no base64 layer in
+                // YAML); anything unparseable is dropped by the same guard.
+                let extra = extra.as_deref().expect("extra passthrough");
+                let v: serde_json::Value = serde_json::from_str(extra).unwrap();
+                assert_eq!(v["xPaddingBytes"], "100-1000");
             }
             other => panic!("expected xhttp transport, got {other:?}"),
         }

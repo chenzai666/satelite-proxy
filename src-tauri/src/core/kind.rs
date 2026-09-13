@@ -292,6 +292,13 @@ impl CoreKind {
                     return false;
                 }
             }
+            // Xray v26 removed the h2/http transport at config load — such
+            // nodes can only be served by sing-box/mihomo (the generator
+            // rejects them with the same rule; the list filter keeps them
+            // hidden under Xray like any other unsupported shape).
+            if matches!(node.transport, Some(crate::domain::Transport::Http { .. })) {
+                return false;
+            }
         }
         if matches!(
             &node.config,

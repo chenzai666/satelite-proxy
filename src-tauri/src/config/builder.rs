@@ -4300,6 +4300,7 @@ mod tests {
             path: Some("/x".into()),
             host: None,
             mode: None,
+            extra: None,
         });
         let err = build_singbox_config(&[n], &sidecar_opts(None)).unwrap_err();
         assert!(err.to_string().contains("xhttp"), "got: {err}");

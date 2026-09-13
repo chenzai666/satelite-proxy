@@ -1336,6 +1336,17 @@ fn node_to_xray_outbound(node: &ProxyNode) -> AppResult<Value> {
             "REALITY only supports tcp/grpc/xhttp transports under Xray".into(),
         ));
     }
+    // Xray v26 removed the h2/http transport at config load
+    // (`infra/conf/transport_internet.go` → PrintRemovedFeatureError; XHTTP
+    // stream-one H2/H3 is the designated replacement). Emitting
+    // `network:"http"` produces a config the core refuses outright — fail the
+    // node here with guidance instead. sing-box and mihomo still serve h2
+    // natively, so the node keeps working under those cores.
+    if matches!(node.transport.as_ref(), Some(Transport::Http { .. })) {
+        return Err(AppError::Config(
+            "h2/http transport was removed in Xray v26: node filtered from this config (sing-box/mihomo still serve it, or switch the node to ws/grpc/xhttp)".into(),
+        ));
+    }
     let (protocol, settings) = protocol_settings(node)?;
     let mut obj = Map::new();
     obj.insert("tag".into(), json!(tag));
@@ -1618,7 +1629,12 @@ fn stream_settings(node: &ProxyNode) -> Option<Value> {
             }
             stream.insert("httpupgradeSettings".into(), Value::Object(hu));
         }
-        Some(Transport::Xhttp { path, host, mode }) => {
+        Some(Transport::Xhttp {
+            path,
+            host,
+            mode,
+            extra,
+        }) => {
             let mut xh = Map::new();
             if let Some(host) = host.as_deref().filter(|s| !s.is_empty()) {
                 xh.insert("host".into(), json!(host));
@@ -1629,6 +1645,22 @@ fn stream_settings(node: &ProxyNode) -> Option<Value> {
             // Xray defaults to "auto"; only emit an explicit mode when set.
             if let Some(mode) = mode.as_deref().filter(|m| !m.is_empty()) {
                 xh.insert("mode".into(), json!(mode));
+            }
+            // XHTTP tunables: embed verbatim as a JSON object. Xray refuses
+            // the whole config over an `extra` it can't unmarshal, so invalid
+            // JSON is dropped with a warn instead of poisoning the config.
+            if let Some(extra) = extra.as_deref().filter(|s| !s.is_empty()) {
+                match serde_json::from_str::<Value>(extra) {
+                    Ok(Value::Object(map)) if !map.is_empty() => {
+                        xh.insert("extra".into(), Value::Object(map));
+                    }
+                    _ => {
+                        crate::app_log::warn(
+                            "xray_config",
+                            format!("node {}: ignoring invalid xhttp extra", node.name),
+                        );
+                    }
+                }
             }
             stream.insert("xhttpSettings".into(), Value::Object(xh));
         }
@@ -1866,6 +1898,7 @@ mod tests {
             path: Some("/upload".into()),
             host: Some("cdn.example.com".into()),
             mode: Some("stream-up".into()),
+            extra: None,
         });
         let built = build_xray_config(&[node.clone()], &default_opts()).expect("build");
         let stream = &built.value["outbounds"][0]["streamSettings"];
@@ -1891,12 +1924,80 @@ mod tests {
     }
 
     #[test]
+    fn xhttp_extra_passthrough_and_invalid_dropped() {
+        // Valid JSON object → embedded verbatim as xhttpSettings.extra.
+        let mut node = vless_node("xh-extra", None);
+        node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("sni.example.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        node.transport = Some(Transport::Xhttp {
+            path: Some("/upload".into()),
+            host: Some("cdn.example.com".into()),
+            mode: None,
+            extra: Some(r#"{"xPaddingBytes":"100-1000","noGRPCHeader":true}"#.into()),
+        });
+        let built = build_xray_config(&[node], &default_opts()).expect("build");
+        let extra = &built.value["outbounds"][0]["streamSettings"]["xhttpSettings"]["extra"];
+        assert_eq!(extra["xPaddingBytes"], "100-1000");
+        assert_eq!(extra["noGRPCHeader"], true);
+
+        // Invalid JSON must be dropped, not emitted — Xray refuses the whole
+        // config over an `extra` it can't unmarshal.
+        let mut node = vless_node("xh-badextra", None);
+        node.tls = None;
+        node.transport = Some(Transport::Xhttp {
+            path: Some("/upload".into()),
+            host: None,
+            mode: None,
+            extra: Some("not json".into()),
+        });
+        let built = build_xray_config(&[node], &default_opts()).expect("build");
+        let xh = &built.value["outbounds"][0]["streamSettings"]["xhttpSettings"];
+        assert!(xh.get("extra").is_none());
+    }
+
+    #[test]
+    fn h2_transport_node_is_rejected_at_generation() {
+        // Xray v26 removed the h2/http transport at config load; the
+        // generator must skip such nodes with a pointed error instead of
+        // emitting a config the core refuses outright.
+        let mut node = vless_node("h2", None);
+        // Drop the helper's default REALITY tls so the rejection comes from
+        // the transport rule itself (REALITY would reject first otherwise).
+        node.tls = None;
+        node.transport = Some(Transport::Http {
+            path: Some("/h2".into()),
+            host: Some(vec!["h2.example.com".into()]),
+        });
+        let err = build_xray_config(&[node], &default_opts()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("h2/http transport was removed"), "got: {msg}");
+        // And the list-level filter hides the shape under Xray entirely.
+        let mut n2 = vless_node("h2b", None);
+        n2.tls = None;
+        n2.transport = Some(Transport::Http {
+            path: None,
+            host: None,
+        });
+        assert!(!CoreKind::Xray.supports_node(&n2));
+        assert!(CoreKind::SingBox.supports_node(&n2));
+        assert!(CoreKind::Mihomo.supports_node(&n2));
+    }
+
+    #[test]
     fn mihomo_supports_node_rejects_xhttp_but_xray_accepts() {
         let mut node = vless_node("xh", None);
         node.transport = Some(Transport::Xhttp {
             path: Some("/x".into()),
             host: None,
             mode: None,
+            extra: None,
         });
         assert!(CoreKind::Xray.supports_node(&node));
         assert!(!CoreKind::Mihomo.supports_node(&node));
@@ -2754,6 +2855,669 @@ mod tests {
             "xray run -test rejected the generated config:\n{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    // ---- live full-pipeline / full-matrix validation -----------------------
+
+    /// Runs `xray run -test -c` on a generated config document and returns the
+    /// core's complaint (stdout+stderr) on failure.
+    fn xray_test_accepts(bin: &std::path::Path, config: &Value) -> Result<(), String> {
+        let tmp = std::env::temp_dir().join(format!(
+            "satelite-xray-matrix-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&tmp, serde_json::to_vec(config).unwrap()).unwrap();
+        let output = std::process::Command::new(bin)
+            .args(["run", "-test", "-c"])
+            .arg(&tmp)
+            .output()
+            .map_err(|e| format!("spawn xray: {e}"))?;
+        let _ = std::fs::remove_file(&tmp);
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    /// Full share-link pipeline against the real core: real-world shaped
+    /// links (the edgetunnel vless+xhttp field report is why this exists) →
+    /// URI parser → model → generator → `xray run -test -c`. A regression in
+    /// any layer — a dropped query param, a renamed streamSettings field, a
+    /// config the core no longer accepts — fails here with the core's own
+    /// error text.
+    /// `cargo test --lib config::xray::tests::live_share_link_pipeline_validates -- --ignored`
+    #[test]
+    #[ignore = "needs the bundled dev xray binary"]
+    fn live_share_link_pipeline_validates() {
+        let bin = crate::core::find_bundled_core(None, CoreKind::Xray)
+            .expect("bundled xray binary — run the fetch-bundled-xray script");
+        let links: &[&str] = &[
+            // edgetunnel (CF workers) vless + xhttp + TLS — the reported
+            // combo, including the v2rayN-style base64url `extra` tunables.
+            "vless://d342d11e-d424-4583-b36e-524ab1f0afa4@edgetunnel.example-workers.dev:443?encryption=none&security=tls&sni=edgetunnel.example-workers.dev&fp=chrome&type=xhttp&host=edgetunnel.example-workers.dev&path=%2Fupload&mode=auto&extra=eyJ4UGFkZGluZ0J5dGVzIjoiMTAwLTEwMDAiLCJub0dSUENIZWFkZXIiOnRydWV9#CF-XHTTP",
+            // vless + ws + TLS CDN shape (early-data path param kept verbatim).
+            "vless://d342d11e-d424-4583-b36e-524ab1f0afa4@cdn.example.com:443?encryption=none&security=tls&sni=cdn.example.com&fp=chrome&type=ws&host=cdn.example.com&path=%2Fws%3Fed%3D2048#CF-WS",
+            // vless + httpupgrade.
+            "vless://d342d11e-d424-4583-b36e-524ab1f0afa4@hu.example.com:443?encryption=none&security=tls&sni=hu.example.com&type=httpupgrade&host=hu.example.com&path=%2Fhu#VLESS-HU",
+            // trojan + grpc + TLS.
+            "trojan://pw123@example.com:443?security=tls&sni=example.com&type=grpc&serviceName=svc#TR-GRPC",
+            // ss SIP002 userinfo form.
+            "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@example.com:8388#SS-BASE64",
+        ];
+        for link in links {
+            let parsed = crate::subscription::parse_single_uri(link, None)
+                .unwrap_or_else(|e| panic!("parse failed for {link}: {e:?}"));
+            let node = parsed.nodes.first().cloned().expect("one parsed node");
+            let built = build_xray_config(&[node], &default_opts())
+                .unwrap_or_else(|e| panic!("build failed for {link}: {e:?}"));
+            if let Err(core_err) = xray_test_accepts(&bin, &built.value) {
+                panic!("xray run -test rejected the config for {link}:\n{core_err}");
+            }
+        }
+    }
+
+    /// Full protocol × transport × security matrix against the real core.
+    /// Every combination the generator claims to support must be accepted by
+    /// `xray run -test`; combinations the generator must reject fail the build
+    /// with a single node; combinations the core rejects are pinned as
+    /// `CoreReject` so the table documents them (and flips loudly if a future
+    /// Xray starts accepting them).
+    /// `cargo test --lib config::xray::tests::live_all_protocol_matrix_validates -- --ignored`
+    #[test]
+    #[ignore = "needs the bundled dev xray binary"]
+    fn live_all_protocol_matrix_validates() {
+        let bin = crate::core::find_bundled_core(None, CoreKind::Xray)
+            .expect("bundled xray binary — run the fetch-bundled-xray script");
+
+        enum Expect {
+            /// Generator emits it and the core accepts it.
+            Valid,
+            /// Generator refuses (node skipped → single-node build errors).
+            GenReject,
+            /// Generator emits it; the core refuses at config load. Pinned so
+            /// the breakage is visible instead of silent.
+            CoreReject,
+        }
+
+        fn plain_tls() -> Option<TlsConfig> {
+            Some(TlsConfig {
+                enabled: true,
+                server_name: Some("sni.example.com".into()),
+                insecure: None,
+                alpn: None,
+                utls_fingerprint: None,
+                reality_public_key: None,
+                reality_short_id: None,
+            })
+        }
+        fn chrome_tls(alpn: Option<Vec<String>>, insecure: bool) -> Option<TlsConfig> {
+            Some(TlsConfig {
+                enabled: true,
+                server_name: Some("sni.example.com".into()),
+                insecure: insecure.then_some(true),
+                alpn,
+                utls_fingerprint: Some("chrome".into()),
+                reality_public_key: None,
+                reality_short_id: None,
+            })
+        }
+        fn reality_tls() -> Option<TlsConfig> {
+            Some(TlsConfig {
+                enabled: true,
+                server_name: Some("sni.example.com".into()),
+                insecure: None,
+                alpn: None,
+                utls_fingerprint: Some("chrome".into()),
+                // 43-char base64url-shaped x25519 key + hex shortId (same
+                // shapes as live_config_validates uses successfully).
+                reality_public_key: Some("a".repeat(43)),
+                reality_short_id: Some("abcd0123".into()),
+            })
+        }
+        fn transports(mode: Option<&str>) -> Vec<(&'static str, Option<Transport>)> {
+            vec![
+                ("tcp", None),
+                (
+                    "ws",
+                    Some(Transport::Ws {
+                        path: Some("/ws?ed=2048".into()),
+                        headers: Some(
+                            [("Host".to_string(), "cdn.example.com".to_string())]
+                                .into_iter()
+                                .collect(),
+                        ),
+                        max_early_data: Some(2048),
+                    }),
+                ),
+                (
+                    "grpc",
+                    Some(Transport::Grpc {
+                        service_name: Some("svc".into()),
+                    }),
+                ),
+                // v26 removed the h2/http transport at config load
+                // (infra/conf TransportProtocol.Build → PrintRemovedFeatureError);
+                // the generator rejects such nodes (GenReject below), same
+                // contract as REALITY over ws/httpupgrade.
+                (
+                    "http",
+                    Some(Transport::Http {
+                        path: Some("/h2".into()),
+                        host: Some(vec!["h2.example.com".into()]),
+                    }),
+                ),
+                (
+                    "httpupgrade",
+                    Some(Transport::HttpUpgrade {
+                        path: Some("/hu".into()),
+                        host: Some("hu.example.com".into()),
+                    }),
+                ),
+                (
+                    "xhttp",
+                    Some(Transport::Xhttp {
+                        path: Some("/upload".into()),
+                        host: Some("cdn.example.com".into()),
+                        mode: mode.map(str::to_string),
+                        extra: None,
+                    }),
+                ),
+            ]
+        }
+        fn node(
+            name: &str,
+            protocol: ProtocolConfig,
+            proto: Protocol,
+            transport: Option<Transport>,
+            tls: Option<TlsConfig>,
+        ) -> ProxyNode {
+            ProxyNode {
+                id: String::new(),
+                name: name.into(),
+                protocol: proto,
+                server: "example.com".into(),
+                port: 443,
+                tls,
+                transport,
+                udp: None,
+                config: protocol,
+                source: None,
+                latency_ms: None,
+                latency_at: None,
+            }
+            .with_computed_id()
+        }
+        fn vmess_cfg() -> ProtocolConfig {
+            ProtocolConfig::Vmess {
+                uuid: "d342d11e-d424-4583-b36e-524ab1f0afa4".into(),
+                alter_id: 0,
+                security: "auto".into(),
+            }
+        }
+        fn vless_cfg(flow: Option<&str>) -> ProtocolConfig {
+            ProtocolConfig::Vless {
+                uuid: "d342d11e-d424-4583-b36e-524ab1f0afa4".into(),
+                flow: flow.map(str::to_string),
+                packet_encoding: "xudp".into(),
+            }
+        }
+        fn trojan_cfg() -> ProtocolConfig {
+            ProtocolConfig::Trojan {
+                password: "pw".into(),
+            }
+        }
+        fn ss_cfg(plugin: bool) -> ProtocolConfig {
+            ProtocolConfig::Shadowsocks {
+                method: "aes-256-gcm".into(),
+                password: "password".into(),
+                plugin: plugin.then(|| "obfs-local".into()),
+                plugin_opts: plugin.then(|| "obfs=http".into()),
+                shadow_tls: None,
+            }
+        }
+
+        // (label, node, expectation)
+        let mut combos: Vec<(String, ProxyNode, Expect)> = Vec::new();
+
+        // vmess across every transport (TLS) + plain tcp without TLS.
+        for (tname, transport) in transports(Some("auto")) {
+            let expect = if tname == "http" {
+                // Xray v26 removed the h2 transport; generator must refuse.
+                Expect::GenReject
+            } else {
+                Expect::Valid
+            };
+            combos.push((
+                format!("vmess+{tname}+tls"),
+                node(
+                    &format!("vm-{tname}"),
+                    vmess_cfg(),
+                    Protocol::Vmess,
+                    transport,
+                    plain_tls(),
+                ),
+                expect,
+            ));
+        }
+        combos.push((
+            "vmess+tcp+plain".into(),
+            node("vm-plain", vmess_cfg(), Protocol::Vmess, None, None),
+            Expect::Valid,
+        ));
+
+        // vless: flow=vision with REALITY (tcp) and TLS; all transports with
+        // TLS; xhttp also with REALITY and with security=none; ALPN pair +
+        // skip-cert-verify on ws.
+        combos.push((
+            "vless+tcp+reality+vision".into(),
+            node(
+                "vl-rv",
+                vless_cfg(Some("xtls-rprx-vision")),
+                Protocol::Vless,
+                None,
+                reality_tls(),
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "vless+tcp+tls+vision".into(),
+            node(
+                "vl-vis",
+                vless_cfg(Some("xtls-rprx-vision")),
+                Protocol::Vless,
+                None,
+                plain_tls(),
+            ),
+            Expect::Valid,
+        ));
+        for (tname, transport) in transports(None) {
+            let expect = if tname == "http" {
+                // Xray v26 removed the h2 transport; generator must refuse.
+                Expect::GenReject
+            } else {
+                Expect::Valid
+            };
+            combos.push((
+                format!("vless+{tname}+tls"),
+                node(
+                    &format!("vl-{tname}"),
+                    vless_cfg(None),
+                    Protocol::Vless,
+                    transport,
+                    plain_tls(),
+                ),
+                expect,
+            ));
+        }
+        combos.push((
+            "vless+xhttp+reality".into(),
+            node(
+                "vl-xh-rv",
+                vless_cfg(None),
+                Protocol::Vless,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: None,
+                    extra: None,
+                }),
+                reality_tls(),
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "vless+xhttp+plain".into(),
+            node(
+                "vl-xh-plain",
+                vless_cfg(None),
+                Protocol::Vless,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: None,
+                    extra: None,
+                }),
+                None,
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "vless+xhttp+tls+fp-alpn-insecure".into(),
+            node(
+                "vl-xh-fp",
+                vless_cfg(None),
+                Protocol::Vless,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: Some("auto".into()),
+                    extra: None,
+                }),
+                chrome_tls(Some(vec!["h2".into(), "http/1.1".into()]), true),
+            ),
+            Expect::Valid,
+        ));
+        // v2rayN-style tunables: a valid JSON object must survive into
+        // xhttpSettings.extra and the core must accept it.
+        combos.push((
+            "vless+xhttp+tls+extra".into(),
+            node(
+                "vl-xh-extra",
+                vless_cfg(None),
+                Protocol::Vless,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: None,
+                    extra: Some(r#"{"xPaddingBytes":"100-1000","noGRPCHeader":true}"#.into()),
+                }),
+                plain_tls(),
+            ),
+            Expect::Valid,
+        ));
+        // Generator passes an unknown mode through verbatim; the core refuses
+        // it at config load ("unsupported mode") — pinned, not silent.
+        combos.push((
+            "vless+xhttp+tls+bad-mode".into(),
+            node(
+                "vl-xh-bad",
+                vless_cfg(None),
+                Protocol::Vless,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: Some("bogus".into()),
+                    extra: None,
+                }),
+                plain_tls(),
+            ),
+            Expect::CoreReject,
+        ));
+        // All four documented xhttp modes must be accepted.
+        for mode in ["auto", "packet-up", "stream-up", "stream-one"] {
+            combos.push((
+                format!("vless+xhttp+tls+{mode}"),
+                node(
+                    &format!("vl-xh-{mode}"),
+                    vless_cfg(None),
+                    Protocol::Vless,
+                    Some(Transport::Xhttp {
+                        path: Some("/upload".into()),
+                        host: Some("cdn.example.com".into()),
+                        mode: Some(mode.into()),
+                        extra: None,
+                    }),
+                    plain_tls(),
+                ),
+                Expect::Valid,
+            ));
+        }
+
+        // trojan across transports (trojan implies TLS at the server, the
+        // generator still emits whatever streamSettings say).
+        for (tname, transport) in transports(None) {
+            let expect = if tname == "http" {
+                // Xray v26 removed the h2 transport; generator must refuse.
+                Expect::GenReject
+            } else {
+                Expect::Valid
+            };
+            combos.push((
+                format!("trojan+{tname}+tls"),
+                node(
+                    &format!("tr-{tname}"),
+                    trojan_cfg(),
+                    Protocol::Trojan,
+                    transport,
+                    plain_tls(),
+                ),
+                expect,
+            ));
+        }
+
+        // shadowsocks: plain, with ws (no TLS), with SIP003 plugin (warned and
+        // dropped by the generator), and xhttp+TLS.
+        combos.push((
+            "ss+tcp+plain".into(),
+            node("ss-plain", ss_cfg(false), Protocol::Shadowsocks, None, None),
+            Expect::Valid,
+        ));
+        combos.push((
+            "ss+ws+plain".into(),
+            node(
+                "ss-ws",
+                ss_cfg(false),
+                Protocol::Shadowsocks,
+                Some(Transport::Ws {
+                    path: Some("/ws".into()),
+                    headers: None,
+                    max_early_data: None,
+                }),
+                None,
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "ss+tcp+plain+plugin-dropped".into(),
+            node("ss-plugin", ss_cfg(true), Protocol::Shadowsocks, None, None),
+            Expect::Valid,
+        ));
+        combos.push((
+            "ss+xhttp+tls".into(),
+            node(
+                "ss-xh",
+                ss_cfg(false),
+                Protocol::Shadowsocks,
+                Some(Transport::Xhttp {
+                    path: Some("/upload".into()),
+                    host: Some("cdn.example.com".into()),
+                    mode: None,
+                    extra: None,
+                }),
+                plain_tls(),
+            ),
+            Expect::Valid,
+        ));
+
+        // socks5 / http proxies.
+        combos.push((
+            "socks5+tcp+plain".into(),
+            node(
+                "sx-plain",
+                ProtocolConfig::Socks5 {
+                    username: Some("u".into()),
+                    password: Some("p".into()),
+                },
+                Protocol::Socks5,
+                None,
+                None,
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "http+tcp+plain".into(),
+            node(
+                "hp-plain",
+                ProtocolConfig::Http {
+                    username: Some("u".into()),
+                    password: Some("p".into()),
+                    path: None,
+                },
+                Protocol::Http,
+                None,
+                None,
+            ),
+            Expect::Valid,
+        ));
+
+        // hysteria2: no obfs → the hysteria transport with its own settings;
+        // obfs must be refused by the generator.
+        combos.push((
+            "hysteria2+plain".into(),
+            node(
+                "hy2-plain",
+                ProtocolConfig::Hysteria2 {
+                    password: "pw".into(),
+                    up_mbps: None,
+                    down_mbps: None,
+                    obfs: None,
+                    obfs_password: None,
+                },
+                Protocol::Hysteria2,
+                None,
+                None,
+            ),
+            Expect::Valid,
+        ));
+        combos.push((
+            "hysteria2+obfs+genreject".into(),
+            node(
+                "hy2-obfs",
+                ProtocolConfig::Hysteria2 {
+                    password: "pw".into(),
+                    up_mbps: None,
+                    down_mbps: None,
+                    obfs: Some("salamander".into()),
+                    obfs_password: Some("ob".into()),
+                },
+                Protocol::Hysteria2,
+                None,
+                None,
+            ),
+            Expect::GenReject,
+        ));
+
+        // wireguard: well-formed key material.
+        combos.push((
+            "wireguard+plain".into(),
+            node(
+                "wg-plain",
+                ProtocolConfig::WireGuard {
+                    local_address: vec!["172.16.0.2/32".into()],
+                    private_key: "a".repeat(43) + "=",
+                    peer_public_key: "b".repeat(43) + "=",
+                    pre_shared_key: None,
+                    reserved: vec![1, 2, 3],
+                    mtu: Some(1420),
+                },
+                Protocol::WireGuard,
+                None,
+                None,
+            ),
+            Expect::Valid,
+        ));
+
+        // Protocols Xray cannot serve at all: generator must refuse.
+        for (label, cfg, proto) in [
+            (
+                "tuic",
+                ProtocolConfig::Tuic {
+                    uuid: "d342d11e-d424-4583-b36e-524ab1f0afa4".into(),
+                    password: "pw".into(),
+                    congestion_control: Some("bbr".into()),
+                    udp_relay_mode: None,
+                    zero_rtt_handshake: false,
+                },
+                Protocol::Tuic,
+            ),
+            (
+                "masque",
+                ProtocolConfig::Masque {
+                    private_key: "k".into(),
+                    public_key: "pk".into(),
+                    ip: Some("172.19.0.2/32".into()),
+                    ipv6: None,
+                    mtu: None,
+                    network: None,
+                    congestion_controller: None,
+                },
+                Protocol::Masque,
+            ),
+        ] {
+            combos.push((
+                format!("{label}+genreject"),
+                node(label, cfg, proto, None, plain_tls()),
+                Expect::GenReject,
+            ));
+        }
+
+        // REALITY + transports it cannot ride: generator must refuse.
+        for (tname, transport) in [
+            (
+                "ws",
+                Some(Transport::Ws {
+                    path: Some("/ws".into()),
+                    headers: None,
+                    max_early_data: None,
+                }),
+            ),
+            (
+                "httpupgrade",
+                Some(Transport::HttpUpgrade {
+                    path: Some("/hu".into()),
+                    host: None,
+                }),
+            ),
+        ] {
+            combos.push((
+                format!("vless+{tname}+reality+genreject"),
+                node(
+                    &format!("vl-rv-{tname}"),
+                    vless_cfg(None),
+                    Protocol::Vless,
+                    transport,
+                    reality_tls(),
+                ),
+                Expect::GenReject,
+            ));
+        }
+
+        let total = combos.len();
+        let mut failures: Vec<String> = Vec::new();
+        for (label, node, expect) in &combos {
+            let built = build_xray_config(std::slice::from_ref(node), &default_opts());
+            match (expect, built) {
+                (Expect::GenReject, Ok(b)) => {
+                    // Escaped rejection: the node produced a valid config.
+                    failures.push(format!(
+                        "{label}: expected generator refusal, core ACCEPTED it"
+                    ));
+                    let _ = &b;
+                }
+                (Expect::GenReject, Err(_)) => {}
+                (_, Err(e)) => {
+                    failures.push(format!("{label}: build failed unexpectedly: {e:?}"));
+                }
+                (expect, Ok(built)) => {
+                    let accepted = xray_test_accepts(&bin, &built.value);
+                    match (expect, accepted) {
+                        (Expect::Valid, Err(core_err)) => failures.push(format!(
+                            "{label}: core rejected a combo we deem valid:\n{core_err}"
+                        )),
+                        (Expect::CoreReject, Ok(())) => failures.push(format!(
+                            "{label}: core ACCEPTED a combo pinned as rejected — update the table"
+                        )),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}/{} matrix combos disagree with the core:\n{}",
+            failures.len(),
+            total,
+            failures.join("\n---\n")
         );
     }
 
