@@ -66,9 +66,7 @@ function ProShell() {
   useGlobalShortcuts(PRO_SHORTCUT_MAP, setNav, "settings");
 
   return (
-    <div
-      className={`app-shell ${nav === "dashboard" ? "dashboard-shell" : ""}`}
-    >
+    <div className="app-shell">
       <TopNav active={nav} onChange={setNav} />
       <main className="main">
         {/* key={nav} forces a remount on page switch → triggers the CSS

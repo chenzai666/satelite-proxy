@@ -316,13 +316,9 @@ button {
   color: var(--text);
 }
 
-/* The green atmosphere moved to .app-shell (all pages); .dashboard-shell
-   now only tunes the navbar liquid for the hero area. */
-.dashboard-shell .topnav {
-  --topnav-liquid: rgba(22, 32, 30, 0.5);
-  background: rgba(15, 20, 23, 0.42);
-}
-
+/* The green atmosphere moved to .app-shell (all pages) and the translucent
+   navbar liquid is global too — every page keeps the dashboard's frosted
+   capsule instead of shifting to a flatter, more opaque fill. */
 [data-theme="day"] .app-shell {
   background:
     radial-gradient(
@@ -336,7 +332,7 @@ button {
     linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
 }
 
-[data-theme="day"] .dashboard-shell .topnav {
+[data-theme="day"] .topnav {
   --topnav-liquid: rgba(244, 250, 248, 0.54);
   background: rgba(255, 255, 255, 0.46);
 }
@@ -351,7 +347,7 @@ button {
 }
 
 .topnav {
-  --topnav-liquid: color-mix(in srgb, var(--nav-bg) 58%, var(--surface-2));
+  --topnav-liquid: rgba(22, 32, 30, 0.5);
   position: relative;
   display: flex;
   align-items: center;
@@ -359,15 +355,10 @@ button {
   max-width: 100%;
   padding: 0.06rem 0.3rem 0.06rem 0.5rem;
   border-radius: var(--radius-pill);
-  /* Glass body: vertical gradient gives top-to-bottom light variation so the
-     surface reads as lit glass rather than a flat fill. */
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--nav-bg) 88%, #ffffff 4%) 0%,
-      var(--nav-bg) 48%,
-      color-mix(in srgb, var(--nav-bg) 92%, #000000 4%) 100%
-    );
+  /* Glass body: flat translucent fill so the app-shell's green atmosphere
+     bleeds through on every page (the lit-glass light variation comes from
+     the ::before reflection, not an opaque gradient). */
+  background: rgba(15, 20, 23, 0.42);
   border: 1px solid rgba(255, 255, 255, 0.075);
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.24);
   /* No backdrop-filter here and no overflow: hidden — the ⋯ menu popup must
