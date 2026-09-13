@@ -77,6 +77,22 @@ const PROJECT_URL = "https://github.com/chenzai666/satelite-proxy/";
 /** Always-latest app release page, opened from the version tab. */
 const RELEASES_URL = "https://github.com/chenzai666/satelite-proxy/releases/latest";
 
+// Session-level memory of the latest MANUAL core update check. The network
+// check fires only on the per-core "检查" button (2026-09: it used to fire
+// for all three cores on every settings-page mount, hammering GitHub on each
+// nav switch) — this snapshot just keeps an already-fetched result visible
+// across page remounts (key={nav} destroys the state) without any network
+// traffic. An entry is dropped as soon as the installed version no longer
+// matches the one it was computed against (stale after download/restore).
+type CoreLatestSnapshot = {
+  local_version: string | null;
+  latest_version: string;
+  latest_prerelease_version: string | null;
+  prerelease_update_available: boolean;
+  update_available: boolean;
+};
+const coreLatestSnapshots = new Map<CoreKind, CoreLatestSnapshot>();
+
 // Accent preset names are picked from the i18n catalog rather than
 // AccentPreset.name (theme/accents.ts), which is display data only and not
 // locale-aware.
@@ -229,37 +245,44 @@ export function SettingsPage() {
     [t],
   );
 
-  const runCoreUpdateCheck = useCallback(
-    async (kind: CoreKind, localVersion: string | null, reportError: boolean) => {
-      setCoreCheckingKind(kind);
-      if (reportError) setCoreError(null);
-      try {
-        const update = await checkCoreUpdate(kind, localVersion);
-        setCores((prev) => {
-          const info = prev[kind];
-          if (!info) return prev;
-          return {
-            ...prev,
-            [kind]: {
-              ...info,
-              latest_version: update.latest_version,
-              latest_prerelease_version: update.latest_prerelease_version ?? null,
-              update_available: update.update_available,
-              prerelease_update_available: !!update.prerelease_update_available,
-            },
-          };
-        });
-      } catch (e) {
-        if (reportError) {
-          setCoreError(typeof e === "string" ? e : String(e));
-        }
-      } finally {
-        setCoreCheckingKind(null);
-      }
-    },
-    [],
-  );
+  // Manual-only ("检查" button): hits the network on every click. The result
+  // is mirrored into the session snapshot so remounts keep showing it.
+  const runCoreUpdateCheck = useCallback(async (kind: CoreKind, localVersion: string | null) => {
+    setCoreCheckingKind(kind);
+    setCoreError(null);
+    try {
+      const update = await checkCoreUpdate(kind, localVersion);
+      coreLatestSnapshots.set(kind, {
+        local_version: localVersion,
+        latest_version: update.latest_version,
+        latest_prerelease_version: update.latest_prerelease_version ?? null,
+        prerelease_update_available: !!update.prerelease_update_available,
+        update_available: update.update_available,
+      });
+      setCores((prev) => {
+        const info = prev[kind];
+        if (!info) return prev;
+        return {
+          ...prev,
+          [kind]: {
+            ...info,
+            latest_version: update.latest_version,
+        latest_prerelease_version: update.latest_prerelease_version ?? null,
+        prerelease_update_available: !!update.prerelease_update_available,
+            update_available: update.update_available,
+          },
+        };
+      });
+    } catch (e) {
+      setCoreError(typeof e === "string" ? e : String(e));
+    } finally {
+      setCoreCheckingKind(null);
+    }
+  }, []);
 
+  // Local core status only — no version check here. Latest-release lookups
+  // are manual-only (and rate-limited by being click-driven); overlaying the
+  // session snapshot below is purely in-memory.
   const reloadCore = useCallback(async () => {
     setCoreError(null);
     try {
@@ -269,14 +292,28 @@ export function SettingsPage() {
         getCoreInfo("mihomo"),
       ]);
       const [singbox, xray, mihomo] = results;
-      setCores({ singbox, xray, mihomo });
-      void runCoreUpdateCheck("singbox", singbox.version ?? null, false);
-      void runCoreUpdateCheck("xray", xray.version ?? null, false);
-      void runCoreUpdateCheck("mihomo", mihomo.version ?? null, false);
+      const next: Record<CoreKind, CoreInfo> = { singbox, xray, mihomo };
+      for (const kind of Object.keys(next) as CoreKind[]) {
+        const snap = coreLatestSnapshots.get(kind);
+        if (!snap) continue;
+        if (snap.local_version !== next[kind].version) {
+          // Binary changed since the check (download/restore) — stale.
+          coreLatestSnapshots.delete(kind);
+          continue;
+        }
+        next[kind] = {
+          ...next[kind],
+          latest_version: snap.latest_version,
+          latest_prerelease_version: snap.latest_prerelease_version,
+          prerelease_update_available: snap.prerelease_update_available,
+          update_available: snap.update_available,
+        };
+      }
+      setCores(next);
     } catch (e) {
       setCoreError(typeof e === "string" ? e : String(e));
     }
-  }, [runCoreUpdateCheck]);
+  }, []);
 
   useEffect(() => {
     getSettings()
@@ -632,8 +669,15 @@ export function SettingsPage() {
     }
   }
 
-  /** Restore a bundled core, or re-download its fixed factory version when
-   * this installer does not ship that core. */
+  async function onCheckCoreUpdate(kind: CoreKind) {
+    await runCoreUpdateCheck(kind, cores[kind]?.version ?? null);
+  }
+
+  /** Core card "factory reset": with a bundled copy, drop the user-downloaded
+   *  binary so the bundled one takes over (backend restarts a running core of
+   *  the same kind). Without one (default installs bundle only sing-box),
+   *  restore = re-downloading the pinned factory version through the normal
+   *  download pipeline, progress bar included. */
   async function onRestoreCore(kind: CoreKind) {
     const info = cores[kind];
     if (info?.bundled_version) {
