@@ -8,10 +8,12 @@
 //!   mapping into the running config (custom sing-box profiles). UDP-only
 //!   protocols (hysteria/hysteria2/tuic) have no TCP fallback at all —
 //!   without the core they report an explicit "start the proxy" error.
-//! - **Smart switch**: ranks candidates with [`probe_nodes_ranked`] — TCP
-//!   ping for TCP-capable nodes (a better speed correlate in practice), the
-//!   through-kernel URL probe only for QUIC-only protocols and for the
-//!   current node's health confirmation.
+//! - **Smart switch**: `probe_nodes_ranked` (TCP ping for TCP-capable
+//!   nodes, kernel URL probe for QUIC-only) is the cheap ORDERING
+//!   pre-filter; every pick that matters — exit patrol, candidate
+//!   verification, the current-node comparison baseline — is a
+//!   `probe_nodes` through-kernel URL probe, so no switch is ever made on
+//!   ping alone (see smart_switch).
 //!
 //! Clash path uses **unified delay** (like mihomo / FlClash): probe twice and
 //! report the second RTT so handshake / cold-connect bias is reduced.

@@ -1,13 +1,22 @@
-//! Smart node auto-switch (docs/auto.md).
+//! Smart node auto-switch.
 //!
-//! Architecture:
-//!   passive connection journal → degradation / healthy re-probe
-//!   → on-demand ranked probe of top-K candidates (TCP ping; kernel URL
-//!     probe only for QUIC-only protocols and current-node health)
-//!   → light score + Clash-style tolerance + dwell / cooldown / eject
+//! Architecture (2026-09 rework — "must beat the manual ping→try→retry loop"):
+//!   every tick: patrol the CURRENT exit with a through-kernel URL probe
+//!     (cache-backed, generous-bar confirm on failure so a transient blip
+//!     or a merely-slow node never triggers a scan)
+//!   → dead exit: recovery bypasses dwell/cooldown (a bad pick must not
+//!     blind the engine for MIN_DWELL). Ping-rank candidates in batches,
+//!     then URL-VERIFY the top few through the kernel delay API — the
+//!     manual loop's "open a page through it and see", done without moving
+//!     the selector — and switch to the fastest verified node. Ping/verify
+//!     failures get escalating ejection, so scanning a broken pool makes
+//!     strict forward progress across rounds.
+//!   → healthy exit: soft paths stay dwell-guarded — passive-journal
+//!     degrade signals and a 10-min drift re-probe may switch only when a
+//!     verified candidate beats the current URL latency by tolerance.
 //!
-//! Not a pure Clash `url-test` (no continuous full-list interval).
-//! Healthy periods still get a low-frequency re-probe for drift correction.
+//! URL delay is the single comparison currency (current and candidates
+//! alike); TCP ping is only the cheap ordering pre-filter.
 //!
 //! Lock rule: never hold `store` while acquiring `runtime` (see AppState).
 
@@ -15,7 +24,7 @@ use crate::app_log;
 use crate::config::outbound_tag;
 use crate::domain::{ProxyNode, Rule, RuleSetStrategy, RuleTarget};
 use crate::runtime::PassiveNodeStats;
-use crate::services::latency::{probe_nodes, probe_nodes_ranked};
+use crate::services::latency::{probe_nodes, probe_nodes_ranked, LatencyResult};
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -25,35 +34,47 @@ use tauri::{AppHandle, Manager};
 
 // —— Schedule ——
 const TICK: Duration = Duration::from_secs(20);
-/// After a switch, refuse further switches for this long.
+/// After a soft (optimization) switch, refuse further soft switches this
+/// long. Recovery switches (probe-confirmed dead exit) bypass dwell — that
+/// blindness window was the "switched to a corpse and sat there" bug.
 const MIN_DWELL: Duration = Duration::from_secs(120);
-/// After dwell, soft switches wait this extra window (hard fail may skip).
+/// After dwell, soft switches wait this extra window.
 const COOLDOWN: Duration = Duration::from_secs(90);
-/// When healthy, re-probe current + top-K at most this often (url-test-like drift fix).
+/// When healthy, re-optimize at most this often (url-test-like drift fix).
 const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(600);
 /// Smart-rule selectors use the same low-frequency refresh cadence.
 const RULE_PROBE_INTERVAL: Duration = Duration::from_secs(600);
 const RULE_FAILURE_RETRY_BASE: Duration = Duration::from_secs(60);
 
 // —— Active probe ——
+/// TCP-ping timeout — the cheap ranking pre-filter.
 const PROBE_TIMEOUT_MS: u64 = 2500;
-const TOP_K: usize = 6;
-const CANDIDATE_CONCURRENCY: usize = 3;
-const BOOTSTRAP_BATCH: usize = 8;
+/// Through-node URL probe timeout (patrol confirm + candidate verify) —
+/// the "open a page through this node and see" measurement.
+const VERIFY_TIMEOUT_MS: u64 = 5000;
+
+// —— Candidate scan ——
+/// Candidates pinged per scan step (also the ping wave width).
+const SCAN_BATCH: usize = 8;
+/// Per-round candidate budget (prefix of the score-ordered pool).
+const SCAN_MAX: usize = 24;
+/// Ping-passers per batch that get a real-path URL verification.
+const SCAN_VERIFY_TOP: usize = 3;
+
+// —— Smart-pool maintenance ——
 const BOOTSTRAP_MAX: usize = 24;
 const BOOTSTRAP_CONCURRENCY: usize = 4;
+
+// —— Passive (connection journal) ——
+const PASSIVE_LOOKBACK_MS: i64 = 20_000;
+const PASSIVE_MIN_SAMPLES: u32 = 5;
+const PASSIVE_FAIL_RATE: f64 = 0.15;
 
 // —— Hysteresis (Clash url-test `tolerance` style) ——
 /// Only switch when `best + TOLERANCE_MS < current`.
 const TOLERANCE_MS: u32 = 50;
 /// Secondary: large relative improvement also qualifies if abs ≥ TOLERANCE_MS.
 const MIN_IMPROVEMENT_RATIO: f64 = 0.25;
-
-// —— Passive (connection journal) ——
-const PASSIVE_LOOKBACK_MS: i64 = 20_000;
-const PASSIVE_MIN_SAMPLES: u32 = 5;
-const PASSIVE_FAIL_RATE: f64 = 0.15;
-const CONSECUTIVE_PROBE_FAILS: u32 = 2;
 
 // —— Score weights (lower is better) ——
 const SCORE_FAIL_PENALTY: f64 = 200.0;
@@ -99,7 +120,6 @@ struct Controller {
     phase: Phase,
     last_switch: Option<Instant>,
     last_health_probe: Option<Instant>,
-    consecutive_probe_fails: u32,
     /// node_id → eject until
     ejected: HashMap<String, Instant>,
     eject_counts: HashMap<String, u32>,
@@ -111,7 +131,6 @@ impl Default for Controller {
             phase: Phase::Ok,
             last_switch: None,
             last_health_probe: None,
-            consecutive_probe_fails: 0,
             ejected: HashMap::new(),
             eject_counts: HashMap::new(),
         }
@@ -149,7 +168,6 @@ impl Controller {
 
     fn mark_switched(&mut self) {
         self.last_switch = Some(Instant::now());
-        self.consecutive_probe_fails = 0;
         self.set_phase(Phase::Cooldown);
     }
 
@@ -219,16 +237,6 @@ fn should_prefer(best_ms: u32, cur_ms: u32) -> bool {
     }
     let better_ratio = (best_ms as f64) <= (cur_ms as f64) * (1.0 - MIN_IMPROVEMENT_RATIO);
     better_ratio && cur_ms.saturating_sub(best_ms) >= TOLERANCE_MS
-}
-
-fn should_switch(cur_ms: Option<u32>, best_ms: u32, hard_fail: bool) -> bool {
-    if hard_fail {
-        return true;
-    }
-    match cur_ms {
-        None => true,
-        Some(cms) => should_prefer(best_ms, cms),
-    }
 }
 
 /// Lower is better. Uses probe latency + optional passive fail rate + eject.
@@ -364,7 +372,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     // Main-node candidates must be servable by the running core (a core may drop
     // REALITY nodes — they pass TCP probes and would win the race, then the
     // pick is rejected by the switch guard).
-    let mut nodes: Vec<_> = nodes
+    let nodes: Vec<_> = nodes
         .into_iter()
         .filter(|n| core_kind.supports_node(n))
         .collect();
@@ -397,86 +405,18 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         });
     };
 
-    let ejected = ctrl().ejected_ids();
-    nodes.retain(|n| !ejected.iter().any(|e| e == &n.id));
-    sort_candidates_by_score(&mut nodes, &ejected);
-
-    let mut probed: u32 = 0;
-    let mut best: Option<(String, String, u32)> = None;
-    let limit = nodes.len().min(BOOTSTRAP_MAX);
-    let pool = &nodes[..limit];
-
-    app_log::debug(
-        "smart_switch",
-        format!("bootstrap pool size={limit} (max {BOOTSTRAP_MAX})"),
-    );
-
-    for (batch_idx, batch) in pool.chunks(BOOTSTRAP_BATCH).enumerate() {
-        let still_on = state
-            .with_store(|s| Ok(s.settings.auto_select.is_smart()))
-            .unwrap_or(false);
-        if !still_on {
-            ctrl().set_phase(Phase::Ok);
-            app_log::info(
-                "smart_switch",
-                "bootstrap cancelled (auto_select not smart)",
-            );
-            return Ok(SmartSwitchNowResult {
-                switched: false,
-                from_id: current_id,
-                to_id: None,
-                to_name: None,
-                latency_ms: None,
-                probed,
-                message: "cancelled".into(),
-            });
-        }
-
-        let results = probe_nodes_ranked(
-            batch,
-            PROBE_TIMEOUT_MS,
-            BOOTSTRAP_CONCURRENCY,
-            Some(api.clone()),
-            &probe_url,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        probed = probed.saturating_add(results.len() as u32);
-
-        let _ = state.with_store_mut(|store| {
-            for r in &results {
-                if !r.id.is_empty() {
-                    store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
-                }
-            }
-            Ok(())
-        });
-
-        for r in results {
-            if let Some(ms) = r.latency_ms {
-                let better = best.as_ref().map(|(_, _, b)| ms < *b).unwrap_or(true);
-                if better {
-                    best = Some((r.id, r.name, ms));
-                }
-            }
-        }
-
-        app_log::trace(
-            "smart_switch",
-            format!(
-                "bootstrap batch {} done, probed={}, best={}",
-                batch_idx + 1,
-                probed,
-                best.as_ref()
-                    .map(|(id, _, ms)| format!("{id}:{ms}ms"))
-                    .unwrap_or_else(|| "none".into())
-            ),
-        );
-
-        if best.is_some() && batch_idx >= 1 {
-            break;
-        }
-    }
+    // Scan the pool and pick the best VERIFIED node — a ping-lowest pick
+    // that cannot carry real traffic is never applied. The current node
+    // competes too (winning keeps it, "already best").
+    let (picked, probed) = run_scan(
+        state,
+        &nodes,
+        current_id.as_deref().unwrap_or(""),
+        ScanGoal::BestOverall,
+        &api,
+        &probe_url,
+    )
+    .await?;
 
     let still_on = state
         .with_store(|s| Ok(s.settings.auto_select.is_smart()))
@@ -495,11 +435,11 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         });
     }
 
-    let Some((best_id, best_name, best_ms)) = best else {
+    let Some(pick) = picked else {
         ctrl().set_phase(Phase::Ok);
         app_log::warn(
             "smart_switch",
-            format!("bootstrap: all probes failed (probed={probed})"),
+            format!("bootstrap: no verified node (probed={probed})"),
         );
         return Ok(SmartSwitchNowResult {
             switched: false,
@@ -512,43 +452,39 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         });
     };
 
-    if current_id.as_ref() == Some(&best_id) {
+    if current_id.as_ref() == Some(&pick.id) {
         {
             let mut c = ctrl();
             c.last_switch = Some(Instant::now());
-            c.consecutive_probe_fails = 0;
             c.last_health_probe = Some(Instant::now());
             c.set_phase(Phase::Ok);
         }
         app_log::info(
             "smart_switch",
-            format!("bootstrap: already best {best_name} ({best_ms}ms)"),
+            format!(
+                "bootstrap: already best {} ({}ms, verified)",
+                pick.name, pick.url_ms
+            ),
         );
         return Ok(SmartSwitchNowResult {
             switched: false,
             from_id: current_id,
-            to_id: Some(best_id),
-            to_name: Some(best_name),
-            latency_ms: Some(best_ms),
+            to_id: Some(pick.id),
+            to_name: Some(pick.name),
+            latency_ms: Some(pick.url_ms),
             probed,
             message: "already best".into(),
         });
     }
 
-    apply_switch(state, &best_id, false)?;
-    {
-        let mut c = ctrl();
-        c.mark_switched();
-        c.last_health_probe = Some(Instant::now());
-    }
-
+    apply_verified_switch(state, &pick, false)?;
     app_log::info(
         "smart_switch",
         format!(
             "bootstrap: {} → {} ({}ms, probed={})",
             current_id.as_deref().unwrap_or("—"),
-            best_name,
-            best_ms,
+            pick.name,
+            pick.url_ms,
             probed
         ),
     );
@@ -556,9 +492,9 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     Ok(SmartSwitchNowResult {
         switched: true,
         from_id: current_id,
-        to_id: Some(best_id),
-        to_name: Some(best_name),
-        latency_ms: Some(best_ms),
+        to_id: Some(pick.id),
+        to_name: Some(pick.name),
+        latency_ms: Some(pick.url_ms),
         probed,
         message: "switched".into(),
     })
@@ -609,18 +545,6 @@ async fn tick(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
 
-    {
-        let mut c = ctrl();
-        c.clear_eject_if_expired();
-        if c.in_dwell() {
-            c.set_phase(Phase::Cooldown);
-            return Ok(());
-        }
-        if c.phase == Phase::Cooldown && !c.in_soft_cooldown() {
-            c.set_phase(Phase::Ok);
-        }
-    }
-
     let (current_id, nodes, probe_url) = {
         let store = state.lock_store();
         (
@@ -633,7 +557,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
         let rt = state.lock_runtime();
         (rt.clash_api_clone(), rt.core.kind())
     };
-    // See the bootstrap path: only core-servable nodes are candidates.
+    // See select_best_now: only core-servable nodes are candidates.
     let nodes: Vec<_> = nodes
         .into_iter()
         .filter(|n| core_kind.supports_node(n))
@@ -647,7 +571,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
     };
     let current_tag = outbound_tag(&current);
 
-    // —— Level 0: passive observation ——
+    // —— Level 0: passive journal ——
     let passive = {
         let rt = state.lock_runtime();
         rt.passive_node_stats(&current_tag, PASSIVE_LOOKBACK_MS)
@@ -656,121 +580,105 @@ async fn tick(state: &AppState) -> Result<(), String> {
     let passive_hard = passive.hard_degraded();
     let passive_bad = passive_soft || passive_hard;
 
-    let (follow_up, health_due, soft_cd) = {
-        let c = ctrl();
-        (
-            c.consecutive_probe_fails > 0,
-            c.health_probe_due(),
-            c.in_soft_cooldown(),
-        )
+    let Some(api) = clash else {
+        return Ok(());
     };
 
-    // Nothing to do: healthy and health re-probe not due.
-    if !passive_bad && !follow_up && !health_due {
-        ctrl().set_phase(Phase::Ok);
-        return Ok(());
+    // —— Level 0.5: exit patrol ——
+    // URL-probe the current exit through the kernel every tick — the engine
+    // must notice a dead exit on its own, not only after the user's traffic
+    // starts failing. Fast (cache-backed) bar first; a generous-bar confirm
+    // on failure so a transient blip or a merely-slow node never triggers a
+    // scan.
+    let (exit_ok, cur_url_ms) = patrol_exit(&current, &api, &probe_url).await?;
+    if let Some(ms) = cur_url_ms {
+        let _ = state.with_store_mut(|store| {
+            store.update_node_latency(&current_id, Some(ms), now_secs());
+            Ok(())
+        });
     }
-
-    // Soft cooldown: block health re-probe and soft passive; allow hard passive / fail streak.
-    if soft_cd && !passive_hard && !follow_up {
-        return Ok(());
-    }
-
-    if passive_bad {
-        ctrl().set_phase(Phase::Suspect);
-    }
+    let exit_dead = !exit_ok;
 
     app_log::debug(
         "smart_switch",
         format!(
-            "signal phase={} passive_soft={} passive_hard={} sus={}/{} dests={}/{} consec={} follow_up={} health_due={}",
+            "signal phase={} exit_dead={} passive_soft={} passive_hard={} sus={}/{} dests={}/{} health_due={}",
             ctrl().phase.as_str(),
+            exit_dead,
             passive_soft,
             passive_hard,
             passive.suspicious,
             passive.total,
             passive.sus_dests,
             passive.dests,
-            passive.consecutive_recent_sus,
-            follow_up,
-            health_due
+            ctrl().health_probe_due(),
         ),
     );
 
-    let Some(api) = clash else {
-        return Ok(());
-    };
-
-    ctrl().set_phase(Phase::Probing);
-
-    // —— Level 1: confirm current node ——
-    // Health: URL probe through the kernel — the only probe that catches
-    // proxy-dead-but-TCP-alive nodes, which a ping-only check would keep
-    // "healthy" forever. Comparison latency: ranked (TCP ping) probe so the
-    // tolerance math against TCP-ranked candidates stays like-for-like —
-    // URL-vs-TCP would inflate the current node's number and churn switches.
-    // (For a QUIC current node both probes share the clash cache key.)
-    let cur_fail = probe_nodes(
-        std::slice::from_ref(&current),
-        Some(PROBE_TIMEOUT_MS),
-        Some(1),
-        Some(api.clone()),
-        probe_url.clone(),
-    )
-    .await
-    .map_err(|e| e.to_string())?
-    .first()
-    .map(|r| r.latency_ms.is_none())
-    .unwrap_or(true);
-    let cur_ms = probe_nodes_ranked(
-        std::slice::from_ref(&current),
-        PROBE_TIMEOUT_MS,
-        1,
-        Some(api.clone()),
-        &probe_url,
-    )
-    .await
-    .map_err(|e| e.to_string())?
-    .first()
-    .and_then(|r| r.latency_ms);
-
+    // —— Dwell / cooldown gates — recovery bypasses ——
     {
         let mut c = ctrl();
-        if cur_fail {
-            c.consecutive_probe_fails = c.consecutive_probe_fails.saturating_add(1);
-        } else {
-            // Probe succeeded: clear fail streak when not in passive hard mode.
-            if !passive_hard {
-                c.consecutive_probe_fails = 0;
-            }
-            if let Some(ms) = cur_ms {
-                let _ = state.with_store_mut(|store| {
-                    store.update_node_latency(&current_id, Some(ms), now_secs());
-                    Ok(())
-                });
-            }
+        c.clear_eject_if_expired();
+        if exit_dead {
+            // Probe-confirmed dead exit: recovery must not sit out MIN_DWELL —
+            // that blindness window was the "switched to a corpse and stayed"
+            // failure mode.
+            c.set_phase(Phase::Probing);
+            c.eject(&current_id);
+        } else if c.in_dwell() {
+            c.set_phase(Phase::Cooldown);
+            return Ok(());
+        } else if c.phase == Phase::Cooldown && !c.in_soft_cooldown() {
+            c.set_phase(Phase::Ok);
         }
     }
 
-    let hard_fail = {
-        let c = ctrl();
-        (cur_fail && c.consecutive_probe_fails >= CONSECUTIVE_PROBE_FAILS)
-            || (cur_fail && passive_hard)
-            || (cur_fail && passive_soft && c.consecutive_probe_fails >= 1)
-    };
-
-    // Healthy re-probe path: current OK and no passive bad — only switch if candidate much better.
-    let health_only = !passive_bad && !hard_fail && !cur_fail && health_due;
-
-    if !cur_fail && !passive_bad && !health_only {
-        // Soft passive cleared by successful probe, or follow-up resolved.
-        ctrl().set_phase(Phase::Ok);
+    if exit_dead {
+        app_log::warn(
+            "smart_switch",
+            format!("exit probe failed on {} — recovery scan", current.name),
+        );
+        let (picked, _) = run_scan(
+            state,
+            &nodes,
+            &current_id,
+            ScanGoal::FirstVerified,
+            &api,
+            &probe_url,
+        )
+        .await?;
+        if picked.is_none() {
+            // Ejected corpses are skipped next round; the pool is worked
+            // through with strict forward progress.
+            app_log::warn(
+                "smart_switch",
+                "recovery scan: no verified candidate this round",
+            );
+            ctrl().set_phase(Phase::Suspect);
+        }
         return Ok(());
     }
 
-    // Successful current + soft passive only: if latency not worse than peer cache, skip expand.
-    if !cur_fail && passive_soft && !passive_hard && !hard_fail {
-        if let Some(ms) = cur_ms {
+    // —— Soft paths (exit healthy): optimization, dwell-guarded ——
+    let health_due = ctrl().health_probe_due();
+    if !passive_bad && !health_due {
+        ctrl().set_phase(Phase::Ok);
+        return Ok(());
+    }
+    // Soft cooldown blocks optimization; a hard passive signal still gets a
+    // tolerance-checked reselect.
+    if ctrl().in_soft_cooldown() && !passive_hard {
+        ctrl().set_phase(Phase::Cooldown);
+        return Ok(());
+    }
+    if passive_bad {
+        ctrl().set_phase(Phase::Suspect);
+    }
+
+    // Passive-soft band guard: probe-healthy current inside the peer median
+    // band → don't expand into a scan.
+    if passive_soft && !passive_hard {
+        if let Some(ms) = cur_url_ms {
             let peers: Vec<u32> = nodes
                 .iter()
                 .filter(|n| n.id != current_id)
@@ -792,28 +700,108 @@ async fn tick(state: &AppState) -> Result<(), String> {
         }
     }
 
-    if !hard_fail {
-        let c = ctrl();
-        if c.in_soft_cooldown() && !passive_hard {
-            ctrl().set_phase(Phase::Cooldown);
-            return Ok(());
-        }
+    ctrl().set_phase(Phase::Probing);
+    let goal = match cur_url_ms {
+        Some(ms) => ScanGoal::BetterThan(ms),
+        None => ScanGoal::FirstVerified,
+    };
+    let scanned = run_scan(state, &nodes, &current_id, goal, &api, &probe_url).await;
+    if health_due {
+        ctrl().last_health_probe = Some(Instant::now());
     }
+    let (picked, _) = scanned?;
+    if picked.is_none() {
+        ctrl().set_phase(if passive_bad {
+            Phase::Suspect
+        } else {
+            Phase::Ok
+        });
+    }
+    Ok(())
+}
 
-    // —— Level 2: probe top-K candidates ——
+/// URL-probe the current exit through the kernel (delay API). Fast bar
+/// (cache-backed) first; on failure a generous-bar probe — healthy unless
+/// both fail. The engine-side equivalent of the manual "open a page and
+/// see if it loads" check, run every tick.
+async fn patrol_exit(
+    current: &ProxyNode,
+    api: &crate::api::ClashApi,
+    probe_url: &str,
+) -> Result<(bool, Option<u32>), String> {
+    let fast = probe_nodes(
+        std::slice::from_ref(current),
+        Some(PROBE_TIMEOUT_MS),
+        Some(1),
+        Some(api.clone()),
+        probe_url.to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if let Some(ms) = fast.first().and_then(|r| r.latency_ms) {
+        return Ok((true, Some(ms)));
+    }
+    let fair = probe_nodes(
+        std::slice::from_ref(current),
+        Some(VERIFY_TIMEOUT_MS),
+        Some(1),
+        Some(api.clone()),
+        probe_url.to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let ms = fair.first().and_then(|r| r.latency_ms);
+    Ok((ms.is_some(), ms))
+}
+
+/// What a candidate scan is trying to achieve.
+#[derive(Debug, Clone, Copy)]
+enum ScanGoal {
+    /// Any node that carries real traffic — as fast as possible (dead exit).
+    FirstVerified,
+    /// Switch only if clearly better than this URL latency (tolerance).
+    BetterThan(u32),
+    /// Scan the whole budget and return the best verified node (the
+    /// initial pick; the caller decides whether to apply it).
+    BestOverall,
+}
+
+/// One candidate proven to carry real traffic through the kernel (URL
+/// probe verified — no ping-only winners).
+struct VerifiedPick {
+    id: String,
+    name: String,
+    url_ms: u32,
+}
+
+/// Scan score-ordered candidates in ping batches until the goal is met.
+/// Returns the verified pick (already switched to, except for
+/// [`ScanGoal::BestOverall`] where the caller applies it) plus the number
+/// of nodes pinged.
+async fn run_scan(
+    state: &AppState,
+    nodes: &[ProxyNode],
+    current_id: &str,
+    goal: ScanGoal,
+    api: &crate::api::ClashApi,
+    probe_url: &str,
+) -> Result<(Option<VerifiedPick>, u32), String> {
+    let include_current = matches!(goal, ScanGoal::BestOverall);
     let ejected = ctrl().ejected_ids();
     let mut candidates: Vec<ProxyNode> = nodes
         .iter()
-        .filter(|n| n.id != current_id)
+        .filter(|n| include_current || n.id != current_id)
         .filter(|n| !ejected.iter().any(|e| e == &n.id))
         .cloned()
         .collect();
     // Weight ranking by each candidate's own recent passive fail rate so a
     // chronically-flaky node doesn't out-rank a merely-slower one just
-    // because its last active probe happened to land low. Query all tags in
-    // one journal scan; doing one scan per candidate makes a large node list
-    // unnecessarily expensive while the runtime lock is held.
-    let fail_rates: HashMap<String, f64> = {
+    // because its last active probe happened to land low. One single-pass
+    // scan for every candidate (per-tag scans would be O(nodes × history)
+    // under the runtime lock).
+    let fail_rates: HashMap<String, f64> = if candidates.is_empty() {
+        HashMap::new()
+    } else {
         let rt = state.lock_runtime();
         let tags: Vec<String> = candidates.iter().map(outbound_tag).collect();
         let stats = rt.passive_stats_for_tags(&tags, PASSIVE_LOOKBACK_MS);
@@ -833,134 +821,175 @@ async fn tick(state: &AppState) -> Result<(), String> {
     sort_candidates_by_score_with_fail_rate(&mut candidates, &ejected, |n| {
         fail_rates.get(&n.id).copied().unwrap_or(0.0)
     });
-    candidates.truncate(TOP_K);
+    candidates.truncate(SCAN_MAX);
 
-    if candidates.is_empty() {
-        if cur_fail {
-            let mut c = ctrl();
-            c.eject(&current_id);
-        }
-        if health_only {
-            ctrl().last_health_probe = Some(Instant::now());
+    let mut probed: u32 = 0;
+    let mut best: Option<VerifiedPick> = None;
+    for batch in candidates.chunks(SCAN_BATCH) {
+        // The user may flip auto_select off mid-scan.
+        let still_on = state
+            .with_store(|s| Ok(s.settings.auto_select.is_smart()))
+            .unwrap_or(false);
+        if !still_on {
             ctrl().set_phase(Phase::Ok);
+            return Ok((None, probed));
         }
-        return Ok(());
+        probed = probed.saturating_add(batch.len() as u32);
+        let pick = scan_slice_for_verified(state, batch, api, probe_url).await?;
+        app_log::trace(
+            "smart_switch",
+            format!(
+                "scan batch done, probed={probed}, pick={}",
+                pick.as_ref()
+                    .map(|p| format!("{}:{}ms", p.name, p.url_ms))
+                    .unwrap_or_else(|| "none".into())
+            ),
+        );
+        let Some(pick) = pick else {
+            continue;
+        };
+        match goal {
+            ScanGoal::FirstVerified => {
+                apply_verified_switch(state, &pick, true)?;
+                app_log::info(
+                    "smart_switch",
+                    format!("recovery → {} ({}ms, verified)", pick.name, pick.url_ms),
+                );
+                return Ok((Some(pick), probed));
+            }
+            ScanGoal::BetterThan(cur_ms) => {
+                if should_prefer(pick.url_ms, cur_ms) {
+                    apply_verified_switch(state, &pick, false)?;
+                    app_log::info(
+                        "smart_switch",
+                        format!(
+                            "improve → {} ({}ms vs cur {cur_ms}ms, verified)",
+                            pick.name, pick.url_ms
+                        ),
+                    );
+                    return Ok((Some(pick), probed));
+                }
+                // Candidates are score-ordered: the first verified pick that
+                // can't beat the tolerance bar ends the round.
+                return Ok((None, probed));
+            }
+            ScanGoal::BestOverall => {
+                let better = best
+                    .as_ref()
+                    .map(|b| pick.url_ms < b.url_ms)
+                    .unwrap_or(true);
+                if better {
+                    best = Some(pick);
+                }
+            }
+        }
     }
+    Ok((best, probed))
+}
 
-    let cand_results = probe_nodes_ranked(
-        &candidates,
+/// Ping-rank one batch, URL-verify the top few through the kernel, return
+/// the fastest verified node. Ping and verify failures are ejected with
+/// escalating penalties — a "TCP-alive but proxy-dead" node proves itself
+/// dead here and stops wasting scan slots in later rounds.
+async fn scan_slice_for_verified(
+    state: &AppState,
+    batch: &[ProxyNode],
+    api: &crate::api::ClashApi,
+    probe_url: &str,
+) -> Result<Option<VerifiedPick>, String> {
+    let pings = probe_nodes_ranked(
+        batch,
         PROBE_TIMEOUT_MS,
-        CANDIDATE_CONCURRENCY,
-        Some(api),
-        &probe_url,
+        SCAN_BATCH,
+        Some(api.clone()),
+        probe_url,
     )
     .await
     .map_err(|e| e.to_string())?;
+    record_latency_results(state, &pings);
+    eject_failures(&pings);
 
-    if health_only {
-        ctrl().last_health_probe = Some(Instant::now());
+    let shortlist = verify_shortlist(&pings, batch, SCAN_VERIFY_TOP);
+    if shortlist.is_empty() {
+        return Ok(None);
     }
+    let verifies = probe_nodes(
+        &shortlist,
+        Some(VERIFY_TIMEOUT_MS),
+        Some(shortlist.len()),
+        Some(api.clone()),
+        probe_url.to_string(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    record_latency_results(state, &verifies);
+    eject_failures(&verifies);
 
+    let mut verified: Vec<VerifiedPick> = verifies
+        .iter()
+        .filter_map(|r| {
+            r.latency_ms.map(|ms| VerifiedPick {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                url_ms: ms,
+            })
+        })
+        .collect();
+    verified.sort_by_key(|v| v.url_ms);
+    Ok(verified.into_iter().next())
+}
+
+/// Ping-passers sorted by ping (lowest first), capped at `top` — the nodes
+/// worth a real-path verification.
+fn verify_shortlist(pings: &[LatencyResult], batch: &[ProxyNode], top: usize) -> Vec<ProxyNode> {
+    let mut passers: Vec<(u32, &ProxyNode)> = pings
+        .iter()
+        .filter_map(|r| {
+            let ms = r.latency_ms?;
+            let node = batch.iter().find(|n| n.id == r.id)?;
+            Some((ms, node))
+        })
+        .collect();
+    passers.sort_by_key(|(ms, _)| *ms);
+    passers
+        .into_iter()
+        .take(top)
+        .map(|(_, n)| n.clone())
+        .collect()
+}
+
+fn record_latency_results(state: &AppState, results: &[LatencyResult]) {
     let _ = state.with_store_mut(|store| {
-        for r in &cand_results {
+        for r in results {
             if !r.id.is_empty() {
                 store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
             }
         }
-        if let Some(ms) = cur_ms {
-            store.update_node_latency(&current_id, Some(ms), now_secs());
-        }
         Ok(())
     });
+}
 
-    // Rank by live score: fresh probe latency weighted by each node's
-    // recent passive fail rate (chronic flakiness still counts even when
-    // this probe happened to succeed).
-    let mut ranked: Vec<(String, u32, f64)> = cand_results
-        .into_iter()
-        .filter_map(|r| {
-            let ms = r.latency_ms?;
-            let fail_rate = fail_rates.get(&r.id).copied().unwrap_or(0.0);
-            let sc = score_node(Some(ms), fail_rate, false);
-            Some((r.id, ms, sc))
-        })
-        .collect();
-    ranked.sort_by(|a, b| {
-        a.2.partial_cmp(&b.2)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.cmp(&b.1))
-    });
-
-    if ranked.is_empty() {
-        app_log::warn(
-            "smart_switch",
-            "all candidates failed (possible local network issue)",
-        );
-        if cur_fail {
-            let mut c = ctrl();
-            c.eject(&current_id);
-        }
-        ctrl().set_phase(if passive_bad {
-            Phase::Suspect
-        } else {
-            Phase::Ok
-        });
-        return Ok(());
-    }
-
-    let (best_id, best_ms, _) = ranked[0].clone();
-
-    if !should_switch(cur_ms, best_ms, hard_fail) {
-        app_log::debug(
-            "smart_switch",
-            format!(
-                "keep current (cur={:?} best={best_ms} hard={hard_fail} tol={TOLERANCE_MS})",
-                cur_ms
-            ),
-        );
-        ctrl().set_phase(if passive_bad {
-            Phase::Suspect
-        } else {
-            Phase::Ok
-        });
-        return Ok(());
-    }
-
-    let best_name = {
-        let store = state.lock_store();
-        store
-            .find_node(&best_id)
-            .map(|n| n.name.clone())
-            .unwrap_or_else(|| best_id.clone())
-    };
-
-    apply_switch(state, &best_id, hard_fail)?;
-
-    {
-        let mut c = ctrl();
-        c.mark_switched();
-        c.last_health_probe = Some(Instant::now());
-        if cur_fail {
-            c.eject(&current_id);
+fn eject_failures(results: &[LatencyResult]) {
+    let mut c = ctrl();
+    for r in results {
+        if r.latency_ms.is_none() && !r.id.is_empty() {
+            c.eject(&r.id);
         }
     }
+}
 
-    app_log::info(
-        "smart_switch",
-        format!(
-            "{} → {} ({}ms{}, score-based)",
-            current.name,
-            best_name,
-            best_ms,
-            if hard_fail {
-                ", hard fail"
-            } else if health_only {
-                ", health re-probe"
-            } else {
-                ""
-            }
-        ),
-    );
+/// Hot-switch to a verified pick and start the post-switch dwell (soft
+/// paths only — patrol re-verifies the pick next tick, so a dead pick is
+/// caught immediately rather than after MIN_DWELL).
+fn apply_verified_switch(
+    state: &AppState,
+    pick: &VerifiedPick,
+    recovery: bool,
+) -> Result<(), String> {
+    apply_switch(state, &pick.id, recovery)?;
+    let mut c = ctrl();
+    c.mark_switched();
+    c.last_health_probe = Some(Instant::now());
     Ok(())
 }
 
@@ -1133,7 +1162,7 @@ async fn maintain_smart_pool(
     }
     members.retain(|n| !ejected.iter().any(|e| e == &n.id));
     sort_candidates_by_score(&mut members, &ejected);
-    members.truncate(BOOTSTRAP_MAX.min(TOP_K.max(8)));
+    members.truncate(BOOTSTRAP_MAX.min(SCAN_BATCH));
 
     let results = match probe_nodes_ranked(
         &members,
@@ -1324,6 +1353,83 @@ mod probe_schedule_tests {
 
         assert!(!controller.ejected.contains_key("recovered-node"));
         assert!(!controller.eject_counts.contains_key("recovered-node"));
+    }
+}
+
+#[cfg(test)]
+mod scan_decision_tests {
+    use super::*;
+
+    #[test]
+    fn prefer_requires_absolute_or_relative_margin() {
+        // Marginal absolute gain (< TOLERANCE_MS) never qualifies.
+        assert!(!should_prefer(160, 200));
+        // Absolute margin ≥ 50ms qualifies.
+        assert!(should_prefer(149, 200));
+        assert!(should_prefer(700, 900));
+        // Exactly 50ms qualifies only with the 25% relative margin.
+        assert!(should_prefer(150, 200));
+        assert!(!should_prefer(450, 500));
+        assert!(!should_prefer(200, 200));
+        assert!(!should_prefer(300, 250));
+    }
+
+    fn result(id: &str, ms: Option<u32>) -> LatencyResult {
+        LatencyResult {
+            id: id.into(),
+            name: id.into(),
+            latency_ms: ms,
+            error: None,
+            tested_at: 0,
+            method: "tcp".into(),
+        }
+    }
+
+    fn node(id: &str) -> ProxyNode {
+        ProxyNode {
+            id: id.into(),
+            name: id.into(),
+            server: "example.com".into(),
+            port: 443,
+            protocol: crate::domain::Protocol::Shadowsocks,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: crate::domain::ProtocolConfig::Shadowsocks {
+                method: "aes-256-gcm".into(),
+                password: "pw".into(),
+                plugin: None,
+                plugin_opts: None,
+                shadow_tls: None,
+            },
+            source: None,
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    #[test]
+    fn verify_shortlist_orders_ping_passers_and_caps() {
+        let batch = vec![node("a"), node("b"), node("c"), node("d")];
+        let pings = vec![
+            result("a", Some(180)),
+            result("b", None),
+            result("c", Some(90)),
+            result("d", Some(120)),
+        ];
+
+        let shortlist = verify_shortlist(&pings, &batch, 2);
+
+        let ids: Vec<&str> = shortlist.iter().map(|n| n.id.as_str()).collect();
+        // Failures dropped, passers ascending by ping, capped at `top`.
+        assert_eq!(ids, vec!["c", "d"]);
+    }
+
+    #[test]
+    fn verify_shortlist_empty_when_all_fail() {
+        let batch = vec![node("a"), node("b")];
+        let pings = vec![result("a", None), result("b", None)];
+        assert!(verify_shortlist(&pings, &batch, 3).is_empty());
     }
 }
 
