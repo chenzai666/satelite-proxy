@@ -171,7 +171,9 @@ impl Controller {
         self.set_phase(Phase::Cooldown);
     }
 
-    fn eject(&mut self, id: &str) {
+    /// Eject a node, returning the escalation count and the ejection seconds
+    /// (for activity logging at the call sites, where the node name is known).
+    fn eject(&mut self, id: &str) -> (u32, u64) {
         let n = self.eject_counts.entry(id.to_string()).or_insert(0);
         *n = n.saturating_add(1);
         let secs = match *n {
@@ -182,6 +184,7 @@ impl Controller {
         };
         self.ejected
             .insert(id.to_string(), Instant::now() + Duration::from_secs(secs));
+        (*n, secs)
     }
 
     fn clear_eject_if_expired(&mut self) {
@@ -272,25 +275,186 @@ fn sort_candidates_by_score_with_fail_rate(
     });
 }
 
+/// Poll cadence while the core is down — quick to notice a start so smart
+/// mode engages promptly instead of waiting a full TICK.
+const IDLE_POLL: Duration = Duration::from_secs(5);
+/// Re-log an idle reason at most this often while it persists.
+const IDLE_NOTE_INTERVAL: Duration = Duration::from_secs(60);
+/// Re-log a skipped round (lock contention) at most this often.
+const SKIP_NOTE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Hard wall for one round of engine work. Generous enough for a full
+/// bootstrap scan (24 nodes, ping + verify ≈ 15s observed); anything past it
+/// is a stuck round — abandon it and keep looping. A silently-dead engine is
+/// exactly the "node died and nothing switched" failure mode (2026-09-13:
+/// the engine froze three times and the dead exit was never recovered), so
+/// the loop must never die with its work.
+const WORK_HARD_LIMIT: Duration = Duration::from_secs(120);
+
+/// Tracks observed core-running samples to detect a real Stopped→Running
+/// edge. `None` samples (core transitioning — the stop/start of a restart
+/// hides inside the transition) are no-observations: a restart therefore
+/// reads as continuous running and never fabricates an edge.
+#[derive(Debug, Default)]
+struct RunningEdge {
+    was_running: bool,
+}
+
+impl RunningEdge {
+    fn observe(&mut self, sample: Option<bool>) -> bool {
+        match sample {
+            Some(running) => {
+                let edge = running && !self.was_running;
+                self.was_running = running;
+                edge
+            }
+            None => false,
+        }
+    }
+}
+
+/// Last time we logged a skipped round (lock contention) — throttled so a
+/// stuck lock holder stays visible without flooding the log.
+static SKIP_NOTE: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
+
+fn note_round_skipped(what: &str) {
+    let mut last = SKIP_NOTE.lock().unwrap_or_else(|p| p.into_inner());
+    let now = Instant::now();
+    if last.map(|at| now.duration_since(at) < SKIP_NOTE_INTERVAL) == Some(true) {
+        return;
+    }
+    app_log::info(
+        "smart_switch",
+        format!("round skipped: {what} lock busy — will retry next tick"),
+    );
+    *last = Some(now);
+}
+
+/// Throttled liveness note for why the engine isn't doing rounds. A dangling
+/// core-transition flag or a stopped core used to be indistinguishable from
+/// a dead engine (total log silence) — now every idle state is visible.
+fn note_engine_idle(last: &mut Option<(&'static str, Instant)>, reason: &'static str) {
+    let now = Instant::now();
+    if let Some((seen, at)) = *last {
+        if seen == reason && now.duration_since(at) < IDLE_NOTE_INTERVAL {
+            return;
+        }
+    }
+    app_log::info("smart_switch", format!("engine idle: {reason}"));
+    *last = Some((reason, now));
+}
+
+/// Run one engine round as a supervised CHILD task and await it under the
+/// hard limit. A round that blocks mid-poll on a worker (sync lock queue,
+/// hung syscall) or panics cannot take the engine loop down with it: tokio
+/// timeouts only fire at await points, so a sync block inside the SAME
+/// task's future would starve its own timeout — as a detached child the
+/// block only strands that child, the supervisor's timer still fires, the
+/// round is abandoned with a visible log, and the loop keeps running.
+async fn supervise_round<F, Fut>(app: &AppHandle, label: &'static str, make: F)
+where
+    F: FnOnce(AppHandle) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    let started = Instant::now();
+    // tokio::spawn (not tauri::async_runtime::spawn) so the handle survives
+    // the timeout wrapper and can be aborted afterwards.
+    let mut handle = tokio::spawn(make(app.clone()));
+    match tokio::time::timeout(WORK_HARD_LIMIT, &mut handle).await {
+        Ok(Ok(Ok(()))) => {
+            app_log::debug(
+                "smart_switch",
+                format!("{label} round done in {:?}", started.elapsed()),
+            );
+        }
+        Ok(Ok(Err(e))) => app_log::warn("smart_switch", format!("{label}: {e}")),
+        Ok(Err(join)) => app_log::error(
+            "smart_switch",
+            format!("{label} round failed to join: {join}"),
+        ),
+        Err(_) => {
+            // Abort cancels the child at its next await point (a child stuck
+            // mid-poll in sync code cannot be cancelled, but one parked on an
+            // await — e.g. a saturated probe semaphore — is). Either way the
+            // abandoned child can no longer pile up unnoticed.
+            handle.abort();
+            app_log::warn(
+                "smart_switch",
+                format!(
+                    "{label} round exceeded hard limit ({:?} elapsed) — aborted, engine keeps running",
+                    started.elapsed()
+                ),
+            );
+        }
+    }
+}
+
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(10)).await;
+        // A fresh app session that starts the core while auto_select=smart
+        // never passes through the UI's enable-time bootstrap
+        // (`smart_switch_now` is only invoked on the toggle) — the engine
+        // must engage itself on the core's Stopped→Running edge.
+        let mut edge = RunningEdge::default();
+        let mut idle_note: Option<(&'static str, Instant)> = None;
         loop {
             if let Some(state) = app.try_state::<AppState>() {
                 if state.is_core_transitioning() {
+                    edge.observe(None);
+                    note_engine_idle(&mut idle_note, "core transitioning");
+                    tokio::time::sleep(IDLE_POLL).await;
+                    continue;
+                }
+                let running = state.is_core_running();
+                if edge.observe(Some(running)) {
+                    supervise_round(&app, "bootstrap", |app| async move {
+                        let state = app.state::<AppState>();
+                        bootstrap_if_smart(&state).await;
+                        Ok(())
+                    })
+                    .await;
+                }
+                if running {
+                    idle_note = None;
+                    supervise_round(&app, "tick", |app| async move {
+                        let state = app.state::<AppState>();
+                        tick(&state).await
+                    })
+                    .await;
+                    supervise_round(&app, "smart rules", |app| async move {
+                        let state = app.state::<AppState>();
+                        tick_smart_rules(&state).await
+                    })
+                    .await;
                     tokio::time::sleep(TICK).await;
                     continue;
                 }
-                if let Err(e) = tick(&state).await {
-                    app_log::warn("smart_switch", format!("tick: {e}"));
-                }
-                if let Err(e) = tick_smart_rules(&state).await {
-                    app_log::warn("smart_switch", format!("smart_rules: {e}"));
-                }
+                note_engine_idle(&mut idle_note, "core not running");
             }
-            tokio::time::sleep(TICK).await;
+            tokio::time::sleep(IDLE_POLL).await;
         }
     });
+}
+
+/// The core just came up: if smart mode is on, run the same verified
+/// bootstrap the UI triggers when toggling smart on, so the engine actually
+/// engages (probe the pool, pick the best verified node) instead of idling
+/// until the next degrade/drift tick.
+async fn bootstrap_if_smart(state: &AppState) {
+    let smart_on = state
+        .with_store(|s| Ok(s.settings.auto_select.is_smart()))
+        .unwrap_or(false);
+    if !smart_on {
+        return;
+    }
+    app_log::info(
+        "smart_switch",
+        "core started with smart mode on — bootstrap",
+    );
+    if let Err(e) = select_best_now(state).await {
+        app_log::warn("smart_switch", format!("start bootstrap: {e}"));
+    }
 }
 
 /// User just enabled smart switch: probe candidates and pick the best node once.
@@ -415,6 +579,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         ScanGoal::BestOverall,
         &api,
         &probe_url,
+        "bootstrap",
     )
     .await?;
 
@@ -532,29 +697,34 @@ fn apply_switch(state: &AppState, best_id: &str, hard_fail: bool) -> Result<(), 
 }
 
 async fn tick(state: &AppState) -> Result<(), String> {
-    let (enabled, custom) = state
-        .with_store(|s| {
-            Ok((
-                s.settings.auto_select.is_smart(),
-                s.settings.runtime_source().is_custom(),
-            ))
-        })
-        .unwrap_or((false, false));
-    // Custom sing-box configs manage their own outbounds — nothing to switch.
-    if !enabled || custom || !state.is_core_running() {
-        return Ok(());
-    }
-
-    let (current_id, nodes, probe_url) = {
-        let store = state.lock_store();
+    let round_start = Instant::now();
+    // Hot path uses try-locks throughout: a contended lock skips this round
+    // (with a throttled log) instead of parking the round on a worker — a
+    // stuck lock holder must never stop the patrol. Guards live in blocks so
+    // they provably never cross an await.
+    let (enabled, custom, current_id, nodes, probe_url) = {
+        let Some(store) = state.try_lock_store() else {
+            note_round_skipped("store");
+            return Ok(());
+        };
         (
+            store.settings.auto_select.is_smart(),
+            store.settings.runtime_source().is_custom(),
             store.settings.current_node_id.clone(),
             store.enabled_nodes(),
             store.settings.probe_url.clone(),
         )
     };
+    // Custom sing-box configs manage their own outbounds — nothing to switch.
+    if !enabled || custom || !state.is_core_running() {
+        return Ok(());
+    }
+
     let (clash, core_kind) = {
-        let rt = state.lock_runtime();
+        let Some(rt) = state.try_lock_runtime() else {
+            note_round_skipped("runtime");
+            return Ok(());
+        };
         (rt.clash_api_clone(), rt.core.kind())
     };
     // See select_best_now: only core-servable nodes are candidates.
@@ -573,7 +743,10 @@ async fn tick(state: &AppState) -> Result<(), String> {
 
     // —— Level 0: passive journal ——
     let passive = {
-        let rt = state.lock_runtime();
+        let Some(rt) = state.try_lock_runtime() else {
+            note_round_skipped("runtime");
+            return Ok(());
+        };
         rt.passive_node_stats(&current_tag, PASSIVE_LOOKBACK_MS)
     };
     let passive_soft = passive.soft_degraded(PASSIVE_MIN_SAMPLES, PASSIVE_FAIL_RATE);
@@ -590,32 +763,81 @@ async fn tick(state: &AppState) -> Result<(), String> {
     // starts failing. Fast (cache-backed) bar first; a generous-bar confirm
     // on failure so a transient blip or a merely-slow node never triggers a
     // scan.
-    let (exit_ok, cur_url_ms) = patrol_exit(&current, &api, &probe_url).await?;
-    if let Some(ms) = cur_url_ms {
-        let _ = state.with_store_mut(|store| {
-            store.update_node_latency(&current_id, Some(ms), now_secs());
-            Ok(())
-        });
+    let patrol_started = Instant::now();
+    let outcome = patrol_exit(&current, &api, &probe_url).await?;
+    // Stage timing: with the 2026-09-13 stuck-round incident these lines
+    // pinpoint which segment of a round ate the hard limit.
+    app_log::debug(
+        "smart_switch",
+        format!(
+            "tick timing: gates={:?} patrol={:?}",
+            patrol_started - round_start,
+            patrol_started.elapsed()
+        ),
+    );
+    match outcome {
+        PatrolOutcome::Healthy(ms) => {
+            app_log::trace(
+                "smart_switch",
+                format!("patrol: {} {ms}ms ok", current.name),
+            );
+        }
+        PatrolOutcome::SlowButAlive(ms) => {
+            app_log::info(
+                "smart_switch",
+                format!(
+                    "patrol: {} failed the fast bar, generous confirm {ms}ms — alive, keeping",
+                    current.name
+                ),
+            );
+        }
+        PatrolOutcome::Dead => {}
     }
-    let exit_dead = !exit_ok;
+    let cur_url_ms = outcome.ms();
+    // Stage markers: the 2026-09-13 stuck-round hunt needs each suspect step
+    // isolated — the last marker before silence names the blocking call.
+    app_log::debug("smart_switch", "stage: post-trace");
+    if let Some(ms) = cur_url_ms {
+        if state
+            .try_with_store_mut(|store| {
+                store.update_node_latency(&current_id, Some(ms), now_secs());
+                Ok(())
+            })
+            .is_none()
+        {
+            note_round_skipped("store (latency write)");
+        }
+    }
+    app_log::debug("smart_switch", "stage: latency written");
+    let exit_dead = outcome.is_dead();
+    let phase_str = ctrl().phase.as_str();
+    app_log::debug(
+        "smart_switch",
+        format!("stage: ctrl phase read ({phase_str})"),
+    );
+    let health_due = ctrl().health_probe_due();
+    app_log::debug("smart_switch", "stage: ctrl health read");
 
     app_log::debug(
         "smart_switch",
         format!(
-            "signal phase={} exit_dead={} passive_soft={} passive_hard={} sus={}/{} dests={}/{} health_due={}",
-            ctrl().phase.as_str(),
-            exit_dead,
-            passive_soft,
-            passive_hard,
+            "signal phase={phase_str} exit_dead={exit_dead} exit_ms={cur_url_ms:?} passive_soft={passive_soft} passive_hard={passive_hard} sus={}/{} dests={}/{} health_due={health_due}",
             passive.suspicious,
             passive.total,
             passive.sus_dests,
             passive.dests,
-            ctrl().health_probe_due(),
+        ),
+    );
+    app_log::debug(
+        "smart_switch",
+        format!(
+            "tick timing: through signal line, total={:?}",
+            round_start.elapsed()
         ),
     );
 
     // —— Dwell / cooldown gates — recovery bypasses ——
+    let mut dead_eject: Option<(u32, u64)> = None;
     {
         let mut c = ctrl();
         c.clear_eject_if_expired();
@@ -624,7 +846,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
             // that blindness window was the "switched to a corpse and stayed"
             // failure mode.
             c.set_phase(Phase::Probing);
-            c.eject(&current_id);
+            dead_eject = Some(c.eject(&current_id));
         } else if c.in_dwell() {
             c.set_phase(Phase::Cooldown);
             return Ok(());
@@ -634,9 +856,15 @@ async fn tick(state: &AppState) -> Result<(), String> {
     }
 
     if exit_dead {
+        let eject_note = dead_eject
+            .map(|(n, s)| format!(" (eject {n}x {s}s)"))
+            .unwrap_or_default();
         app_log::warn(
             "smart_switch",
-            format!("exit probe failed on {} — recovery scan", current.name),
+            format!(
+                "exit probe failed on {}{eject_note} — recovery scan",
+                current.name
+            ),
         );
         let (picked, _) = run_scan(
             state,
@@ -645,6 +873,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
             ScanGoal::FirstVerified,
             &api,
             &probe_url,
+            "recovery",
         )
         .await?;
         if picked.is_none() {
@@ -689,9 +918,12 @@ async fn tick(state: &AppState) -> Result<(), String> {
                 sorted.sort_unstable();
                 let median = sorted[sorted.len() / 2];
                 if ms <= median.saturating_mul(2).saturating_add(150) {
-                    app_log::debug(
+                    app_log::info(
                         "smart_switch",
-                        format!("soft passive but cur {ms}ms within peer median band; skip"),
+                        format!(
+                            "passive soft but {} {}ms within peer median band — skip scan",
+                            current.name, ms
+                        ),
                     );
                     ctrl().set_phase(Phase::Suspect);
                     return Ok(());
@@ -705,7 +937,14 @@ async fn tick(state: &AppState) -> Result<(), String> {
         Some(ms) => ScanGoal::BetterThan(ms),
         None => ScanGoal::FirstVerified,
     };
-    let scanned = run_scan(state, &nodes, &current_id, goal, &api, &probe_url).await;
+    let reason = if passive_hard {
+        "passive hard degrade"
+    } else if passive_soft {
+        "passive soft degrade"
+    } else {
+        "drift re-probe"
+    };
+    let scanned = run_scan(state, &nodes, &current_id, goal, &api, &probe_url, reason).await;
     if health_due {
         ctrl().last_health_probe = Some(Instant::now());
     }
@@ -720,6 +959,32 @@ async fn tick(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
+/// Result of one exit-patrol round (the tick-level "is the current exit
+/// actually carrying traffic" check).
+#[derive(Debug, Clone, Copy)]
+enum PatrolOutcome {
+    /// Fast (cache-backed) bar passed.
+    Healthy(u32),
+    /// Fast bar failed; the generous confirm probe still carried traffic —
+    /// slow but alive, keep it.
+    SlowButAlive(u32),
+    /// Both bars failed — probe-confirmed dead exit.
+    Dead,
+}
+
+impl PatrolOutcome {
+    fn ms(self) -> Option<u32> {
+        match self {
+            Self::Healthy(ms) | Self::SlowButAlive(ms) => Some(ms),
+            Self::Dead => None,
+        }
+    }
+
+    fn is_dead(self) -> bool {
+        matches!(self, Self::Dead)
+    }
+}
+
 /// URL-probe the current exit through the kernel (delay API). Fast bar
 /// (cache-backed) first; on failure a generous-bar probe — healthy unless
 /// both fail. The engine-side equivalent of the manual "open a page and
@@ -728,7 +993,8 @@ async fn patrol_exit(
     current: &ProxyNode,
     api: &crate::api::ClashApi,
     probe_url: &str,
-) -> Result<(bool, Option<u32>), String> {
+) -> Result<PatrolOutcome, String> {
+    let fast_started = Instant::now();
     let fast = probe_nodes(
         std::slice::from_ref(current),
         Some(PROBE_TIMEOUT_MS),
@@ -738,9 +1004,20 @@ async fn patrol_exit(
     )
     .await
     .map_err(|e| e.to_string())?;
-    if let Some(ms) = fast.first().and_then(|r| r.latency_ms) {
-        return Ok((true, Some(ms)));
+    if fast_started.elapsed() > Duration::from_millis(PROBE_TIMEOUT_MS) {
+        app_log::debug(
+            "smart_switch",
+            format!(
+                "patrol: fast bar took {:?} (budget {}ms) — probe layer queuing",
+                fast_started.elapsed(),
+                PROBE_TIMEOUT_MS
+            ),
+        );
     }
+    if let Some(ms) = fast.first().and_then(|r| r.latency_ms) {
+        return Ok(PatrolOutcome::Healthy(ms));
+    }
+    let fair_started = Instant::now();
     let fair = probe_nodes(
         std::slice::from_ref(current),
         Some(VERIFY_TIMEOUT_MS),
@@ -750,8 +1027,21 @@ async fn patrol_exit(
     )
     .await
     .map_err(|e| e.to_string())?;
+    if fair_started.elapsed() > Duration::from_millis(VERIFY_TIMEOUT_MS) {
+        app_log::debug(
+            "smart_switch",
+            format!(
+                "patrol: confirm bar took {:?} (budget {}ms) — probe layer queuing",
+                fair_started.elapsed(),
+                VERIFY_TIMEOUT_MS
+            ),
+        );
+    }
     let ms = fair.first().and_then(|r| r.latency_ms);
-    Ok((ms.is_some(), ms))
+    Ok(match ms {
+        Some(ms) => PatrolOutcome::SlowButAlive(ms),
+        None => PatrolOutcome::Dead,
+    })
 }
 
 /// What a candidate scan is trying to achieve.
@@ -775,9 +1065,10 @@ struct VerifiedPick {
 }
 
 /// Scan score-ordered candidates in ping batches until the goal is met.
-/// Returns the verified pick (already switched to, except for
-/// [`ScanGoal::BestOverall`] where the caller applies it) plus the number
-/// of nodes pinged.
+/// `reason` is the trigger ("recovery" / "passive soft degrade" / …) — it
+/// only feeds the activity log. Returns the verified pick (already switched
+/// to, except for [`ScanGoal::BestOverall`] where the caller applies it)
+/// plus the number of nodes pinged.
 async fn run_scan(
     state: &AppState,
     nodes: &[ProxyNode],
@@ -785,6 +1076,7 @@ async fn run_scan(
     goal: ScanGoal,
     api: &crate::api::ClashApi,
     probe_url: &str,
+    reason: &str,
 ) -> Result<(Option<VerifiedPick>, u32), String> {
     let include_current = matches!(goal, ScanGoal::BestOverall);
     let ejected = ctrl().ejected_ids();
@@ -802,26 +1094,44 @@ async fn run_scan(
     let fail_rates: HashMap<String, f64> = if candidates.is_empty() {
         HashMap::new()
     } else {
-        let rt = state.lock_runtime();
-        let tags: Vec<String> = candidates.iter().map(outbound_tag).collect();
-        let stats = rt.passive_stats_for_tags(&tags, PASSIVE_LOOKBACK_MS);
-        tags.iter()
-            .zip(candidates.iter())
-            .map(|(tag, node)| {
-                (
-                    node.id.clone(),
-                    stats
-                        .get(tag)
-                        .map(PassiveNodeStats::fail_rate)
-                        .unwrap_or(0.0),
-                )
-            })
-            .collect()
+        // Contended runtime lock just means no passive weighting this round —
+        // the scan itself doesn't need it.
+        match state.try_lock_runtime() {
+            Some(rt) => {
+                let tags: Vec<String> = candidates.iter().map(outbound_tag).collect();
+                let stats = rt.passive_stats_for_tags(&tags, PASSIVE_LOOKBACK_MS);
+                tags.iter()
+                    .zip(candidates.iter())
+                    .map(|(tag, n)| {
+                        (
+                            n.id.clone(),
+                            stats.get(tag).map(PassiveNodeStats::fail_rate).unwrap_or(0.0),
+                        )
+                    })
+                    .collect()
+            }
+            None => HashMap::new(),
+        }
     };
     sort_candidates_by_score_with_fail_rate(&mut candidates, &ejected, |n| {
         fail_rates.get(&n.id).copied().unwrap_or(0.0)
     });
     candidates.truncate(SCAN_MAX);
+
+    let goal_desc = match goal {
+        ScanGoal::FirstVerified => "first-verified".to_string(),
+        ScanGoal::BetterThan(ms) => format!("better-than {ms}ms"),
+        ScanGoal::BestOverall => "best-overall".to_string(),
+    };
+    app_log::info(
+        "smart_switch",
+        format!(
+            "scan start ({reason}): goal={goal_desc}, candidates={} (of {} nodes, {} ejected)",
+            candidates.len(),
+            nodes.len(),
+            ejected.len()
+        ),
+    );
 
     let mut probed: u32 = 0;
     let mut best: Option<VerifiedPick> = None;
@@ -836,15 +1146,6 @@ async fn run_scan(
         }
         probed = probed.saturating_add(batch.len() as u32);
         let pick = scan_slice_for_verified(state, batch, api, probe_url).await?;
-        app_log::trace(
-            "smart_switch",
-            format!(
-                "scan batch done, probed={probed}, pick={}",
-                pick.as_ref()
-                    .map(|p| format!("{}:{}ms", p.name, p.url_ms))
-                    .unwrap_or_else(|| "none".into())
-            ),
-        );
         let Some(pick) = pick else {
             continue;
         };
@@ -871,6 +1172,18 @@ async fn run_scan(
                 }
                 // Candidates are score-ordered: the first verified pick that
                 // can't beat the tolerance bar ends the round.
+                let cur_name = nodes
+                    .iter()
+                    .find(|n| n.id == current_id)
+                    .map(|n| n.name.as_str())
+                    .unwrap_or(current_id);
+                app_log::info(
+                    "smart_switch",
+                    format!(
+                        "scan: best candidate {} ({}ms) doesn't beat {} ({cur_ms}ms) by tolerance — keep",
+                        pick.name, pick.url_ms, cur_name
+                    ),
+                );
                 return Ok((None, probed));
             }
             ScanGoal::BestOverall => {
@@ -883,6 +1196,12 @@ async fn run_scan(
                 }
             }
         }
+    }
+    if best.is_none() && matches!(goal, ScanGoal::BetterThan(_)) {
+        app_log::info(
+            "smart_switch",
+            format!("scan ({reason}) complete: no verified candidate, probed={probed}"),
+        );
     }
     Ok((best, probed))
 }
@@ -910,7 +1229,15 @@ async fn scan_slice_for_verified(
     eject_failures(&pings);
 
     let shortlist = verify_shortlist(&pings, batch, SCAN_VERIFY_TOP);
+    let passers = pings.iter().filter(|r| r.latency_ms.is_some()).count();
     if shortlist.is_empty() {
+        app_log::info(
+            "smart_switch",
+            format!(
+                "scan batch: ping {passers}/{} pass, none to verify",
+                batch.len()
+            ),
+        );
         return Ok(None);
     }
     let verifies = probe_nodes(
@@ -936,7 +1263,23 @@ async fn scan_slice_for_verified(
         })
         .collect();
     verified.sort_by_key(|v| v.url_ms);
-    Ok(verified.into_iter().next())
+    let pick = verified.into_iter().next();
+    app_log::info(
+        "smart_switch",
+        format!(
+            "scan batch: ping {passers}/{} pass, verify [{}] → {}",
+            batch.len(),
+            shortlist
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            pick.as_ref()
+                .map(|p| format!("{}:{}ms", p.name, p.url_ms))
+                .unwrap_or_else(|| "none verified".into())
+        ),
+    );
+    Ok(pick)
 }
 
 /// Ping-passers sorted by ping (lowest first), capped at `top` — the nodes
@@ -959,7 +1302,7 @@ fn verify_shortlist(pings: &[LatencyResult], batch: &[ProxyNode], top: usize) ->
 }
 
 fn record_latency_results(state: &AppState, results: &[LatencyResult]) {
-    let _ = state.with_store_mut(|store| {
+    let applied = state.try_with_store_mut(|store| {
         for r in results {
             if !r.id.is_empty() {
                 store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
@@ -967,13 +1310,24 @@ fn record_latency_results(state: &AppState, results: &[LatencyResult]) {
         }
         Ok(())
     });
+    if applied.is_none() {
+        note_round_skipped("store (latency write)");
+    }
 }
 
 fn eject_failures(results: &[LatencyResult]) {
     let mut c = ctrl();
     for r in results {
         if r.latency_ms.is_none() && !r.id.is_empty() {
-            c.eject(&r.id);
+            let (count, secs) = c.eject(&r.id);
+            app_log::info(
+                "smart_switch",
+                format!(
+                    "eject {} ({count}x, {secs}s): {}",
+                    r.name,
+                    r.error.as_deref().unwrap_or("probe failed")
+                ),
+            );
         }
     }
 }
@@ -1127,7 +1481,7 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
 
     for pool in pools {
         if let Err(e) = maintain_smart_pool(state, &pool, &nodes, &probe_url, api.clone()).await {
-            app_log::debug("smart_switch", format!("smart pool {}: {e}", pool.label));
+            app_log::info("smart_switch", format!("smart pool {}: {e}", pool.label));
         }
     }
     Ok(())
@@ -1180,7 +1534,7 @@ async fn maintain_smart_pool(
         }
     };
 
-    let _ = state.with_store_mut(|store| {
+    let applied = state.try_with_store_mut(|store| {
         for r in &results {
             if !r.id.is_empty() {
                 store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
@@ -1188,6 +1542,9 @@ async fn maintain_smart_pool(
         }
         Ok(())
     });
+    if applied.is_none() {
+        note_round_skipped("store (latency write)");
+    }
 
     let mut ranked: Vec<(String, String, u32, f64)> = results
         .into_iter()
@@ -1204,6 +1561,14 @@ async fn maintain_smart_pool(
     });
     let Some((best_id, best_name, best_ms, _)) = ranked.into_iter().next() else {
         record_rule_probe_failure(&pool.id);
+        app_log::info(
+            "smart_switch",
+            format!(
+                "smart pool {}: all {} probed members failed",
+                pool.label,
+                members.len()
+            ),
+        );
         return Ok(());
     };
 
@@ -1226,6 +1591,13 @@ async fn maintain_smart_pool(
                     last_latency_ms: Some(best_ms),
                 },
             );
+            app_log::info(
+                "smart_switch",
+                format!(
+                    "smart pool {}: {} still best ({}ms)",
+                    pool.label, best_name, best_ms
+                ),
+            );
             return Ok(());
         }
         if let Some(cur_ms) = st.last_latency_ms {
@@ -1236,12 +1608,17 @@ async fn maintain_smart_pool(
                     current.consecutive_probe_fails = 0;
                     current.last_latency_ms = Some(cur_ms);
                 }
-                app_log::debug(
+                let cur_name = st
+                    .last_node_id
+                    .as_ref()
+                    .and_then(|id| nodes.iter().find(|n| n.id == *id))
+                    .map(|n| n.name.as_str())
+                    .unwrap_or("?");
+                app_log::info(
                     "smart_switch",
                     format!(
-                        "smart pool {} keep {} (cur={cur_ms} best={best_ms} tol={TOLERANCE_MS})",
-                        pool.label,
-                        st.last_node_id.as_deref().unwrap_or("?")
+                        "smart pool {} keep {} (cur={cur_ms}ms best={best_ms}ms tol={TOLERANCE_MS})",
+                        pool.label, cur_name
                     ),
                 );
                 return Ok(());
@@ -1353,6 +1730,35 @@ mod probe_schedule_tests {
 
         assert!(!controller.ejected.contains_key("recovered-node"));
         assert!(!controller.eject_counts.contains_key("recovered-node"));
+    }
+}
+
+#[cfg(test)]
+mod running_edge_tests {
+    use super::RunningEdge;
+
+    #[test]
+    fn fresh_session_start_fires_once() {
+        let mut edge = RunningEdge::default();
+        assert!(edge.observe(Some(true)));
+        assert!(!edge.observe(Some(true)));
+    }
+
+    #[test]
+    fn restart_hidden_in_transition_does_not_fire() {
+        let mut edge = RunningEdge::default();
+        assert!(edge.observe(Some(true)));
+        // Core transition window between stop and start: no observation.
+        assert!(!edge.observe(None));
+        assert!(!edge.observe(Some(true)));
+    }
+
+    #[test]
+    fn stop_then_start_fires_again() {
+        let mut edge = RunningEdge::default();
+        assert!(edge.observe(Some(true)));
+        assert!(!edge.observe(Some(false)));
+        assert!(edge.observe(Some(true)));
     }
 }
 

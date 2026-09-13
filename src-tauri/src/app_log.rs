@@ -298,9 +298,19 @@ fn writer_loop(rx: Receiver<WriterMessage>) {
             }
             WriterMessage::Entry(entry, ack) => {
                 sink.persist_entry(&entry);
+                // Ack immediately so a stalled consumer can never delay the
+                // logging caller beyond its own PERSIST_ACK_TIMEOUT.
                 if let Some(ack) = ack {
                     let _ = ack.send(());
                 }
+                // NOTE: no stderr/eprintln mirror, not even here. Any
+                // synchronous console write can block forever (Windows
+                // ConHost QuickEdit pauses the pipe when text is selected in
+                // the console) — on 2026-09-13 that froze first the engine
+                // task and later the log writer itself, blinding the log
+                // file exactly when it was needed for diagnosis. Dev console
+                // visibility is not worth that: the Logs UI ring and the
+                // hourly files are the log surfaces.
             }
             WriterMessage::Flush(ack) => {
                 if let Some(file) = sink.file.as_mut() {
@@ -387,8 +397,12 @@ pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<Strin
     let _operation = LOG_OPERATION.lock().unwrap_or_else(|p| p.into_inner());
     let target = target.into();
     let message = message.into();
-    // Mirror to stderr for dev / Console.app
-    eprintln!("[satelite][{}][{}] {}", level.as_str(), target, message);
+    // NO synchronous stderr mirror here: eprintln! on the caller's thread
+    // blocks forever when nobody drains stderr — Windows ConHost QuickEdit
+    // (click/select in the console) pauses the pipe and a full pipe write
+    // never returns, which froze the whole smart_switch engine mid-log-line
+    // (2026-09-13). The mirror runs on the log writer thread instead: a
+    // frozen console then only pauses persistence, never the logging caller.
     let entry = lock_ring().push(level, target, message);
     enqueue_persist(entry);
 }

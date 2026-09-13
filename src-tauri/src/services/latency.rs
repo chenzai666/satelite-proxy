@@ -360,7 +360,9 @@ where
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
         )
     };
+    let key_wait_started = Instant::now();
     let _key_guard = probe_lock.lock().await;
+    let key_wait = key_wait_started.elapsed();
     // Double-check behind the lock — but only when reading cache is allowed
     // at all; a bypass run must really probe even if another caller just
     // finished one.
@@ -370,11 +372,27 @@ where
         }
     }
 
+    let permit_started = Instant::now();
     let _global_permit = Arc::clone(&GLOBAL_SEMAPHORE)
         .acquire_owned()
         .await
         .expect("global probe semaphore");
+    let permit_wait = permit_started.elapsed();
+    let probe_started = Instant::now();
     let result = probe().await;
+    let probe_took = probe_started.elapsed();
+    // Slow-probe diagnostics: with per-key merging and a global concurrency
+    // cap, a probe's wall time far above its own budget means queueing —
+    // these lines pinpoint which layer ate the wait (2026-09-13 incident).
+    let total = key_wait_started.elapsed();
+    if total > Duration::from_secs(5) {
+        crate::app_log::debug(
+            "probe",
+            format!(
+                "slow probe: key_wait={key_wait:?} permit_wait={permit_wait:?} probe={probe_took:?} total={total:?}"
+            ),
+        );
+    }
     cache_result(key.clone(), result.clone());
     let mut locks = PROBE_LOCKS.lock().unwrap_or_else(|p| p.into_inner());
     if locks

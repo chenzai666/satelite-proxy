@@ -714,6 +714,7 @@ struct CoreTransitionGuard<'a> {
 impl Drop for CoreTransitionGuard<'_> {
     fn drop(&mut self) {
         self.flag.store(false, Ordering::Release);
+        app_log::debug("core", "core transition end");
     }
 }
 
@@ -780,8 +781,57 @@ impl AppState {
         recover_lock(&self.runtime, "runtime")
     }
 
+    /// Non-blocking runtime access for background loops (see
+    /// [`Self::try_lock_store`]).
+    pub fn try_lock_runtime(&self) -> Option<MutexGuard<'_, Runtime>> {
+        match self.runtime.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "runtime lock was poisoned — recovering");
+                Some(poisoned.into_inner())
+            }
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
     pub fn lock_store(&self) -> MutexGuard<'_, AppStore> {
         recover_lock(&self.store, "store")
+    }
+
+    /// Non-blocking store access for background loops: a contended lock skips
+    /// the round instead of parking the caller. A stuck lock holder must
+    /// never silently kill a background engine (see smart_switch::spawn).
+    pub fn try_lock_store(&self) -> Option<MutexGuard<'_, AppStore>> {
+        match self.store.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                app_log::error("lock", "store lock was poisoned — recovering");
+                Some(poisoned.into_inner())
+            }
+            Err(TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Same contract as [`Self::with_store_mut`] but acquisition is
+    /// non-blocking: `None` means the store (or its persistence slot) is
+    /// contended and the caller should skip, not queue.
+    pub fn try_with_store_mut<F, T>(&self, f: F) -> Option<AppResult<T>>
+    where
+        F: FnOnce(&mut AppStore) -> AppResult<T>,
+    {
+        let _persistence = match self.store_persistence.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        let mut guard = self.try_lock_store()?;
+        let result = f(&mut guard);
+        let snapshot = guard.clone();
+        drop(guard);
+        Some(match snapshot.save(&self.store_path) {
+            Ok(()) => result,
+            Err(e) => Err(e),
+        })
     }
 
     fn lock_store_persistence(&self) -> MutexGuard<'_, ()> {
@@ -973,6 +1023,7 @@ impl AppState {
         self.core_transitioning
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| crate::error::AppError::Core("内核正在切换，请稍候".into()))?;
+        app_log::debug("core", "core transition begin");
         Ok(CoreTransitionGuard {
             flag: &self.core_transitioning,
         })
