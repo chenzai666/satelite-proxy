@@ -32,8 +32,10 @@ try {
     await page.mouse.wheel(0, 260);
     assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
     const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
-    const rightBox = await page.locator(".rules-main").boundingBox();
-    await page.mouse.move(rightBox.x + 30, rightBox.y + 120);
+    // Hover through Playwright rather than raw coordinates: root zoom changes
+    // the CSS-pixel/device-pixel conversion on Windows WebView Chromium.
+    const rightContent = page.locator(".rules-main > .card");
+    await rightContent.hover({ position: { x: 30, y: 120 } });
     await page.mouse.wheel(0, 180);
     assert.ok(await main.evaluate(el => el.scrollTop) > 80, "鼠标离开左栏后页面应可单独滚动");
     assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
