@@ -1,6 +1,13 @@
 import { useLayoutEffect, useRef } from "react";
 
-/** 侧栏只占当前可视区域；用实际几何尺寸兼容根节点 zoom 和窗口缩放。 */
+/**
+ * 侧栏只占当前可视区域；用实际几何尺寸兼容根节点 zoom 和窗口缩放。
+ *
+ * The value must not be recalculated from `.main` scroll events. The sidebar
+ * is sticky, so its `top` changes while the page moves; using that changing
+ * top to update `max-height` creates a feedback loop where the outer page
+ * grows as it is scrolled and its scrollbar thumb keeps shrinking.
+ */
 export function useRulesSidebarHeight() {
   const ref = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
@@ -20,15 +27,14 @@ export function useRulesSidebarHeight() {
     const schedule = () => { if (!frame) frame = requestAnimationFrame(measure); };
     const observer = new ResizeObserver(schedule);
     observer.observe(main ?? document.documentElement);
-    observer.observe(sidebar);
     window.addEventListener("resize", schedule);
-    main?.addEventListener("scroll", schedule, { passive: true });
+    window.visualViewport?.addEventListener("resize", schedule);
     measure();
     return () => {
       observer.disconnect();
       cancelAnimationFrame(frame);
       window.removeEventListener("resize", schedule);
-      main?.removeEventListener("scroll", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
     };
   }, []);
   return ref;

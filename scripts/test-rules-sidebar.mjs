@@ -17,12 +17,13 @@ try {
     await scroll.waitFor();
     await page.waitForTimeout(250);
     const rightTop = (await page.locator(".rules-main").boundingBox()).y;
+    const sidebar = page.locator(".rules-route-list");
     assert.ok(await scroll.evaluate(el => el.scrollHeight > el.clientHeight + 100));
     assert.ok(await scroll.evaluate(el => el.offsetWidth > el.clientWidth), "独立滚动条必须有可见槽位");
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
-    const sidebar = await page.locator(".rules-route-list").boundingBox();
-    assert.ok(sidebar.y + sidebar.height <= 720 * zoom + 2, JSON.stringify(sidebar));
+    const sidebarBox = await sidebar.boundingBox();
+    assert.ok(sidebarBox.y + sidebarBox.height <= 720 * zoom + 2, JSON.stringify(sidebarBox));
     await page.locator('[data-menu="28"]').click();
     const pop = page.locator(".ruleset-menu-portal");
     await pop.waitFor();
@@ -49,7 +50,14 @@ try {
     // Run input isolation last: programmatic fixture scrolling before the
     // menu/drag tests can perturb Chromium's nested-scroll targeting at zoom.
     // The side list must consume wheel input even at both boundaries.
+    const sidebarMaxHeightBeforePageScroll = await sidebar.evaluate(el => getComputedStyle(el).maxHeight);
     await main.evaluate(el => { el.scrollTop = 80; });
+    await page.waitForTimeout(100);
+    assert.equal(
+      await sidebar.evaluate(el => getComputedStyle(el).maxHeight),
+      sidebarMaxHeightBeforePageScroll,
+      "页面滚动不能动态放大左栏",
+    );
     await scroll.evaluate(el => { el.scrollTop = 0; });
     const sideBox = await scroll.boundingBox();
     await page.mouse.move(sideBox.x + sideBox.width / 2, sideBox.y + sideBox.height / 2);

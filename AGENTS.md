@@ -7,7 +7,7 @@
 
 2026-09-15 当前版本更新为 **1.0.35**（下方 1.0.28/1.0.32 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.35.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。
 
-1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
+1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesSidebarHeight 只能在布局/窗口视口变化时测量，禁止监听 `.main` scroll（sticky top 变化会让外层总高度反馈增长）。useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
 XHTTP extra/mode 在 URI 分享和 ManualNodeDraft 编辑往返中必须保留；原生 Mihomo 订阅规则优先、预发布内核检查、UWP、DNS/IPv4 和节点交互保留。内核最新版本查询仅由按钮触发，会话快照包含稳定版和预发布版字段。
 Windows CI 缓存固定版本内核并退避重试下载；不缓存滚动更新的规则集，不依赖本仓库不存在的 Mihomo geodata 快照。Rust/客户端构建与浏览器侧栏测试在 Actions 执行，禁止本机客户端构建。
 
