@@ -36,6 +36,8 @@ interface Session {
   startY: number;
   startIds: string[];
   list: HTMLElement;
+  scroller: HTMLElement;
+  zoom: number;
   host: HTMLElement;
   preview: HTMLElement;
   /** Preview origin (fixed left/top at pickup). */
@@ -100,6 +102,7 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
   const detachSessionListeners = useCallback(() => {
     window.removeEventListener("keydown", onSessionKeyDown);
     window.removeEventListener("blur", onSessionBlur);
+    window.removeEventListener("resize", onSessionBlur);
   }, []);
 
   /** Insertion slot from live card midpoints; the dragged card is excluded. */
@@ -135,6 +138,8 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       return;
     }
     const rect = node.getBoundingClientRect();
+    const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+    const scroller = node.closest<HTMLElement>("[data-ruleset-scroll]") ?? list;
 
     // The floating preview is a DOM clone living outside React's tree (React
     // keeps re-rendering the list during the drag). It sits inside a fixed
@@ -146,9 +151,9 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       .join(" ")}`;
     Object.assign(host.style, {
       position: "fixed",
-      left: `${rect.left}px`,
-      top: `${rect.top}px`,
-      width: `${rect.width}px`,
+      left: `${rect.left / zoom}px`,
+      top: `${rect.top / zoom}px`,
+      width: `${rect.width / zoom}px`,
       zIndex: "1000",
       margin: "0",
       padding: "0",
@@ -181,16 +186,18 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       startY: p.startY,
       startIds: itemsRef.current.map((it) => it.id),
       list,
+      scroller,
+      zoom,
       host,
       preview,
-      originX: rect.left,
-      originY: rect.top,
+      originX: rect.left / zoom,
+      originY: rect.top / zoom,
       dx: 0,
       dy: 0,
       targetDx: 0,
       targetDy: 0,
       pointerY,
-      height: rect.height,
+      height: rect.height / zoom,
       insertIndex: fromIndex,
       raf: 0,
     };
@@ -198,7 +205,8 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
     sessionRef.current = session;
     window.addEventListener("keydown", onSessionKeyDown);
     window.addEventListener("blur", onSessionBlur);
-    setDrag({ id: p.id, insertIndex: fromIndex, height: rect.height });
+    window.addEventListener("resize", onSessionBlur);
+    setDrag({ id: p.id, insertIndex: fromIndex, height: rect.height / zoom });
     session.raf = requestAnimationFrame(() => tickRef.current());
   };
 
@@ -235,8 +243,8 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
         return;
       }
       const rect = node.getBoundingClientRect();
-      const tdx = rect.left - s.originX;
-      const tdy = rect.top - s.originY;
+      const tdx = rect.left / s.zoom - s.originX;
+      const tdy = rect.top / s.zoom - s.originY;
       s.preview.style.transition = "none";
       // The drag displacement lives on the HOST (host.style.translate);
       // preview.translate is still 0. Animate the preview by the REMAINING
@@ -328,19 +336,19 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
     }
     s.host.style.translate = `${s.dx}px ${s.dy}px`;
 
-    const listRect = s.list.getBoundingClientRect();
+    const listRect = s.scroller.getBoundingClientRect();
     if (s.pointerY < listRect.top + EDGE_PX) {
       const depth = Math.min(
         1,
         Math.max(0.25, (listRect.top + EDGE_PX - s.pointerY) / EDGE_PX),
       );
-      s.list.scrollTop -= Math.round(EDGE_SPEED_PX * depth);
+      s.scroller.scrollTop -= Math.round(EDGE_SPEED_PX * depth);
     } else if (s.pointerY > listRect.bottom - EDGE_PX) {
       const depth = Math.min(
         1,
         Math.max(0.25, (s.pointerY - (listRect.bottom - EDGE_PX)) / EDGE_PX),
       );
-      s.list.scrollTop += Math.round(EDGE_SPEED_PX * depth);
+      s.scroller.scrollTop += Math.round(EDGE_SPEED_PX * depth);
     }
     updateInsertIndex(s);
     s.raf = requestAnimationFrame(() => tickRef.current());
@@ -351,8 +359,8 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
     if (s) {
       if (s.pointerId !== e.pointerId) return;
       e.preventDefault();
-      s.targetDx = e.clientX - s.startX;
-      s.targetDy = e.clientY - s.startY;
+      s.targetDx = (e.clientX - s.startX) / s.zoom;
+      s.targetDy = (e.clientY - s.startY) / s.zoom;
       s.pointerY = e.clientY;
       return;
     }
@@ -472,7 +480,8 @@ export function useRulesetDragSort<T extends { id: string }>(options: {
       const prev = flipTopsRef.current.get(id);
       if (!animate || prev === undefined || prev === top) continue;
       n.style.transition = "none";
-      n.style.transform = `translateY(${prev - top}px)`;
+      const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+      n.style.transform = `translateY(${(prev - top) / zoom}px)`;
       void n.offsetHeight; // commit the inverted position before animating
       n.style.transition = `transform ${FLIP_MS}ms cubic-bezier(0.2, 0, 0, 1)`;
       n.style.transform = "";

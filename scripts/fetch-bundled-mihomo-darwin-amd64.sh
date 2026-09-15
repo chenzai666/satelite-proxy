@@ -31,21 +31,14 @@ else
   echo "mihomo v${VER} already staged, skipping download."
 fi
 
-# mihomo geodata: Country.mmdb + GeoSite.dat (exact casing), staged from the
-# repo-committed snapshot (see resources/geodata/mihomo/ and
-# scripts/fetch-bundled-mihomo-geodata.sh) — upstream meta-rules-dat only
-# ships a rolling "latest" release, so a live fetch here would defeat the
-# pinned-version guarantee.
-SNAPSHOT_DIR="$ROOT/src-tauri/resources/geodata/mihomo"
+# mihomo geodata: Country.mmdb + GeoSite.dat (exact casing).
 for pair in "Country.mmdb country.mmdb" "GeoSite.dat geosite.dat"; do
   set -- $pair
-  local_name="$1"; snapshot_name="$2"
+  local_name="$1"; remote_name="$2"
   if [[ -f "$OUT_DIR/mihomo-geodata/$local_name" ]]; then continue; fi
-  if [[ ! -f "$SNAPSHOT_DIR/$snapshot_name" ]]; then
-    echo "missing $SNAPSHOT_DIR/$snapshot_name — run scripts/fetch-bundled-mihomo-geodata.sh once and commit the result" >&2
-    exit 1
-  fi
-  cp "$SNAPSHOT_DIR/$snapshot_name" "$OUT_DIR/mihomo-geodata/$local_name"
+  url="https://github.com/MetaCubeX/meta-rules-dat/releases/latest/download/${remote_name}"
+  echo "Downloading $url …"
+  curl -fL --retry 3 -o "$OUT_DIR/mihomo-geodata/$local_name" "$url"
 done
 
 echo "Installed:"

@@ -5,7 +5,11 @@
 
 ## 0. 阅读与维护规则（必读）
 
-2026-09-12 当前版本更新为 **1.0.32**（下方 1.0.28 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.32.md。默认打包目标 app/dmg/nsis/appimage，Windows 脚本仍支持显式 MSI/便携选择。
+2026-09-15 当前版本更新为 **1.0.35**（下方 1.0.28/1.0.32 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.35.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。
+
+1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
+XHTTP extra/mode 在 URI 分享和 ManualNodeDraft 编辑往返中必须保留；原生 Mihomo 订阅规则优先、预发布内核检查、UWP、DNS/IPv4 和节点交互保留。内核最新版本查询仅由按钮触发，会话快照包含稳定版和预发布版字段。
+Windows CI 缓存固定版本内核并退避重试下载；不缓存滚动更新的规则集，不依赖本仓库不存在的 Mihomo geodata 快照。Rust/客户端构建与浏览器侧栏测试在 Actions 执行，禁止本机客户端构建。
 
 本轮整合上游31–32：MASQUE 和 Xray/Mihomo 双副内核、窗口放大及分模式记忆、原生注册表/剪贴板、新图标；Windows 剪贴板使用消息专用隐藏窗口作为所有者，不能把 OpenClipboard 的句柄改回空值。节点拖拽预览坐标必须除以根 zoom，窗口缩放时取消在途拖拽。保留分支原生订阅策略、节点交互、UWP、DNS 和失败回滚。新版模块说明优先于下方历史 Xray 单副内核说明。
 

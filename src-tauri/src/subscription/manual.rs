@@ -213,13 +213,12 @@ fn build_transport(draft: &ManualNodeDraft, protocol: Protocol) -> Option<Transp
             host: opt_nonempty(&draft.host),
         }),
         // Xray-only: such nodes only work via multi-core Xray delegation
-        // (the manual form's hint says so). No mode/extra fields in the
-        // draft — Xray defaults to "auto" / no tunables.
+        // 编辑其他字段时保留订阅带入的 mode/extra。
         "xhttp" | "splithttp" => Some(Transport::Xhttp {
             path: opt_nonempty(&draft.path),
             host: opt_nonempty(&draft.host),
-            mode: None,
-            extra: None,
+            mode: opt_nonempty(&draft.xhttp_mode),
+            extra: opt_nonempty(&draft.xhttp_extra),
         }),
         _ => Some(Transport::Tcp),
     }
@@ -454,10 +453,17 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
             draft.path = path.clone();
             draft.host = host.clone();
         }
-        Some(Transport::Xhttp { path, host, .. }) => {
+        Some(Transport::Xhttp {
+            path,
+            host,
+            mode,
+            extra,
+        }) => {
             draft.network = Some("xhttp".into());
             draft.path = path.clone();
             draft.host = host.clone();
+            draft.xhttp_mode = mode.clone();
+            draft.xhttp_extra = extra.clone();
         }
         Some(Transport::Tcp) | None => {
             draft.network = Some("tcp".into());

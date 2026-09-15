@@ -429,6 +429,8 @@ export interface ManualNodeDraft {
   realityPublicKey?: string | null;
   realityShortId?: string | null;
   network?: string | null;
+  xhttp_mode?: string | null;
+  xhttp_extra?: string | null;
   host?: string | null;
   serviceName?: string | null;
   udp?: boolean | null;

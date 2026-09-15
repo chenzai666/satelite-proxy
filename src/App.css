@@ -3567,8 +3567,31 @@ button.node-card:disabled,
 }
 
 .ruleset-list.rules-route-list {
-  max-height: none;
-  overflow: visible;
+  position: sticky;
+  top: 0;
+  min-height: 0;
+  max-height: calc(100dvh - 240px);
+  overflow: hidden;
+}
+
+.rules-route-list > :not(.ruleset-scroll) {
+  flex: 0 0 auto;
+}
+
+.ruleset-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+
+.ruleset-scroll > * {
+  flex-shrink: 0;
 }
 
 .ruleset-list-actions {

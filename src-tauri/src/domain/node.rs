@@ -715,6 +715,8 @@ pub struct ManualNodeDraft {
     pub reality_short_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    pub xhttp_mode: Option<String>,
+    pub xhttp_extra: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

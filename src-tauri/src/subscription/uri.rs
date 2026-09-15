@@ -126,6 +126,10 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
                 "host": host.unwrap_or_default(),
                 "path": path.unwrap_or_default(),
                 "mode": mode.unwrap_or_default(),
+                "extra": match node.transport.as_ref() {
+                    Some(Transport::Xhttp { extra, .. }) => extra.clone(),
+                    _ => None,
+                },
                 "tls": if tls.is_some() { "tls" } else { "none" },
                 "sni": tls.and_then(|value| value.server_name.as_deref()).unwrap_or_default(),
                 "alpn": tls.and_then(|value| value.alpn.as_ref()).map(|items| items.join(",")).unwrap_or_default(),
@@ -482,11 +486,23 @@ fn transport_query(transport: Option<&Transport>) -> ShareQuery {
             push_optional_query(&mut query, "path", path.clone());
             push_optional_query(&mut query, "host", host.clone());
         }
-        Some(Transport::Xhttp { path, host, mode }) => {
+        Some(Transport::Xhttp {
+            path,
+            host,
+            mode,
+            extra,
+        }) => {
             query.push(("type", "xhttp".into()));
             push_optional_query(&mut query, "path", path.clone());
             push_optional_query(&mut query, "host", host.clone());
             push_optional_query(&mut query, "mode", mode.clone());
+            push_optional_query(
+                &mut query,
+                "extra",
+                extra
+                    .as_ref()
+                    .map(|value| general_purpose::URL_SAFE_NO_PAD.encode(value)),
+            );
         }
         Some(Transport::Tcp) | None => {}
     }
@@ -518,9 +534,9 @@ fn vmess_transport(
         Some(Transport::HttpUpgrade { path, host }) => {
             ("httpupgrade", path.clone(), host.clone(), None)
         }
-        Some(Transport::Xhttp { path, host, mode }) => {
-            ("xhttp", path.clone(), host.clone(), mode.clone())
-        }
+        Some(Transport::Xhttp {
+            path, host, mode, ..
+        }) => ("xhttp", path.clone(), host.clone(), mode.clone()),
         Some(Transport::Tcp) | None => ("tcp", None, None, None),
     }
 }
@@ -571,7 +587,11 @@ fn tls_from_query(query: &BTreeMap<String, String>, default_enabled: bool) -> Op
 
 fn parse_http_uri(line: &str) -> Result<ProxyNode, String> {
     // url::Url removes explicit default ports (:80/:443) during normalization.
-    let default_port = if line.split(':').next().is_some_and(|s| s.eq_ignore_ascii_case("https")) {
+    let default_port = if line
+        .split(':')
+        .next()
+        .is_some_and(|s| s.eq_ignore_ascii_case("https"))
+    {
         443
     } else {
         80
@@ -980,7 +1000,10 @@ fn parse_vmess_uri(line: &str) -> Result<ProxyNode, String> {
             path,
             host: host_header,
             mode: transport_mode,
-            extra: None,
+            extra: json
+                .get("extra")
+                .and_then(|value| value.as_str())
+                .and_then(decode_xhttp_extra),
         }),
         "tcp" | "" => Some(Transport::Tcp),
         other => return Err(format!("unsupported transport: {other}")),
@@ -1640,7 +1663,11 @@ mod tests {
         node.config = ProtocolConfig::Masque {
             private_key: "private-test-secret".into(),
             public_key: "public-test-key".into(),
-            ip: None, ipv6: None, mtu: None, network: None, congestion_controller: None,
+            ip: None,
+            ipv6: None,
+            mtu: None,
+            network: None,
+            congestion_controller: None,
         };
         let error = serialize_share_uri(&node).unwrap_err();
         assert!(error.contains("MASQUE"));
@@ -1843,6 +1870,15 @@ mod tests {
             .encode(r#"{"xPaddingBytes":"100-1000","noGRPCHeader":true}"#);
         let uri = format!("vless://22222222-2222-2222-2222-222222222222@vl.example.com:443?encryption=none&security=tls&type=xhttp&path=%2Fup&extra={b64}#VL-EXTRA");
         let node = parse_uri_line(&uri).unwrap();
+        let shared = serialize_share_uri(&node).unwrap();
+        assert_eq!(parse_uri_line(&shared).unwrap().transport, node.transport);
+        let draft = crate::subscription::node_to_draft(&node);
+        assert_eq!(
+            crate::subscription::draft_to_node(&draft, None)
+                .unwrap()
+                .transport,
+            node.transport
+        );
         match node.transport {
             Some(Transport::Xhttp { extra, .. }) => {
                 let v: serde_json::Value = serde_json::from_str(extra.as_deref().unwrap()).unwrap();

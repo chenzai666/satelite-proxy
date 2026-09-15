@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v1.0.32"
+      - "v1.0.35"
 
 permissions:
   contents: read
@@ -50,6 +50,16 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      - name: 缓存固定版本内核资源
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: src-tauri/resources/bin/windows-amd64
+          key: windows-core-${{ hashFiles('scripts/fetch-bundled-core-windows-amd64.ps1') }}
+
+      - name: 预取内核并在网络失败时退避重试
+        shell: bash
+        run: bash scripts/ci-fetch-with-retry.sh scripts/fetch-bundled-core-windows-amd64.ps1
+
       - name: 构建 NSIS 安装包
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Bundle nsis
@@ -60,7 +70,36 @@ jobs:
 
       - name: 确认弹窗安全回归测试
         shell: pwsh
-        run: node --test scripts/test-confirm-action.mjs
+        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs
+
+      - name: 规则侧栏浏览器回归测试
+        shell: pwsh
+        run: |
+          $uiDeps = Join-Path $env:RUNNER_TEMP 'satelite-ui-tests'
+          npm install --prefix $uiDeps --no-audit --no-fund playwright@1.55.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node (Join-Path $uiDeps 'node_modules/playwright/cli.js') install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_MODULE = Join-Path $uiDeps 'node_modules/playwright/index.mjs'
+          $server = Start-Process node -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '1440', '--strictPort') -WindowStyle Hidden -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try { Invoke-WebRequest 'http://127.0.0.1:1440/scripts/ui-smoke/index.html' -UseBasicParsing | Out-Null; $ready = $true; break } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw 'UI 测试服务未就绪' }
+            node scripts/test-rules-sidebar.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+
+      - name: 保存规则侧栏测试截图
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: rules-sidebar-${{ github.sha }}
+          path: test-results/*.png
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: 运行 Rust 单元测试
         shell: pwsh
@@ -95,7 +134,7 @@ jobs:
 
   release:
     name: 发布 GitHub Release
-    if: github.ref == 'refs/tags/v1.0.32'
+    if: github.ref == 'refs/tags/v1.0.35'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -127,10 +166,10 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --notes-file docs/release-1.0.32.md \
+              --notes-file docs/release-1.0.35.md \
               --title "Satelite $GITHUB_REF_NAME"
           fi
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.32.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.35.md
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.zip \
             --repo "$GITHUB_REPOSITORY" \
             --clobber

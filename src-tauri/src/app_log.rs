@@ -401,8 +401,8 @@ pub fn push(level: LogLevel, target: impl Into<String>, message: impl Into<Strin
     // blocks forever when nobody drains stderr — Windows ConHost QuickEdit
     // (click/select in the console) pauses the pipe and a full pipe write
     // never returns, which froze the whole smart_switch engine mid-log-line
-    // (2026-09-13). The mirror runs on the log writer thread instead: a
-    // frozen console then only pauses persistence, never the logging caller.
+    // (2026-09-13). Only the UI ring and hourly files receive log entries;
+    // even the writer thread must not mirror them into a blocking console.
     let entry = lock_ring().push(level, target, message);
     enqueue_persist(entry);
 }

@@ -705,10 +705,6 @@ export function SettingsPage() {
     }
   }
 
-  async function onCheckCoreUpdate(kind: CoreKind) {
-    await runCoreUpdateCheck(kind, cores[kind]?.version ?? null, true);
-  }
-
   /** Switch the active core; a running core restarts onto the new binary. */
   async function onSwitchCore(kind: CoreKind) {
     if (settings?.core_type === kind) return;
