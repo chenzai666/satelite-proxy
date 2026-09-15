@@ -17,7 +17,7 @@ try {
     await scroll.waitFor();
     await page.waitForTimeout(250);
     const rightTop = (await page.locator(".rules-main").boundingBox()).y;
-    const sidebar = page.locator(".rules-route-list");
+    const sidebar = page.locator("aside.rules-route-list");
     assert.ok(await scroll.evaluate(el => el.scrollHeight > el.clientHeight + 100));
     assert.ok(await scroll.evaluate(el => el.offsetWidth > el.clientWidth), "独立滚动条必须有可见槽位");
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
