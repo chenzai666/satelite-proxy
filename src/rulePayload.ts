@@ -1,7 +1,6 @@
 import type { RuleType } from "./types";
 
-/** Batch entries for the match-content textarea: whitespace (spaces or
- *  newlines) separates entries — one rule per entry on save. */
+/** 域名/IP 支持空白分隔；进程名与关键词按行分隔，保留内部空格。 */
 export function parsePayloadEntries(raw: string, type?: RuleType): string[] {
   return raw
     .split(type === "process" || type === "domain_keyword" ? /\r?\n/ : /\s+/)
@@ -29,6 +28,8 @@ function isValidIpv4(ip: string): boolean {
 /** IPv6 via the WHATWG URL parser: `http://[...]` only parses for valid
  *  literals, in both WebView2 and WKWebView. */
 function isValidIpv6(ip: string): boolean {
+  // URL 解析器接受路径/片段，先限制字面量字符，不能把 URL 当成 IPv6。
+  if (!/^[0-9a-f:.]+$/i.test(ip) || !ip.includes(":")) return false;
   try {
     new URL(`http://[${ip}]/`);
     return true;

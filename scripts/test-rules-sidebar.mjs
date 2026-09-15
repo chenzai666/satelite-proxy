@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 // 只在隔离的 CI 浏览器加载测试夹具，不接入用户配置或代理内核。
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true, ignoreDefaultArgs: ["--hide-scrollbars"] });
 await mkdir("test-results", { recursive: true });
 try {
   for (const zoom of [1, 1.5, 2]) {
@@ -17,6 +17,7 @@ try {
     await page.waitForTimeout(250);
     const rightTop = (await page.locator(".rules-main").boundingBox()).y;
     assert.ok(await scroll.evaluate(el => el.scrollHeight > el.clientHeight + 100));
+    assert.ok(await scroll.evaluate(el => el.offsetWidth > el.clientWidth), "独立滚动条必须有可见槽位");
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
     const sidebar = await page.locator(".rules-route-list").boundingBox();

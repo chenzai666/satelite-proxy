@@ -21,6 +21,9 @@ test("地址族及 CIDR 上下界校验", () => {
   for (const value of ["1.2.3.4/33", "2001:db8::1/129", "256.1.1.1", "01.2.3.4", "1.2.3.4/-1", "1.2.3.4/24/1", "garbage"]) assert.equal(cidr(value), null, value);
   assert.equal(cidr("0.0.0.0/0"), "0.0.0.0/0");
   assert.equal(cidr("::/0"), "::/0");
+  assert.equal(cidr("::1]#fragment"), null);
+  assert.equal(cidr("::1]?query"), null);
+  assert.equal(cidr("::ffff:192.0.2.1"), "::ffff:192.0.2.1/128");
 });
 test("域名形状、标签长度和进程路径校验", () => {
   assert.deepEqual(validate(["github.com", "例子.测试", "localhost"], "domain"), []);

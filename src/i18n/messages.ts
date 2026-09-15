@@ -935,7 +935,7 @@ const en = {
   "rules.urlDetectedHint": "Detected a URL — click to replace with",
   "rules.clickToReplace": "Click to replace",
   "rules.payloadPlaceholder":
-    "One entry per line or separated by spaces (batch add):\ngoogle.com\nyoutube\n10.0.0.0/8",
+    "One entry per line; domains and IPs may also use spaces:\ngoogle.com\nyoutube\n10.0.0.0/8",
   "rules.payloadInvalidDomain":
     "Entry {i} \"{v}\" is not a valid domain: use the example.com form (no https://, path, or port)",
   "rules.payloadInvalidIp":
@@ -1963,7 +1963,7 @@ const zh: Record<MessageKey, string> = {
   "rules.urlDetectedHint": "检测到 URL，点击替换为",
   "rules.clickToReplace": "点击替换",
   "rules.payloadPlaceholder":
-    "每行一条或用空格分隔，支持批量添加：\ngoogle.com\nyoutube\n10.0.0.0/8",
+    "每行一条；域名和 IP 也可用空格分隔：\ngoogle.com\nyoutube\n10.0.0.0/8",
   "rules.payloadInvalidDomain":
     "第 {i} 条「{v}」不是合法域名：应为 example.com 形式（不含 https://、路径、端口）",
   "rules.payloadInvalidIp":
