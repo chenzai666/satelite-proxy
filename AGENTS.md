@@ -7,7 +7,7 @@
 
 2026-09-15 当前版本更新为 **1.0.35**（下方 1.0.28/1.0.32 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.35.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。
 
-1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
+1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
 XHTTP extra/mode 在 URI 分享和 ManualNodeDraft 编辑往返中必须保留；原生 Mihomo 订阅规则优先、预发布内核检查、UWP、DNS/IPv4 和节点交互保留。内核最新版本查询仅由按钮触发，会话快照包含稳定版和预发布版字段。
 Windows CI 缓存固定版本内核并退避重试下载；不缓存滚动更新的规则集，不依赖本仓库不存在的 Mihomo geodata 快照。Rust/客户端构建与浏览器侧栏测试在 Actions 执行，禁止本机客户端构建。
 
@@ -31,7 +31,7 @@ Xray 非默认 DNS 池仅作分类；Mihomo 不生成跨池 fallback；旧 leak_
 
 发布入口：`.github/workflows/publish-windows.yml` 可复用成功的 Windows 构建，不重复编译。
 手动输入构建任务编号及现有标签；流程核对任务成功、仓库来源、构建工作流路径和标签提交一致后，下载对应 SHA 的两份产物并更新 Release。
-发布说明记录真实构建 SHA 和验证任务。仅修改该发布流程时可使用 [skip ci] 避免触发客户端重编译。
+发布说明记录真实构建 SHA 和验证任务。仅修改该发布流程时可使用 [skip ci] 避免触发客户端重编译。用户明确要求同版本覆盖时，先完成新提交的 Windows 构建验证，再强制将同名标签移动到该提交并用验证产物 `--clobber` 替换 Release 两个资产；不得把未验证的包上传到既有 Release。
 
 2026-09-11：继续整合上游至 v1.0.28 的订阅自定义 User-Agent、跨页内核下载进度与安装时间、远程 DoH 配置和节点详情。移除 Dashboard 系统代理绕过检测横幅与其后台采样命令；正常 TUN 控制、UWP 回环入口保留。应用及发布版本按用户要求同步到 1.0.28。
 - `coreDownload.ts` 和 `components/CoreDownloadToast.tsx` 保存跨页下载状态。
@@ -159,7 +159,7 @@ satelite-proxy/
 │   ├── pages/               # 专业模式页面（含代理链 / DNS 诊断）
 │   ├── ui/simple/           # 简洁模式 UI（独立 shell + 4 页）
 │   ├── components/          # 玻璃设计系统 + 3D 首页 + 弹窗表单
-│   ├── hooks/               # useVirtualRange / useVisibleInterval / 拖拽排序等
+│   ├── hooks/               # useVirtualRange / useVisibleInterval / 拖拽排序 / 嵌套滚动隔离等
 │   ├── i18n/                # zh/en 扁平文案表（TS 强制双语言键一致）
 │   ├── theme/               # aerospace 深色 / day 浅色 + 6 主题色
 │   └── App.css              # ★ 全部样式单文件（~7.6k 行，按 /* —— 段落 —— */ 分节）
@@ -364,6 +364,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
   - `useVisibleInterval` — **通用轮询原语**：页面隐藏暂停、回调不重叠、可见即重发；
   - `useVirtualRange` — 基于 `.main` 滚动容器的列表虚拟化（支持网格 itemsPerRow）；
   - `useRulesetDragSort` — 手写指针拖拽排序（Tauri WebView 里 HTML5 DnD 不可靠，见文件头注释）：5px 阈值、LERP 跟随克隆、FLIP 动画、边缘自动滚动、Esc 中止；
+  - `useIsolatedScroll` — 规则集左栏的输入级嵌套滚动隔离：消费左栏内的滚轮、触摸和键盘分页，并在边界阻止事件链传给 `.main`；
   - `useCaptureModeSwitch` — 乐观切换 + 单飞排空队列（防内核并发切换报错）。
 
 ### 6.6 i18n / 主题 / 其他工具模块

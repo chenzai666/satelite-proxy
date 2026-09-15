@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useRulesSidebarHeight } from "../../src/hooks/useRulesSidebarHeight";
 import { useRulesetDragSort } from "../../src/hooks/useRulesetDragSort";
+import { useIsolatedScroll } from "../../src/hooks/useIsolatedScroll";
 import { RulesetMenu } from "../../src/components/RulesetMenu";
 import "../../src/App.css";
 
@@ -13,6 +14,8 @@ function Fixture() {
   const [menu, setMenu] = useState<string | null>(null);
   const anchor = useRef<HTMLElement | null>(null);
   const sidebar = useRulesSidebarHeight();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useIsolatedScroll(scrollRef);
   const closeMenu = useCallback(() => setMenu(null), []);
   const { drag, onItemPointerDown } = useRulesetDragSort({ items, onReorder: setItems });
   const cards = items.filter(item => item.id !== drag?.id).map(item => (
@@ -29,7 +32,7 @@ function Fixture() {
       <aside ref={sidebar} className="card ruleset-list rules-route-list">
         <div className="ruleset-list-actions"><button>新建</button><button>重置</button></div>
         <div className="ruleset-list-title">规则集 · 拖拽排序</div>
-        <div className="ruleset-scroll" data-ruleset-scroll tabIndex={0}>{cards}</div>
+        <div ref={scrollRef} className="ruleset-scroll" data-ruleset-scroll tabIndex={0}>{cards}</div>
       </aside>
       <section className="rules-main"><div className="card" style={{height: 950}}>右侧内容保持位置</div></section>
     </div>

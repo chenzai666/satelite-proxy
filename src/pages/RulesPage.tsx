@@ -12,6 +12,7 @@ import {
 } from "react";
 import { useRulesetDragSort } from "../hooks/useRulesetDragSort";
 import { useRulesSidebarHeight } from "../hooks/useRulesSidebarHeight";
+import { useIsolatedScroll } from "../hooks/useIsolatedScroll";
 import { RulesetMenu } from "../components/RulesetMenu";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -285,6 +286,8 @@ function SingboxRulesPage({ embedded = false }: Props) {
   const menuSetAnchor = useRef<HTMLElement | null>(null);
   const closeSetMenu = useCallback(() => setMenuSetId(null), []);
   const sidebarRef = useRulesSidebarHeight();
+  const rulesetScrollRef = useRef<HTMLDivElement>(null);
+  useIsolatedScroll(rulesetScrollRef);
   const [remoteBusyIds, setRemoteBusyIds] = useState<Set<string>>(new Set());
   /** Rule-set ids with a background enable/disable restart in flight. */
   const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
@@ -1940,7 +1943,7 @@ function SingboxRulesPage({ embedded = false }: Props) {
             {t("rules.sets")}
             <span className="ruleset-list-hint">{t("rules.dragHint")}</span>
           </div>
-          <div className="ruleset-scroll" data-ruleset-scroll tabIndex={0} aria-label={t("rules.sets")}>
+          <div ref={rulesetScrollRef} className="ruleset-scroll" data-ruleset-scroll tabIndex={0} aria-label={t("rules.sets")}>
             {setCards}
           </div>
         </aside>

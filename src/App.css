@@ -3586,7 +3586,9 @@ button.node-card:disabled,
   min-height: 0;
   overflow-y: scroll;
   overflow-x: hidden;
-  overscroll-behavior-y: contain;
+  /* CSS fast path; useIsolatedScroll also blocks WebView edge chaining. */
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   scrollbar-gutter: stable;
 }
 

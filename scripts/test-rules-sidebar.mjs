@@ -13,11 +13,31 @@ try {
     page.on("pageerror", error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:1440/scripts/ui-smoke/index.html?zoom=${zoom}`);
     const scroll = page.locator("[data-ruleset-scroll]");
+    const main = page.locator(".main");
     await scroll.waitFor();
     await page.waitForTimeout(250);
     const rightTop = (await page.locator(".rules-main").boundingBox()).y;
     assert.ok(await scroll.evaluate(el => el.scrollHeight > el.clientHeight + 100));
     assert.ok(await scroll.evaluate(el => el.offsetWidth > el.clientWidth), "独立滚动条必须有可见槽位");
+    // The side list must consume wheel input even at its boundaries. The
+    // outer page may scroll only after the pointer leaves the side list.
+    await main.evaluate(el => { el.scrollTop = 80; });
+    await scroll.evaluate(el => { el.scrollTop = 0; });
+    const sideBox = await scroll.boundingBox();
+    await page.mouse.move(sideBox.x + sideBox.width / 2, sideBox.y + sideBox.height / 2);
+    await page.mouse.wheel(0, 260);
+    assert.ok(await scroll.evaluate(el => el.scrollTop > 0), "左栏应响应自身滚轮");
+    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏滚动不能带动页面");
+    await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await page.mouse.wheel(0, 260);
+    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
+    const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
+    const rightBox = await page.locator(".rules-main").boundingBox();
+    await page.mouse.move(rightBox.x + 30, rightBox.y + 120);
+    await page.mouse.wheel(0, 180);
+    assert.ok(await main.evaluate(el => el.scrollTop) > 80, "鼠标离开左栏后页面应可单独滚动");
+    assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
+    await main.evaluate(el => { el.scrollTop = 0; });
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
     const sidebar = await page.locator(".rules-route-list").boundingBox();
@@ -47,7 +67,7 @@ try {
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
     assert.deepEqual(errors, []);
     await page.screenshot({path: `test-results/rules-sidebar-${zoom}.png`});
-    console.log(`PASS 规则侧栏 zoom=${zoom}: 独立滚动、菜单子菜单、拖拽排序`);
+    console.log(`PASS 规则侧栏 zoom=${zoom}: 独立滚动输入、菜单子菜单、拖拽排序`);
     await page.close();
   }
 } finally { await browser.close(); }
