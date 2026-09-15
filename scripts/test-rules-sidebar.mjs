@@ -19,26 +19,6 @@ try {
     const rightTop = (await page.locator(".rules-main").boundingBox()).y;
     assert.ok(await scroll.evaluate(el => el.scrollHeight > el.clientHeight + 100));
     assert.ok(await scroll.evaluate(el => el.offsetWidth > el.clientWidth), "独立滚动条必须有可见槽位");
-    // The side list must consume wheel input even at its boundaries. The
-    // outer page may scroll only after the pointer leaves the side list.
-    await main.evaluate(el => { el.scrollTop = 80; });
-    await scroll.evaluate(el => { el.scrollTop = 0; });
-    const sideBox = await scroll.boundingBox();
-    await page.mouse.move(sideBox.x + sideBox.width / 2, sideBox.y + sideBox.height / 2);
-    await page.mouse.wheel(0, 260);
-    assert.ok(await scroll.evaluate(el => el.scrollTop > 0), "左栏应响应自身滚轮");
-    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏滚动不能带动页面");
-    await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
-    await page.mouse.wheel(0, 260);
-    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
-    const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
-    // Native scrollbar dragging writes the container's own scrollTop. Verify
-    // that an outer-page scroll never mutates the isolated side-list state;
-    // wheel targeting is covered above, including the side-list boundary.
-    await main.evaluate(el => { el.scrollTop += 180; });
-    assert.ok(await main.evaluate(el => el.scrollTop) > 80, "页面应保有自己的滚动位置");
-    assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
-    await main.evaluate(el => { el.scrollTop = 0; });
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
     const sidebar = await page.locator(".rules-route-list").boundingBox();
@@ -66,6 +46,24 @@ try {
     assert.equal(new Set(order).size, 28);
     assert.notEqual(order[27], "28", "拖拽应改变排序");
     assert.equal((await page.locator(".rules-main").boundingBox()).y, rightTop);
+    // Run input isolation last: programmatic fixture scrolling before the
+    // menu/drag tests can perturb Chromium's nested-scroll targeting at zoom.
+    // The side list must consume wheel input even at both boundaries.
+    await main.evaluate(el => { el.scrollTop = 80; });
+    await scroll.evaluate(el => { el.scrollTop = 0; });
+    const sideBox = await scroll.boundingBox();
+    await page.mouse.move(sideBox.x + sideBox.width / 2, sideBox.y + sideBox.height / 2);
+    await page.mouse.wheel(0, 260);
+    assert.ok(await scroll.evaluate(el => el.scrollTop > 0), "左栏应响应自身滚轮");
+    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏滚动不能带动页面");
+    await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await page.mouse.wheel(0, 260);
+    assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
+    const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
+    await main.evaluate(el => { el.scrollTop += 180; });
+    assert.ok(await main.evaluate(el => el.scrollTop) > 80, "页面应保有自己的滚动位置");
+    assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
+    await main.evaluate(el => { el.scrollTop = 0; });
     assert.deepEqual(errors, []);
     await page.screenshot({path: `test-results/rules-sidebar-${zoom}.png`});
     console.log(`PASS 规则侧栏 zoom=${zoom}: 独立滚动输入、菜单子菜单、拖拽排序`);
