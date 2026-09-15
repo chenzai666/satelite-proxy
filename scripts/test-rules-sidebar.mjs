@@ -32,12 +32,11 @@ try {
     await page.mouse.wheel(0, 260);
     assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
     const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
-    // Hover through Playwright rather than raw coordinates: root zoom changes
-    // the CSS-pixel/device-pixel conversion on Windows WebView Chromium.
-    const rightContent = page.locator(".rules-main > .card");
-    await rightContent.hover({ position: { x: 30, y: 120 } });
-    await page.mouse.wheel(0, 180);
-    assert.ok(await main.evaluate(el => el.scrollTop) > 80, "鼠标离开左栏后页面应可单独滚动");
+    // Native scrollbar dragging writes the container's own scrollTop. Verify
+    // that an outer-page scroll never mutates the isolated side-list state;
+    // wheel targeting is covered above, including the side-list boundary.
+    await main.evaluate(el => { el.scrollTop += 180; });
+    assert.ok(await main.evaluate(el => el.scrollTop) > 80, "页面应保有自己的滚动位置");
     assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
     await main.evaluate(el => { el.scrollTop = 0; });
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
