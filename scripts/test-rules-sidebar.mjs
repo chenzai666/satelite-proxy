@@ -59,10 +59,20 @@ try {
     await scroll.evaluate(el => { el.scrollTop = el.scrollHeight; });
     await page.mouse.wheel(0, 260);
     assert.equal(await main.evaluate(el => el.scrollTop), 80, "左栏到底后也不能把滚动交给页面");
-    const innerAtBoundary = await scroll.evaluate(el => el.scrollTop);
+    assert.equal(await scroll.evaluate(el => {
+      const max = el.scrollHeight - el.clientHeight;
+      return Math.abs(el.scrollTop - max) <= 1;
+    }), true, "左栏应停在自身底部");
     await main.evaluate(el => { el.scrollTop += 180; });
     assert.ok(await main.evaluate(el => el.scrollTop) > 80, "页面应保有自己的滚动位置");
-    assert.equal(await scroll.evaluate(el => el.scrollTop), innerAtBoundary, "页面滚动不能带动左栏");
+    // Sticky sidebars grow as their top reaches the viewport, so Chromium
+    // may clamp an already-bottom scrollTop to the new maximum. Verify the
+    // user-visible invariant instead: page scrolling keeps the side list at
+    // its own bottom rather than transferring the page delta into its items.
+    assert.equal(await scroll.evaluate(el => {
+      const max = el.scrollHeight - el.clientHeight;
+      return Math.abs(el.scrollTop - max) <= 1;
+    }), true, "页面滚动不能把左栏带离自身底部");
     await main.evaluate(el => { el.scrollTop = 0; });
     assert.deepEqual(errors, []);
     await page.screenshot({path: `test-results/rules-sidebar-${zoom}.png`});
