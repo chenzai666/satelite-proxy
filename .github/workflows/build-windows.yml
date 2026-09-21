@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v1.0.35"
+      - "v1.0.38"
 
 permissions:
   contents: read
@@ -134,7 +134,7 @@ jobs:
 
   release:
     name: 发布 GitHub Release
-    if: github.ref == 'refs/tags/v1.0.35'
+    if: github.ref == 'refs/tags/v1.0.38'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -166,10 +166,10 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --notes-file docs/release-1.0.35.md \
+              --notes-file docs/release-1.0.38.md \
               --title "Satelite $GITHUB_REF_NAME"
           fi
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.35.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.38.md
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.zip \
             --repo "$GITHUB_REPOSITORY" \
             --clobber
