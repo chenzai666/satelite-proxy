@@ -33,13 +33,21 @@ export interface ConfigFormValues {
   userAgent?: string;
 }
 
-type AutoUpdateInterval = "disabled" | "1h" | "12h" | "24h";
+type AutoUpdateInterval = "disabled" | "1h" | "12h" | "24h" | "custom";
 
-const AUTO_UPDATE_MINUTES: Record<Exclude<AutoUpdateInterval, "disabled">, number> = {
+const AUTO_UPDATE_MINUTES: Record<"1h" | "12h" | "24h", number> = {
   "1h": 60,
   "12h": 720,
   "24h": 1440,
 };
+
+/** A subscription scheduler interval is a whole positive u32 minute count. */
+function parseCustomMinutes(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const minutes = Number.parseInt(trimmed, 10);
+  return minutes > 0 && minutes <= 4_294_967_295 ? minutes : null;
+}
 
 function kindToProfile(kind: AddSourceKind): ProfileKind {
   if (kind === "url") return "subscription";
@@ -90,6 +98,7 @@ export function AddConfigModal({
   const [viaProxy, setViaProxy] = useState(false);
   const [autoUpdateInterval, setAutoUpdateInterval] =
     useState<AutoUpdateInterval>("24h");
+  const [customMinutes, setCustomMinutes] = useState("");
   const [userAgent, setUserAgent] = useState("");
   const [fileLabel, setFileLabel] = useState("");
   const [fileError, setFileError] = useState<string | null>(null);
@@ -111,6 +120,7 @@ export function AddConfigModal({
       setFileError(null);
       setUserAgent(initial.userAgent ?? "");
       const interval = initial.autoUpdateIntervalMin ?? 1440;
+      setCustomMinutes(initial.autoUpdate === false ? "" : String(interval));
       setAutoUpdateInterval(
         initial.autoUpdate === false
           ? "disabled"
@@ -118,7 +128,9 @@ export function AddConfigModal({
             ? "1h"
             : interval === 720
               ? "12h"
-              : "24h",
+              : interval === 1440
+                ? "24h"
+                : "custom",
       );
     } else {
       setProfile("subscription");
@@ -130,6 +142,7 @@ export function AddConfigModal({
       setConfigMode("paste");
       setViaProxy(false);
       setAutoUpdateInterval("24h");
+      setCustomMinutes("");
       setFileLabel("");
       setFileError(null);
       setUserAgent("");
@@ -172,7 +185,9 @@ export function AddConfigModal({
     e.preventDefault();
     const autoUpdate = autoUpdateInterval !== "disabled";
     const interval = autoUpdate
-      ? AUTO_UPDATE_MINUTES[autoUpdateInterval]
+      ? autoUpdateInterval === "custom"
+        ? (parseCustomMinutes(customMinutes) ?? 1440)
+        : AUTO_UPDATE_MINUTES[autoUpdateInterval]
       : 1440;
     const kind = currentKind();
     const payload: ConfigFormValues = {
@@ -195,8 +210,13 @@ export function AddConfigModal({
   }
 
   const kind = currentKind();
+  const customIntervalInvalid =
+    kind === "url" &&
+    autoUpdateInterval === "custom" &&
+    parseCustomMinutes(customMinutes) == null;
   const canSubmit =
     !busy &&
+    !customIntervalInvalid &&
     ((kind === "url" && url.trim().length > 0) ||
       ((kind === "text" || kind === "singbox") && content.trim().length > 0) ||
       (kind === "node" && name.trim().length > 0 && nodeDraftReady(node)));
@@ -342,9 +362,33 @@ export function AddConfigModal({
                     { value: "1h", label: "1 小时" },
                     { value: "12h", label: "12 小时" },
                     { value: "24h", label: "24 小时" },
+                    { value: "custom", label: "自定义" },
                   ]}
                 />
               </div>
+              {autoUpdateInterval === "custom" && (
+                <label className="field">
+                  <span>更新间隔（分钟）</span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    inputMode="numeric"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    value={customMinutes}
+                    onChange={(e) => setCustomMinutes(e.target.value)}
+                    placeholder="大于 0 的整数，例如 90"
+                    disabled={busy}
+                  />
+                  {customIntervalInvalid && (
+                    <span className="field-warning" role="status">
+                      更新间隔必须是大于 0 的整数（分钟）
+                    </span>
+                  )}
+                </label>
+              )}
               <label className="field">
                 <span>自定义 User-Agent</span>
                 <input

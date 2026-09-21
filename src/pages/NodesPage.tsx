@@ -9,6 +9,8 @@ import {
   listAllNodes,
   listCustomConfigNodes,
   listNodeIds,
+  onNodeLatencyChanged,
+  onProxySnapshot,
   reorderNodes,
   pingNodesLatency,
   setCurrentNode,
@@ -145,6 +147,9 @@ export function NodesPage() {
   const [detailNode, setDetailNode] = useState<ProxyNode | null>(null);
 
   const [customRuntime, setCustomRuntime] = useState(false);
+  // Xray has no Clash-compatible delay API. Keep real latency distinct from
+  // direct TCP reachability instead of silently degrading one into the other.
+  const [xrayCore, setXrayCore] = useState(false);
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
@@ -185,6 +190,43 @@ export function NodesPage() {
     [],
   );
 
+  useEffect(
+    () =>
+      onProxySnapshot((status) => {
+        setXrayCore((status.core_type ?? "singbox") === "xray");
+      }),
+    [],
+  );
+
+  // Manual batch tests and background smart-switch probes update the visible
+  // list without requiring a page reload. A newer streaming result always
+  // wins over an older event.
+  useEffect(() => {
+    if (customRuntime) return;
+    return onNodeLatencyChanged((change) => {
+      setNodes((prev) => {
+        const index = prev.findIndex((node) => node.id === change.id);
+        if (index < 0) return prev;
+        const node = prev[index];
+        if (
+          change.latency_at != null &&
+          node.latency_at != null &&
+          change.latency_at < node.latency_at
+        ) {
+          return prev;
+        }
+        const next = [...prev];
+        next[index] = {
+          ...node,
+          latency_ms: change.latency_ms,
+          latency_at: change.latency_at ?? node.latency_at,
+          latency_method: change.method,
+        };
+        return sortMode === "latency" ? sortNodes(next, sortMode) : next;
+      });
+    });
+  }, [customRuntime, sortMode]);
+
   // Grouping: default (flat) / subscription / protocol / country, persisted
   // like viewMode. v2 key: the first iteration persisted "sub" as its
   // default — the feature is unreleased, so bump the key to let every
@@ -205,6 +247,7 @@ export function NodesPage() {
       const settings = await getSettings();
       const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
       setCustomRuntime(custom);
+      setXrayCore((settings.core_type ?? "singbox") === "xray");
       setCurrentId(settings.current_node_id ?? null);
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       setDelegatedCores(
@@ -483,6 +526,7 @@ export function NodesPage() {
 
   async function onTestNodes(ids: string[], kind: "real" | "ping" = "real") {
     if (testing || ids.length === 0) return;
+    if (kind === "real" && xrayCore) return;
     setTesting(true);
     setTestKind(kind);
     setError(null);
@@ -530,11 +574,16 @@ export function NodesPage() {
         const next = prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
+          // A direct TCP success must not paint over an earlier real
+          // through-core failure/success. The backend enforces the same rule
+          // in storage; this keeps the streaming UI consistent before reload.
+          if (r.method === "tcp" && n.latency_method === "clash_api") return n;
           return {
             ...n,
             // null = failed → show timeout; number = success
             latency_ms: r.latency_ms ?? null,
             latency_at: r.tested_at,
+            latency_method: r.method ?? n.latency_method,
           };
         });
         // Re-sort in place as results stream in so the latency sort mode
@@ -810,9 +859,9 @@ export function NodesPage() {
           <button
             type="button"
             className="node-latency-action"
-            title={t("nodes.testOneLatency")}
             aria-label={`${t("nodes.testOneLatency")}：${n.name}`}
-            disabled={testing || customRuntime || batchBusy}
+            disabled={testing || customRuntime || batchBusy || xrayCore}
+            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testOneLatency")}
             onClick={(event) => {
               event.stopPropagation();
               void onTestNodes([n.id], "real");
@@ -955,9 +1004,9 @@ export function NodesPage() {
               follow the button color instead of rendering as color emoji. */}
           <GlassButton
             icon="◉"
-            disabled={testing || displayed.length === 0}
+            disabled={testing || displayed.length === 0 || xrayCore}
             onClick={() => void onTestLatency("real")}
-            title={t("nodes.testRealLatencyHint")}
+            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testRealLatencyHint")}
           >
             {testing && testKind === "real" ? t("nodes.testing") : t("nodes.testRealLatency")}
           </GlassButton>

@@ -261,8 +261,8 @@ impl CoreKind {
 
     /// Whether this core can serve the NODE as a whole — protocol plus the
     /// per-node shapes a core cannot represent. Xray rejects REALITY over
-    /// transports other than tcp/grpc/xhttp and hysteria2 with obfs
-    /// (generation-time rules); mihomo (canonical Clash Meta, proper uTLS)
+    /// transports other than tcp/grpc/xhttp, hysteria2 with obfs, and legacy
+    /// Shadowsocks stream ciphers; mihomo (canonical Clash Meta, proper uTLS)
     /// lacks our ss+shadow-tls detour shape and the xhttp transport;
     /// sing-box serves every protocol it parses except xhttp — those nodes
     /// stay listed and are force-delegated to the Xray sidecar when
@@ -298,6 +298,30 @@ impl CoreKind {
             // hidden under Xray like any other unsupported shape).
             if matches!(node.transport, Some(crate::domain::Transport::Http { .. })) {
                 return false;
+            }
+            // Xray v26 rejects every non-AEAD Shadowsocks stream cipher at
+            // config load (aes-*-cfb, rc4-md5, ...). Keep the node visible in
+            // the UI: manual selection uses manual_node_fallback and hands it
+            // to the bundled sing-box core instead of emitting a config that
+            // makes Xray fail to start.
+            if let crate::domain::ProtocolConfig::Shadowsocks { method, .. } = &node.config {
+                let method = method.to_ascii_lowercase();
+                let aead_or_2022 = method.starts_with("2022-blake3-")
+                    || matches!(
+                        method.as_str(),
+                        "aes-128-gcm"
+                            | "aes-256-gcm"
+                            | "chacha20-poly1305"
+                            | "chacha20-ietf-poly1305"
+                            | "aead_aes_128_gcm"
+                            | "aead_aes_256_gcm"
+                            | "aead_chacha20_poly1305"
+                            | "none"
+                            | "plain"
+                    );
+                if !aead_or_2022 {
+                    return false;
+                }
             }
         }
         if matches!(
@@ -618,6 +642,33 @@ mod tests {
             *obfs = None;
         }
         assert!(CoreKind::Xray.supports_node(&hy2_obfs));
+        // Xray v26 removed non-AEAD Shadowsocks stream ciphers at config
+        // load. Legacy nodes fall back to the bundled sing-box core when a
+        // user selects one; they must never reach an Xray config.
+        let mut ss_legacy = node(Protocol::Shadowsocks, None, None);
+        ss_legacy.config = ProtocolConfig::Shadowsocks {
+            method: "aes-256-cfb".into(),
+            password: "pw".into(),
+            plugin: None,
+            plugin_opts: None,
+            shadow_tls: None,
+        };
+        assert!(!CoreKind::Xray.supports_node(&ss_legacy));
+        assert_eq!(
+            CoreKind::Xray.manual_node_fallback(&ss_legacy),
+            Some(CoreKind::SingBox)
+        );
+        assert!(CoreKind::Mihomo.supports_node(&ss_legacy));
+        assert!(CoreKind::SingBox.supports_node(&ss_legacy));
+        let mut ss_2022 = node(Protocol::Shadowsocks, None, None);
+        ss_2022.config = ProtocolConfig::Shadowsocks {
+            method: "2022-blake3-aes-256-gcm".into(),
+            password: "pw".into(),
+            plugin: None,
+            plugin_opts: None,
+            shadow_tls: None,
+        };
+        assert!(CoreKind::Xray.supports_node(&ss_2022));
         // sing-box accepts everything.
         assert!(CoreKind::SingBox.supports_node(&ss_stls));
         assert!(CoreKind::SingBox.supports_node(&vision));

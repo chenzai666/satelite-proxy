@@ -93,17 +93,10 @@ pub async fn test_nodes_latency(
     .await
     .map_err(|e| e.to_string())?;
 
-    state
-        .with_store_mut(|store| {
-            for r in &results {
-                if r.id.is_empty() {
-                    continue;
-                }
-                store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
-            }
-            Ok(())
-        })
+    let changes = state
+        .apply_latency_results(&results)
         .map_err(|e| e.to_string())?;
+    crate::state::emit_node_latency_changes(&changes);
 
     let ok = results.iter().filter(|r| r.latency_ms.is_some()).count();
     let failed = results.len() - ok;
@@ -152,17 +145,10 @@ pub async fn ping_nodes_latency(
     .await
     .map_err(|e| e.to_string())?;
 
-    state
-        .with_store_mut(|store| {
-            for r in &results {
-                if r.id.is_empty() {
-                    continue;
-                }
-                store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
-            }
-            Ok(())
-        })
+    let changes = state
+        .apply_latency_results(&results)
         .map_err(|e| e.to_string())?;
+    crate::state::emit_node_latency_changes(&changes);
 
     let ok = results.iter().filter(|r| r.latency_ms.is_some()).count();
     let failed = results.len() - ok;

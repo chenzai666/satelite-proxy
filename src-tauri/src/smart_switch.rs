@@ -798,14 +798,17 @@ async fn tick(state: &AppState) -> Result<(), String> {
     // isolated — the last marker before silence names the blocking call.
     app_log::debug("smart_switch", "stage: post-trace");
     if let Some(ms) = cur_url_ms {
-        if state
-            .try_with_store_mut(|store| {
-                store.update_node_latency(&current_id, Some(ms), now_secs());
-                Ok(())
-            })
-            .is_none()
-        {
-            note_round_skipped("store (latency write)");
+        let patrol_result = LatencyResult {
+            id: current_id.clone(),
+            name: current.name.clone(),
+            latency_ms: Some(ms),
+            error: None,
+            tested_at: now_secs(),
+            method: "clash_api".into(),
+        };
+        match state.try_apply_latency_results(&[patrol_result]) {
+            Some(changes) => crate::state::emit_node_latency_changes(&changes),
+            None => note_round_skipped("store (latency write)"),
         }
     }
     app_log::debug("smart_switch", "stage: latency written");
@@ -1302,16 +1305,9 @@ fn verify_shortlist(pings: &[LatencyResult], batch: &[ProxyNode], top: usize) ->
 }
 
 fn record_latency_results(state: &AppState, results: &[LatencyResult]) {
-    let applied = state.try_with_store_mut(|store| {
-        for r in results {
-            if !r.id.is_empty() {
-                store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
-            }
-        }
-        Ok(())
-    });
-    if applied.is_none() {
-        note_round_skipped("store (latency write)");
+    match state.try_apply_latency_results(results) {
+        Some(changes) => crate::state::emit_node_latency_changes(&changes),
+        None => note_round_skipped("store (latency write)"),
     }
 }
 
@@ -1534,16 +1530,9 @@ async fn maintain_smart_pool(
         }
     };
 
-    let applied = state.try_with_store_mut(|store| {
-        for r in &results {
-            if !r.id.is_empty() {
-                store.update_node_latency(&r.id, r.latency_ms, r.tested_at);
-            }
-        }
-        Ok(())
-    });
-    if applied.is_none() {
-        note_round_skipped("store (latency write)");
+    match state.try_apply_latency_results(&results) {
+        Some(changes) => crate::state::emit_node_latency_changes(&changes),
+        None => note_round_skipped("store (latency write)"),
     }
 
     let mut ranked: Vec<(String, String, u32, f64)> = results

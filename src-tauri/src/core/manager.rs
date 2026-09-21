@@ -134,6 +134,13 @@ impl CoreManager {
         matches!(self.state, CoreState::Running)
     }
 
+    /// Test-only state injection for liveness-dependent AppState paths. A
+    /// manager without a child keeps the forced state across poll() calls.
+    #[cfg(test)]
+    pub(crate) fn force_state_for_tests(&mut self, state: CoreState) {
+        self.state = state;
+    }
+
     /// Kind of the current/last session — set by `start_with_ports`. Callers
     /// wanting the *actual* running core (e.g. custom sing-box profiles keep
     /// running sing-box even when `settings.core_type` is xray) read this.
@@ -291,21 +298,28 @@ impl CoreManager {
         port_has_listener(port)
     }
 
-    /// Force-free a TCP listen port: kill listeners + short wait.
-    ///
-    /// Important: if nothing is in LISTEN, return immediately (or after one short
-    /// settle). A false `bind` failure without a listener used to spin ~2s and
-    /// made settings restarts feel stuck (e.g. changing route.final).
+    /// Force-free a TCP listen port: kill listeners and wait for true
+    /// bindability. A just-killed Go core can leave accepted sockets behind
+    /// after netstat no longer shows a LISTEN row; those sockets can still
+    /// reject a replacement bind on Windows.
     pub fn force_free_port(port: u16) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
         }
         let mut killed = kill_listeners_on_port(port);
 
-        // No server socket → do not busy-wait (CLOSE_WAIT / TIME_WAIT / bind flake).
+        // No visible listener can still mean teardown residue. Wait a bounded
+        // moment for the OS to reclaim it; if a new listener appears, fall
+        // through to the kill path rather than idling out the deadline.
         if !port_has_listener(port) {
-            std::thread::sleep(Duration::from_millis(40));
-            if Self::is_port_free(port) || !port_has_listener(port) {
+            let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+            while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
+                if port_has_listener(port) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if Self::is_port_free(port) {
                 return Ok(());
             }
         }
@@ -316,14 +330,15 @@ impl CoreManager {
                 return Ok(());
             }
             if !port_has_listener(port) {
-                return Ok(());
+                std::thread::sleep(Duration::from_millis(30));
+                continue;
             }
             if i == 4 || i == 8 {
                 killed = kill_listeners_on_port(port);
             }
             std::thread::sleep(Duration::from_millis(30));
         }
-        if Self::is_port_free(port) || !port_has_listener(port) {
+        if Self::is_port_free(port) {
             return Ok(());
         }
         let manual = if cfg!(windows) {
@@ -765,15 +780,23 @@ impl CoreManager {
     /// stuck/leaked port never hangs a restart; the next start's own
     /// `ensure_ports_free` sweep is the final backstop either way.
     ///
+    /// The wait condition is true bindability (`is_port_free`), not just the
+    /// netstat LISTEN row: a dead core's accepted sockets can linger without
+    /// an owning listener. A visible foreign listener breaks early — only the
+    /// later `ensure_ports_free` path is allowed to terminate it.
+    ///
     /// Callers opt in explicitly (rather than this running inside `stop()`
-    /// itself) because it spawns `lsof`/`netstat` to probe each port, which
-    /// `force_shutdown` must never do during app-exit shutdown (see there).
+    /// itself) because it probes each port, which `force_shutdown` must never
+    /// do during app-exit shutdown (see there).
     pub fn await_owned_ports_released(&mut self) {
         let ports = std::mem::take(&mut self.owned_ports);
-        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
         for port in ports {
-            while Self::has_port_listener(port) && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
+            while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
+                if Self::has_port_listener(port) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
             }
         }
     }

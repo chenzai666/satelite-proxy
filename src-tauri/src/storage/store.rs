@@ -90,6 +90,11 @@ pub struct StoredNode {
     pub subscription_id: String,
     #[serde(flatten)]
     pub node: ProxyNode,
+    /// How the stored latency was obtained: `clash_api` is a real
+    /// through-core result, while `tcp` is only direct reachability. The
+    /// former takes priority so a TCP success cannot mask a dead proxy path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_method: Option<String>,
 }
 
 impl AppStore {
@@ -844,6 +849,7 @@ impl AppStore {
             self.nodes.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
+                latency_method: None,
             });
         }
         self.gc_favorite_nodes();
@@ -1161,6 +1167,7 @@ impl AppStore {
         edited.latency_ms = None;
         edited.latency_at = None;
         stored.node = edited.clone();
+        stored.latency_method = None;
         self.node_overrides.insert(
             Self::node_override_key(&subscription_id, id),
             edited.clone(),
@@ -1243,10 +1250,18 @@ impl AppStore {
         id: &str,
         latency_ms: Option<u32>,
         latency_at: i64,
+        method: &str,
     ) -> bool {
+        if method != "clash_api" && method != "tcp" {
+            return false;
+        }
         if let Some(n) = self.nodes.iter_mut().find(|n| n.node.id == id) {
+            if method == "tcp" && n.latency_method.as_deref() == Some("clash_api") {
+                return false;
+            }
             n.node.latency_ms = latency_ms;
             n.node.latency_at = Some(latency_at);
+            n.latency_method = Some(method.to_string());
             true
         } else {
             false
@@ -2367,6 +2382,7 @@ mod tests {
                 latency_ms: None,
                 latency_at: None,
             },
+            latency_method: None,
         };
         // Legacy collision: same server/port/protocol, different creds, but
         // manually assigned the same id (simulating stale/corrupt data).
@@ -2419,6 +2435,7 @@ mod tests {
         store.nodes.push(StoredNode {
             subscription_id: "sub".into(),
             node,
+            latency_method: None,
         });
         let set = RuleSet::new_user(
             "批量集",
@@ -2534,6 +2551,7 @@ mod tests {
                 latency_ms: None,
                 latency_at: None,
             },
+            latency_method: None,
         };
         let mut store = AppStore::default();
         store.nodes.push(mk_node("node-1", "东京 01", 8388));
@@ -2662,6 +2680,7 @@ mod tests {
         store.nodes.push(StoredNode {
             subscription_id: "sub".into(),
             node: node_pin,
+            latency_method: None,
         });
         let (updated, _) = store
             .batch_set_rule_targets(
@@ -2912,6 +2931,7 @@ mod tests {
                 latency_ms: None,
                 latency_at: None,
             },
+            latency_method: None,
         }
     }
 
@@ -4028,6 +4048,7 @@ mod tests {
                 latency_ms: None,
                 latency_at: None,
             },
+            latency_method: None,
         }
     }
 
@@ -4053,6 +4074,27 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("已存在同名"));
+    }
+
+    #[test]
+    fn update_node_latency_keeps_real_probe_over_tcp_ping() {
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "HK-1"));
+
+        assert!(store.update_node_latency("n1", Some(40), 100, "tcp"));
+        assert!(store.update_node_latency("n1", Some(120), 200, "clash_api"));
+        assert_eq!(store.nodes[0].node.latency_ms, Some(120));
+        assert_eq!(store.nodes[0].latency_method.as_deref(), Some("clash_api"));
+
+        // A real failure is meaningful: TCP-connect success cannot pretend
+        // that a proxy path which just failed is healthy.
+        assert!(store.update_node_latency("n1", None, 300, "clash_api"));
+        assert!(!store.update_node_latency("n1", Some(20), 400, "tcp"));
+        assert_eq!(store.nodes[0].node.latency_ms, None);
+        assert_eq!(store.nodes[0].node.latency_at, Some(300));
+
+        assert!(!store.update_node_latency("n1", Some(5), 500, "unsupported"));
+        assert!(!store.update_node_latency("missing", Some(5), 500, "tcp"));
     }
 
     #[test]

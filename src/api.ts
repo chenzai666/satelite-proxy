@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
   AppSettings,
   CoreDownloadResult,
@@ -13,6 +14,7 @@ import type {
   ProxyStatus,
   UwpLoopbackResult,
   MihomoProxyGroup,
+  NodeLatencyChange,
   Rule,
   RuleSet,
   RuleSetStrategy,
@@ -284,6 +286,31 @@ export function onProxySnapshot(listener: ProxySnapshotListener): () => void {
   proxySnapshotListeners.add(listener);
   return () => {
     proxySnapshotListeners.delete(listener);
+  };
+}
+
+/** Accepted latency writes are emitted by every backend probe path (manual
+ * tests and smart-switch patrols). Attach one Tauri listener lazily and fan
+ * it out to mounted views. */
+type NodeLatencyListener = (change: NodeLatencyChange) => void;
+const nodeLatencyListeners = new Set<NodeLatencyListener>();
+let nodeLatencyListening = false;
+
+function ensureNodeLatencyListener(): void {
+  if (nodeLatencyListening) return;
+  nodeLatencyListening = true;
+  void listen<NodeLatencyChange[]>("node-latency-changed", (event) => {
+    for (const change of event.payload ?? []) {
+      for (const listener of nodeLatencyListeners) listener(change);
+    }
+  });
+}
+
+export function onNodeLatencyChanged(listener: NodeLatencyListener): () => void {
+  ensureNodeLatencyListener();
+  nodeLatencyListeners.add(listener);
+  return () => {
+    nodeLatencyListeners.delete(listener);
   };
 }
 

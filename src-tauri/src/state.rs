@@ -226,6 +226,89 @@ mod kernel_selection_poll_tests {
     }
 
     #[test]
+    fn xray_manual_selection_of_a_running_core_requests_restart() {
+        let test_dir = std::env::temp_dir().join(format!(
+            "satelite-xray-selection-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ));
+        let state = AppState::load(test_dir.clone(), None).expect("load test state");
+        state
+            .with_store_mut(|store| {
+                store.upsert_subscription(
+                    crate::domain::Subscription {
+                        id: "sub".into(),
+                        name: "sub".into(),
+                        source: crate::domain::SubscriptionSource::Url {
+                            url: "https://example.com/sub".into(),
+                        },
+                        last_update: 1,
+                        node_count: 0,
+                        enabled: true,
+                        format: None,
+                        skipped_count: 0,
+                        via_proxy: false,
+                        auto_update: false,
+                        auto_update_interval_min: 1440,
+                        traffic: None,
+                        clash_config: None,
+                        user_agent: None,
+                    },
+                    vec![crate::domain::ProxyNode {
+                        id: "node-a".into(),
+                        name: "node-a".into(),
+                        protocol: crate::domain::Protocol::Trojan,
+                        server: "example.com".into(),
+                        port: 443,
+                        tls: None,
+                        transport: None,
+                        udp: None,
+                        config: crate::domain::ProtocolConfig::Trojan {
+                            password: "x".into(),
+                        },
+                        source: None,
+                        latency_ms: None,
+                        latency_at: None,
+                    }],
+                )?;
+                store.settings.core_type = "xray".into();
+                Ok(())
+            })
+            .expect("seed Xray state");
+        state
+            .lock_runtime()
+            .core
+            .force_state_for_tests(CoreState::Running);
+
+        let (_, restart_needed, selected_live) = state
+            .select_current_node_serialized("node-a", true, true)
+            .expect("manual Xray selection must persist");
+        assert!(!selected_live);
+        assert!(restart_needed);
+
+        let _ = std::fs::remove_dir_all(test_dir);
+    }
+
+    #[test]
+    fn bind_race_detection_retries_only_transient_port_failures() {
+        assert!(startup_error_is_bind_race(&AppError::Core(
+            "listen tcp 127.0.0.1:2080: bind: Only one usage of each socket address is normally permitted".into()
+        )));
+        assert!(startup_error_is_bind_race(&AppError::Core(
+            "listen tcp 0.0.0.0:7890: bind: address already in use".into()
+        )));
+        assert!(!startup_error_is_bind_race(&AppError::Core(
+            "failed to parse config: unknown field".into()
+        )));
+        assert!(!startup_error_is_bind_race(&AppError::Core(
+            "端口 2080 仍被占用（已尝试结束监听进程）".into()
+        )));
+    }
+
+    #[test]
     fn system_capture_waits_until_core_is_running() {
         assert!(!should_enable_system_proxy(
             crate::domain::CaptureMode::System,
@@ -734,6 +817,20 @@ fn recover_lock<'a, T>(mutex: &'a Mutex<T>, name: &str) -> MutexGuard<'a, T> {
     }
 }
 
+/// True only for the transient replacement-core bind race: a just-killed Go
+/// core can leave accepted sockets behind after its LISTEN row disappears.
+/// A single retry is useful here; config failures and a foreign live listener
+/// must surface directly instead of being hidden behind retries.
+fn startup_error_is_bind_race(err: &AppError) -> bool {
+    let message = err.to_string().to_ascii_lowercase();
+    message.contains("only one usage of each socket address")
+        || message.contains("address already in use")
+        || (message.contains("failed to listen")
+            && (message.contains("bind")
+                || message.contains("tcp")
+                || message.contains("address")))
+}
+
 impl AppState {
     pub fn load(app_data_dir: PathBuf, resource_dir: Option<PathBuf>) -> AppResult<Self> {
         let store_path = default_store_path(&app_data_dir);
@@ -1080,6 +1177,53 @@ impl AppState {
         f(&guard)
     }
 
+    /// Persist probe results under the real-vs-ping priority rule and return
+    /// only the accepted subset. Every caller then feeds that subset to the
+    /// one backend→UI event path, keeping node rows and the dashboard card
+    /// current even when a background smart-switch probe produced the value.
+    pub fn apply_latency_results(
+        &self,
+        results: &[crate::services::latency::LatencyResult],
+    ) -> AppResult<Vec<NodeLatencyChange>> {
+        self.with_store_mut(|store| Ok(Self::accepted_latency_changes(store, results)))
+    }
+
+    /// Non-blocking form for background smart-switch work. A contended store
+    /// remains a skipped round rather than a queued worker.
+    pub fn try_apply_latency_results(
+        &self,
+        results: &[crate::services::latency::LatencyResult],
+    ) -> Option<Vec<NodeLatencyChange>> {
+        self.try_with_store_mut(|store| Ok(Self::accepted_latency_changes(store, results)))
+            .map(|result| result.unwrap_or_default())
+    }
+
+    fn accepted_latency_changes(
+        store: &mut AppStore,
+        results: &[crate::services::latency::LatencyResult],
+    ) -> Vec<NodeLatencyChange> {
+        results
+            .iter()
+            .filter(|result| !result.id.is_empty())
+            .filter_map(|result| {
+                store
+                    .update_node_latency(
+                        &result.id,
+                        result.latency_ms,
+                        result.tested_at,
+                        &result.method,
+                    )
+                    .then(|| NodeLatencyChange {
+                        id: result.id.clone(),
+                        name: result.name.clone(),
+                        latency_ms: result.latency_ms,
+                        latency_at: Some(result.tested_at),
+                        method: result.method.clone(),
+                    })
+            })
+            .collect()
+    }
+
     pub fn start_proxy(
         &self,
         resource_dir: Option<&Path>,
@@ -1181,7 +1325,18 @@ impl AppState {
         let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
         let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
-        let mut status = runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?;
+        let mut status = match runtime.restart_core(&self.app_data_dir, resource_dir, &mut store) {
+            Ok(status) => status,
+            Err(first) if startup_error_is_bind_race(&first) => {
+                app_log::warn(
+                    "core",
+                    format!("restart hit a port bind race, retrying once: {first}"),
+                );
+                std::thread::sleep(Duration::from_millis(2000));
+                runtime.restart_core(&self.app_data_dir, resource_dir, &mut store)?
+            }
+            Err(error) => return Err(error),
+        };
         if runtime.system_proxy_on != want_system {
             status = runtime.set_system_proxy(&store, want_system)?;
         }
@@ -1694,6 +1849,10 @@ impl AppState {
         manual: bool,
         close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
+        // is_core_running deliberately reports false during a transition.
+        // Capture it before taking the guard so a manual Xray selection of a
+        // running core reliably schedules the restart it needs.
+        let core_running = self.is_core_running();
         let _operation = self.begin_core_transition()?;
         let core_kind = {
             let kind = crate::core::CoreKind::parse(
@@ -1755,10 +1914,10 @@ impl AppState {
                     fallback_core,
                 ))
             })?;
-        let (api, core_running) = {
+        let api = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
-            (runtime.clash_api_clone(), runtime.core.is_running())
+            runtime.clash_api_clone()
         };
         // Kernel-auto main group is urltest: PUT /proxies would 400. Persist the
         // manual pick; the caller rebuilds a selector group via core restart.
@@ -2271,6 +2430,39 @@ struct CoreStatusChangedEvent {
     /// Alive sidecar core kinds (e.g. `["xray","mihomo"]`); the frontend
     /// uses it for per-core indicators, `sidecar_running` for "any".
     sidecar_kinds: Vec<String>,
+}
+
+/// Accepted stored-latency changes are emitted as a small batch, allowing all
+/// mounted views to reflect manual and background probes without a reload.
+const NODE_LATENCY_EVENT: &str = "node-latency-changed";
+
+#[derive(Clone, serde::Serialize)]
+pub struct NodeLatencyChange {
+    pub id: String,
+    pub name: String,
+    pub latency_ms: Option<u32>,
+    pub latency_at: Option<i64>,
+    /// `clash_api` (through-core) or `tcp` (direct reachability).
+    pub method: String,
+}
+
+/// Some latency writers run beneath smart-switch helpers and receive no Tauri
+/// argument. Register one process-wide handle during setup for their
+/// best-effort UI notifications; unit tests safely have no handle.
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+pub fn set_app_handle(app: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app);
+}
+
+pub fn emit_node_latency_changes(changes: &[NodeLatencyChange]) {
+    if changes.is_empty() {
+        return;
+    }
+    if let Some(app) = APP_HANDLE.get() {
+        use tauri::Emitter;
+        let _ = app.emit(NODE_LATENCY_EVENT, changes.to_vec());
+    }
 }
 
 /// Pure decision core (unit-tested): restart only on the running→not-running

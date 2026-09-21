@@ -192,6 +192,10 @@ pub fn run() {
             let _ = autostart::set_launch_at_login(launch);
 
             app.manage(app_state);
+            // Background latency probes run below command handlers and do not
+            // receive an AppHandle. Register one once for their best-effort
+            // node-latency-changed notifications.
+            state::set_app_handle(app.handle().clone());
             window_ctrl::apply_main_window_icon(app.handle());
             window_ctrl::restore_main_window_size(app.handle());
             window_ctrl::apply_window_theme(app.handle());

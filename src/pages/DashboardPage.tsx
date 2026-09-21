@@ -9,6 +9,7 @@ import {
   getSubscription,
   listAllNodes,
   listSubscriptions,
+  onNodeLatencyChanged,
   onProxySnapshot,
   peekProxyStatus,
   previewSingboxConfig,
@@ -724,8 +725,8 @@ function coreDisplayName(kind: string | null | undefined): string {
     setResult(null);
   }
 
-  async function onProbeLatency() {
-    if (!currentNode || latencyProbing) return;
+  const onProbeLatency = useCallback(async () => {
+    if (!currentNode || latencyProbing || proxy?.core_type === "xray") return;
     setLatencyProbing(true);
     setError(null);
     try {
@@ -733,7 +734,14 @@ function coreDisplayName(kind: string | null | undefined): string {
       const r = batch.results.find((r) => r.id === currentNode.id);
       if (r) {
         setCurrentNode((n) =>
-          n ? { ...n, latency_ms: r.latency_ms ?? null } : n,
+          n
+            ? {
+                ...n,
+                latency_ms: r.latency_ms ?? null,
+                latency_at: r.tested_at,
+                latency_method: r.method ?? n.latency_method,
+              }
+            : n,
         );
       }
     } catch (e) {
@@ -741,7 +749,7 @@ function coreDisplayName(kind: string | null | undefined): string {
     } finally {
       setLatencyProbing(false);
     }
-  }
+  }, [currentNode, latencyProbing, proxy?.core_type]);
 
   /** Probe the actual public exit through the running core when applicable. */
   const onProbeExitIp = useCallback(async () => {
@@ -773,7 +781,31 @@ function coreDisplayName(kind: string | null | undefined): string {
     if (!statusReady || autoProbeKeyRef.current === autoProbeKey) return;
     autoProbeKeyRef.current = autoProbeKey;
     void onProbeExitIp();
-  }, [autoProbeKey, onProbeExitIp, statusReady]);
+    if (proxy?.running && proxy.core_type !== "xray") void onProbeLatency();
+  }, [autoProbeKey, onProbeExitIp, onProbeLatency, proxy?.core_type, proxy?.running, statusReady]);
+
+  useEffect(
+    () =>
+      onNodeLatencyChanged((change) => {
+        setCurrentNode((node) => {
+          if (!node || node.id !== change.id) return node;
+          if (
+            change.latency_at != null &&
+            node.latency_at != null &&
+            change.latency_at < node.latency_at
+          ) {
+            return node;
+          }
+          return {
+            ...node,
+            latency_ms: change.latency_ms,
+            latency_at: change.latency_at ?? node.latency_at,
+            latency_method: change.method,
+          };
+        });
+      }),
+    [],
+  );
 
   const running = proxy?.running ?? false;
   const stateLabel = proxy?.core_state ?? "stopped";

@@ -13,6 +13,8 @@ import {
   listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
+  onNodeLatencyChanged,
+  onProxySnapshot,
   setCurrentNode,
   testCustomNodesLatency,
   testNodesLatency,
@@ -92,6 +94,7 @@ export function SimpleServersPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [runtimeSource, setRuntimeSource] = useState("generated");
+  const [xrayCore, setXrayCore] = useState(false);
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [sortMode, setSortMode] = useState<SortMode>(() => readSortMode());
@@ -121,6 +124,40 @@ export function SimpleServersPage() {
   > | null>(null);
   useEffect(() => () => latencyBufferRef.current?.stop(), []);
 
+  useEffect(
+    () =>
+      onProxySnapshot((status) => {
+        setXrayCore((status.core_type ?? "singbox") === "xray");
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    if (runtimeSource.startsWith("singbox:")) return;
+    return onNodeLatencyChanged((change) => {
+      setNodes((prev) => {
+        const index = prev.findIndex((node) => node.id === change.id);
+        if (index < 0) return prev;
+        const node = prev[index];
+        if (
+          change.latency_at != null &&
+          node.latency_at != null &&
+          change.latency_at < node.latency_at
+        ) {
+          return prev;
+        }
+        const next = [...prev];
+        next[index] = {
+          ...node,
+          latency_ms: change.latency_ms,
+          latency_at: change.latency_at ?? node.latency_at,
+          latency_method: change.method,
+        };
+        return next;
+      });
+    });
+  }, [runtimeSource]);
+
 
   const reload = useCallback(async (append = false) => {
     try {
@@ -128,6 +165,7 @@ export function SimpleServersPage() {
       const settings = await getSettings();
       setCurrentId(settings.current_node_id ?? null);
       setRuntimeSource(settings.runtime_source || "generated");
+      setXrayCore((settings.core_type ?? "singbox") === "xray");
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       const offset = append ? nodes.length : 0;
       if ((settings.runtime_source || "generated").startsWith("singbox:")) {
@@ -218,6 +256,7 @@ export function SimpleServersPage() {
 
   async function onTestNodes(ids: string[]) {
     if (testing || ids.length === 0) return;
+    if (xrayCore) return;
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -254,10 +293,12 @@ export function SimpleServersPage() {
         prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
+          if (r.method === "tcp" && n.latency_method === "clash_api") return n;
           return {
             ...n,
             latency_ms: r.latency_ms ?? null,
             latency_at: r.tested_at,
+            latency_method: r.method ?? n.latency_method,
           };
         }),
       );
@@ -430,9 +471,9 @@ export function SimpleServersPage() {
           <GlassButton
             variant="primary"
             icon="⚡"
-            disabled={testing || nodeTotal === 0}
+            disabled={testing || nodeTotal === 0 || xrayCore}
             onClick={() => void onTestAll()}
-            title={t("nodes.testRealLatency")}
+            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testRealLatency")}
           >
             {testing ? t("nodes.testing") : t("nodes.testRealLatency")}
           </GlassButton>

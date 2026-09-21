@@ -330,6 +330,8 @@ export interface ProxyNode {
   source?: string;
   latency_ms?: number | null;
   latency_at?: number | null;
+  /** `clash_api` = through-core real latency; `tcp` = direct reachability. */
+  latency_method?: string | null;
   /** Present from list_all_nodes — owning subscription. */
   subscription_id?: string;
   subscription_name?: string;
@@ -360,6 +362,15 @@ export interface LatencyResult {
   tested_at: number;
   /** `tcp` | `clash_api` | `unsupported` (needs core running) */
   method?: string;
+}
+
+/** An accepted stored-latency update broadcast by the backend. */
+export interface NodeLatencyChange {
+  id: string;
+  name: string;
+  latency_ms: number | null;
+  latency_at: number | null;
+  method: string;
 }
 
 export interface LatencyBatchResult {

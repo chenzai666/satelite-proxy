@@ -525,6 +525,8 @@ const en = {
   "nodes.sortLatency": "Latency",
   "nodes.testRealLatency": "Real latency",
   "nodes.testRealLatencyHint": "Probe through the core's proxy path — accurate but slower",
+  "nodes.realLatencyXrayUnsupported":
+    "Xray has no delay API, so real-latency tests are unavailable — use the TCP ping test or switch core",
   "nodes.pingTest": "Ping test",
   "nodes.pingTestHint": "Fast direct TCP check, 30 concurrent",
   "nodes.pinging": "Pinging…",
@@ -1569,6 +1571,8 @@ const zh: Record<MessageKey, string> = {
   "nodes.sortLatency": "延迟",
   "nodes.testRealLatency": "测真实延迟",
   "nodes.testRealLatencyHint": "经内核真实代理链路探测——准确但较慢",
+  "nodes.realLatencyXrayUnsupported":
+    "Xray 内核无延迟测试接口，无法测真实延迟——可使用 Ping 测试或切换内核",
   "nodes.pingTest": "Ping 测试",
   "nodes.pingTestHint": "TCP 直连快速探测，并发 30",
   "nodes.pinging": "Ping 中…",

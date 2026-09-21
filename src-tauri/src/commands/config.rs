@@ -29,6 +29,10 @@ pub struct ListedNode {
     pub node: ProxyNode,
     pub subscription_id: String,
     pub subscription_name: String,
+    /// Measurement source kept separately from ProxyNode so latency results
+    /// survive only for the stored node, not parsed subscription input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_method: Option<String>,
     /// Not part of `ProxyNode` — favorites are keyed on node id in a
     /// separate store set (`AppStore::favorite_nodes`) so they survive a
     /// subscription refresh that rebuilds every `ProxyNode` instance.
@@ -654,6 +658,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                         .copied()
                         .unwrap_or("")
                         .to_string(),
+                    latency_method: n.latency_method.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect())
@@ -737,6 +742,7 @@ pub fn list_nodes_page(
                         .copied()
                         .unwrap_or("")
                         .to_string(),
+                    latency_method: n.latency_method.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -798,6 +804,7 @@ pub fn list_node_ids(
                         .copied()
                         .unwrap_or("")
                         .to_string(),
+                    latency_method: n.latency_method.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -823,6 +830,7 @@ fn extract_custom_nodes(
                 node,
                 subscription_id: sub_id.to_string(),
                 subscription_name: sub_name.to_string(),
+                latency_method: None,
                 // Custom-config nodes are parsed on demand from a raw config
                 // body, never stored in `AppStore.nodes` — there's no store
                 // access here and no id they could match in `favorite_nodes`.
