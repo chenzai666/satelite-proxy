@@ -71,7 +71,7 @@ function ProShell() {
       <main className="main">
         {/* key={nav} forces a remount on page switch → triggers the CSS
             page-enter fade/slide animation below. */}
-        <div className="page-enter" key={nav}>
+        <div className={`page-enter${nav === "settings" ? " settings-enter" : ""}`} key={nav}>
           {nav === "dashboard" && (
             <DashboardPage
               onGoProfiles={() => setNav("config")}

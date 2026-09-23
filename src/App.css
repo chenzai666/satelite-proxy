@@ -1091,6 +1091,9 @@ button {
 
 .settings-page.settings-wide {
   max-width: none;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 /* WebView2 can flash a white compositor tile over settings and traffic cards
@@ -4868,14 +4871,16 @@ code {
   max-width: 56rem;
 }
 
-/* Rules / DNS tabs both overflow .main once loaded, but they mount with an
-   empty/loading body that briefly fits the viewport — the scrollbar thumb
-   would flash out and back on every tab switch. Keep the embed overflowing
-   through the async load so the thumb stays put. Generous margin below the
-   visible-area threshold (~100vh - 11rem of chrome) and still shorter than
-   both pages' loaded height, so no permanent empty tail. */
+/* Stretch embedded settings to the actual visible height. A fixed viewport
+   estimate left an empty scroll tail on short tabs. */
+.main > .settings-enter {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .settings-scroll-embed {
-  min-height: calc(100vh - 9rem);
+  flex: 1 0 auto;
 }
 
 /* Ports tab: main port form (left) beside the extra-listeners panel (right). */
