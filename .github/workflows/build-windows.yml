@@ -169,7 +169,16 @@ jobs:
               --notes-file docs/release-1.0.40.md \
               --title "Satelite $GITHUB_REF_NAME"
           fi
+          # gh release upload --clobber 可能因按标签查询的缓存漏掉旧资产而报 422。
+          # 按 Release ID 枚举并删除同名资产，再上传本次已验证产物。
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)
+          for file in release/*.exe release/*.zip; do
+            name=$(basename "$file")
+            asset_ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
+              --jq ".[] | select(.name == \"$name\") | .id")
+            for asset_id in $asset_ids; do
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
+          done
+          gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.zip --repo "$GITHUB_REPOSITORY"
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.40.md
-          gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.zip \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
