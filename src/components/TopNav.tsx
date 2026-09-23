@@ -150,7 +150,7 @@ export function TopNav({ active, onChange }: Props) {
           <ThemeSwitch />
           <div
             className="topnav-status"
-            title={transitioning ? "内核切换中" : stateLabel}
+            title={transitioning ? t("topnav.coreSwitching") : stateLabel}
             aria-busy={transitioning}
           >
             <span className={`status-dot ${dotClass}`} />

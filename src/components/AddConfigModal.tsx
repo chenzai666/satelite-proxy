@@ -18,6 +18,7 @@ import type {
   ProfileKind,
 } from "../types";
 import { canonicalSubscriptionUrl } from "../subscriptionUrl";
+import { useI18n } from "../i18n";
 
 export interface ConfigFormValues {
   name: string;
@@ -88,6 +89,7 @@ export function AddConfigModal({
   onClose,
   onSubmit,
 }: Props) {
+  const { t } = useI18n();
   const [profile, setProfile] = useState<ProfileKind>("subscription");
   const [localKind, setLocalKind] = useState<LocalKind>("node");
   const [name, setName] = useState("");
@@ -241,14 +243,14 @@ export function AddConfigModal({
       >
         <header className="modal-header">
           <h2 id="config-modal-title">
-            {title ?? (isEdit ? "编辑配置" : "添加配置")}
+            {title ?? (isEdit ? t("modal.editTitle") : t("modal.addTitle"))}
           </h2>
           <button
             type="button"
             className="icon-btn"
             onClick={onClose}
             disabled={busy}
-            aria-label="关闭"
+            aria-label={t("common.close")}
           >
             ×
           </button>
@@ -256,7 +258,7 @@ export function AddConfigModal({
 
         <form className="modal-body" onSubmit={handleSubmit}>
           <div className="field">
-            <span>类型</span>
+            <span>{t("modal.type")}</span>
             <GlassSeg
               value={
                 profile === "local"
@@ -265,7 +267,7 @@ export function AddConfigModal({
                     : "parse"
                   : profile
               }
-              ariaLabel="配置类型"
+              ariaLabel={t("modal.typeAria")}
               disabled={busy}
               onChange={(v) => {
                 if (v === "subscription" || v === "singbox") {
@@ -276,25 +278,25 @@ export function AddConfigModal({
                 }
               }}
               options={[
-                { value: "subscription", label: "订阅" },
-                { value: "manual", label: "手动填写" },
-                { value: "parse", label: "链接解析" },
-                { value: "singbox", label: "自写配置" },
+                { value: "subscription", label: t("modal.tabSubscription") },
+                { value: "manual", label: t("modal.tabManual") },
+                { value: "parse", label: t("modal.tabParse") },
+                { value: "singbox", label: t("modal.tabSingbox") },
               ]}
             />
             <span className="field-hint muted">
               {profile === "subscription"
-                ? "从订阅链接下载并解析节点"
+                ? t("modal.hintSubscription")
                 : profile === "singbox"
-                  ? "自己手写或已有现成 sing-box 配置文件，按原文启动内核；应用内节点 / 路由 / DNS 停用"
+                  ? t("modal.hintSingbox")
                   : localKind === "node"
-                    ? "按协议表单添加单条手动节点"
-                    : "粘贴协议链接或 Clash / sing-box 订阅内容提取节点"}
+                    ? t("modal.hintManual")
+                    : t("modal.hintParse")}
             </span>
           </div>
 
           <label className="field">
-            <span>名称</span>
+            <span>{t("modal.name")}</span>
             <input
               autoCapitalize="off"
               autoCorrect="off"
@@ -303,12 +305,12 @@ export function AddConfigModal({
               onChange={(e) => setName(e.target.value)}
               placeholder={
                 profile === "subscription"
-                  ? "例如：机场 A"
+                  ? t("modal.namePhSubscription")
                   : profile === "singbox"
-                    ? "例如：自用完整配置"
+                    ? t("modal.namePhSingbox")
                     : localKind === "node"
-                      ? "必填，例如：家宽备用"
-                      : "例如：自建节点组 / 协议链接"
+                      ? t("modal.namePhManual")
+                      : t("modal.namePhParse")
               }
               disabled={busy}
             />
@@ -317,7 +319,7 @@ export function AddConfigModal({
           {profile === "subscription" && (
             <>
               <label className="field">
-                <span>订阅链接</span>
+                <span>{t("modal.urlLabel")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -330,45 +332,45 @@ export function AddConfigModal({
                 />
                 {duplicateUrl && (
                   <span className="field-warning" role="status">
-                    订阅已存在，保存会覆盖已有配置
+                    {t("modal.duplicateUrl")}
                   </span>
                 )}
               </label>
               <div className="via-proxy-row">
                 <div>
-                  <div className="sys-proxy-title">走代理添加</div>
+                  <div className="sys-proxy-title">{t("modal.viaProxy")}</div>
                   <div className="sys-proxy-desc">
-                    开启后强制走当前节点；关闭时直连失败会自动回退（需先启动代理核心）
+                    {t("modal.viaProxyDesc")}
                   </div>
                 </div>
                 <GlassSwitchControl
                   checked={viaProxy}
-                  title="走代理添加"
+                  title={t("modal.viaProxy")}
                   disabled={busy}
                   onChange={setViaProxy}
                 />
               </div>
               <div className="field">
-                <span>自动更新</span>
+                <span>{t("modal.autoUpdate")}</span>
                 <GlassSeg
                   value={autoUpdateInterval}
-                  ariaLabel="自动更新间隔"
+                  ariaLabel={t("modal.autoUpdateAria")}
                   disabled={busy}
                   onChange={(value) =>
                     setAutoUpdateInterval(value as AutoUpdateInterval)
                   }
                   options={[
-                    { value: "disabled", label: "禁用" },
-                    { value: "1h", label: "1 小时" },
-                    { value: "12h", label: "12 小时" },
-                    { value: "24h", label: "24 小时" },
-                    { value: "custom", label: "自定义" },
+                    { value: "disabled", label: t("modal.intervalDisabled") },
+                    { value: "1h", label: t("modal.interval1h") },
+                    { value: "12h", label: t("modal.interval12h") },
+                    { value: "24h", label: t("modal.interval24h") },
+                    { value: "custom", label: t("modal.intervalCustom") },
                   ]}
                 />
               </div>
               {autoUpdateInterval === "custom" && (
                 <label className="field">
-                  <span>更新间隔（分钟）</span>
+                  <span>{t("modal.customInterval")}</span>
                   <input
                     type="number"
                     min={1}
@@ -379,18 +381,18 @@ export function AddConfigModal({
                     spellCheck={false}
                     value={customMinutes}
                     onChange={(e) => setCustomMinutes(e.target.value)}
-                    placeholder="大于 0 的整数，例如 90"
+                    placeholder={t("modal.customIntervalPh")}
                     disabled={busy}
                   />
                   {customIntervalInvalid && (
                     <span className="field-warning" role="status">
-                      更新间隔必须是大于 0 的整数（分钟）
+                      {t("modal.customIntervalInvalid")}
                     </span>
                   )}
                 </label>
               )}
               <label className="field">
-                <span>自定义 User-Agent</span>
+                <span>{t("modal.userAgent")}</span>
                 <input
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -416,26 +418,26 @@ export function AddConfigModal({
             (profile === "local" && localKind === "multi")) && (
               <>
                 <div className="field">
-                  <span>输入方式</span>
+                  <span>{t("modal.inputMode")}</span>
                   <GlassSeg
                     value={configMode}
-                    ariaLabel="配置输入方式"
+                    ariaLabel={t("modal.inputModeAria")}
                     disabled={busy}
                     onChange={(v) => setConfigMode(v as ConfigInputMode)}
                     options={[
-                      { value: "paste", label: "粘贴" },
-                      { value: "file", label: "本地文件" },
+                      { value: "paste", label: t("modal.modePaste") },
+                      { value: "file", label: t("modal.modeFile") },
                     ]}
                   />
                 </div>
                 {configMode === "file" && (
                   <div className="field">
-                    <span>从文件拷贝</span>
+                    <span>{t("modal.copyFile")}</span>
                     <div className="file-row">
                       <input
                         readOnly
                         value={fileLabel}
-                        placeholder="选择文件后会拷贝进应用，不记录原路径"
+                        placeholder={t("modal.copyFilePh")}
                         disabled={busy}
                       />
                       <button
@@ -444,7 +446,7 @@ export function AddConfigModal({
                         onClick={() => void pickFile()}
                         disabled={busy}
                       >
-                        浏览…
+                        {t("modal.browse")}
                       </button>
                     </div>
                   </div>
@@ -452,8 +454,8 @@ export function AddConfigModal({
                 <label className="field">
                   <span>
                     {profile === "singbox"
-                      ? "完整 sing-box JSON"
-                      : "配置内容"}
+                      ? t("modal.contentSingbox")
+                      : t("modal.content")}
                   </span>
                   <textarea
                     className="config-paste"
@@ -464,8 +466,8 @@ export function AddConfigModal({
                     onChange={(e) => setContent(e.target.value)}
                     placeholder={
                       profile === "singbox"
-                        ? "必须是含 inbounds + outbounds 的完整 sing-box JSON。启动时按原文拉起内核，应用不会改这份文件。"
-                        : "一行一个协议链接（vless://…），也可粘贴 Clash / sing-box 订阅内容以提取节点"
+                        ? t("modal.contentPhSingbox")
+                        : t("modal.contentPhParse")
                     }
                     disabled={busy}
                     rows={profile === "singbox" ? 12 : 8}
@@ -477,13 +479,13 @@ export function AddConfigModal({
           <p className="hint">
             {profile === "subscription"
               ? isEdit
-                ? "保存时会重新拉取并解析节点（保留配置 id）。"
-                : "提交后将下载订阅并解析节点。"
+                ? t("modal.hintSubEdit")
+                : t("modal.hintSubNew")
               : profile === "singbox"
-                ? "点卡片选中后，首页连接会用这份文件启动内核。"
+                ? t("modal.hintSingboxTail")
                 : localKind === "node"
-                  ? "按协议填写字段，添加一条手动节点。协议链接请用「链接解析」。"
-                  : "支持单行或多行协议链接，也能从 Clash / sing-box 订阅里提取节点。本地文件会拷贝进应用。"}
+                  ? t("modal.hintManualTail")
+                  : t("modal.hintParseTail")}
           </p>
 
           {error && (
@@ -496,14 +498,14 @@ export function AddConfigModal({
 
           <footer className="modal-footer">
             <GlassButton onClick={onClose} disabled={busy}>
-              取消
+              {t("common.cancel")}
             </GlassButton>
             <GlassButton type="submit" variant="primary" disabled={!canSubmit}>
               {busy
                 ? isEdit
-                  ? "保存中…"
-                  : "导入中…"
-                : (submitLabel ?? (isEdit ? "保存" : "添加"))}
+                  ? t("common.saving")
+                  : t("modal.importing")
+                : (submitLabel ?? (isEdit ? t("common.save") : t("common.add")))}
             </GlassButton>
           </footer>
         </form>

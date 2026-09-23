@@ -1,5 +1,6 @@
 import { GlassSwitchControl } from "./GlassSwitchControl";
 import { SolidSelect } from "./SolidSelect";
+import { useI18n } from "../i18n";
 import type { ManualNodeDraft } from "../types";
 
 export const NODE_PROTOCOLS = [
@@ -13,7 +14,7 @@ export const NODE_PROTOCOLS = [
   { value: "http", label: "HTTP" },
   { value: "anytls", label: "AnyTLS" },
   { value: "snell", label: "Snell" },
-  { value: "masque", label: "MASQUE (仅 mihomo)" },
+  { value: "masque", label: "MASQUE" },
   { value: "hysteria", label: "Hysteria" },
   { value: "ssh", label: "SSH" },
   { value: "wireguard", label: "WireGuard" },
@@ -39,7 +40,7 @@ const NETWORKS = [
   { value: "grpc", label: "gRPC" },
   { value: "http", label: "HTTP" },
   { value: "httpupgrade", label: "HTTPUpgrade" },
-  { value: "xhttp", label: "XHTTP (仅 Xray)" },
+  { value: "xhttp", label: "XHTTP" },
 ];
 const FINGERPRINTS = [
   "chrome",
@@ -134,19 +135,29 @@ interface Props {
 }
 
 export function NodeDraftFields({ value, disabled, onChange }: Props) {
+  const { t } = useI18n();
   const p = value.protocol || "vless";
   const set = (patch: Partial<ManualNodeDraft>) =>
     onChange({ ...value, ...patch });
 
+  const protocolOptions = NODE_PROTOCOLS.map((o) => ({
+    value: o.value,
+    label: o.value === "masque" ? t("nodeDraft.masqueOption") : o.label,
+  }));
+  const networkOptions = NETWORKS.map((o) => ({
+    value: o.value,
+    label: o.value === "xhttp" ? t("nodeDraft.xhttpOption") : o.label,
+  }));
+
   return (
     <div className="node-draft">
       <label className="field">
-        <span>协议</span>
+        <span>{t("nodeDraft.protocol")}</span>
         <SolidSelect
-          aria-label="协议"
+          aria-label={t("nodeDraft.protocolAria")}
           value={p}
           disabled={disabled}
-          options={NODE_PROTOCOLS.map((o) => ({ ...o }))}
+          options={protocolOptions}
           onChange={(protocol) => {
             const tlsOn = [
               "vless",
@@ -177,7 +188,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {needsServer(p) && (
         <div className="field-grid">
           <label className="field">
-            <span>服务器</span>
+            <span>{t("nodeDraft.server")}</span>
             <input
               autoCapitalize="off"
               autoCorrect="off"
@@ -189,7 +200,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>端口</span>
+            <span>{t("nodeDraft.port")}</span>
             <input
               type="number"
               min={1}
@@ -207,9 +218,9 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "shadowsocks" && (
         <>
           <label className="field">
-            <span>加密</span>
+            <span>{t("nodeDraft.encryption")}</span>
             <SolidSelect
-              aria-label="加密"
+              aria-label={t("nodeDraft.encryptionAria")}
               value={value.method || "aes-256-gcm"}
               disabled={disabled}
               options={SS_METHODS.map((m) => ({ value: m, label: m }))}
@@ -217,7 +228,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>密码</span>
+            <span>{t("nodeDraft.password")}</span>
             <input
               autoCapitalize="off"
               autoCorrect="off"
@@ -229,20 +240,20 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
           </label>
           <div className="field-grid">
             <label className="field">
-              <span>插件</span>
+              <span>{t("nodeDraft.plugin")}</span>
               <input
                 value={value.plugin ?? ""}
                 onChange={(e) => set({ plugin: e.target.value })}
-                placeholder="可选"
+                placeholder={t("nodeDraft.optional")}
                 disabled={disabled}
               />
             </label>
             <label className="field">
-              <span>插件参数</span>
+              <span>{t("nodeDraft.pluginOpts")}</span>
               <input
                 value={value.pluginOpts ?? ""}
                 onChange={(e) => set({ pluginOpts: e.target.value })}
-                placeholder="可选"
+                placeholder={t("nodeDraft.optional")}
                 disabled={disabled}
               />
             </label>
@@ -273,7 +284,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             spellCheck={false}
             value={value.flow ?? ""}
             onChange={(e) => set({ flow: e.target.value })}
-            placeholder="如 xtls-rprx-vision，可留空"
+            placeholder={t("nodeDraft.flowPh")}
             disabled={disabled}
           />
         </label>
@@ -282,9 +293,9 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "vmess" && (
         <div className="field-grid">
           <label className="field">
-            <span>加密</span>
+            <span>{t("nodeDraft.encryption")}</span>
             <SolidSelect
-              aria-label="VMess 加密"
+              aria-label={t("nodeDraft.vmessEncryptionAria")}
               value={value.security || "auto"}
               disabled={disabled}
               options={VMESS_SECURITY.map((m) => ({ value: m, label: m }))}
@@ -312,7 +323,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
         p === "hysteria" ||
         p === "tuic") && (
         <label className="field">
-          <span>{p === "hysteria" ? "Auth" : "密码"}</span>
+          <span>{p === "hysteria" ? "Auth" : t("nodeDraft.password")}</span>
           <input
             autoCapitalize="off"
             autoCorrect="off"
@@ -327,20 +338,20 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {(p === "socks5" || p === "http" || p === "naive") && (
         <div className="field-grid">
           <label className="field">
-            <span>用户名</span>
+            <span>{t("nodeDraft.username")}</span>
             <input
               value={value.username ?? ""}
               onChange={(e) => set({ username: e.target.value })}
-              placeholder={p === "naive" ? "必填" : "可选"}
+              placeholder={p === "naive" ? t("nodeDraft.required") : t("nodeDraft.optional")}
               disabled={disabled}
             />
           </label>
           <label className="field">
-            <span>密码</span>
+            <span>{t("nodeDraft.password")}</span>
             <input
               value={value.password ?? ""}
               onChange={(e) => set({ password: e.target.value })}
-              placeholder={p === "naive" ? "必填" : "可选"}
+              placeholder={p === "naive" ? t("nodeDraft.required") : t("nodeDraft.optional")}
               disabled={disabled}
             />
           </label>
@@ -350,7 +361,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {(p === "hysteria2" || p === "hysteria") && (
         <div className="field-grid">
           <label className="field">
-            <span>上行 Mbps</span>
+            <span>{t("nodeDraft.upMbps")}</span>
             <input
               type="number"
               min={0}
@@ -366,7 +377,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>下行 Mbps</span>
+            <span>{t("nodeDraft.downMbps")}</span>
             <input
               type="number"
               min={0}
@@ -387,16 +398,16 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "hysteria2" && (
         <div className="field-grid">
           <label className="field">
-            <span>混淆</span>
+            <span>{t("nodeDraft.obfs")}</span>
             <input
               value={value.obfs ?? ""}
               onChange={(e) => set({ obfs: e.target.value })}
-              placeholder="salamander / 可留空"
+              placeholder={t("nodeDraft.obfsPh")}
               disabled={disabled}
             />
           </label>
           <label className="field">
-            <span>混淆密码</span>
+            <span>{t("nodeDraft.obfsPassword")}</span>
             <input
               value={value.obfsPassword ?? ""}
               onChange={(e) => set({ obfsPassword: e.target.value })}
@@ -409,7 +420,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "tuic" && (
         <div className="field-grid">
           <label className="field">
-            <span>拥塞控制</span>
+            <span>{t("nodeDraft.congestionControl")}</span>
             <input
               value={value.congestionControl ?? ""}
               onChange={(e) => set({ congestionControl: e.target.value })}
@@ -418,7 +429,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>UDP 模式</span>
+            <span>{t("nodeDraft.udpRelayMode")}</span>
             <input
               value={value.udpRelayMode ?? ""}
               onChange={(e) => set({ udpRelayMode: e.target.value })}
@@ -441,9 +452,9 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
           </label>
           <div className="field-grid">
             <label className="field">
-              <span>版本</span>
+              <span>{t("nodeDraft.version")}</span>
               <SolidSelect
-                aria-label="Snell 版本"
+                aria-label={t("nodeDraft.snellVersionAria")}
                 value={String(value.version ?? 4)}
                 disabled={disabled}
                 options={[
@@ -469,52 +480,52 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "masque" && (
         <>
           <label className="field">
-            <span>私钥（base64）</span>
+            <span>{t("nodeDraft.masquePrivKey")}</span>
             <textarea
               className="config-paste"
               value={value.privateKey ?? ""}
               onChange={(e) => set({ privateKey: e.target.value })}
-              placeholder="usque 生成的 ECDSA 私钥"
+              placeholder={t("nodeDraft.masquePrivKeyPh")}
               disabled={disabled}
               rows={3}
             />
           </label>
           <label className="field">
-            <span>公钥（base64）</span>
+            <span>{t("nodeDraft.masquePubKey")}</span>
             <textarea
               className="config-paste"
               value={value.publicKey ?? ""}
               onChange={(e) => set({ publicKey: e.target.value })}
-              placeholder="服务端 ECDSA 公钥（去掉 PEM 头尾）"
+              placeholder={t("nodeDraft.masquePubKeyPh")}
               disabled={disabled}
               rows={3}
             />
           </label>
           <div className="field-grid">
             <label className="field">
-              <span>本机 IPv4</span>
+              <span>{t("nodeDraft.localIpv4")}</span>
               <input
                 value={value.ip ?? ""}
                 onChange={(e) => set({ ip: e.target.value })}
-                placeholder="172.16.0.2/32，可选"
+                placeholder={t("nodeDraft.localIpv4Ph")}
                 disabled={disabled}
               />
             </label>
             <label className="field">
-              <span>本机 IPv6</span>
+              <span>{t("nodeDraft.localIpv6")}</span>
               <input
                 value={value.ipv6 ?? ""}
                 onChange={(e) => set({ ipv6: e.target.value })}
-                placeholder="fd00::2/128，可选"
+                placeholder={t("nodeDraft.localIpv6Ph")}
                 disabled={disabled}
               />
             </label>
           </div>
           <div className="field-grid">
             <label className="field">
-              <span>模式</span>
+              <span>{t("nodeDraft.mode")}</span>
               <SolidSelect
-                aria-label="MASQUE 模式"
+                aria-label={t("nodeDraft.masqueModeAria")}
                 value={value.network || "quic"}
                 disabled={disabled}
                 options={[
@@ -525,7 +536,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
                 onChange={(network) => set({ network })}
               />
             </label>
-            <label className="field">
+              <label className="field">
               <span>MTU</span>
               <input
                 type="number"
@@ -538,7 +549,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
                       : null,
                   })
                 }
-                placeholder="默认 1280"
+                placeholder={t("nodeDraft.mtuPh")}
                 disabled={disabled}
               />
             </label>
@@ -551,13 +562,13 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
               spellCheck={false}
               value={value.sni ?? ""}
               onChange={(e) => set({ sni: e.target.value })}
-              placeholder="可留空"
+              placeholder={t("nodeDraft.sniPh")}
               disabled={disabled}
             />
           </label>
           <div className="via-proxy-row">
             <div>
-              <div className="sys-proxy-title">跳过证书验证</div>
+              <div className="sys-proxy-title">{t("nodeDraft.skipCertVerify")}</div>
             </div>
             <GlassSwitchControl
               checked={!!value.insecure}
@@ -572,7 +583,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "ssh" && (
         <>
           <label className="field">
-            <span>用户</span>
+            <span>{t("nodeDraft.sshUser")}</span>
             <input
               value={value.user ?? value.username ?? ""}
               onChange={(e) => set({ user: e.target.value })}
@@ -581,21 +592,21 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>密码</span>
+            <span>{t("nodeDraft.password")}</span>
             <input
               value={value.password ?? ""}
               onChange={(e) => set({ password: e.target.value })}
-              placeholder="与私钥二选一"
+              placeholder={t("nodeDraft.sshPasswordPh")}
               disabled={disabled}
             />
           </label>
           <label className="field">
-            <span>私钥</span>
+            <span>{t("nodeDraft.privateKey")}</span>
             <textarea
               className="config-paste"
               value={value.privateKey ?? ""}
               onChange={(e) => set({ privateKey: e.target.value })}
-              placeholder="PEM / OpenSSH，可留空"
+              placeholder={t("nodeDraft.sshPrivKeyPh")}
               disabled={disabled}
               rows={3}
             />
@@ -606,7 +617,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "wireguard" && (
         <>
           <label className="field">
-            <span>本地地址</span>
+            <span>{t("nodeDraft.localAddress")}</span>
             <input
               value={value.localAddress ?? ""}
               onChange={(e) => set({ localAddress: e.target.value })}
@@ -615,7 +626,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>私钥</span>
+            <span>{t("nodeDraft.privateKey")}</span>
             <input
               value={value.privateKey ?? ""}
               onChange={(e) => set({ privateKey: e.target.value })}
@@ -623,7 +634,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>对端公钥</span>
+            <span>{t("nodeDraft.peerPublicKey")}</span>
             <input
               value={value.peerPublicKey ?? ""}
               onChange={(e) => set({ peerPublicKey: e.target.value })}
@@ -636,9 +647,9 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {p === "shadowtls" && (
         <div className="field-grid">
           <label className="field">
-            <span>版本</span>
+            <span>{t("nodeDraft.version")}</span>
             <SolidSelect
-              aria-label="ShadowTLS 版本"
+              aria-label={t("nodeDraft.shadowtlsVersionAria")}
               value={String(value.version ?? 3)}
               disabled={disabled}
               options={[
@@ -650,7 +661,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             />
           </label>
           <label className="field">
-            <span>密码</span>
+            <span>{t("nodeDraft.password")}</span>
             <input
               value={value.password ?? ""}
               onChange={(e) => set({ password: e.target.value })}
@@ -662,11 +673,11 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
 
       {p === "tor" && (
         <label className="field">
-          <span>可执行文件</span>
+          <span>{t("nodeDraft.executable")}</span>
           <input
             value={value.executablePath ?? ""}
             onChange={(e) => set({ executablePath: e.target.value })}
-            placeholder="tor 路径"
+            placeholder={t("nodeDraft.executablePh")}
             disabled={disabled}
           />
         </label>
@@ -677,7 +688,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
           <div className="via-proxy-row">
             <div>
               <div className="sys-proxy-title">TLS</div>
-              <div className="sys-proxy-desc">启用传输层加密</div>
+              <div className="sys-proxy-desc">{t("nodeDraft.tlsDesc")}</div>
             </div>
             <GlassSwitchControl
               checked={!!value.tls}
@@ -697,19 +708,19 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
                     spellCheck={false}
                     value={value.sni ?? ""}
                     onChange={(e) => set({ sni: e.target.value })}
-                    placeholder="可留空"
+                    placeholder={t("nodeDraft.sniPh")}
                     disabled={disabled}
                   />
                 </label>
                 <label className="field">
-                  <span>指纹</span>
+                  <span>{t("nodeDraft.fingerprint")}</span>
                   <SolidSelect
-                    aria-label="uTLS 指纹"
+                    aria-label={t("nodeDraft.fingerprintAria")}
                     value={value.fingerprint || ""}
                     disabled={disabled}
-                    placeholder="默认"
+                    placeholder={t("nodeDraft.fingerprintDefault")}
                     options={[
-                      { value: "", label: "默认" },
+                      { value: "", label: t("nodeDraft.fingerprintDefault") },
                       ...FINGERPRINTS.map((f) => ({ value: f, label: f })),
                     ]}
                     onChange={(fingerprint) =>
@@ -720,7 +731,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
               </div>
               <div className="via-proxy-row">
                 <div>
-                  <div className="sys-proxy-title">跳过证书验证</div>
+                  <div className="sys-proxy-title">{t("nodeDraft.skipCertVerify")}</div>
                 </div>
                 <GlassSwitchControl
                   checked={!!value.insecure}
@@ -732,20 +743,20 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
               {(p === "vless" || p === "vmess") && (
                 <div className="field-grid">
                   <label className="field">
-                    <span>Reality 公钥</span>
+                    <span>{t("nodeDraft.realityPublicKey")}</span>
                     <input
                       value={value.realityPublicKey ?? ""}
                       onChange={(e) => set({ realityPublicKey: e.target.value })}
-                      placeholder="可选"
+                      placeholder={t("nodeDraft.optional")}
                       disabled={disabled}
                     />
                   </label>
                   <label className="field">
-                    <span>Short ID</span>
+                    <span>{t("nodeDraft.shortId")}</span>
                     <input
                       value={value.realityShortId ?? ""}
                       onChange={(e) => set({ realityShortId: e.target.value })}
-                      placeholder="可选"
+                      placeholder={t("nodeDraft.optional")}
                       disabled={disabled}
                     />
                   </label>
@@ -759,12 +770,12 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {hasTransport(p) && (
         <>
           <label className="field">
-            <span>传输</span>
+            <span>{t("nodeDraft.transport")}</span>
             <SolidSelect
-              aria-label="传输"
+              aria-label={t("nodeDraft.transportAria")}
               value={value.network || "tcp"}
               disabled={disabled}
-              options={NETWORKS}
+              options={networkOptions}
               onChange={(network) => set({ network })}
             />
           </label>
@@ -774,7 +785,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             value.network === "xhttp") && (
             <div className="field-grid">
               <label className="field">
-                <span>路径</span>
+                <span>{t("nodeDraft.path")}</span>
                 <input
                   value={value.path ?? ""}
                   onChange={(e) => set({ path: e.target.value })}

@@ -6,6 +6,7 @@ import {
   setCoreType,
 } from "../api";
 import type { CoreKind } from "../types";
+import { useI18n } from "../i18n";
 import { useUiMode, type UiMode } from "./UiModeContext";
 
 function coreOf(raw: string | null | undefined): CoreKind {
@@ -26,6 +27,7 @@ function coreLabel(kind: CoreKind): string {
  */
 export function UiModeMenu() {
   const { mode, setMode } = useUiMode();
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [mixedPort, setMixedPort] = useState<number | null>(null);
   const [coreType, setCoreTypeState] = useState<CoreKind>(
@@ -96,9 +98,9 @@ export function UiModeMenu() {
     try {
       await setCoreType(kind);
       setCoreTypeState(kind);
-      flash(`已切换到 ${coreLabel(kind)}`);
+      flash(t("uiMenu.switchedCore", { name: coreLabel(kind) }));
     } catch (e) {
-      flash(typeof e === "string" ? e : "切换失败");
+      flash(typeof e === "string" ? e : t("uiMenu.switchFailed"));
     } finally {
       setSwitchingCore(false);
     }
@@ -109,9 +111,9 @@ export function UiModeMenu() {
     setRestarting(true);
     try {
       await restartProxy();
-      flash("内核已重启");
+      flash(t("uiMenu.restarted"));
     } catch (e) {
-      flash(typeof e === "string" ? e : "重启失败");
+      flash(typeof e === "string" ? e : t("uiMenu.restartFailed"));
     } finally {
       setRestarting(false);
     }
@@ -127,10 +129,10 @@ export function UiModeMenu() {
     try {
       await navigator.clipboard.writeText(text);
       setEnvCopied(true);
-      flash("已复制环境变量");
+      flash(t("common.copied"));
       window.setTimeout(() => setEnvCopied(false), 1500);
     } catch {
-      flash("复制失败");
+      flash(t("uiMenu.copyFailed"));
     }
   }
 
@@ -139,10 +141,10 @@ export function UiModeMenu() {
       <button
         type="button"
         className="ui-mode-menu-trigger"
-        aria-label="快捷菜单"
+        aria-label={t("uiMenu.quickMenu")}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="快捷菜单"
+        title={t("uiMenu.quickMenu")}
         onClick={() => {
           setOpen((v) => !v);
           void refreshPort();
@@ -152,7 +154,7 @@ export function UiModeMenu() {
       </button>
       {open && (
         <div className="ui-mode-menu-pop" role="menu">
-          <div className="ui-mode-menu-label">运行模式</div>
+          <div className="ui-mode-menu-label">{t("uiMenu.runMode")}</div>
           <button
             type="button"
             role="menuitemradio"
@@ -163,7 +165,7 @@ export function UiModeMenu() {
             <span className="ui-mode-radio" aria-hidden>
               {mode === "simple" ? "●" : "○"}
             </span>
-            简洁模式
+            {t("uiMenu.simpleMode")}
           </button>
           <button
             type="button"
@@ -175,12 +177,12 @@ export function UiModeMenu() {
             <span className="ui-mode-radio" aria-hidden>
               {mode === "pro" ? "●" : "○"}
             </span>
-            完整模式
+            {t("uiMenu.proMode")}
           </button>
 
           <div className="ui-mode-menu-sep" aria-hidden />
 
-          <div className="ui-mode-menu-label">切换内核</div>
+          <div className="ui-mode-menu-label">{t("uiMenu.switchCore")}</div>
           {(["singbox", "xray", "mihomo"] as const).map((kind) => (
             <button
               key={kind}
@@ -220,7 +222,7 @@ export function UiModeMenu() {
                 "↻"
               )}
             </span>
-            {restarting ? "重启中…" : "重启内核"}
+            {restarting ? t("uiMenu.restarting") : t("uiMenu.restartCore")}
           </button>
           <button
             type="button"
@@ -231,7 +233,7 @@ export function UiModeMenu() {
             <span className="ui-mode-radio" aria-hidden>
               {envCopied ? "✓" : "⧉"}
             </span>
-            {envCopied ? "已复制" : "复制环境变量"}
+            {envCopied ? t("common.copied") : t("uiMenu.copyEnv")}
           </button>
         </div>
       )}

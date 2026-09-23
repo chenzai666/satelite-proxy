@@ -226,8 +226,71 @@ struct ToggleMenuHandle<R: TauriRuntime>(MenuItem<R>);
 /// Low-memory checkbox mirrored from `settings.unload_ui_on_tray`.
 struct LowMemoryMenuHandle<R: TauriRuntime>(CheckMenuItem<R>);
 
-const TOGGLE_START_LABEL: &str = "启动代理";
-const TOGGLE_STOP_LABEL: &str = "停止代理";
+/// Locale-independent tray copy. `settings.locale` decides which one the
+/// menu shows; `refresh_icon` re-applies texts so a locale flip in the UI
+/// relabels the tray on the next settings update.
+struct TrayLabels {
+    show: &'static str,
+    start: &'static str,
+    stop: &'static str,
+    restart: &'static str,
+    copy_env: &'static str,
+    quit: &'static str,
+    low_memory: &'static str,
+    capture: &'static str,
+    capture_off: &'static str,
+    capture_system: &'static str,
+    capture_tun: &'static str,
+}
+
+const TRAY_LABELS_ZH: TrayLabels = TrayLabels {
+    show: "打开主界面",
+    start: "启动代理",
+    stop: "停止代理",
+    restart: "重启内核",
+    copy_env: "复制环境变量",
+    quit: "退出",
+    low_memory: "低内存模式",
+    capture: "流量接管",
+    capture_off: "关闭",
+    capture_system: "系统代理",
+    capture_tun: "TUN（全局）",
+};
+
+const TRAY_LABELS_EN: TrayLabels = TrayLabels {
+    show: "Open Satelite",
+    start: "Start Proxy",
+    stop: "Stop Proxy",
+    restart: "Restart Core",
+    copy_env: "Copy Proxy Env",
+    quit: "Quit",
+    low_memory: "Low-memory Mode",
+    capture: "Traffic Capture",
+    capture_off: "Off",
+    capture_system: "System Proxy",
+    capture_tun: "TUN (Global)",
+};
+
+fn tray_labels(app: &AppHandle<impl TauriRuntime>) -> &'static TrayLabels {
+    let locale = app
+        .try_state::<AppState>()
+        .and_then(|s| s.with_store(|st| Ok(st.settings.locale.clone())).ok())
+        .unwrap_or_else(|| "zh".to_string());
+    if locale.eq_ignore_ascii_case("en") {
+        &TRAY_LABELS_EN
+    } else {
+        &TRAY_LABELS_ZH
+    }
+}
+
+/// Fixed-text items whose label still tracks the locale.
+struct StaticMenuHandles<R: TauriRuntime> {
+    show: MenuItem<R>,
+    restart: MenuItem<R>,
+    copy_env: MenuItem<R>,
+    quit: MenuItem<R>,
+    capture_menu: Submenu<R>,
+}
 
 fn current_capture_mode(app: &AppHandle<impl TauriRuntime>) -> CaptureMode {
     app.try_state::<AppState>()
@@ -249,14 +312,34 @@ fn refresh_toggle_menu<R: TauriRuntime>(app: &AppHandle<R>, running: bool) {
     let Some(handle) = app.try_state::<ToggleMenuHandle<R>>() else {
         return;
     };
-    let label = if running {
-        TOGGLE_STOP_LABEL
-    } else {
-        TOGGLE_START_LABEL
-    };
+    let labels = tray_labels(app);
+    let label = if running { labels.stop } else { labels.start };
     let _ = handle.0.set_text(label);
 }
 
+/// Re-apply every locale-dependent label to the tray menu. Called from
+/// `refresh_icon`, which `update_settings` invokes unconditionally — so a
+/// locale change in the UI relabels the tray immediately.
+fn refresh_labels<R: TauriRuntime>(app: &AppHandle<R>) {
+    let labels = tray_labels(app);
+    if let Some(h) = app.try_state::<StaticMenuHandles<R>>() {
+        let _ = h.show.set_text(labels.show);
+        let _ = h.restart.set_text(labels.restart);
+        let _ = h.copy_env.set_text(labels.copy_env);
+        let _ = h.quit.set_text(labels.quit);
+        let _ = h.capture_menu.set_text(labels.capture);
+    }
+    if let Some(h) = app.try_state::<CaptureMenuHandles<R>>() {
+        let _ = h.off.set_text(labels.capture_off);
+        let _ = h.system.set_text(labels.capture_system);
+        let _ = h.tun.set_text(labels.capture_tun);
+    }
+    if let Some(h) = app.try_state::<LowMemoryMenuHandle<R>>() {
+        let _ = h.0.set_text(labels.low_memory);
+    }
+}
+
+/// Re-check the "低内存模式" item to match `settings.unload_ui_on_tray`.
 fn refresh_low_memory_menu<R: TauriRuntime>(app: &AppHandle<R>) {
     let Some(handle) = app.try_state::<LowMemoryMenuHandle<R>>() else {
         return;
@@ -316,27 +399,29 @@ pub fn refresh_icon<R: TauriRuntime>(app: &AppHandle<R>) {
     // Keep the main taskbar icon explicit. Windows owns a hidden tray helper
     // window and may briefly fall back to its generic icon during NIM_MODIFY.
     window_ctrl::apply_main_window_icon(app);
+    refresh_labels(app);
     refresh_capture_menu(app);
     refresh_toggle_menu(app, running);
     refresh_low_memory_menu(app);
 }
 
 pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
-    let show_i = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
+    let labels = tray_labels(app);
+    let show_i = MenuItem::with_id(app, "show", labels.show, true, None::<&str>)?;
     let running_now = app
         .try_state::<AppState>()
         .map(|s| s.is_core_running())
         .unwrap_or(false);
     let toggle_label = if running_now {
-        TOGGLE_STOP_LABEL
+        labels.stop
     } else {
-        TOGGLE_START_LABEL
+        labels.start
     };
     let toggle_i = MenuItem::with_id(app, "toggle", toggle_label, true, None::<&str>)?;
-    let restart_i = MenuItem::with_id(app, "restart", "重启内核", true, None::<&str>)?;
-    let copy_env_i = MenuItem::with_id(app, "copy_env", "复制环境变量", true, None::<&str>)?;
+    let restart_i = MenuItem::with_id(app, "restart", labels.restart, true, None::<&str>)?;
+    let copy_env_i = MenuItem::with_id(app, "copy_env", labels.copy_env, true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>)?;
     app.manage(ToggleMenuHandle::<R>(toggle_i.clone()));
 
     let low_memory_now = app
@@ -346,7 +431,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let low_memory_i = CheckMenuItem::with_id(
         app,
         "low_memory",
-        "低内存模式",
+        labels.low_memory,
         true,
         low_memory_now,
         None::<&str>,
@@ -357,7 +442,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let capture_off_i = CheckMenuItem::with_id(
         app,
         "capture_off",
-        "关闭",
+        labels.capture_off,
         true,
         mode == CaptureMode::Off,
         None::<&str>,
@@ -365,7 +450,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let capture_system_i = CheckMenuItem::with_id(
         app,
         "capture_system",
-        "系统代理",
+        labels.capture_system,
         true,
         mode == CaptureMode::System,
         None::<&str>,
@@ -373,7 +458,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let capture_tun_i = CheckMenuItem::with_id(
         app,
         "capture_tun",
-        "TUN（全局）",
+        labels.capture_tun,
         true,
         mode == CaptureMode::Tun,
         None::<&str>,
@@ -381,10 +466,17 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let capture_menu = Submenu::with_id_and_items(
         app,
         "capture",
-        "流量接管",
+        labels.capture,
         true,
         &[&capture_off_i, &capture_system_i, &capture_tun_i],
     )?;
+    app.manage(StaticMenuHandles::<R> {
+        show: show_i.clone(),
+        restart: restart_i.clone(),
+        copy_env: copy_env_i.clone(),
+        quit: quit_i.clone(),
+        capture_menu: capture_menu.clone(),
+    });
     app.manage(CaptureMenuHandles::<R> {
         off: capture_off_i,
         system: capture_system_i,

@@ -97,7 +97,7 @@ function LatencyDisplay({
 }) {
   const { t } = useI18n();
   if (testing) {
-    return <span className="lat-spinner" aria-label="测试中" />;
+    return <span className="lat-spinner" aria-label={t("nodes.testingAria")} />;
   }
   if (unsupported) {
     const label = unsupportedLabel ?? t("nodes.latencyNeedsCore");
@@ -1057,11 +1057,11 @@ export function NodesPage() {
 
           <GlassSeg
             value={viewMode}
-            ariaLabel="视图"
+            ariaLabel={t("nodes.viewAria")}
             onChange={(v) => setViewMode(v as ViewMode)}
             options={[
-              { value: "list", label: "列表" },
-              { value: "grid", label: "网格" },
+              { value: "list", label: t("nodes.viewList") },
+              { value: "grid", label: t("nodes.viewGrid") },
             ]}
           />
         </div>

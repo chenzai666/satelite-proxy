@@ -1,13 +1,14 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。
+本分支最后核对：2026-09-23。选择性整合上游正式版至 1.0.40：设置页嵌入标签通过 flex 链按可见高度填充，移除空白滚动尾巴；英文界面和托盘文案按 `settings.locale` 补齐。图标与托盘样式继续沿用本分支定制。下行是此前功能的历史记录。
 最后核对：2026-09-13（**Xray 传输面修正 + 真内核矩阵测试**：① h2/http 传输已被 Xray v26 配置层移除（`network:"http"` 拒载）——Xray 生成期报错跳过 + `supports_node` 列表过滤，sing-box/mihomo 原生可用；② xhttp `extra` 调优参数接入：分享链 base64url `extra=`（裸 JSON 亦收）与 clash `xhttp-opts.extra` 解析入 `Transport::Xhttp.extra`，原样嵌入 `xhttpSettings.extra`，非法 JSON 丢弃防整配置拒载（v2rayN 对齐，edgetunnel xhttp 场景）；③ 新增真内核 live 验证 `live_share_link_pipeline_validates`（真实分享链接全管线）与 `live_all_protocol_matrix_validates`（全协议×传输×TLS 矩阵 + Valid/GenReject/CoreReject 预期表），见 §8。**智能切换二次重构**：`smart_switch.rs` 新增出口巡检（每 tick 经内核 URL 探测当前出口、快慢双档复核防抖，死出口不依赖用户流量即可发现）+ 恢复扫描（死出口绕过 dwell/cooldown：ping 分批排序 → top3 经内核 delay API 实测验证 → 取最低验证延迟者热切；ping/verify 失败递增弹出 30s→30min），URL 延迟为唯一对比口径、绝不凭 ping 上位，见 §5.1。此前 2026-09-12：**MASQUE 接入 + 三核多副进程**：新增 `Protocol::Masque`（mihomo 独占，usque 式 ECDSA 密钥对；mihomo 主内核原生可用），副进程机制从单一 Xray 泛化为 **Xray + mihomo 双副进程**（`SidecarPlan` 条目带 kind、单一连续端口空间、看门狗按副进程独立跟踪），masque 节点在 sing-box 主核下钉选到 mihomo 副进程经 loopback socks 委托，见 §5.4/§5.6/§9.20。窗口两模式开放自由放大：pro ≥960×720 / simple ≥320×480 无上限，经 `useViewportScale` 等比缩放，尺寸按模式持久化，见 §4/§9.6。此前 v1.0.9，三内核：sing-box / Xray / mihomo；新增首页「网络探测」卡=延迟+出口 IP 竞速探测，见 §5.6/§5.8/§6.3。内核意外退出修复：watchdog 真重启 + `core-status-changed` 事件 + 启动就绪须实测 mixed 端口拨号，见 §5.1/§5.6/§6.2。智能切换被动检测 2026-09 重构：失败判定=≤3s 快死或 ≤15s 零字节（拨号超时带），mihomo 增设内核日志流 `/logs` WS 监听（§5.1 `log_listener.rs`）；同批性能改造=快照流三档变速（需求心跳+TUN 退避）与 passive stats 单趟化，见 §5.1。CI 与本地打包脚本默认改为三内核四平台全打包，Linux 补齐 xray/mihomo 基础设施，mihomo geodata 改为固定快照机制，sing-box 版本号三处统一为 v1.13.18，见 §9.19；mihomo 的 amd64 发行包改用 `-compatible`（GOAMD64=v1）变体，修复 Intel 版应用在 Rosetta 2 / 老 Intel CPU 上安装 mihomo 即 fatal 的问题，见 §9.17⑦。远程加密 DNS 开放用户自定义：`DnsSettings.remote_dns` 非空即整体替换内置池，三生成器+诊断统一走 `effective_remote_pool()`，见 §18①。规则集「指定」支持多选节点池：`RuleSet.node_ids`（2+ 勾选=整组显式池，与 Filter 池同 tag `smart-<集id>`、同生成/维护路径，勾 1 个仍走存量单钉 `node_id`），见 §5.3/§5.4/§5.5）。
 
 ## 0. 阅读与维护规则（必读）
 
-2026-09-15 当前版本更新为 **1.0.35**（下方 1.0.28/1.0.32 条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.35.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。
+2026-09-23 当前版本更新为 **1.0.40**（下方旧版本条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.40.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。
 
-1.0.33–35 整合记录见 docs/upstream-integration-1.0.35.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesSidebarHeight 只能在布局/窗口视口变化时测量，禁止监听 `.main` scroll（sticky top 变化会让外层总高度反馈增长）。useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
+1.0.33–37 整合记录见 docs/upstream-integration-1.0.37.md；1.0.38–40 见 docs/upstream-integration-1.0.40.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesSidebarHeight 只能在布局/窗口视口变化时测量，禁止监听 `.main` scroll（sticky top 变化会让外层总高度反馈增长）。useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
 XHTTP extra/mode 在 URI 分享和 ManualNodeDraft 编辑往返中必须保留；原生 Mihomo 订阅规则优先、预发布内核检查、UWP、DNS/IPv4 和节点交互保留。内核最新版本查询仅由按钮触发，会话快照包含稳定版和预发布版字段。
 Windows CI 缓存固定版本内核并退避重试下载；不缓存滚动更新的规则集，不依赖本仓库不存在的 Mihomo geodata 快照。Rust/客户端构建与浏览器侧栏测试在 Actions 执行，禁止本机客户端构建。
 
@@ -299,7 +300,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `uwp_loopback.rs` 与 commands/proxy.rs 提供 Windows UWP 回环兼容：列举当前用户 AppContainer 映射中的包 SID，经一次 UAC 提权启动同一 exe helper，逐个调用 `CheckNetIsolation.exe LoopbackExempt -a -p=<SID>`；结果回传设置页，已有豁免不会被清除。
 
 - `proxy/windows.rs|macos.rs|stub.rs` — 系统代理设置（注册表 / networksetup），含 owned-proxy 标记与崩溃残留清理（启动时 `cleanup_stale_system_proxy`）。
-- `tray.rs` — 托盘菜单 + 图标状态刷新（8 种托盘图标，`src-tauri/icons/tray/`）。
+- `tray.rs` — 托盘菜单 + 图标状态刷新（8 种托盘图标，`src-tauri/icons/tray/`）。菜单根据 `settings.locale` 选择 `TRAY_LABELS_ZH/EN`，`refresh_icon` 调用 `refresh_labels` 实时更新文案，并保留 Windows 主窗口图标重设。
 - `window_ctrl.rs` — 窗口 show/hide/destroy（托盘内存管理）、ui_mode 偏好持久化；尺寸常量与前端 `windowLayout.ts` 对应。
 - `url_scheme.rs` — 注册并抢占 `clash://` `sing-box://` `singbox://` 为默认（深链一键导入）。
 - `autostart.rs` — 开机启动（macOS LaunchAgent）。
@@ -369,7 +370,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 6.6 i18n / 主题 / 其他工具模块
 
-- `i18n/messages.ts` — `en`（630 键，`as const`）+ `zh: Record<MessageKey, string>`。**加文案必须两边同加，否则 TS 编译错**。键前缀：`common./nav./simple./dashboard./nodes./config./traffic./conn./logs./settings./rules./dns./hosts./failures.`；`translate()` 支持 `{n}` 插值。
+- `i18n/messages.ts` — `en`（`as const`）+ `zh: Record<MessageKey, string>`。**加文案必须两边同加，否则 TS 编译错**。本轮补齐 `modal./nodeDraft./uiMenu./theme./crash.` 等界面键；`translate()` 支持 `{n}` 插值。订阅到期中文习语只在英文显示时翻译，后端原始内容和存储不变。后端错误消息仍可能显示中文。
 - `theme/` — `ThemeId = "aerospace"(深,默认) | "day"`；`accents.ts` 6 个主题色，由一个基色派生整个 `--primary*` 变量族（Rec.709 亮度决定 `--on-primary`）。语义色 `--success*` 为固定绿（App.css tokens），**不随主题色**（ok/直连/测速良好语义稳定）；自定义 `#rrggbb` accent 在 `applyAccentToDom` 应用时按主题做亮度钳制（深色提亮 ≥0.5 / 浅色加深 ≤0.6）保证文字对比度，存储仍保留原始 hex。另有独立背景光晕色 `glow_color`（`"accent"`=跟随主题色 / 预设 id / `#rrggbb`），`applyGlowToDom` 下发 `--glow-rgb`（原始色，驱动 `--hero-glow`）与 `--glow-deep-rgb`（按感知亮度归一化的深色变体，驱动 app-shell 大气层，防止亮色光晕把暗色主题洗亮）。
 - 独立模块：`customNodes.ts`（custom 节点客户端侧过滤/排序/分页镜像）、`subscriptionUrl.ts`（URL 规范化去重）、`deepLink.ts`（深链解析→ImportPrefill）、`coreBusy.ts`（全局 busy 深度计数 + `waitForCoreRestart`）、`connectionChanges.ts`（delta 合并纯函数）、`trafficFilter.ts`（all/direct/proxy 分类）、`windowLayout.ts`（窗口尺寸/模式）。
 - `theme/` — `ThemeId = "day"(浅,Rust `default_theme` 默认) | "aerospace"(深)`；theme/uiMode/heroStyle 三者均镜像到 localStorage（`index.html` 内联脚本 + Provider 初始 `useState` 同步读取）防 WebView 重建首帧闪烁/误挂 three.js hero；`accents.ts` 6 个主题色，由一个基色派生整个 `--primary*` 变量族（Rec.709 亮度决定 `--on-primary`）。语义色 `--success*` 为固定绿（App.css tokens），**不随主题色**（ok/直连/测速良好语义稳定）；自定义 `#rrggbb` accent 在 `applyAccentToDom` 应用时按主题做亮度钳制（深色提亮 ≥0.5 / 浅色加深 ≤0.6）保证文字对比度，存储仍保留原始 hex。另有独立背景光晕色 `glow_color`（`"accent"`=跟随主题色 / 预设 id / `#rrggbb`），`applyGlowToDom` 下发 `--glow-rgb`（原始色，驱动 `--hero-glow`）与 `--glow-deep-rgb`（按感知亮度归一化的深色变体，驱动 app-shell 大气层，防止亮色光晕把暗色主题洗亮）。

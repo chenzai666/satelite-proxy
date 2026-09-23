@@ -74,8 +74,9 @@ function LatencyLabel({
   testedAt?: number | null;
   testing?: boolean;
 }) {
+  const { t } = useI18n();
   if (testing) {
-    return <span className="lat lat-spinner" aria-label="测速中" />;
+    return <span className="lat lat-spinner" aria-label={t("simple.testingAria")} />;
   }
   if (ms != null && ms >= 0) {
     return <span className={`lat mono ${latencyClass(ms)}`}>{ms}ms</span>;

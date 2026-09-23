@@ -184,14 +184,25 @@ function trafficStats(t: SubscriptionTraffic | null | undefined): TrafficView | 
   return { used, total, remaining, ratio, expire, expireText };
 }
 
+/** Provider remark headers carry Chinese expire phrases (e.g. `长期有效`).
+ *  Map the well-known ones for non-zh display; anything else passes through
+ *  verbatim — it is provider-authored text, not ours. */
+function localizeExpireText(text: string, locale: string, neverLabel: string): string {
+  if (locale !== "zh") {
+    const key = text.trim();
+    if (key === "长期有效" || key === "永久有效") return neverLabel;
+  }
+  return text;
+}
+
 /** Compact FlClash-style traffic: thin bar + "used / total · expire". */
 function TrafficBlock({ traffic }: { traffic?: SubscriptionTraffic | null }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const tr = trafficStats(traffic);
   if (!tr) return null;
 
   const expireLabel = tr.expireText
-    ? tr.expireText
+    ? localizeExpireText(tr.expireText, locale, t("config.expireNever"))
     : tr.expire != null
       ? formatExpireDate(tr.expire)
       : null;
@@ -538,13 +549,17 @@ export function ConfigPage() {
     }
     const total = skippedReport.reduce((n, r) => n + r.skipped.length, 0);
     const lines = [
-      `Satelite 跳过节点报告（v${version}）`,
-      `共 ${total} 个节点未能导入：`,
+      t("config.reportTitle", { v: version }),
+      t("config.reportTotal", { n: total }),
     ];
     for (const r of skippedReport) {
-      lines.push(``, `订阅：${r.name}${r.format ? `（${r.format}）` : ""}`, `来源：${r.source}`);
+      lines.push(
+        ``,
+        `${t("config.reportProfile", { name: r.name })}${r.format ? `（${r.format}）` : ""}`,
+        t("config.reportSource", { source: r.source }),
+      );
       r.skipped.forEach((item, i) => {
-        lines.push(`  ${i + 1}. ${item.name || "(未命名)"} — ${item.reason}`);
+        lines.push(`  ${i + 1}. ${item.name || t("config.skippedUnnamed")} — ${item.reason}`);
       });
     }
     const text = lines.join("\n");

@@ -7,7 +7,7 @@ import { ErrorModal } from "./components/ErrorModal";
 import { beginCoreBusy } from "./coreBusy";
 import { CoreDownloadToast } from "./components/CoreDownloadToast";
 import { ImportIntentProvider, useImportIntent } from "./ImportIntentContext";
-import { LocaleProvider } from "./i18n";
+import { LocaleProvider, useI18n } from "./i18n";
 import { ThemeProvider } from "./theme";
 import { DashboardPage } from "./pages/DashboardPage";
 import type { NavKey } from "./types";
@@ -98,6 +98,7 @@ function ProShell() {
 
 function AppShell() {
   const { mode } = useUiMode();
+  const { t } = useI18n();
   const [applyError, setApplyError] = useState<string | null>(null);
 
   // Maximize magnification: zoom the whole UI when the OS window exceeds
@@ -134,7 +135,7 @@ function AppShell() {
         void endBusy?.();
         endBusy = undefined;
         if (status === "error") {
-          setApplyError(event.payload.error || "配置应用失败");
+          setApplyError(event.payload.error || t("config.applyFailed"));
         } else {
           setApplyError(null);
         }
@@ -146,7 +147,7 @@ function AppShell() {
       void endBusy?.();
       unlisten?.();
     };
-  }, []);
+  }, [t]);
 
   // Paint immediately from localStorage mode (Rust already sized window on recreate).
   return (

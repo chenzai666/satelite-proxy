@@ -308,7 +308,11 @@ export function HostsPage({ embedded = false }: { embedded?: boolean }) {
         >
           <div className="ruleset-item-top">
             <span className="ruleset-drag" aria-hidden="true">⋮⋮</span>
-            <span className="ruleset-name">{set.name}</span>
+            {/* Builtin set names come from the backend store (persisted zh);
+                display through i18n by id so they follow the UI locale. */}
+            <span className="ruleset-name">
+              {set.id === SYSTEM_HOSTS_ID ? t("hosts.systemSetName") : set.name}
+            </span>
             <GlassSwitchControl
               checked={set.enabled}
               size="sm"
