@@ -1,6 +1,7 @@
 import { useI18n, type MessageKey } from "../i18n";
 import type { TrayIconStyle } from "../types";
 import trayBadge from "../../src-tauri/icons/tray/badge-on.png";
+import traySaturn from "../../src-tauri/icons/tray/saturn-on.png";
 import trayBuddy from "../../src-tauri/icons/tray/buddy-on.png";
 import trayGhost from "../../src-tauri/icons/tray/ghost-on.png";
 import trayMark from "../../src-tauri/icons/tray/mark-on.png";
@@ -15,6 +16,7 @@ const TRAY_ICON_PICKS: {
   labelKey: MessageKey;
 }[] = [
   { value: "badge", src: trayBadge, labelKey: "settings.trayIconBadge" },
+  { value: "saturn", src: traySaturn, labelKey: "settings.trayIconSaturn" },
   { value: "mark", src: trayMark, labelKey: "settings.trayIconMark" },
   { value: "ghost", src: trayGhost, labelKey: "settings.trayIconGhost" },
   { value: "ghost2", src: trayGhost2, labelKey: "settings.trayIconGhost2" },

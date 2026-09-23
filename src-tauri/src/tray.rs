@@ -372,6 +372,8 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         // Black frown silhouette: macOS template tint keeps it visible in
         // both light and dark menu bars.
         (TrayIconStyle::Faceid, false) => (include_bytes!("../icons/tray/faceid-off.png"), true),
+        (TrayIconStyle::Saturn, true) => (include_bytes!("../icons/tray/saturn-on.png"), false),
+        (TrayIconStyle::Saturn, false) => (include_bytes!("../icons/tray/saturn-off.png"), false),
     }
 }
 

@@ -172,6 +172,8 @@ pub enum TrayIconStyle {
     Ghost2,
     /// Face ID smiley; mint smile running, black frown (template) stopped.
     Faceid,
+    /// Saturn tile; dimmed stopped, full color running.
+    Saturn,
 }
 
 impl TrayIconStyle {
@@ -185,6 +187,7 @@ impl TrayIconStyle {
             Self::Danger2 => "danger2",
             Self::Ghost2 => "ghost2",
             Self::Faceid => "faceid",
+            Self::Saturn => "saturn",
         }
     }
 
@@ -198,6 +201,7 @@ impl TrayIconStyle {
             "danger2" => Some(Self::Danger2),
             "ghost2" => Some(Self::Ghost2),
             "faceid" | "face" | "smile" => Some(Self::Faceid),
+            "saturn" | "planet" | "app" => Some(Self::Saturn),
             _ => None,
         }
     }
@@ -681,6 +685,8 @@ mod tests {
         );
         assert_eq!(TrayIconStyle::parse("ghost2"), Some(TrayIconStyle::Ghost2));
         assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
+        assert_eq!(TrayIconStyle::parse("saturn"), Some(TrayIconStyle::Saturn));
+        assert_eq!(TrayIconStyle::Saturn.as_str(), "saturn");
         assert_eq!(TrayIconStyle::parse("nope"), None);
     }
 
