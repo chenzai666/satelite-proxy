@@ -351,7 +351,10 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
 type ShareQuery = Vec<(&'static str, String)>;
 
 fn share_component(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+    // Userinfo and fragments are URI components, not form fields. A literal
+    // '+' must stay distinct from a space (which is encoded as %20).
+    let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+    encoded.replace('+', "%20")
 }
 
 fn share_endpoint(server: &str, port: u16) -> String {
@@ -1655,6 +1658,32 @@ fn split_host_port(hostport: &str) -> Result<(String, u16), String> {
 mod tests {
     use super::*;
     use base64::Engine;
+
+    #[test]
+    fn share_components_preserve_spaces_and_literal_plus() {
+        let text = "香港 A+B & # % / @";
+        let encoded = share_component(text);
+        assert!(encoded.contains("%20"));
+        assert!(encoded.contains("%2B"));
+        assert!(!encoded.contains('+'));
+        assert_eq!(percent_decode(&encoded), text);
+    }
+
+    #[test]
+    fn share_names_and_credentials_with_spaces_roundtrip() {
+        for original in [
+            "ss://aes-256-gcm:p%20a%2Bb@ss.example.com:8388#old",
+            "trojan://p%20a%2Bb@tj.example.com:443#old",
+            "https://user%20a%2Bb:p%20a%2Bb@proxy.example.com:8443#old",
+        ] {
+            let mut node = parse_uri_line(original).unwrap();
+            node.name = "香港 A+B & #节点".into();
+            let exported = serialize_share_uri(&node).unwrap();
+            let restored = parse_uri_line(&exported).unwrap();
+            assert_eq!(restored.name, node.name);
+            assert_eq!(restored.identity_key(), node.identity_key());
+        }
+    }
 
     #[test]
     fn masque_share_does_not_emit_keys_or_misleading_uri() {
