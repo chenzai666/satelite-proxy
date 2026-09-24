@@ -70,7 +70,7 @@ jobs:
 
       - name: 确认弹窗安全回归测试
         shell: pwsh
-        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs
+        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs scripts/test-node-clipboard.mjs
 
       - name: 规则侧栏浏览器回归测试
         shell: pwsh

@@ -1,6 +1,8 @@
 import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  activateSubscription,
+  addSubscriptionText,
   deleteNodes,
   generateSingboxConfig,
   getNodeShareUri,
@@ -34,6 +36,7 @@ import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useNodeDragSort } from "../hooks/useNodeDragSort";
 import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
+import { clipboardNodePayload } from "../nodeClipboard";
 import { createLatencyResultBuffer } from "../latencyStream";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
@@ -48,6 +51,12 @@ const NODE_GROUP_H = 30;
 // squeezing every cell into unreadable slivers on a narrow window.
 const NODE_LIST_COLS = "38px minmax(300px,3fr) 104px minmax(140px,1fr) 82px 100px";
 const GRID_GAP = 10;
+
+function isEditingTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest(
+    "input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']",
+  );
+}
 
 /** Flat render items for the grouped list (headers share the row height so
  *  the fixed-size virtualizer math stays exact). */
@@ -174,6 +183,27 @@ export function NodesPage() {
   const [shareNode, setShareNode] = useState<ProxyNode | null>(null);
   const [editNode, setEditNode] = useState<ProxyNode | null>(null);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [pendingClipboardImport, setPendingClipboardImport] = useState<{
+    id: string;
+    count: number;
+    mixMode: boolean;
+  } | null>(null);
+  const clipboardBusyRef = useRef(false);
+  const noticeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current != null) window.clearTimeout(noticeTimerRef.current);
+  }, []);
+
+  function showNotice(message: string | null, durationMs = 0) {
+    if (noticeTimerRef.current != null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = null;
+    setShareNotice(message);
+    if (message && durationMs > 0) {
+      noticeTimerRef.current = window.setTimeout(() => setShareNotice(null), durationMs);
+    }
+  }
 
   useEffect(() => {
     const update = () => setGridCols(gridColumns());
@@ -650,15 +680,15 @@ export function NodesPage() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, textarea, [contenteditable='true']")) return;
+      if (customRuntime || shareNode || editNode || detailNode || error || contextMenu ||
+          !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      if (isEditingTarget(event.target)) return;
       event.preventDefault();
       void selectAllMatching();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectAllMatching]);
+  }, [customRuntime, shareNode, editNode, detailNode, error, contextMenu, selectAllMatching]);
 
   async function deleteSelected(ids: string[]) {
     if (batchBusy || ids.length === 0) return;
@@ -688,12 +718,112 @@ export function NodesPage() {
   async function copyShareLink(node: ProxyNode) {
     try {
       await copyNodeShareText(await getNodeShareUri(node.id));
-      setShareNotice(t("nodes.shareCopied"));
-      window.setTimeout(() => setShareNotice(null), 2200);
+      showNotice(t("nodes.shareCopied"), 2200);
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     }
   }
+
+  async function copySelectedLinks() {
+    if (clipboardBusyRef.current) return;
+    const selected = displayed.filter((node) => selectedIds.has(node.id));
+    if (!selected.length) return;
+    clipboardBusyRef.current = true;
+    setCopyBusy(true);
+    setError(null);
+    try {
+      const links: string[] = [];
+      // Bound local IPC fan-out; preserve the visible node order in the output.
+      for (let i = 0; i < selected.length; i += 16) {
+        links.push(...await Promise.all(selected.slice(i, i + 16).map((node) => getNodeShareUri(node.id))));
+      }
+      await copyNodeShareText(links.join("\n"));
+      showNotice(t("nodes.shareCopiedCount", { n: links.length }), 3000);
+    } catch (reason) {
+      // Do not replace the user's clipboard with a partial selection.
+      setError(typeof reason === "string" ? reason : String(reason));
+    } finally {
+      setCopyBusy(false);
+      clipboardBusyRef.current = false;
+    }
+  }
+
+  async function pasteNodeLinks(payload: string) {
+    if (clipboardBusyRef.current) return;
+    clipboardBusyRef.current = true;
+    setBatchBusy(true);
+    setError(null);
+    try {
+      const result = await addSubscriptionText(t("nodes.clipboardProfileName"), payload);
+      const skipped = result.skipped_count
+        ? t("nodes.pasteSkipped", { n: result.skipped_count })
+        : "";
+      if (result.subscription.enabled) {
+        setPendingClipboardImport(null);
+        showNotice(t("nodes.pasteReady", { n: result.node_count }) + skipped, 5000);
+      } else {
+        const settings = await getSettings();
+        setPendingClipboardImport({
+          id: result.subscription.id,
+          count: result.node_count,
+          mixMode: !!settings.mix_mode,
+        });
+        showNotice(skipped || null);
+      }
+      await reload();
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : String(reason));
+    } finally {
+      setBatchBusy(false);
+      clipboardBusyRef.current = false;
+    }
+  }
+
+  async function enablePastedProfile() {
+    if (!pendingClipboardImport || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      await activateSubscription(pendingClipboardImport.id);
+      await reload();
+      showNotice(t("nodes.pasteReady", { n: pendingClipboardImport.count }), 5000);
+      setPendingClipboardImport(null);
+    } catch (reason) {
+      setError(typeof reason === "string" ? reason : String(reason));
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    const dialogOpen = !!(shareNode || editNode || detailNode || error || contextMenu);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (dialogOpen || customRuntime || batchBusy || copyBusy || event.defaultPrevented ||
+          event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey) ||
+          event.key.toLowerCase() !== "c" || isEditingTarget(event.target)) return;
+      if (window.getSelection()?.toString()) return;
+      if (!displayed.some((node) => selectedIds.has(node.id))) return;
+      event.preventDefault();
+      void copySelectedLinks();
+    };
+    const onPaste = (event: ClipboardEvent) => {
+      if (dialogOpen || batchBusy || isEditingTarget(event.target) ||
+          isEditingTarget(document.activeElement)) return;
+      const payload = clipboardNodePayload(event.clipboardData?.getData("text/plain") ?? "");
+      if (!payload) return;
+      event.preventDefault();
+      if (customRuntime) {
+        setError(t("nodes.pasteCustomUnsupported"));
+        return;
+      }
+      void pasteNodeLinks(payload);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("paste", onPaste);
+    };
+  });
 
   function openNodeEditor(node: ProxyNode) {
     if (!node.subscription_id) {
@@ -1070,6 +1200,9 @@ export function NodesPage() {
       {!customRuntime && selectedIds.size > 0 && (
         <div className="node-batch-toolbar" role="status">
           <span>{t("nodes.selectedCount", { n: selectedIds.size })}</span>
+          <GlassButton disabled={batchBusy || copyBusy} onClick={() => void copySelectedLinks()}>
+            {copyBusy ? t("nodes.copyingSelected") : t("nodes.copySelected")}
+          </GlassButton>
           <GlassButton
             disabled={testing || batchBusy}
             onClick={() => void onTestNodes([...selectedIds])}
@@ -1090,7 +1223,15 @@ export function NodesPage() {
       )}
 
       {!customRuntime && <div className="muted" role="note">{t("nodes.dragHint")}</div>}
-      {shareNotice && <div className="banner" role="status">{shareNotice}</div>}
+      {shareNotice && <div className="banner ok" role="status">{shareNotice}</div>}
+      {pendingClipboardImport && (
+        <div className="banner guide node-paste-banner" role="status">
+          <span>{t("nodes.pasteNeedsActivation", { n: pendingClipboardImport.count })}</span>
+          <GlassButton disabled={batchBusy} onClick={() => void enablePastedProfile()}>
+            {t(pendingClipboardImport.mixMode ? "nodes.pasteEnableMix" : "nodes.pasteSwitchProfile")}
+          </GlassButton>
+        </div>
+      )}
 
       {error && (
         <ErrorModal message={error} onClose={() => setError(null)} />

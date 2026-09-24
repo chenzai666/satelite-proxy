@@ -843,6 +843,17 @@ button {
   font-size: 0.75rem;
 }
 
+.node-paste-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.node-paste-banner .glass-btn {
+  flex-shrink: 0;
+}
+
 /* Restart-in-progress banner: spinner + text (kernel auto → manual click). */
 .banner.busy {
   display: flex;
