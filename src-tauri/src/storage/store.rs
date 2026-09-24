@@ -1298,25 +1298,11 @@ impl AppStore {
             .iter_mut()
             .find(|n| n.node.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        let identity = node.node.identity_key();
-        let old_name = node.node.name.clone();
-        let parsed_key = format!("{identity}|{old_name}");
-        let prefix = format!("{identity}|");
-        let source_key = self
-            .node_aliases
-            .iter()
-            .find_map(|(key, value)| {
-                if key.starts_with(&prefix) && value == &old_name {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(parsed_key);
         node.node.name = name.clone();
         let subscription_id = node.subscription_id.clone();
         let edited = node.node.clone();
-        self.node_aliases.insert(source_key, name);
+        // Scope new renames to this profile and node, never to a shared backend.
+        // Legacy aliases remain readable for older saved data.
         self.node_overrides.insert(
             Self::node_override_key(&subscription_id, id),
             edited.clone(),
@@ -2249,6 +2235,19 @@ fn store_from_json(value: Value) -> AppStore {
         .and_then(Value::as_str)
         .map(ToString::to_string);
 
+    // Persisted per-node edits are authoritative, including names used for
+    // listing, config generation and share URI/QR export after a reload.
+    for entry in &mut store.nodes {
+        let key = AppStore::node_override_key(&entry.subscription_id, &entry.node.id);
+        if let Some(edited) = store.node_overrides.get(&key) {
+            let mut effective = edited.clone();
+            effective.id = entry.node.id.clone();
+            effective.source = entry.node.source.clone();
+            effective.latency_ms = entry.node.latency_ms;
+            effective.latency_at = entry.node.latency_at;
+            entry.node = effective;
+        }
+    }
     store
 }
 
@@ -3905,6 +3904,57 @@ mod tests {
         store.upsert_subscription(sample_url_sub("t"), vec![source]).unwrap();
         assert_eq!(store.nodes.len(), 2);
         assert_ne!(store.nodes[0].node.id, store.nodes[1].node.id);
+    }
+
+    #[test]
+    fn renamed_node_and_share_name_survive_profile_switch_and_reload() {
+        use crate::subscription::{parse_subscription, serialize_share_uri};
+        let mut store = AppStore::default();
+        let original = sample_hy2("a", "Original");
+        store.upsert_subscription(sample_url_sub("s"), vec![original.clone()]).unwrap();
+        store.upsert_subscription(sample_url_sub("t"), vec![sample_hy2("b", "Original")]).unwrap();
+        let renamed = "香港 自定义 & #节点";
+        store.rename_node("a", renamed.into()).unwrap();
+        store.activate_subscription("id-t").unwrap();
+        store.activate_subscription("id-s").unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, renamed);
+        assert_eq!(store.find_node("b").unwrap().name, "Original");
+        let mut saved = serde_json::from_str::<Value>(&serialize_store(&store).unwrap()).unwrap();
+        // Even a stale materialized node must not override the explicit edit.
+        saved["nodes"][0]["name"] = Value::String("Original".into());
+        let mut store = store_from_json(saved);
+        store.activate_subscription("id-t").unwrap();
+        store.activate_subscription("id-s").unwrap();
+        let uri = serialize_share_uri(store.find_node("a").unwrap()).unwrap();
+        assert_eq!(parse_subscription(&uri).unwrap().nodes[0].name, renamed);
+        store.upsert_subscription(sample_url_sub("s"), vec![original]).unwrap();
+        assert_eq!(store.find_node("a").unwrap().name, renamed);
+        // Refreshing a sibling profile with the same backend/name is isolated.
+        store.upsert_subscription(sample_url_sub("t"), vec![sample_hy2("b", "Original")]).unwrap();
+        assert_eq!(store.find_node("b").unwrap().name, "Original");
+    }
+
+    #[test]
+    fn edited_vmess_share_embeds_new_ps_after_profile_switch_and_reload() {
+        use crate::subscription::{parse_subscription, serialize_share_uri};
+        let mut original = sample_hy2("vmess-node", "Original");
+        original.protocol = crate::domain::Protocol::Vmess;
+        original.config = crate::domain::ProtocolConfig::Vmess {
+            uuid: "11111111-1111-4111-8111-111111111111".into(),
+            alter_id: 0,
+            security: "auto".into(),
+        };
+        let mut store = AppStore::default();
+        store.upsert_subscription(sample_url_sub("s"), vec![original.clone()]).unwrap();
+        store.upsert_subscription(sample_url_sub("t"), vec![sample_hy2("b", "Other")]).unwrap();
+        original.name = "新名称-clone".into();
+        store.update_node("vmess-node", original).unwrap();
+        store.activate_subscription("id-t").unwrap();
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        store.activate_subscription("id-s").unwrap();
+        let uri = serialize_share_uri(store.find_node("vmess-node").unwrap()).unwrap();
+        assert!(uri.starts_with("vmess://"));
+        assert_eq!(parse_subscription(&uri).unwrap().nodes[0].name, "新名称-clone");
     }
 
     #[test]

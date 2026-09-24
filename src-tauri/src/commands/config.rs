@@ -481,7 +481,7 @@ pub fn rename_node(
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNodeDraft, String> {
     state
         .with_store(|store| {
@@ -496,7 +496,7 @@ pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNo
 /// Return a portable node share URI for local copy / QR rendering. The URI is
 /// generated from the normalized node only; no local paths or app settings are
 /// included. Protocols without an interoperable share format return an error.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_node_share_uri(state: State<'_, AppState>, id: String) -> Result<String, String> {
     state
         .with_store(|store| {
@@ -511,7 +511,7 @@ pub fn get_node_share_uri(state: State<'_, AppState>, id: String) -> Result<Stri
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn update_node(
     app: AppHandle,
     state: State<'_, AppState>,

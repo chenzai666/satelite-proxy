@@ -8,6 +8,8 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-09-24 节点名称一致性：新改名只写入按配置 ID + 节点 ID 隔离的 `node_overrides`，不再生成跨配置共享的后端名称别名；旧别名兼容读取。`store_from_json` 读取覆盖记录后恢复节点有效内容，列表、编辑器、内核生成与 `get_node_share_uri` 使用同一名称。分享链接普通协议使用编码后的 fragment，VMess 使用 base64 JSON 的 `ps`；二维码直接编码同一链接。配置切换不修改节点名，新增切换/持久化/刷新/分享往返及同后端跨配置隔离测试。
+
 2026-09-24 当前版本更新为 **1.0.43**（下方旧版本条目是历史记录）。同步 package.json、Cargo.toml、Cargo.lock 应用条目、check-fixed-version.ps1 以及两个 Windows 工作流；发布说明为 docs/release-1.0.43.md。本分支发布验证范围仍为 Windows x64 安装包和便携包，默认只内置 sing-box。TLS 分片默认关闭，sing-box 在生成 TLS 出站时设置 `tls.fragment`，Xray 主核及副核通过 freedom `fragment-out` 与 `dialerProxy` 接线；Mihomo 无对应开关。TUN 副核进程优先直连，节点 IP 字面量兜底规则可能同时影响访问相同 IP 的其他应用，改动前须审查此权衡。
 
 1.0.33–37 整合记录见 docs/upstream-integration-1.0.37.md；1.0.38–40 见 docs/upstream-integration-1.0.40.md。规则侧栏使用 useRulesSidebarHeight 限制实际可视高度，工具栏固定、内部 .ruleset-scroll 独立滚动；useRulesSidebarHeight 只能在布局/窗口视口变化时测量，禁止监听 `.main` scroll（sticky top 变化会让外层总高度反馈增长）。useIsolatedScroll 必须消费左栏内的滚轮、触摸与键盘翻页，连到边界也不能把事件交给 `.main`。useRulesetDragSort 自动滚动该内部容器，预览和 FLIP 必须处理根 zoom。RulesetMenu 通过 portal 避免侧栏裁切菜单，滚动/缩放关闭菜单。不要改回 overflow:visible 或只有外层页面滚动。
