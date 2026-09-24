@@ -1,8 +1,7 @@
 import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  activateSubscription,
-  addSubscriptionText,
+  appendClipboardNodes,
   deleteNodes,
   generateSingboxConfig,
   getNodeShareUri,
@@ -184,11 +183,6 @@ export function NodesPage() {
   const [editNode, setEditNode] = useState<ProxyNode | null>(null);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
-  const [pendingClipboardImport, setPendingClipboardImport] = useState<{
-    id: string;
-    count: number;
-    mixMode: boolean;
-  } | null>(null);
   const clipboardBusyRef = useRef(false);
   const noticeTimerRef = useRef<number | null>(null);
 
@@ -754,43 +748,20 @@ export function NodesPage() {
     setBatchBusy(true);
     setError(null);
     try {
-      const result = await addSubscriptionText(t("nodes.clipboardProfileName"), payload);
+      const targets = new Set(nodes.filter((node) => selectedIds.has(node.id))
+        .map((node) => node.subscription_id).filter((id): id is string => !!id));
+      if (targets.size > 1) throw t("nodes.pasteAmbiguousTarget");
+      const result = await appendClipboardNodes(payload, [...targets][0] ?? null);
       const skipped = result.skipped_count
         ? t("nodes.pasteSkipped", { n: result.skipped_count })
         : "";
-      if (result.subscription.enabled) {
-        setPendingClipboardImport(null);
-        showNotice(t("nodes.pasteReady", { n: result.node_count }) + skipped, 5000);
-      } else {
-        const settings = await getSettings();
-        setPendingClipboardImport({
-          id: result.subscription.id,
-          count: result.node_count,
-          mixMode: !!settings.mix_mode,
-        });
-        showNotice(skipped || null);
-      }
+      showNotice(t("nodes.pasteReady", { n: result.node_count, name: result.subscription.name }) + skipped, 5000);
       await reload();
     } catch (reason) {
       setError(typeof reason === "string" ? reason : String(reason));
     } finally {
       setBatchBusy(false);
       clipboardBusyRef.current = false;
-    }
-  }
-
-  async function enablePastedProfile() {
-    if (!pendingClipboardImport || batchBusy) return;
-    setBatchBusy(true);
-    try {
-      await activateSubscription(pendingClipboardImport.id);
-      await reload();
-      showNotice(t("nodes.pasteReady", { n: pendingClipboardImport.count }), 5000);
-      setPendingClipboardImport(null);
-    } catch (reason) {
-      setError(typeof reason === "string" ? reason : String(reason));
-    } finally {
-      setBatchBusy(false);
     }
   }
 
@@ -1224,14 +1195,6 @@ export function NodesPage() {
 
       {!customRuntime && <div className="muted" role="note">{t("nodes.dragHint")}</div>}
       {shareNotice && <div className="banner ok" role="status">{shareNotice}</div>}
-      {pendingClipboardImport && (
-        <div className="banner guide node-paste-banner" role="status">
-          <span>{t("nodes.pasteNeedsActivation", { n: pendingClipboardImport.count })}</span>
-          <GlassButton disabled={batchBusy} onClick={() => void enablePastedProfile()}>
-            {t(pendingClipboardImport.mixMode ? "nodes.pasteEnableMix" : "nodes.pasteSwitchProfile")}
-          </GlassButton>
-        </div>
-      )}
 
       {error && (
         <ErrorModal message={error} onClose={() => setError(null)} />

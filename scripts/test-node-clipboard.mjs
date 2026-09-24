@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { clipboardNodePayload } from "../src/nodeClipboard.ts";
+
+test("paste appends to existing profile instead of importing a profile", () => {
+  const page = readFileSync(new URL("../src/pages/NodesPage.tsx", import.meta.url), "utf8");
+  assert.match(page, /await appendClipboardNodes\(payload,/);
+  assert.doesNotMatch(page, /addSubscriptionText|activateSubscription|pendingClipboardImport/);
+  assert.match(page, /targets\.size > 1/);
+});
 
 test("accepts one and multiple v2rayN-compatible share links", () => {
   assert.equal(clipboardNodePayload("vless://id@example.com:443#HK"), "vless://id@example.com:443#HK");

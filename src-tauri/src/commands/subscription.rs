@@ -260,6 +260,34 @@ pub async fn add_subscription_text(
     persist_import(&app, &state, outcome)
 }
 
+/// Clipboard imports append to an existing profile; never create/activate one.
+#[tauri::command(async)]
+pub fn append_clipboard_nodes(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    content: String,
+    subscription_id: Option<String>,
+) -> Result<ImportResult, String> {
+    if content.len() > 8 * 1024 * 1024 {
+        return Err("粘贴内容超过 8 MB 限制".into());
+    }
+    let parsed = crate::subscription::parse_subscription(&content)
+        .map_err(|_| "无法解析节点分享链接，请检查格式".to_string())?;
+    if !matches!(parsed.format, crate::domain::SubscriptionFormat::UriList | crate::domain::SubscriptionFormat::Base64UriList) {
+        return Err("请粘贴节点分享链接，而不是完整配置".into());
+    }
+    let node_count = parsed.nodes.len() as u32;
+    let skipped_count = parsed.skipped.len() as u32;
+    let view = state.with_store_mut(|store| {
+        let id = store.append_nodes_to_profile(subscription_id.as_deref(), parsed.nodes)?;
+        Ok(store.get_subscription(&id).expect("validated profile").to_view())
+    }).map_err(|e| e.to_string())?;
+    if view.enabled && state.is_core_running() {
+        crate::rule_apply::request_restart(app, Vec::new());
+    }
+    Ok(ImportResult { subscription: view, node_count, skipped_count, skipped: Vec::new() })
+}
+
 #[tauri::command]
 pub async fn add_subscription_node(
     app: tauri::AppHandle,

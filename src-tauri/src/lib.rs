@@ -422,6 +422,7 @@ pub fn run() {
             commands::add_subscription_url,
             commands::add_subscription_file,
             commands::add_subscription_text,
+            commands::append_clipboard_nodes,
             commands::add_subscription_node,
             commands::add_subscription_singbox,
             commands::read_import_file,

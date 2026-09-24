@@ -69,6 +69,9 @@ pub struct AppStore {
     pub favorite_nodes: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub node_order: Vec<String>,
+    /// Locally appended nodes, keyed by subscription-id|node-id; kept on refresh.
+    #[serde(default)]
+    pub appended_node_ids: std::collections::BTreeSet<String>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -755,16 +758,22 @@ impl AppStore {
         mut nodes: Vec<ProxyNode>,
     ) -> AppResult<()> {
         let id = sub.id.clone();
+        let appended: Vec<_> = self.nodes.iter().filter(|entry| {
+            entry.subscription_id == id && self.appended_node_ids.contains(
+                &Self::node_override_key(&id, &entry.node.id))
+        }).cloned().collect();
         // 保留存量标识，避免升级/订阅改名使手选、规则引用和本地编辑失效。
         let mut previous: Vec<_> = self
             .nodes
             .iter()
-            .filter(|entry| entry.subscription_id == id)
+            .filter(|entry| entry.subscription_id == id && !self.appended_node_ids.contains(
+                &Self::node_override_key(&id, &entry.node.id)))
             .collect();
         let mut used: std::collections::HashSet<String> = self
             .nodes
             .iter()
-            .filter(|entry| entry.subscription_id != id)
+            .filter(|entry| entry.subscription_id != id || self.appended_node_ids.contains(
+                &Self::node_override_key(&id, &entry.node.id)))
             .map(|entry| entry.node.id.chars().take(16).collect())
             .collect();
         for node in &mut nodes {
@@ -829,7 +838,7 @@ impl AppStore {
                     .contains(&Self::node_override_key(&id, &node.id))
             })
             .collect();
-        sub.node_count = nodes.len() as u32;
+        sub.node_count = (nodes.len() + appended.len()) as u32;
         if let Some(existing) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             *existing = sub;
         } else {
@@ -856,8 +865,71 @@ impl AppStore {
                 latency_method: None,
             });
         }
+        self.nodes.extend(appended);
         self.gc_favorite_nodes();
         Ok(())
+    }
+
+    pub fn append_nodes_to_profile(
+        &mut self,
+        target: Option<&str>,
+        nodes: Vec<ProxyNode>,
+    ) -> AppResult<String> {
+        if self.settings.runtime_source().is_custom() {
+            return Err(AppError::Config("自写配置不支持粘贴节点".into()));
+        }
+        let target = target.map(str::to_owned).or_else(|| {
+            self.nodes.iter().find(|entry| {
+                Some(&entry.node.id) == self.settings.current_node_id.as_ref()
+                    && self.subscriptions.iter().any(|s| s.id == entry.subscription_id && s.enabled)
+            }).map(|entry| entry.subscription_id.clone())
+        }).or_else(|| {
+            let mut enabled = self.subscriptions.iter().filter(|s| s.enabled && s.source.contributes_nodes());
+            let first = enabled.next()?;
+            enabled.next().is_none().then(|| first.id.clone())
+        }).ok_or_else(|| AppError::Config("请先启用一个配置，或选中目标配置中的节点再粘贴".into()))?;
+        let sub = self.get_subscription(&target)
+            .ok_or_else(|| AppError::NotFound(target.clone()))?;
+        if !sub.source.contributes_nodes() {
+            return Err(AppError::Config("自写配置不支持粘贴节点".into()));
+        }
+        let mut names: std::collections::HashSet<_> = self.nodes.iter()
+            .filter(|n| n.subscription_id == target).map(|n| n.node.name.clone()).collect();
+        let mut identities: std::collections::HashSet<_> = self.nodes.iter()
+            .filter(|n| n.subscription_id == target).map(|n| n.node.identity_key()).collect();
+        let mut used: std::collections::HashSet<String> = self.nodes.iter()
+            .map(|n| n.node.id.chars().take(16).collect()).collect();
+        let count = nodes.len() as u32;
+        for mut node in nodes {
+            let base = node.name.clone();
+            if !identities.insert(node.identity_key()) || names.contains(&base) {
+                node.name = format!("{base}-clone");
+                let mut suffix = 2;
+                while names.contains(&node.name) {
+                    node.name = format!("{base}-clone-{suffix}");
+                    suffix += 1;
+                }
+            }
+            names.insert(node.name.clone());
+            let mut salt = 0_u64;
+            loop {
+                use sha2::{Digest, Sha256};
+                node.id = hex::encode(&Sha256::digest(
+                    format!("append|{target}|{}|{}|{salt}", node.identity_key(), node.name).as_bytes()
+                )[..16]);
+                salt += 1;
+                if !self.deleted_node_ids.contains(&Self::node_override_key(&target, &node.id))
+                    && used.insert(node.id.chars().take(16).collect()) { break; }
+            }
+            node.latency_ms = None;
+            node.latency_at = None;
+            self.appended_node_ids.insert(Self::node_override_key(&target, &node.id));
+            self.nodes.push(StoredNode { subscription_id: target.clone(), node, latency_method: None });
+        }
+        if let Some(sub) = self.subscriptions.iter_mut().find(|s| s.id == target) {
+            sub.node_count += count;
+        }
+        Ok(target)
     }
 
     pub fn remove_subscription(&mut self, id: &str) -> AppResult<()> {
@@ -1157,6 +1229,7 @@ impl AppStore {
             .retain(|key, _| !key.starts_with(&prefix));
         self.deleted_node_ids
             .retain(|key| !key.starts_with(&prefix));
+        self.appended_node_ids.retain(|key| !key.starts_with(&prefix));
     }
 
     pub fn update_node(&mut self, id: &str, mut edited: ProxyNode) -> AppResult<ProxyNode> {
@@ -1188,6 +1261,7 @@ impl AppStore {
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
         let stored = self.nodes.remove(index);
         let key = Self::node_override_key(&stored.subscription_id, id);
+        self.appended_node_ids.remove(&key);
         self.node_overrides.remove(&key);
         self.deleted_node_ids.insert(key);
         self.gc_favorite_nodes();
@@ -2126,6 +2200,21 @@ fn store_from_json(value: Value) -> AppStore {
                 "storage",
                 format!("ignored unreadable node_order ({error}); keeping defaults"),
             ),
+        }
+    }
+    if let Some(value) = obj.get("appended_node_ids") {
+        if let Ok(ids) = serde_json::from_value(value.clone()) {
+            store.appended_node_ids = ids;
+        }
+    }
+    if let Some(value) = obj.get("node_overrides") {
+        if let Ok(overrides) = serde_json::from_value(value.clone()) {
+            store.node_overrides = overrides;
+        }
+    }
+    if let Some(value) = obj.get("deleted_node_ids") {
+        if let Ok(ids) = serde_json::from_value(value.clone()) {
+            store.deleted_node_ids = ids;
         }
     }
     if let Some(favorites) = obj.get("favorite_nodes") {
@@ -3766,6 +3855,56 @@ mod tests {
             latency_ms: None,
             latency_at: None,
         }
+    }
+
+    #[test]
+    fn clipboard_clones_survive_reload_refresh_edit_and_delete() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let source = sample_hy2("source", "HK");
+        store.upsert_subscription(sub.clone(), vec![source.clone()]).unwrap();
+        store.settings.current_node_id = Some("source".into());
+        let target = store.append_nodes_to_profile(None, vec![source.clone(), source.clone()]).unwrap();
+        assert_eq!(target, sub.id);
+        assert_eq!(store.subscriptions.len(), 1);
+        assert_eq!(store.nodes[1].node.name, "HK-clone");
+        assert_eq!(store.nodes[2].node.name, "HK-clone-2");
+        let clone_id = store.nodes[1].node.id.clone();
+        assert_ne!(clone_id, "source");
+        assert_ne!(clone_id, store.nodes[2].node.id);
+        let mut edited = store.nodes[1].node.clone();
+        edited.port = 8443;
+        store.update_node(&clone_id, edited).unwrap();
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        store.upsert_subscription(sub.clone(), vec![source.clone()]).unwrap();
+        assert_eq!(store.nodes.len(), 3);
+        assert_eq!(store.subscriptions[0].node_count, 3);
+        assert_eq!(store.find_node(&clone_id).unwrap().port, 8443);
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("source"));
+        store.delete_node(&clone_id).unwrap();
+        store.upsert_subscription(sub.clone(), vec![source]).unwrap();
+        assert_eq!(store.nodes.len(), 2);
+        assert!(store.find_node(&clone_id).is_none());
+        store.remove_subscription(&sub.id).unwrap();
+        assert!(store.appended_node_ids.is_empty());
+    }
+
+    #[test]
+    fn clipboard_target_must_be_unambiguous_and_never_creates_profile() {
+        let mut store = AppStore::default();
+        assert!(store.append_nodes_to_profile(None, vec![]).is_err());
+        store.upsert_subscription(sample_url_sub("s"), vec![]).unwrap();
+        store.upsert_subscription(sample_url_sub("t"), vec![]).unwrap();
+        assert!(store.append_nodes_to_profile(None, vec![sample_hy2("a", "HK")]).is_err());
+        assert!(store.nodes.is_empty());
+        store.append_nodes_to_profile(Some("id-t"), vec![sample_hy2("a", "HK")]).unwrap();
+        assert_eq!(store.nodes[0].subscription_id, "id-t");
+        assert_eq!(store.nodes[0].node.name, "HK");
+        assert_eq!(store.subscriptions.len(), 2);
+        let source = store.nodes[0].node.clone();
+        store.upsert_subscription(sample_url_sub("t"), vec![source]).unwrap();
+        assert_eq!(store.nodes.len(), 2);
+        assert_ne!(store.nodes[0].node.id, store.nodes[1].node.id);
     }
 
     #[test]

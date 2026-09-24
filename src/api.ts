@@ -88,6 +88,10 @@ export function addSubscriptionText(name: string | null, content: string) {
   });
 }
 
+export function appendClipboardNodes(content: string, subscriptionId: string | null) {
+  return invoke<ImportResult>("append_clipboard_nodes", { content, subscriptionId });
+}
+
 export function addSubscriptionNode(
   name: string | null,
   uri: string | null,
