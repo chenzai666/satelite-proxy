@@ -57,3 +57,4 @@ nul
 # Android (Interstellar) launcher material living here for convenience.
 assets/icon/*
 !assets/icon/ic_launcher-web.png
+!assets/icon/ic_launcher-mac.png

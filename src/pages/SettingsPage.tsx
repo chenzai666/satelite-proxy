@@ -1107,7 +1107,38 @@ export function SettingsPage() {
         {!customRuntime && visibleTab === "chain" && <ChainPage embedded />}
 
         {visibleTab === "multiCore" && settings && (
-          <section className="settings-panel" aria-label="Multi-core">
+          <section className="settings-panel" aria-label="Core options">
+            <div className="card sidecar-card">
+              <div className="via-proxy-row">
+                <div>
+                  <div className="sys-proxy-title">{t("settings.tlsFragment")}</div>
+                  <div className="sys-proxy-desc">{t("settings.tlsFragmentDesc")}</div>
+                </div>
+              </div>
+              <div className="sidecar-body">
+                <div className="multicore-grid">
+                  <div className="multicore-row">
+                    <code>sing-box</code>
+                    <GlassSwitchControl
+                      checked={!!settings.tls_fragment_singbox}
+                      title={t("settings.tlsFragmentSingbox")}
+                      disabled={customRuntime}
+                      onChange={(value) => void patchApp({ tlsFragmentSingbox: value })}
+                    />
+                  </div>
+                  <div className="multicore-row">
+                    <code>Xray</code>
+                    <GlassSwitchControl
+                      checked={!!settings.tls_fragment_xray}
+                      title={t("settings.tlsFragmentXray")}
+                      disabled={customRuntime}
+                      onChange={(value) => void patchApp({ tlsFragmentXray: value })}
+                    />
+                  </div>
+                </div>
+                <div className="field-hint muted">{t("settings.tlsFragmentHint")}</div>
+              </div>
+            </div>
             <div className="card sidecar-card">
               <div className="via-proxy-row">
                 <div>
@@ -1477,9 +1508,6 @@ export function SettingsPage() {
               <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
                 <div className="settings-app-text">
                   <div className="settings-app-title">{t("settings.trayIcon")}</div>
-                  <div className="settings-app-desc muted">
-                    {t("settings.trayIconDesc")}
-                  </div>
                 </div>
                 <TrayIconPicker
                   value={settings?.tray_icon}

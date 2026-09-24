@@ -369,6 +369,7 @@ fn parse_vless(
             uuid,
             flow: get_str(map, &["flow"]),
             packet_encoding: get_str(map, &["packet_encoding", "packet-encoding"])
+                .map(|value| crate::domain::normalize_vless_packet_encoding(&value))
                 .unwrap_or_else(|| "xudp".into()),
         },
     ))

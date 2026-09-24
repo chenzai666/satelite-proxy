@@ -1448,8 +1448,19 @@ button {
 }
 
 .settings-tray-icon-row .settings-app-text {
-  flex: 1 1 auto;
-  min-width: 10rem;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.settings-tray-icon-row {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.45rem;
+}
+
+.settings-tray-icon-row .tray-icon-picks {
+  flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .settings-app-title {

@@ -223,9 +223,10 @@ pub async fn add_subscription_url(
         })
         .map_err(|e| e.to_string())?;
     let subscription_proxy = active_subscription_proxy(&state)?;
-    let mut outcome = import_from_url_with_id(name, url, existing_id, via, subscription_proxy, user_agent)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut outcome =
+        import_from_url_with_id(name, url, existing_id, via, subscription_proxy, user_agent)
+            .await
+            .map_err(|e| e.to_string())?;
     apply_auto_update_prefs(
         &mut outcome.subscription,
         auto_update.unwrap_or(false),

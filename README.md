@@ -1,8 +1,8 @@
 # Satelite
 
-## 本分支 1.0.40
+## 本分支 1.0.43
 
-已选择性整合上游正式版至 1.0.40：保留既有智能选路、Xray XHTTP 兼容、原生 Mihomo 策略组、节点拖拽/右键编辑分享、UWP 回环和 IPv4/DNS。新增设置页嵌入标签的空白滚动条修复、英文界面文案补齐和中英文托盘菜单。沿用本分支应用及托盘图标定制。安装包和便携包见[本分支发布页](https://github.com/chenzai666/satelite-proxy/releases)，更新说明见 [1.0.40 发布说明](docs/release-1.0.40.md)。
+已选择性整合上游正式版至 1.0.43：保留既有智能选路、Xray XHTTP 兼容、原生 Mihomo 策略组、节点拖拽/右键编辑分享、UWP 回环和 IPv4/DNS。本次加入冰蓝土星图标、可选经典土星托盘样式、TLS ClientHello 分片开关及内核兼容修复。安装包和便携包见[本分支发布页](https://github.com/chenzai666/satelite-proxy/releases)，更新说明见 [1.0.43 发布说明](docs/release-1.0.43.md)。
 
 当前发布流程仅验证 Windows x64，默认内置 sing-box，其余内核按需下载；没有改成强制捆绑三内核。上游另有 Linux AppImage 与独立的 Android 项目 [Interstellar](https://github.com/zn0wii/interstellar)，它们不属于本分支的已验证发布包。本分支已接入 Linux DMA-BUF 兼容修复，但尚未补齐和验证 Linux 打包流程。
 

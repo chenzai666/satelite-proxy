@@ -548,6 +548,8 @@ export interface AppSettings {
   protocol_cores?: ProtocolCoreItem[];
   /** Base loopback port for the sidecar's per-node inbounds. */
   sidecar_port?: number;
+  tls_fragment_singbox?: boolean;
+  tls_fragment_xray?: boolean;
 }
 
 /** One protocol→core row of the multi-core settings table. */
@@ -568,7 +570,7 @@ export type ThemeId = "aerospace" | "day";
 
 export type HeroStyle = "particle" | "classic" | "smiley";
 
-export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid" | "saturn";
+export type TrayIconStyle = "badge" | "mark" | "ghost" | "buddy" | "danger" | "danger2" | "ghost2" | "faceid" | "saturn" | "saturn_classic";
 
 export interface GenerateConfigResult {
   path: string;

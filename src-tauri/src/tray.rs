@@ -79,8 +79,8 @@ mod clipboard_tests {
 /// which can mangle non-ASCII text. CF_UNICODETEXT has neither problem.
 #[cfg(target_os = "windows")]
 fn set_clipboard_text(text: &str) -> Result<(), String> {
-    use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
     use windows::core::w;
+    use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
     };
@@ -88,9 +88,22 @@ fn set_clipboard_text(text: &str) -> Result<(), String> {
     // A non-null owner is required for EmptyClipboard + SetClipboardData.
     // A message-only STATIC window works even after the main WebView is destroyed.
     let owner = unsafe {
-        CreateWindowExW(WINDOW_EX_STYLE::default(), w!("STATIC"), w!("Satelite clipboard"),
-            WINDOW_STYLE::default(), 0, 0, 0, 0, Some(HWND_MESSAGE), None, None, None)
-    }.map_err(|e| format!("Create clipboard owner: {e}"))?;
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!("Satelite clipboard"),
+            WINDOW_STYLE::default(),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            None,
+            None,
+        )
+    }
+    .map_err(|e| format!("Create clipboard owner: {e}"))?;
 
     // The clipboard is shared; a concurrent holder (clipboard manager,
     // another app mid-write) makes OpenClipboard fail — retry briefly
@@ -104,7 +117,9 @@ fn set_clipboard_text(text: &str) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     if !opened {
-        unsafe { let _ = DestroyWindow(owner); }
+        unsafe {
+            let _ = DestroyWindow(owner);
+        }
         return Err("OpenClipboard stayed busy".into());
     }
     let placed = unsafe { place_text_while_open(text) };
@@ -374,6 +389,13 @@ fn tray_png(style: TrayIconStyle, running: bool) -> (&'static [u8], bool) {
         (TrayIconStyle::Faceid, false) => (include_bytes!("../icons/tray/faceid-off.png"), true),
         (TrayIconStyle::Saturn, true) => (include_bytes!("../icons/tray/saturn-on.png"), false),
         (TrayIconStyle::Saturn, false) => (include_bytes!("../icons/tray/saturn-off.png"), false),
+        (TrayIconStyle::SaturnClassic, true) => {
+            (include_bytes!("../icons/tray/saturn-classic-on.png"), false)
+        }
+        (TrayIconStyle::SaturnClassic, false) => (
+            include_bytes!("../icons/tray/saturn-classic-off.png"),
+            false,
+        ),
     }
 }
 
@@ -504,6 +526,7 @@ pub fn setup_tray<R: TauriRuntime>(app: &AppHandle<R>) -> tauri::Result<()> {
     // Prefer app icon; fall back to default tray without custom image if load fails.
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
+        .show_menu_on_left_click(!cfg!(target_os = "windows"))
         .tooltip("Satelite")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => {

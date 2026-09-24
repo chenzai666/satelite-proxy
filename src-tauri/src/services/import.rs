@@ -47,7 +47,10 @@ pub struct SubscriptionProxy {
     pub password: String,
 }
 
-fn subscription_client(proxy: Option<&SubscriptionProxy>, user_agent: &str) -> AppResult<reqwest::Client> {
+fn subscription_client(
+    proxy: Option<&SubscriptionProxy>,
+    user_agent: &str,
+) -> AppResult<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(6))
         .timeout(Duration::from_secs(45))
@@ -164,7 +167,11 @@ pub async fn import_from_url_with_id(
         ));
     }
 
-    let custom_ua = user_agent.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let custom_ua = user_agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let ua = custom_ua.clone().unwrap_or_else(subscription_user_agent);
     let response = fetch_subscription_response(&url, via_proxy, proxy.as_ref(), &ua).await?;
 

@@ -2,11 +2,11 @@
 
 use crate::api::{ClashApi, ConnectionInfo, RequestRecord, TrafficTotals, XrayMetrics};
 use crate::config::{
-    apply_udp_node_compatibility, build_mihomo_config, build_singbox_config_with_chain_context,
-    build_xray_config, build_xray_sidecar_config, generate_api_secret, inspect_singbox_config,
-    outbound_tag, subscription_proxy_port, write_active_config, write_active_yaml_config,
-    write_custom_config, write_xray_sidecar_config, BuildOptions, SidecarPlan,
-    build_mihomo_sidecar_config, write_mihomo_sidecar_config,
+    apply_udp_node_compatibility, build_mihomo_config, build_mihomo_sidecar_config,
+    build_singbox_config_with_chain_context, build_xray_config, build_xray_sidecar_config,
+    generate_api_secret, inspect_singbox_config, outbound_tag, subscription_proxy_port,
+    write_active_config, write_active_yaml_config, write_custom_config,
+    write_mihomo_sidecar_config, write_xray_sidecar_config, BuildOptions, SidecarPlan,
 };
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
@@ -288,7 +288,9 @@ impl Runtime {
     /// their public TCP connections are the expected outbound leg of the
     /// proxy, not an application bypass.
     pub fn managed_process_ids(&self) -> Vec<u32> {
-        self.core.pid().into_iter()
+        self.core
+            .pid()
+            .into_iter()
             .chain(self.sidecars.iter().filter_map(|sc| sc.manager.pid()))
             .collect()
     }
@@ -1216,8 +1218,11 @@ impl Runtime {
         // outbounds already point at the sidecar ports, so leaving it
         // running would black-hole delegated nodes.
         if let Some(plan) = &sidecar_plan {
+            let tls_fragment = store.settings.tls_fragment_xray;
             for kind in plan.used_kinds() {
-                if let Err(e) = self.start_sidecar(kind, app_data_dir, resource_dir, &nodes, plan) {
+                if let Err(e) =
+                    self.start_sidecar(kind, app_data_dir, resource_dir, &nodes, plan, tls_fragment)
+                {
                     // Roll back the sidecars already started this round and
                     // the main core itself.
                     self.stop_all_sidecars();
@@ -1266,6 +1271,7 @@ impl Runtime {
         resource_dir: Option<&Path>,
         nodes: &[ProxyNode],
         plan: &SidecarPlan,
+        tls_fragment: bool,
     ) -> AppResult<()> {
         let entries: Vec<(ProxyNode, u16)> = plan
             .entries_for(kind)
@@ -1280,7 +1286,7 @@ impl Runtime {
         let ports = entries.iter().map(|(_, p)| *p).collect::<Vec<u16>>();
         let config_path = match kind {
             CoreKind::Xray => {
-                let built = build_xray_sidecar_config(&entries)?;
+                let built = build_xray_sidecar_config(&entries, tls_fragment)?;
                 write_xray_sidecar_config(app_data_dir, &built)?
             }
             CoreKind::Mihomo => {
@@ -2166,6 +2172,8 @@ fn build_options(store: &AppStore, api_secret: String) -> BuildOptions {
         direct_ip_strategy: store.settings.direct_ip_strategy,
         tun_interface_name: None,
         sidecar: None,
+        tls_fragment_singbox: store.settings.tls_fragment_singbox,
+        tls_fragment_xray: store.settings.tls_fragment_xray,
     }
 }
 

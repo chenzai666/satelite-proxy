@@ -99,8 +99,12 @@ pub struct StoredNode {
 
 impl AppStore {
     pub fn ordered_nodes(&self) -> Vec<&StoredNode> {
-        let ranks: std::collections::HashMap<&str, usize> = self.node_order.iter()
-            .enumerate().map(|(i, id)| (id.as_str(), i)).collect();
+        let ranks: std::collections::HashMap<&str, usize> = self
+            .node_order
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.as_str(), i))
+            .collect();
         let mut nodes: Vec<_> = self.nodes.iter().collect();
         nodes.sort_by_key(|n| ranks.get(n.node.id.as_str()).copied().unwrap_or(usize::MAX));
         nodes
@@ -1132,7 +1136,8 @@ impl AppStore {
     /// credentials changed so it hashes to a different id). Keeps
     /// `favorite_nodes` from growing unboundedly with unreachable ids.
     fn gc_favorite_nodes(&mut self) {
-        let valid: std::collections::HashSet<&str> = self.nodes.iter().map(|n| n.node.id.as_str()).collect();
+        let valid: std::collections::HashSet<&str> =
+            self.nodes.iter().map(|n| n.node.id.as_str()).collect();
         self.node_order.retain(|id| valid.contains(id.as_str()));
         self.favorite_nodes
             .retain(|id| self.nodes.iter().any(|n| &n.node.id == id));
@@ -2117,7 +2122,10 @@ fn store_from_json(value: Value) -> AppStore {
     if let Some(order) = obj.get("node_order") {
         match serde_json::from_value(order.clone()) {
             Ok(order) => store.node_order = order,
-            Err(error) => crate::app_log::warn("storage", format!("ignored unreadable node_order ({error}); keeping defaults")),
+            Err(error) => crate::app_log::warn(
+                "storage",
+                format!("ignored unreadable node_order ({error}); keeping defaults"),
+            ),
         }
     }
     if let Some(favorites) = obj.get("favorite_nodes") {

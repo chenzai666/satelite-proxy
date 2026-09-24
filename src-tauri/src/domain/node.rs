@@ -377,6 +377,15 @@ fn default_vless_packet_encoding() -> String {
     "xudp".into()
 }
 
+/// sing-box accepts only xudp and packetaddr; normalize subscription values
+/// before they can make an entire generated config fail at startup.
+pub fn normalize_vless_packet_encoding(value: &str) -> String {
+    match value {
+        "xudp" | "packetaddr" => value.to_string(),
+        _ => default_vless_packet_encoding(),
+    }
+}
+
 /// Normalized proxy node — intermediate model between subscription and sing-box config.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProxyNode {
@@ -734,6 +743,14 @@ pub struct ManualNodeDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vless_packet_encoding_normalization() {
+        assert_eq!(normalize_vless_packet_encoding("xudp"), "xudp");
+        assert_eq!(normalize_vless_packet_encoding("packetaddr"), "packetaddr");
+        assert_eq!(normalize_vless_packet_encoding("none"), "xudp");
+        assert_eq!(normalize_vless_packet_encoding("unexpected"), "xudp");
+    }
 
     fn ss_node(id: &str, name: &str, password: &str) -> ProxyNode {
         ProxyNode {

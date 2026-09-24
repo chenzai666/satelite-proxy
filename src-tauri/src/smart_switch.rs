@@ -1108,7 +1108,10 @@ async fn run_scan(
                     .map(|(tag, n)| {
                         (
                             n.id.clone(),
-                            stats.get(tag).map(PassiveNodeStats::fail_rate).unwrap_or(0.0),
+                            stats
+                                .get(tag)
+                                .map(PassiveNodeStats::fail_rate)
+                                .unwrap_or(0.0),
                         )
                     })
                     .collect()

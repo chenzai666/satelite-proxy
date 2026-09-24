@@ -174,6 +174,8 @@ pub enum TrayIconStyle {
     Faceid,
     /// Saturn tile; dimmed stopped, full color running.
     Saturn,
+    /// Previous smiley Saturn artwork, retained as a selectable tray style.
+    SaturnClassic,
 }
 
 impl TrayIconStyle {
@@ -188,6 +190,7 @@ impl TrayIconStyle {
             Self::Ghost2 => "ghost2",
             Self::Faceid => "faceid",
             Self::Saturn => "saturn",
+            Self::SaturnClassic => "saturn_classic",
         }
     }
 
@@ -202,6 +205,7 @@ impl TrayIconStyle {
             "ghost2" => Some(Self::Ghost2),
             "faceid" | "face" | "smile" => Some(Self::Faceid),
             "saturn" | "planet" | "app" => Some(Self::Saturn),
+            "saturn_classic" | "saturn-classic" => Some(Self::SaturnClassic),
             _ => None,
         }
     }
@@ -381,6 +385,10 @@ pub struct AppSettings {
     /// node i listens on `base + i` (127.0.0.1 only).
     #[serde(default = "default_sidecar_port")]
     pub sidecar_port: u16,
+    #[serde(default)]
+    pub tls_fragment_singbox: bool,
+    #[serde(default)]
+    pub tls_fragment_xray: bool,
 }
 
 /// One protocol→core row of the multi-core settings table.
@@ -532,6 +540,8 @@ impl Default for AppSettings {
             multi_core_enabled: false,
             protocol_cores: Vec::new(),
             sidecar_port: default_sidecar_port(),
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 }
@@ -687,6 +697,10 @@ mod tests {
         assert_eq!(TrayIconStyle::parse("faceid"), Some(TrayIconStyle::Faceid));
         assert_eq!(TrayIconStyle::parse("saturn"), Some(TrayIconStyle::Saturn));
         assert_eq!(TrayIconStyle::Saturn.as_str(), "saturn");
+        assert_eq!(
+            TrayIconStyle::parse("saturn_classic"),
+            Some(TrayIconStyle::SaturnClassic)
+        );
         assert_eq!(TrayIconStyle::parse("nope"), None);
     }
 

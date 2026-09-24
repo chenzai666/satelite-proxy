@@ -37,6 +37,7 @@ pub(crate) mod uwp_loopback {
 }
 mod url_scheme;
 mod window_ctrl;
+mod window_icon;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
@@ -405,6 +406,11 @@ pub fn run() {
                     if let Some(state) = window.app_handle().try_state::<AppState>() {
                         state.set_ui_visible(true);
                     }
+                    window_icon::apply_to_window(window);
+                }
+                #[cfg(windows)]
+                tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                    window_icon::apply_to_window(window);
                 }
                 _ => {}
             }

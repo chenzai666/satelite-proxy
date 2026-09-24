@@ -12,7 +12,9 @@
 //! that group. The three system sets map onto GEOSITE/GEOIP matchers
 //! (MetaCubeX `.mrs`/mmdb geodata lives in the mihomo home dir).
 
-use crate::config::builder::{explicit_set_pool_tags, outbound_tag, resolve_selected_tag, BuildOptions};
+use crate::config::builder::{
+    explicit_set_pool_tags, outbound_tag, resolve_selected_tag, BuildOptions,
+};
 use crate::config::punycode::to_ascii_domain;
 use crate::core::kind::CoreKind;
 use crate::domain::{
@@ -748,8 +750,11 @@ fn build_remote_policy_groups(
     ]);
     // Clash requires proxy and group names to share one namespace.
     used.extend(node_tags.iter().cloned());
-    used.extend(sets.iter().filter(|set| set.enabled && set.remote.is_some() && set.is_node_pool())
-        .map(RuleSet::smart_set_outbound_tag));
+    used.extend(
+        sets.iter()
+            .filter(|set| set.enabled && set.remote.is_some() && set.is_node_pool())
+            .map(RuleSet::smart_set_outbound_tag),
+    );
 
     for (index, set) in sets
         .iter()
@@ -1932,6 +1937,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 
@@ -2398,22 +2405,26 @@ mod tests {
 
     #[test]
     fn remote_explicit_pool_preserves_members_and_falls_back_when_stale() {
-        let nodes: Vec<ProxyNode> = (0..3).map(|i| {
-            let mut node = plain_node(&format!("n{i}"));
-            node.port = 443 + i;
-            node.with_computed_id()
-        }).collect();
+        let nodes: Vec<ProxyNode> = (0..3)
+            .map(|i| {
+                let mut node = plain_node(&format!("n{i}"));
+                node.port = 443 + i;
+                node.with_computed_id()
+            })
+            .collect();
         let tags: Vec<String> = nodes.iter().map(outbound_tag).collect();
-        assert_eq!(tags.iter().collect::<std::collections::HashSet<_>>().len(), 3);
+        assert_eq!(
+            tags.iter().collect::<std::collections::HashSet<_>>().len(),
+            3
+        );
         let spec = crate::domain::builtin_remote_spec("system-geosite-cn").unwrap();
         let mut set = crate::domain::build_builtin_remote_set(spec);
         set.strategy = RuleSetStrategy::Node;
         set.node_ids = vec![nodes[0].id.clone(), nodes[1].id.clone()];
         let pool_tag = set.smart_set_outbound_tag();
         set.name = pool_tag.clone();
-        let (groups, categories) = build_remote_policy_groups(
-            &[set.clone()], &Default::default(), &nodes, &tags,
-        );
+        let (groups, categories) =
+            build_remote_policy_groups(&[set.clone()], &Default::default(), &nodes, &tags);
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0]["name"].as_str(), Some(pool_tag.as_str()));
         let members = groups[0]["proxies"].as_sequence().unwrap();
@@ -2422,9 +2433,7 @@ mod tests {
         assert_eq!(groups[1]["proxies"][0].as_str(), Some(pool_tag.as_str()));
         assert_ne!(categories[&set.id], pool_tag);
         set.node_ids = vec!["gone-1".into(), "gone-2".into()];
-        let (groups, _) = build_remote_policy_groups(
-            &[set], &Default::default(), &nodes, &tags,
-        );
+        let (groups, _) = build_remote_policy_groups(&[set], &Default::default(), &nodes, &tags);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0]["proxies"][0].as_str(), Some(MAIN_GROUP));
     }

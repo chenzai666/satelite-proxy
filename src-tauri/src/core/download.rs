@@ -345,7 +345,9 @@ fn pick_asset(
                     && a.name.ends_with(ext)
                     && !a.name.contains("legacy")
                     && !a.name.contains("go1")
-                    && (kind != CoreKind::Mihomo || !suffix.ends_with("amd64") || a.name.contains("-compatible-"))
+                    && (kind != CoreKind::Mihomo
+                        || !suffix.ends_with("amd64")
+                        || a.name.contains("-compatible-"))
             })
         })
         .ok_or_else(|| {
@@ -369,10 +371,16 @@ async fn fetch_official_asset(
     download_url: &str,
     proxy_url: Option<&str>,
 ) -> AppResult<reqwest::Response> {
-    let response = http_client(proxy_url)?.get(download_url).send().await
+    let response = http_client(proxy_url)?
+        .get(download_url)
+        .send()
+        .await
         .map_err(|error| AppError::Core(format!("download: {error}")))?;
     if !response.status().is_success() {
-        return Err(AppError::Core(format!("download status {}", response.status())));
+        return Err(AppError::Core(format!(
+            "download status {}",
+            response.status()
+        )));
     }
     Ok(response)
 }

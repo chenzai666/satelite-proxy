@@ -39,6 +39,38 @@ const DIRECT_DNS_TAG: &str = "direct-dns";
 /// match by prefix).
 const NODE_TAG_PREFIX: &str = "node-";
 
+const FRAGMENT_OUT_TAG: &str = "fragment-out";
+
+fn apply_xray_tls_fragment(outbounds: &mut Vec<Value>) {
+    for outbound in outbounds.iter_mut() {
+        let tls_bearing = outbound
+            .get("streamSettings")
+            .and_then(|s| s.get("security"))
+            .and_then(Value::as_str)
+            .is_some_and(|sec| sec == "tls" || sec == "reality");
+        if !tls_bearing {
+            continue;
+        }
+        let stream = outbound
+            .get_mut("streamSettings")
+            .and_then(Value::as_object_mut)
+            .expect("TLS outbound has streamSettings");
+        let sockopt = stream
+            .entry("sockopt")
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(obj) = sockopt.as_object_mut() {
+            obj.insert("dialerProxy".into(), json!(FRAGMENT_OUT_TAG));
+        }
+    }
+    outbounds.push(json!({
+        "tag": FRAGMENT_OUT_TAG,
+        "protocol": "freedom",
+        "settings": {
+            "fragment": { "packets": "tlshello", "length": "100-200", "interval": "10-20" }
+        }
+    }));
+}
+
 pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<BuiltConfig> {
     let mut supported: Vec<ProxyNode> = nodes
         .iter()
@@ -160,6 +192,10 @@ pub fn build_xray_config(nodes: &[ProxyNode], opts: &BuildOptions) -> AppResult<
 
     let dns = build_dns(opts, &opts.rule_sets, &effective_rules);
     let inbounds = build_inbounds(opts);
+
+    if opts.tls_fragment_xray {
+        apply_xray_tls_fragment(&mut outbounds);
+    }
 
     let mut direct = json!({ "tag": "direct", "protocol": "freedom" });
     if let Some(domain_strategy) = xray_direct_domain_strategy(opts.direct_ip_strategy) {
@@ -340,7 +376,10 @@ pub const SIDECAR_INBOUND_PREFIX: &str = "in-sc";
 /// Entries must already be Xray-supported (`CoreKind::Xray.supports_node`) —
 /// the caller computes the delegation plan and falls back to native sing-box
 /// outbounds for anything the sidecar can't speak.
-pub fn build_xray_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<BuiltConfig> {
+pub fn build_xray_sidecar_config(
+    entries: &[(ProxyNode, u16)],
+    tls_fragment: bool,
+) -> AppResult<BuiltConfig> {
     if entries.is_empty() {
         return Err(AppError::Config(
             "xray sidecar plan is empty; nothing to delegate".into(),
@@ -400,6 +439,10 @@ pub fn build_xray_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<Buil
         "network": "tcp,udp",
         "outboundTag": selected_tag.clone(),
     }));
+
+    if tls_fragment {
+        apply_xray_tls_fragment(&mut outbounds);
+    }
 
     let mut config = Map::new();
     config.insert("log".into(), json!({ "loglevel": "warning" }));
@@ -1781,6 +1824,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 
@@ -3530,7 +3575,7 @@ mod tests {
         let mut b = vless_node("b", None);
         b.id = "bbbb".into();
         let entries = vec![(a, 20890u16), (b, 20891)];
-        let built = build_xray_sidecar_config(&entries).expect("build");
+        let built = build_xray_sidecar_config(&entries, false).expect("build");
         let v = &built.value;
 
         // One loopback mixed inbound per node, 1:1 with the plan ports.
@@ -3558,7 +3603,52 @@ mod tests {
 
     #[test]
     fn sidecar_config_empty_entries_error() {
-        assert!(build_xray_sidecar_config(&[]).is_err());
+        assert!(build_xray_sidecar_config(&[], false).is_err());
+    }
+
+    #[test]
+    fn tls_fragment_wires_main_and_sidecar_tls_only() {
+        let tls_node = vless_node("tls", None);
+        let mut plain_node = vless_node("plain", None);
+        plain_node.tls = None;
+        plain_node.id = "plain-node".into();
+        let nodes = [tls_node.clone(), plain_node];
+
+        let off = build_xray_config(&nodes, &default_opts()).unwrap();
+        assert!(off.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|outbound| outbound["streamSettings"]["sockopt"].is_null()));
+
+        let mut opts = default_opts();
+        opts.tls_fragment_xray = true;
+        let on = build_xray_config(&nodes, &opts).unwrap();
+        let outbounds = on.value["outbounds"].as_array().unwrap();
+        assert!(outbounds
+            .iter()
+            .any(|outbound| outbound["tag"] == FRAGMENT_OUT_TAG));
+        assert_eq!(
+            outbounds
+                .iter()
+                .filter(
+                    |outbound| outbound["streamSettings"]["sockopt"]["dialerProxy"]
+                        == FRAGMENT_OUT_TAG
+                )
+                .count(),
+            1
+        );
+
+        let sidecar = build_xray_sidecar_config(&[(tls_node, 20890)], true).unwrap();
+        let outbounds = sidecar.value["outbounds"].as_array().unwrap();
+        assert!(outbounds
+            .iter()
+            .any(|outbound| outbound["tag"] == FRAGMENT_OUT_TAG));
+        assert!(outbounds
+            .iter()
+            .any(
+                |outbound| outbound["streamSettings"]["sockopt"]["dialerProxy"] == FRAGMENT_OUT_TAG
+            ));
     }
 
     /// Live validation of the sidecar companion config (same harness as
@@ -3582,7 +3672,7 @@ mod tests {
             reality_short_id: Some("abcd0123".into()),
         });
         let entries = vec![(node, 20890u16)];
-        let built = build_xray_sidecar_config(&entries).expect("build");
+        let built = build_xray_sidecar_config(&entries, false).expect("build");
 
         let tmp = std::env::temp_dir().join(format!(
             "satelite-xray-sidecar-live-{}-{}.json",

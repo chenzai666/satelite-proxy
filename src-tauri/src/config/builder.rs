@@ -112,6 +112,8 @@ pub struct BuildOptions {
     /// Nodes routed through the companion Xray sidecar process (loopback
     /// socks outbounds). `None`/empty = fully native config (default).
     pub sidecar: Option<SidecarPlan>,
+    pub tls_fragment_singbox: bool,
+    pub tls_fragment_xray: bool,
 }
 
 impl BuildOptions {
@@ -179,6 +181,14 @@ impl SidecarPlan {
             }
         }
         kinds
+    }
+}
+
+fn sidecar_process_names(kind: crate::core::CoreKind) -> &'static [&'static str] {
+    match kind {
+        crate::core::CoreKind::Xray => &["xray", "xray.exe"],
+        crate::core::CoreKind::Mihomo => &["mihomo", "mihomo.exe"],
+        crate::core::CoreKind::SingBox => &["sing-box", "sing-box.exe"],
     }
 }
 
@@ -431,6 +441,16 @@ pub fn build_singbox_config_with_chain_context(
     outbounds.push(direct_outbound);
     outbounds.push(json!({ "type": "block", "tag": "block" }));
 
+    if opts.tls_fragment_singbox {
+        for outbound in &mut outbounds {
+            if let Some(tls) = outbound.get_mut("tls") {
+                if tls.get("enabled") == Some(&json!(true)) {
+                    tls["fragment"] = json!(true);
+                }
+            }
+        }
+    }
+
     // Clash-style modes:
     // - Rule: user rules + configurable final (proxy|direct|block)
     // - Global: no user rules, final proxy
@@ -454,6 +474,51 @@ pub fn build_singbox_config_with_chain_context(
     let mut route_rules = Vec::new();
     // Sniff helps domain-based route / DNS on mixed + TUN
     route_rules.push(json!({ "action": "sniff" }));
+    if opts.tun_enabled {
+        if let Some(plan) = opts.sidecar.as_ref().filter(|plan| !plan.ports.is_empty()) {
+            // TUN auto_route captures the sidecar's own server connections.
+            // Route them direct before user/DNS/QUIC rules, or they loop back
+            // through their own delegated outbound indefinitely.
+            let mut process_names = Vec::new();
+            for kind in plan.used_kinds() {
+                for name in sidecar_process_names(kind) {
+                    if !process_names.contains(name) {
+                        process_names.push(*name);
+                    }
+                }
+            }
+            route_rules.push(json!({
+                "process_name": process_names,
+                "action": "route",
+                "outbound": "direct",
+            }));
+
+            // Process detection can be unavailable on some platforms. IP-only
+            // delegated endpoints receive a narrowly scoped address fallback.
+            let mut server_ips = Vec::new();
+            for entry in &plan.ports {
+                let Some(node) = nodes.iter().find(|node| node.id == entry.node_id) else {
+                    continue;
+                };
+                if let Ok(ip) = node.server.parse::<std::net::IpAddr>() {
+                    let cidr = match ip {
+                        std::net::IpAddr::V4(_) => format!("{ip}/32"),
+                        std::net::IpAddr::V6(_) => format!("{ip}/128"),
+                    };
+                    if !server_ips.contains(&cidr) {
+                        server_ips.push(cidr);
+                    }
+                }
+            }
+            if !server_ips.is_empty() {
+                route_rules.push(json!({
+                    "ip_cidr": server_ips,
+                    "action": "route",
+                    "outbound": "direct",
+                }));
+            }
+        }
+    }
     if has_diag {
         route_rules.push(json!({
             "inbound": [DIAG_INBOUND_TAG],
@@ -1517,7 +1582,9 @@ fn build_chain_outbounds(
 pub fn smart_pool_nodes(r: &Rule, nodes: &[ProxyNode]) -> Vec<ProxyNode> {
     nodes
         .iter()
-        .filter(|n| crate::domain::name_matches_keywords(&n.name, &r.smart_include, &r.smart_exclude))
+        .filter(|n| {
+            crate::domain::name_matches_keywords(&n.name, &r.smart_include, &r.smart_exclude)
+        })
         .cloned()
         .collect()
 }
@@ -1679,7 +1746,7 @@ fn node_to_outbound_tagged(
                 "server": node.server,
                 "server_port": node.port,
                 "uuid": uuid,
-                "packet_encoding": packet_encoding,
+                "packet_encoding": crate::domain::normalize_vless_packet_encoding(packet_encoding),
             });
             // sing-box only accepts "xtls-rprx-vision" / "xtls-rprx-direct".
             // Some subscriptions carry Xray-core-only variants (e.g.
@@ -2337,6 +2404,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -2771,8 +2840,7 @@ mod tests {
 
         let group = set.smart_set_outbound_tag();
         let tag = set.id.clone();
-        let (_, routes, _) =
-            build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
+        let (_, routes, _) = build_grouped_rule_sets(&[set.clone()], &nodes, &tags);
         assert_eq!(
             routes[0],
             json!({ "rule_set": [tag], "action": "route", "outbound": group })
@@ -2787,8 +2855,7 @@ mod tests {
         // no dead selector.
         let mut stale = set;
         stale.node_ids = vec!["gone-1".into(), "gone-2".into()];
-        let (_, routes, _) =
-            build_grouped_rule_sets(&[stale.clone()], &nodes, &tags);
+        let (_, routes, _) = build_grouped_rule_sets(&[stale.clone()], &nodes, &tags);
         assert_eq!(routes[0]["outbound"], "proxy");
         assert!(build_filter_set_selectors(&[stale], &nodes, &tags, true).is_empty());
     }
@@ -2928,6 +2995,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3043,6 +3112,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3090,6 +3161,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let localhost = build_singbox_config(&nodes, &base()).unwrap();
@@ -3140,6 +3213,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
         let built = build_singbox_config(&nodes, &options).unwrap();
         assert_eq!(built.outbound_tags.len(), 1);
@@ -3258,6 +3333,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3301,6 +3378,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3349,6 +3428,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3405,6 +3486,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3472,6 +3555,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let v4_only = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3520,6 +3605,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3558,6 +3645,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3626,6 +3715,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
 
         let off = build_singbox_config(&nodes, &base(false)).unwrap();
@@ -3784,6 +3875,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap_err();
@@ -3820,6 +3913,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3857,6 +3952,8 @@ mod tests {
                     tun_interface_name: None,
                     mihomo_configs: Vec::new(),
                     sidecar: None,
+                    tls_fragment_singbox: false,
+                    tls_fragment_xray: false,
                 },
             )
             .unwrap();
@@ -3900,6 +3997,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3949,6 +4048,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -3999,6 +4100,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -4053,6 +4156,8 @@ mod tests {
                 tun_interface_name: None,
                 mihomo_configs: Vec::new(),
                 sidecar: None,
+                tls_fragment_singbox: false,
+                tls_fragment_xray: false,
             },
         )
         .unwrap();
@@ -4168,6 +4273,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: None,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         };
         let built =
             build_singbox_config_with_chain_context(&nodes, &options, true, &[], &[chain.clone()])
@@ -4223,6 +4330,8 @@ mod tests {
             tun_interface_name: None,
             mihomo_configs: Vec::new(),
             sidecar: plan,
+            tls_fragment_singbox: false,
+            tls_fragment_xray: false,
         }
     }
 
@@ -4289,6 +4398,34 @@ mod tests {
             .find(|o| o["tag"] == json!(tag))
             .unwrap();
         assert_eq!(out["type"], "shadowsocks");
+    }
+
+    #[test]
+    fn tun_sidecar_guard_precedes_user_and_dns_rules() {
+        let mut node = sample_node("n1", "delegated");
+        node.server = "203.0.113.7".into();
+        let plan = SidecarPlan {
+            ports: vec![crate::config::SidecarPort {
+                node_id: "n1".into(),
+                port: 20890,
+                kind: crate::core::CoreKind::Xray,
+            }],
+        };
+        let mut opts = sidecar_opts(Some(plan));
+        opts.tun_enabled = true;
+        let built = build_singbox_config(&[node.clone()], &opts).unwrap();
+        let rules = built.value["route"]["rules"].as_array().unwrap();
+        assert_eq!(rules[1]["process_name"], json!(["xray", "xray.exe"]));
+        assert_eq!(rules[1]["outbound"], "direct");
+        assert_eq!(rules[2]["ip_cidr"], json!(["203.0.113.7/32"]));
+
+        opts.tun_enabled = false;
+        let without_tun = build_singbox_config(&[node], &opts).unwrap();
+        assert!(without_tun.value["route"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|rule| rule.get("process_name").is_none()));
     }
 
     #[test]
@@ -4446,5 +4583,38 @@ mod tests {
     fn vless_standard_flow_is_kept() {
         let (_, outbound, _) = node_to_outbound(&sample_vless(Some("xtls-rprx-vision"))).unwrap();
         assert_eq!(outbound["flow"], "xtls-rprx-vision");
+    }
+
+    #[test]
+    fn tls_fragment_only_marks_tls_outbounds() {
+        let mut tls_node = sample_vless(None);
+        tls_node.tls = Some(TlsConfig {
+            enabled: true,
+            server_name: Some("vl.example.com".into()),
+            insecure: None,
+            alpn: None,
+            utls_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
+        });
+        let nodes = [tls_node, sample_ss()];
+        let off = build_singbox_config(&nodes, &sidecar_opts(None)).unwrap();
+        assert!(off.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|outbound| outbound["tls"].get("fragment").is_none()));
+
+        let mut opts = sidecar_opts(None);
+        opts.tls_fragment_singbox = true;
+        let on = build_singbox_config(&nodes, &opts).unwrap();
+        let marked: Vec<_> = on.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|outbound| outbound["tls"]["fragment"] == true)
+            .collect();
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0]["type"], "vless");
     }
 }

@@ -109,6 +109,8 @@ pub fn update_settings(
     // core == "xray"); unknown protocols/cores are dropped silently.
     protocol_cores: Option<Vec<crate::domain::ProtocolCoreItem>>,
     sidecar_port: Option<u16>,
+    tls_fragment_singbox: Option<bool>,
+    tls_fragment_xray: Option<bool>,
 ) -> Result<AppSettings, String> {
     let mut launch_changed: Option<bool> = None;
     let mut auto_select_changed: Option<(
@@ -120,7 +122,7 @@ pub fn update_settings(
     let mut bypass_lan_changed = false;
     let mut direct_ip_strategy_changed = false;
     let mut close_connections_changed = false;
-    let mut multi_core_changed = false;
+    let mut core_config_changed = false;
     let theme_changed = theme.is_some();
     // The native Windows caption also depends on accent/glow_color. Re-apply
     // only the caption when either value changes without a theme change.
@@ -364,7 +366,7 @@ pub fn update_settings(
                     return Err(AppError::Config("多核模式仅支持 sing-box 主内核".into()));
                 }
                 if store.settings.multi_core_enabled != v {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.multi_core_enabled = v;
                 }
             }
@@ -391,7 +393,7 @@ pub fn update_settings(
                     })
                     .collect();
                 if cleaned != store.settings.protocol_cores {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.protocol_cores = cleaned;
                 }
             }
@@ -400,8 +402,20 @@ pub fn update_settings(
                     return Err(AppError::Config("副进程端口无效".into()));
                 }
                 if store.settings.sidecar_port != p {
-                    multi_core_changed = true;
+                    core_config_changed = true;
                     store.settings.sidecar_port = p;
+                }
+            }
+            if let Some(value) = tls_fragment_singbox {
+                if store.settings.tls_fragment_singbox != value {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_singbox = value;
+                }
+            }
+            if let Some(value) = tls_fragment_xray {
+                if store.settings.tls_fragment_xray != value {
+                    core_config_changed = true;
+                    store.settings.tls_fragment_xray = value;
                 }
             }
             Ok(store.settings.clone())
@@ -426,7 +440,7 @@ pub fn update_settings(
         || bypass_lan_changed
         || direct_ip_strategy_changed
         || close_connections_changed
-        || multi_core_changed
+        || core_config_changed
         || auto_select_changed
             .map(|(prev, next)| prev.is_kernel() != next.is_kernel())
             .unwrap_or(false);
@@ -671,15 +685,18 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
 /// the exact order the list is showing.
 #[tauri::command(async)]
 pub fn reorder_nodes(state: State<'_, AppState>, ids: Vec<String>) -> Result<(), String> {
-    state.with_store_mut(|store| {
-        if store.settings.runtime_source().is_custom() {
-            return Err(crate::error::AppError::Config("自写配置节点为只读".into()));
-        }
-        let all: Vec<_> = store.nodes.iter().map(|n| n.node.id.clone()).collect();
-        store.node_order = crate::storage::node_order::merge_order(&store.node_order, &all, &ids)
-            .map_err(crate::error::AppError::Config)?;
-        Ok(())
-    }).map_err(|e| e.to_string())
+    state
+        .with_store_mut(|store| {
+            if store.settings.runtime_source().is_custom() {
+                return Err(crate::error::AppError::Config("自写配置节点为只读".into()));
+            }
+            let all: Vec<_> = store.nodes.iter().map(|n| n.node.id.clone()).collect();
+            store.node_order =
+                crate::storage::node_order::merge_order(&store.node_order, &all, &ids)
+                    .map_err(crate::error::AppError::Config)?;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
 }
 
 fn sort_listed_nodes(nodes: &mut [ListedNode], sort_mode: Option<&str>) {
@@ -978,6 +995,8 @@ pub async fn generate_singbox_config(
             direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {
@@ -1112,6 +1131,8 @@ pub async fn preview_singbox_config(
             direct_ip_strategy: settings.direct_ip_strategy,
             tun_interface_name: None,
             sidecar,
+            tls_fragment_singbox: settings.tls_fragment_singbox,
+            tls_fragment_xray: settings.tls_fragment_xray,
         };
         let result = match crate::core::CoreKind::parse(&core_type) {
             crate::core::CoreKind::Mihomo => {

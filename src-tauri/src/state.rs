@@ -826,9 +826,7 @@ fn startup_error_is_bind_race(err: &AppError) -> bool {
     message.contains("only one usage of each socket address")
         || message.contains("address already in use")
         || (message.contains("failed to listen")
-            && (message.contains("bind")
-                || message.contains("tcp")
-                || message.contains("address")))
+            && (message.contains("bind") || message.contains("tcp") || message.contains("address")))
 }
 
 impl AppState {

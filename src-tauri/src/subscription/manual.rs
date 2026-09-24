@@ -302,7 +302,9 @@ fn build_config(draft: &ManualNodeDraft, protocol: Protocol) -> Result<ProtocolC
         Protocol::Vless => Ok(ProtocolConfig::Vless {
             uuid: req(&draft.uuid, "uuid")?,
             flow: opt_nonempty(&draft.flow),
-            packet_encoding: opt_nonempty(&draft.packet_encoding).unwrap_or_else(|| "xudp".into()),
+            packet_encoding: opt_nonempty(&draft.packet_encoding)
+                .map(|value| crate::domain::normalize_vless_packet_encoding(&value))
+                .unwrap_or_else(|| "xudp".into()),
         }),
         Protocol::Trojan => Ok(ProtocolConfig::Trojan {
             password: req(&draft.password, "password")?,

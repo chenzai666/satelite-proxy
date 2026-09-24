@@ -8,70 +8,9 @@ use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{
-    image::Image, window::Color, AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
+    image::Image, window::Color, AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
 };
-
-#[cfg(windows)]
-mod windows_taskbar_icon {
-    use std::os::windows::ffi::OsStrExt;
-    use std::sync::OnceLock;
-    use tauri::{Runtime, WebviewWindow};
-
-    const WM_SETICON: u32 = 0x0080;
-    const ICON_BIG: usize = 1;
-
-    #[link(name = "shell32")]
-    extern "system" {
-        fn ExtractIconExW(
-            file: *const u16,
-            icon_index: i32,
-            large_icon: *mut isize,
-            small_icon: *mut isize,
-            icon_count: u32,
-        ) -> u32;
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn SendMessageW(window: isize, message: u32, wparam: usize, lparam: isize) -> isize;
-    }
-
-    // Keep the extracted HICON alive for the process lifetime. Windows expects
-    // a WM_SETICON handle to remain valid while the window uses it.
-    static LARGE_ICON: OnceLock<usize> = OnceLock::new();
-
-    fn executable_large_icon() -> Option<isize> {
-        if let Some(icon) = LARGE_ICON.get() {
-            return Some(*icon as isize);
-        }
-
-        let executable = std::env::current_exe().ok()?;
-        let mut path: Vec<u16> = executable.as_os_str().encode_wide().collect();
-        path.push(0);
-        let mut icon = 0isize;
-        let extracted =
-            unsafe { ExtractIconExW(path.as_ptr(), 0, &mut icon, std::ptr::null_mut(), 1) };
-        if extracted == 0 || icon == 0 {
-            return None;
-        }
-        let _ = LARGE_ICON.set(icon as usize);
-        Some(icon)
-    }
-
-    pub fn apply<R: Runtime>(window: &WebviewWindow<R>) {
-        let Ok(hwnd) = window.hwnd() else {
-            return;
-        };
-        let Some(icon) = executable_large_icon() else {
-            eprintln!("[satelite] extract Windows taskbar icon failed");
-            return;
-        };
-        unsafe {
-            SendMessageW(hwnd.0 as isize, WM_SETICON, ICON_BIG, icon);
-        }
-    }
-}
 
 /// Matches frontend `windowLayout.ts` (logical px).
 const PRO_SIZE: (f64, f64) = (960.0, 720.0);
@@ -212,18 +151,24 @@ pub fn apply_titlebar_accent<R: Runtime>(app: &AppHandle<R>) {
 pub fn apply_titlebar_accent<R: Runtime>(_app: &AppHandle<R>) {}
 
 fn set_main_window_icon<R: Runtime>(window: &WebviewWindow<R>) {
-    let icon = match Image::from_bytes(include_bytes!("../icons/128x128.png")) {
-        Ok(icon) => icon,
-        Err(error) => {
-            eprintln!("[satelite] decode main window icon failed: {error}");
-            return;
-        }
-    };
-    if let Err(error) = window.set_icon(icon) {
-        eprintln!("[satelite] set main window icon failed: {error}");
-    }
     #[cfg(windows)]
-    windows_taskbar_icon::apply(window);
+    {
+        crate::window_icon::apply_to(window);
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let icon = match Image::from_bytes(include_bytes!("../icons/128x128.png")) {
+            Ok(icon) => icon,
+            Err(error) => {
+                eprintln!("[satelite] decode main window icon failed: {error}");
+                return;
+            }
+        };
+        if let Err(error) = window.set_icon(icon) {
+            eprintln!("[satelite] set main window icon failed: {error}");
+        }
+    }
 }
 
 /// Explicitly set the top-level window icon. On Windows this stabilizes the
@@ -276,7 +221,9 @@ fn min_for_ui_mode(mode: &str) -> (f64, f64) {
 }
 
 fn window_size_file(app_data_dir: &std::path::Path, mode: &str) -> PathBuf {
-    app_data_dir.join("data").join(format!("window_size_{mode}"))
+    app_data_dir
+        .join("data")
+        .join(format!("window_size_{mode}"))
 }
 
 /// Persisted per-mode window size (logical px, "<w> <h>") so a recreated or
@@ -322,7 +269,11 @@ fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
     }
     let _ = fs::write(
         path,
-        format!("{} {}", size.width as f64 / scale, size.height as f64 / scale),
+        format!(
+            "{} {}",
+            size.width as f64 / scale,
+            size.height as f64 / scale
+        ),
     );
 }
 

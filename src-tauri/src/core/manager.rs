@@ -302,7 +302,7 @@ impl CoreManager {
     /// bindability. A just-killed Go core can leave accepted sockets behind
     /// after netstat no longer shows a LISTEN row; those sockets can still
     /// reject a replacement bind on Windows.
-    pub fn force_free_port(port: u16) -> AppResult<()> {
+    pub fn force_free_port(port: u16, residue_wait: Duration) -> AppResult<()> {
         if Self::is_port_free(port) {
             return Ok(());
         }
@@ -312,7 +312,7 @@ impl CoreManager {
         // moment for the OS to reclaim it; if a new listener appears, fall
         // through to the kill path rather than idling out the deadline.
         if !port_has_listener(port) {
-            let deadline = std::time::Instant::now() + Duration::from_millis(2000);
+            let deadline = std::time::Instant::now() + residue_wait;
             while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
                 if port_has_listener(port) {
                     break;
@@ -353,13 +353,13 @@ impl CoreManager {
     }
 
     /// Ensure mixed + API ports are free (kill leftovers from previous runs).
-    pub fn ensure_ports_free(ports: &[u16]) -> AppResult<()> {
+    pub fn ensure_ports_free(ports: &[u16], residue_wait: Duration) -> AppResult<()> {
         let list: Vec<u16> = ports.iter().copied().filter(|p| *p != 0).collect();
         if list.is_empty() {
             return Ok(());
         }
         for &p in &list {
-            Self::force_free_port(p)?;
+            Self::force_free_port(p, residue_wait)?;
         }
         Ok(())
     }
@@ -441,8 +441,26 @@ impl CoreManager {
             return Ok(());
         }
 
+        // Preserve the old privilege mode before stop() clears run_mode.
+        #[cfg(target_os = "windows")]
+        let was_elevated = matches!(self.run_mode, RunMode::ElevatedPid);
         // Drop our own child first if still tracked.
         let _ = self.stop();
+        #[cfg(target_os = "macos")]
+        let dropping_privilege = !elevated
+            && self
+                .binary_path
+                .as_deref()
+                .is_some_and(super::macos_auth::core_has_setuid);
+        #[cfg(target_os = "windows")]
+        let dropping_privilege = was_elevated && !elevated;
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let dropping_privilege = false;
+        let port_residue_wait = if dropping_privilege {
+            Duration::from_millis(2000)
+        } else {
+            Duration::from_millis(250)
+        };
         let mut ports = Vec::new();
         if mixed_port != 0 {
             ports.push(mixed_port);
@@ -458,7 +476,7 @@ impl CoreManager {
             }
         }
         if !ports.is_empty() {
-            Self::ensure_ports_free(&ports)?;
+            Self::ensure_ports_free(&ports, port_residue_wait)?;
         }
         self.owned_ports = ports.clone();
 
@@ -504,7 +522,7 @@ impl CoreManager {
         // Light re-check only (first ensure_ports_free already waited if needed).
         for &p in &ports {
             if !Self::is_port_free(p) && port_has_listener(p) {
-                Self::force_free_port(p)?;
+                Self::force_free_port(p, Duration::from_millis(2000))?;
             }
         }
 
@@ -752,12 +770,12 @@ impl CoreManager {
             let _ = child.kill();
         }
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::sleep(Duration::from_millis(20));
                 }
                 Ok(None) => {
                     let _ = child.kill();
@@ -790,13 +808,13 @@ impl CoreManager {
     /// do during app-exit shutdown (see there).
     pub fn await_owned_ports_released(&mut self) {
         let ports = std::mem::take(&mut self.owned_ports);
-        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+        let deadline = std::time::Instant::now() + Duration::from_millis(1000);
         for port in ports {
             while !Self::is_port_free(port) && std::time::Instant::now() < deadline {
                 if Self::has_port_listener(port) {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }

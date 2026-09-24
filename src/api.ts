@@ -403,6 +403,8 @@ export interface SettingsUpdatePayload {
   protocolCores?: import("./types").ProtocolCoreItem[] | null;
   /** Base loopback port for the sidecar's per-node inbounds. */
   sidecarPort?: number | null;
+  tlsFragmentSingbox?: boolean | null;
+  tlsFragmentXray?: boolean | null;
 }
 
 type SettingsWaiter = {
@@ -457,6 +459,8 @@ function scheduleSettingsWrite() {
       multiCoreEnabled: payload.multiCoreEnabled ?? null,
       protocolCores: payload.protocolCores ?? null,
       sidecarPort: payload.sidecarPort ?? null,
+      tlsFragmentSingbox: payload.tlsFragmentSingbox ?? null,
+      tlsFragmentXray: payload.tlsFragmentXray ?? null,
     })
       .then((settings) => {
         settingsSnapshot = settings;
