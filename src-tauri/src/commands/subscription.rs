@@ -690,7 +690,6 @@ pub fn remove_subscription(
 /// the "view raw config" modal. Node profiles have no config body (None);
 /// text / custom profiles fall back to their stored content when the raw
 /// file predates this feature.
-#[tauri::command(async)]
 /// Resolve the stored verbatim body of a subscription: the raw snapshot
 /// file when present; text/custom profiles fall back to their stored
 /// content (profiles whose file predates the snapshot feature). Node
