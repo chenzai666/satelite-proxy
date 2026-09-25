@@ -881,10 +881,10 @@ export function ConfigPage() {
                         onClick={() => { setMenuId(null); void openRawConfig(item); }}>
                         {t("config.menuViewConfig")}
                       </button>
-                      <button type="button" role="menuitem" className="sub-menu-item" disabled={busy}
+                      {item.source_kind !== "custom" && <button type="button" role="menuitem" className="sub-menu-item" disabled={busy}
                         onClick={() => { setMenuId(null); void openCoreSupport(item); }}>
                         {t("config.menuSupport")}
-                      </button>
+                      </button>}
                     </>}
                     {item.node_count > 0 && (
                         <button

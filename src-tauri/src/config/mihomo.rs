@@ -2252,7 +2252,7 @@ dialer-proxy: 不存在的节点
         nodes[1].name = "本地改名".into();
         let doc = parse(&build_mihomo_config(&nodes, &default_opts()).unwrap());
         assert_eq!(doc["proxies"][0]["dialer-proxy"].as_str(), Some(outbound_tag(&nodes[1]).as_str()));
-        nodes[1].raw.as_mut().unwrap().push_str("dialer-proxy: front\n");
+        nodes[1].raw.as_mut().unwrap().push_str("\ndialer-proxy: front\n");
         assert!(build_mihomo_config(&nodes, &default_opts()).is_err());
     }
 
