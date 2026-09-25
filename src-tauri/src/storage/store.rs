@@ -72,6 +72,9 @@ pub struct AppStore {
     /// Locally appended nodes, keyed by subscription-id|node-id; kept on refresh.
     #[serde(default)]
     pub appended_node_ids: std::collections::BTreeSet<String>,
+    /// Last effective selection per profile; ids remain stable across local renames.
+    #[serde(default)]
+    pub selected_nodes_by_subscription: std::collections::BTreeMap<String, String>,
     /// Items this build could not parse. Kept so save() writes them back
     /// instead of dropping newer-schema data.
     #[serde(skip)]
@@ -1038,6 +1041,7 @@ impl AppStore {
     /// Exclusive (default): only one subscription enabled.
     /// Mix: multiple can be enabled.
     pub fn ensure_subscription_enable_policy(&mut self) {
+        self.remember_current_node();
         let generated: Vec<String> = self
             .subscriptions
             .iter()
@@ -1113,6 +1117,7 @@ impl AppStore {
         if !contributes {
             return Ok(());
         }
+        self.remember_current_node();
         if self.settings.mix_mode {
             let currently = self
                 .subscriptions
@@ -1151,20 +1156,35 @@ impl AppStore {
         Ok(())
     }
 
-    /// Drop current_node if it is not in any enabled subscription.
-    pub fn ensure_current_node_valid(&mut self) {
-        if let Some(ref cur) = self.settings.current_node_id {
-            let still = self.nodes.iter().any(|n| {
-                &n.node.id == cur && {
-                    self.subscriptions
-                        .iter()
-                        .any(|s| s.enabled && s.id == n.subscription_id)
-                }
-            });
-            if !still {
-                self.settings.current_node_id = self.enabled_nodes().first().map(|n| n.id.clone());
-            }
+    /// Remember only a valid selection owned by an enabled generated profile.
+    pub fn remember_current_node(&mut self) {
+        let Some(id) = self.settings.current_node_id.as_ref() else { return };
+        if let Some(entry) = self.nodes.iter().find(|entry| &entry.node.id == id
+            && self.subscriptions.iter().any(|sub| sub.id == entry.subscription_id
+                && sub.enabled && sub.source.contributes_nodes())) {
+            self.selected_nodes_by_subscription.insert(entry.subscription_id.clone(), id.clone());
         }
+    }
+
+    /// Preserve a valid live selection (including mix mode). Otherwise restore
+    /// an enabled profile's remembered node, then fall back to its first node.
+    pub fn ensure_current_node_valid(&mut self) {
+        self.selected_nodes_by_subscription.retain(|sub_id, node_id| {
+            self.subscriptions.iter().any(|sub| &sub.id == sub_id && sub.source.contributes_nodes())
+                && self.nodes.iter().any(|entry| &entry.subscription_id == sub_id && &entry.node.id == node_id)
+        });
+        let enabled = self.enabled_nodes();
+        let valid = self.settings.current_node_id.as_ref()
+            .is_some_and(|id| enabled.iter().any(|node| &node.id == id));
+        if !valid {
+            self.settings.current_node_id = self.subscriptions.iter()
+                .filter(|sub| sub.enabled && sub.source.contributes_nodes())
+                .filter_map(|sub| self.selected_nodes_by_subscription.get(&sub.id))
+                .find(|id| enabled.iter().any(|node| &node.id == *id))
+                .cloned()
+                .or_else(|| enabled.first().map(|node| node.id.clone()));
+        }
+        self.remember_current_node();
     }
 
     /// New subscription: enable only when no other is enabled (or none exist).
@@ -1209,6 +1229,9 @@ impl AppStore {
     /// credentials changed so it hashes to a different id). Keeps
     /// `favorite_nodes` from growing unboundedly with unreachable ids.
     fn gc_favorite_nodes(&mut self) {
+        self.selected_nodes_by_subscription.retain(|sub_id, node_id| {
+            self.nodes.iter().any(|entry| &entry.subscription_id == sub_id && &entry.node.id == node_id)
+        });
         let valid: std::collections::HashSet<&str> =
             self.nodes.iter().map(|n| n.node.id.as_str()).collect();
         self.node_order.retain(|id| valid.contains(id.as_str()));
@@ -1225,6 +1248,7 @@ impl AppStore {
     }
 
     pub fn clear_node_customizations_for_subscription(&mut self, subscription_id: &str) {
+        self.selected_nodes_by_subscription.remove(subscription_id);
         let prefix = format!("{subscription_id}|");
         self.node_overrides
             .retain(|key, _| !key.starts_with(&prefix));
@@ -2194,6 +2218,11 @@ fn store_from_json(value: Value) -> AppStore {
             store.appended_node_ids = ids;
         }
     }
+    if let Some(value) = obj.get("selected_nodes_by_subscription") {
+        if let Ok(selected) = serde_json::from_value(value.clone()) {
+            store.selected_nodes_by_subscription = selected;
+        }
+    }
     if let Some(value) = obj.get("node_overrides") {
         if let Ok(overrides) = serde_json::from_value(value.clone()) {
             store.node_overrides = overrides;
@@ -2990,6 +3019,95 @@ mod tests {
         assert!(parse_store(&fs::read_to_string(&path).unwrap()).is_ok());
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    fn selection_memory_store() -> AppStore {
+        let mut store = AppStore::default();
+        store.subscriptions = vec![sample_url_sub("a"), sample_url_sub("b")];
+        store.subscriptions[1].enabled = false;
+        store.nodes = vec![stored_node("id-a", "a1"), stored_node("id-a", "a2"),
+            stored_node("id-b", "b1"), stored_node("id-b", "b2")];
+        store.settings.current_node_id = Some("a2".into());
+        store
+    }
+
+    #[test]
+    fn profile_switch_restores_each_profiles_last_node() {
+        let mut store = selection_memory_store();
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b1"));
+        store.settings.current_node_id = Some("b2".into());
+        store.activate_subscription("id-a").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b2"));
+    }
+
+    #[test]
+    fn profile_selection_survives_persistence_and_rename() {
+        let mut store = selection_memory_store();
+        store.rename_node("a2", "已改名".into()).unwrap();
+        store.activate_subscription("id-b").unwrap();
+        let mut restored = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        restored.ensure_subscription_enable_policy();
+        restored.activate_subscription("id-a").unwrap();
+        assert_eq!(restored.settings.current_node_id.as_deref(), Some("a2"));
+        assert_eq!(restored.find_node("a2").unwrap().name, "已改名");
+    }
+
+    #[test]
+    fn deleted_remembered_node_falls_back_and_empty_profile_clears_selection() {
+        let mut store = selection_memory_store();
+        store.activate_subscription("id-b").unwrap();
+        store.delete_node("a2").unwrap();
+        assert!(!store.selected_nodes_by_subscription.contains_key("id-a"));
+        store.activate_subscription("id-a").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a1"));
+        store.delete_node("a1").unwrap();
+        assert_eq!(store.settings.current_node_id, None);
+        store.remove_subscription("id-a").unwrap();
+        assert!(!store.selected_nodes_by_subscription.contains_key("id-a"));
+    }
+
+    #[test]
+    fn mixed_profiles_preserve_valid_current_node_and_auto_mode() {
+        let mut store = selection_memory_store();
+        store.settings.auto_select = crate::domain::AutoSelectMode::Kernel;
+        store.set_mix_mode(true).unwrap();
+        store.selected_nodes_by_subscription.insert("id-b".into(), "b2".into());
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+        store.activate_subscription("id-a").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b2"));
+        assert_eq!(store.settings.auto_select, crate::domain::AutoSelectMode::Kernel);
+    }
+
+    #[test]
+    fn selection_memory_rejects_cross_profile_ids_and_loads_legacy_data() {
+        let mut store = selection_memory_store();
+        store.selected_nodes_by_subscription.insert("id-b".into(), "a2".into());
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b1"));
+        let mut value = serde_json::to_value(selection_memory_store()).unwrap();
+        value.as_object_mut().unwrap().remove("selected_nodes_by_subscription");
+        let mut legacy = store_from_json(value);
+        legacy.ensure_subscription_enable_policy();
+        legacy.activate_subscription("id-b").unwrap();
+        legacy.activate_subscription("id-a").unwrap();
+        assert_eq!(legacy.settings.current_node_id.as_deref(), Some("a2"));
+    }
+
+    #[test]
+    fn refreshing_inactive_profile_retains_selection_for_stable_node_id() {
+        let mut store = selection_memory_store();
+        store.activate_subscription("id-b").unwrap();
+        let mut profile = sample_url_sub("a");
+        profile.enabled = false;
+        let mut renamed = store.find_node("a2").unwrap().clone();
+        renamed.name = "订阅更名".into();
+        store.upsert_subscription(profile, vec![store.find_node("a1").unwrap().clone(), renamed]).unwrap();
+        store.activate_subscription("id-a").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
     }
 
     fn sample_url_sub(name: &str) -> Subscription {

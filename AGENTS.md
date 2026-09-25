@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-09-25（1.0.45 同版本修复）：AppStore.selected_nodes_by_subscription 按配置 ID 保存最后有效节点 ID，宽容读取器 store_from_json 必须恢复该字段。activate_subscription 切走前记忆，ensure_current_node_valid 优先保留有效当前节点，再恢复已启用配置的记忆，最后首节点兜底；无节点清空。手动/智能选点与内核自动选择同步记忆，不修改自动选择模式。删除、刷新清理失效引用；内核选择异步回包不得写入已禁用配置的节点。回归覆盖往返、序列化、改名、混合模式、刷新、删除及旧数据。
+
 2026-09-25：本轮整合上游 **1.0.45**，详见 docs/upstream-integration-1.0.45.md 与 docs/release-1.0.45.md。ProxyNode.raw 保存 Clash 原文，Mihomo 发射原文但改写内部 tag；表单编辑清除原文，改名保留原始名称用于组/代理链引用。Unknown 仅供 SSR/mieru 原文透传，不支持表单编辑。SubscriptionSource::Custom{content,kind} 替代 Singbox，旧存储兼容；运行时 RuntimeSource::Singbox 标记保持。新增 add_subscription_custom、get_subscription_raw_config、get_subscription_core_support 命令及 services/core_support.rs。原文存入 subscriptions/<id>.txt，列表 IPC 移除 raw。自定义 SOCKS-only 入站不设置 HTTP 系统代理。保留 fork 节点 ID、追加副本、编辑覆盖及原生 Mihomo 规则。以下版本记录为历史。
 
 面向 AI agent 的项目速查文档。读完本文即可定位绝大多数代码，无需重复探索。

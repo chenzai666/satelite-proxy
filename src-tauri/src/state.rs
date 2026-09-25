@@ -1945,6 +1945,7 @@ impl AppState {
                 store.settings.core_type = fallback.as_str().to_string();
             }
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
+            store.remember_current_node();
             Ok((store.settings.clone(), was_kernel))
         })?;
         if let Some(fallback) = fallback_core {
@@ -2067,15 +2068,26 @@ impl AppState {
             return;
         }
 
-        if let Err(e) = self.with_store_mut(|store| {
+        let persisted = self.with_store_mut(|store| {
+            // An HTTP poll can finish after the user switched profiles or
+            // left kernel-auto mode. Do not overwrite the restored selection.
+            if store.settings.auto_select != AutoSelectMode::Kernel
+                || store.settings.runtime_source().is_custom()
+                || !store.enabled_nodes().iter().any(|node| node.id == node_id)
+            {
+                return Ok(false);
+            }
             store.settings.current_node_id = Some(node_id.clone());
-            Ok(())
-        }) {
-            app_log::warn(
-                "auto_select",
-                format!("persist kernel selection failed: {e}"),
-            );
-            return;
+            store.remember_current_node();
+            Ok(true)
+        });
+        match persisted {
+            Ok(true) => {},
+            Ok(false) => return,
+            Err(e) => {
+                app_log::warn("auto_select", format!("persist kernel selection failed: {e}"));
+                return;
+            }
         }
         app_log::info(
             "auto_select",
