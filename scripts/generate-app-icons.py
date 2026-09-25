@@ -11,16 +11,25 @@ swapping in a new source, trim alpha<4 glow noise, force-square the
 content, then center it at that ratio). The .icns writer is pure Python
 (PNG payloads), so no iconutil / macOS needed.
 
-Windows/Linux outputs re-normalize the tile to TILE_ART_SCALE (~96% of
-the canvas, own rounded corners kept, corners stay transparent): the
-source's 14% transparent margin made the taskbar icon read noticeably
-smaller than full-square apps. A soft ice-blue outer halo (TILE_HALO_*)
-traces the tile silhouette so the dark tile reads at full size on dark
-taskbars too — the glyph itself is mostly dark, so without the halo the
-perceived icon was just the inner planet. This is deliberately NOT the
-macOS full-bleed treatment (opaque dark base + own 15% mask) — that
-variant was tried for Windows and reverted: the ~25% tile radius recedes
-past the 15% mask near the corners and the base showed as square corners.
+Windows outputs (.ico entries, Square*Logo, StoreLogo) come from the mac
+source AS-IS since 2026-09-24 (user request: the Windows app icon should
+match the macOS look): same treatment as the .icns — resized only, no
+bbox crop, no TILE_ART_SCALE renormalization, no halo. The tile already
+sits at ~94% of its canvas with the hand-tuned radius, so nothing needs
+normalizing away.
+
+Linux PNG outputs (icon.png, 32x32, 128x128@2x) still re-normalize the
+web tile to TILE_ART_SCALE (~96% of the canvas, own rounded corners
+kept, corners stay transparent) plus a soft ice-blue outer halo
+(TILE_HALO_*): the source's 14% transparent margin made the icon read
+noticeably smaller than full-square apps, and the dark glyph needs the
+halo ring to read at full size on dark taskbars. That normalization +
+halo pipeline used to feed the Windows products too (2026-09-24 morning)
+and was replaced by the mac-source pass-through above the same day; it
+now feeds only these PNGs. The opaque-base full-bleed variant stays
+forbidden on Windows/Linux either way (tried & reverted 2026-09-22: the
+~25% tile radius recedes past a 15% mask near the corners and the base
+showed as square corners).
 
 The .icns payloads (make_mac_icon) come from a separate, hand-tuned
 source: assets/icon/ic_launcher-mac.png. It's used as-is (only resized
@@ -32,8 +41,9 @@ every icon with the system squircle and plates transparent margins with
 a light backdrop). See mac_icon_1024 for the history of the two earlier
 programmatic derivations this replaced.
 
-Windows / Linux outputs (ico, Square*, pngs) keep the source's rounded
-transparent-margin design — those platforms render transparency natively.
+Windows / Linux outputs keep a rounded transparent-margin design — those
+platforms render transparency natively (Windows ico/Square* via the mac
+source, Linux pngs via the tile pipeline).
 
 Tray icons live in generate-tray-icons.py — this script never touches them.
 """
@@ -177,18 +187,19 @@ def make_mac_icon(size: int) -> Image.Image:
 
 
 def _ico_entry(size: int) -> Image.Image:
-    """One .ico entry, tuned for Windows title-bar legibility (2026-09).
+    """One .ico entry, tuned for Windows legibility (2026-09 recipe).
 
-    Entries <=48px are single-step LANCZOS downscales from the normalized
-    1024 tile canvas with a mild unsharp pass on RGB only (alpha keeps its
-    clean AA) and, for <=32px, a slight midtone lift — the frost artwork is
-    a dark planet on a dark tile with soft glow and reads as mush when
-    merely resampled at 16-24px. Bigger entries keep the plain
-    make_app_icon pipeline.
+    Base is the mac source as-is (see module docstring): entries >48px
+    ride the plain make_mac_icon halving pipeline, entries <=48px are
+    single-step LANCZOS downscales from the 1024 canvas with a mild
+    unsharp pass on RGB only (alpha keeps its clean AA) and, for <=32px,
+    a slight midtone lift — the frost artwork is a dark planet on a dark
+    tile with soft glow and reads as mush when merely resampled at
+    16-24px.
     """
     if size > 48:
-        return make_app_icon(size)
-    im = tile_icon_1024().resize((size, size), Image.Resampling.LANCZOS)
+        return make_mac_icon(size)
+    im = mac_icon_1024().resize((size, size), Image.Resampling.LANCZOS)
     r, g, b, a = im.split()
     rgb = Image.merge("RGB", (r, g, b))
     if size <= 32:
@@ -251,6 +262,10 @@ def main() -> None:
         ("32x32.png", 32),
         ("128x128.png", 128),
         ("128x128@2x.png", 256),
+    ]:
+        make_app_icon(sz).save(OUT / name, format="PNG")
+    # Windows store/msi assets share the mac source so they match the .ico.
+    for name, sz in [
         ("Square30x30Logo.png", 30),
         ("Square44x44Logo.png", 44),
         ("Square71x71Logo.png", 71),
@@ -262,7 +277,7 @@ def main() -> None:
         ("Square310x310Logo.png", 310),
         ("StoreLogo.png", 50),
     ]:
-        make_app_icon(sz).save(OUT / name, format="PNG")
+        make_mac_icon(sz).save(OUT / name, format="PNG")
 
     write_ico(OUT / "icon.ico")
     write_icns()

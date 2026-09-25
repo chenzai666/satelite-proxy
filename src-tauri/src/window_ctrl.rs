@@ -8,7 +8,7 @@ use crate::state::AppState;
 use std::fs;
 use std::path::PathBuf;
 use tauri::{
-    image::Image, window::Color, AppHandle, LogicalSize, Manager, Runtime, Theme, WebviewUrl,
+    image::Image, window::Color, AppHandle, LogicalPosition, LogicalSize, Manager, Runtime, Theme, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder,
 };
 
@@ -226,10 +226,17 @@ fn window_size_file(app_data_dir: &std::path::Path, mode: &str) -> PathBuf {
         .join(format!("window_size_{mode}"))
 }
 
-/// Persisted per-mode window size (logical px, "<w> <h>") so a recreated or
-/// restarted window is born directly at its final size — resizing after the
-/// WebView paints reads as a grow animation to the user.
-fn read_window_size(app_data_dir: &std::path::Path, mode: &str) -> Option<(f64, f64)> {
+/// Persisted per-mode window layout (logical px, `"<w> <h> [x y]"`) so a
+/// recreated or restarted window is born directly at its final size and
+/// position — resizing or moving after the WebView paints reads as an
+/// animation to the user. The position tokens are optional so size-only
+/// files from older versions keep parsing.
+struct WindowLayout {
+    size: (f64, f64),
+    position: Option<(f64, f64)>,
+}
+
+fn read_window_layout(app_data_dir: &std::path::Path, mode: &str) -> Option<WindowLayout> {
     let raw = fs::read_to_string(window_size_file(app_data_dir, mode)).ok()?;
     let mut parts = raw.split_whitespace();
     let w: f64 = parts.next()?.parse().ok()?;
@@ -238,14 +245,55 @@ fn read_window_size(app_data_dir: &std::path::Path, mode: &str) -> Option<(f64, 
         return None;
     }
     let (min_w, min_h) = min_for_ui_mode(mode);
-    Some((w.clamp(min_w, 8192.0), h.clamp(min_h, 8192.0)))
+    let size = (w.clamp(min_w, 8192.0), h.clamp(min_h, 8192.0));
+    let x: Option<f64> = parts.next().and_then(|p| p.parse().ok());
+    let y: Option<f64> = parts.next().and_then(|p| p.parse().ok());
+    let position = match (x, y) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() => Some((x, y)),
+        _ => None,
+    };
+    Some(WindowLayout { size, position })
 }
 
-/// Save the main window's current logical size for its UI mode. Called when
-/// hiding to tray / quitting — the moments the WebView may be destroyed.
-/// Maximized sizes are skipped: restoring one would produce a full-screen
-/// window that is not actually maximized.
-fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
+/// True when a `w×h` window at logical `(x, y)` overlaps some connected
+/// monitor's work area by enough to grab — restoring onto an unplugged
+/// monitor or a shrunken desktop would strand the window off-screen. Each
+/// work area is converted with its own monitor's scale factor, an
+/// approximation on mixed-DPI setups that errs toward "reachable".
+fn position_reachable<R: Runtime>(app: &AppHandle<R>, x: f64, y: f64, w: f64, h: f64) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return false;
+    };
+    monitors.iter().any(|m| {
+        let scale = m.scale_factor();
+        if !scale.is_finite() || scale <= 0.0 {
+            return false;
+        }
+        let wa = m.work_area();
+        let left = wa.position.x as f64 / scale;
+        let top = wa.position.y as f64 / scale;
+        let right = left + wa.size.width as f64 / scale;
+        let bottom = top + wa.size.height as f64 / scale;
+        titlebar_reachable(x, y, w, h, (left, top, right, bottom))
+    })
+}
+
+fn titlebar_reachable(x: f64, y: f64, w: f64, h: f64, area: (f64, f64, f64, f64)) -> bool {
+    if ![x, y, w, h, area.0, area.1, area.2, area.3].iter().all(|v| v.is_finite()) {
+        return false;
+    }
+    // Seeing only the lower content is not enough: the title bar must remain
+    // reachable after a monitor above the primary has been disconnected.
+    let overlap_w = (x + w).min(area.2) - x.max(area.0);
+    let overlap_h = (y + h.min(40.0)).min(area.3) - y.max(area.1);
+    overlap_w >= 80.0 && overlap_h >= 24.0
+}
+
+/// Save the main window's current logical size and position for its UI mode.
+/// Called when hiding to tray / quitting — the moments the WebView may be
+/// destroyed. Maximized snapshots are skipped: restoring one would produce a
+/// full-screen window that is not actually maximized.
+fn persist_main_window_layout<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
@@ -259,6 +307,9 @@ fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
     let Ok(size) = win.inner_size() else {
         return;
     };
+    let Ok(pos) = win.outer_position() else {
+        return;
+    };
     let scale = win.scale_factor().unwrap_or(1.0);
     if scale <= 0.0 {
         return;
@@ -270,29 +321,43 @@ fn persist_main_window_size<R: Runtime>(app: &AppHandle<R>) {
     let _ = fs::write(
         path,
         format!(
-            "{} {}",
+            "{} {} {} {}",
             size.width as f64 / scale,
-            size.height as f64 / scale
+            size.height as f64 / scale,
+            pos.x as f64 / scale,
+            pos.y as f64 / scale
         ),
     );
 }
 
-/// Resize the just-created main window (born at the design size from config)
-/// to the persisted size before the WebView paints — cold-start companion
-/// to the tray-recreate sizing in `show_main`. Also lowers the config min
-/// (960x720) to the simple-mode floor so a simple window can shrink here.
-pub fn restore_main_window_size<R: Runtime>(app: &AppHandle<R>) {
+/// Resize and reposition the just-created main window (born centered at the
+/// design size from config) to the persisted layout before the WebView
+/// paints — cold-start companion to the tray-recreate sizing in `show_main`.
+/// Also lowers the config min (960x720) to the simple-mode floor so a simple
+/// window can shrink here. Without a usable position the window re-centers:
+/// config centers the 960x720 design size, so a simple-mode resize would
+/// otherwise sit off-center.
+pub fn restore_main_window_layout<R: Runtime>(app: &AppHandle<R>) {
     let Some(state) = app.try_state::<AppState>() else {
         return;
     };
     let mode = read_ui_mode(&state.app_data_dir);
-    let Some((w, h)) = read_window_size(&state.app_data_dir, mode) else {
+    let Some(layout) = read_window_layout(&state.app_data_dir, mode) else {
         return;
     };
+    let (w, h) = layout.size;
     if let Some(win) = app.get_webview_window("main") {
         let (min_w, min_h) = min_for_ui_mode(mode);
         let _ = win.set_min_size(Some(LogicalSize::new(min_w, min_h)));
         let _ = win.set_size(LogicalSize::new(w, h));
+        match layout.position {
+            Some((x, y)) if position_reachable(app, x, y, w, h) => {
+                let _ = win.set_position(LogicalPosition::new(x, y));
+            }
+            _ => {
+                let _ = win.center();
+            }
+        }
     }
 }
 /// macOS: show Dock icon (foreground app). No-op on other platforms.
@@ -329,6 +394,13 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         apply_titlebar_accent(app);
         let _ = w.show();
         let _ = w.unminimize();
+        if let (Ok(pos), Ok(size), Ok(scale)) = (w.outer_position(), w.inner_size(), w.scale_factor()) {
+            if scale.is_finite() && scale > 0.0 && !position_reachable(app,
+                pos.x as f64 / scale, pos.y as f64 / scale,
+                size.width as f64 / scale, size.height as f64 / scale) {
+                let _ = w.center();
+            }
+        }
         let _ = w.set_focus();
     } else {
         // Use last persisted UI mode so we don't flash pro (960) then shrink to simple.
@@ -336,11 +408,15 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             .try_state::<AppState>()
             .map(|s| read_ui_mode(&s.app_data_dir).to_string())
             .unwrap_or_else(|| "pro".into());
-        // Born at the persisted size (persist_main_window_size) so waking
-        // from tray shows the final size directly — no grow animation.
-        let (w, h) = app
+        // Born at the persisted layout (persist_main_window_layout) so waking
+        // from tray shows the final size and position directly — no grow
+        // animation, no OS cascade placement.
+        let layout = app
             .try_state::<AppState>()
-            .and_then(|s| read_window_size(&s.app_data_dir, &mode))
+            .and_then(|s| read_window_layout(&s.app_data_dir, &mode));
+        let (w, h) = layout
+            .as_ref()
+            .map(|l| l.size)
             .unwrap_or_else(|| size_for_ui_mode(&mode));
         let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Satelite")
@@ -356,6 +432,10 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
             // can recreate a window that never becomes key.
             .visible(true)
             .focused(true);
+        let builder = match layout.as_ref().and_then(|l| l.position) {
+            Some((x, y)) if position_reachable(app, x, y, w, h) => builder.position(x, y),
+            _ => builder.center(),
+        };
         let builder = match Image::from_bytes(include_bytes!("../icons/128x128.png"))
             .and_then(|icon| builder.icon(icon))
         {
@@ -423,9 +503,9 @@ pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
         // exit_allowed stays false.
     }
 
-    // Capture the size while the window still exists — destroy below may
-    // drop it, and the next recreate needs it at build time.
-    persist_main_window_size(app);
+    // Capture the size and position while the window still exists — destroy
+    // below may drop it, and the next recreate needs them at build time.
+    persist_main_window_layout(app);
 
     // Hide Dock icon before (or with) hide — matches close-to-tray-and-dock.md.
     set_dock_visible(app, false);
@@ -446,12 +526,84 @@ pub fn hide_main_to_tray<R: Runtime>(app: &AppHandle<R>) {
 
 /// Explicit full quit: allow exit, stop core, exit process.
 pub fn quit_app<R: Runtime>(app: &AppHandle<R>) {
-    // Keep the window size file fresh for the next launch (no-op when the
+    // Keep the window layout file fresh for the next launch (no-op when the
     // WebView was already destroyed — hide_main_to_tray persisted then).
-    persist_main_window_size(app);
+    persist_main_window_layout(app);
     if let Some(state) = app.try_state::<AppState>() {
         state.allow_exit();
         state.shutdown_runtime();
     }
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_requires_reachable_titlebar() {
+        let primary = (0.0, 0.0, 1920.0, 1040.0);
+        assert!(titlebar_reachable(100.0, 100.0, 960.0, 720.0, primary));
+        assert!(!titlebar_reachable(2000.0, 100.0, 960.0, 720.0, primary));
+        assert!(!titlebar_reachable(100.0, -600.0, 960.0, 720.0, primary));
+        assert!(!titlebar_reachable(1900.0, 100.0, 960.0, 720.0, primary));
+        assert!(titlebar_reachable(-1800.0, 50.0, 960.0, 720.0, (-1920.0, 0.0, 0.0, 1080.0)));
+        assert!(!titlebar_reachable(f64::NAN, 0.0, 960.0, 720.0, primary));
+    }
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("satelite-window-ctrl-{tag}-{}", std::process::id()))
+    }
+
+    fn write_layout(tag: &str, contents: &str) -> std::path::PathBuf {
+        let root = temp_root(tag);
+        std::fs::create_dir_all(root.join("data")).expect("create temp data dir");
+        std::fs::write(window_size_file(&root, "pro"), contents).expect("write layout file");
+        root
+    }
+
+    #[test]
+    fn parses_size_and_position() {
+        let root = write_layout("full", "1100 800 240 130\n");
+        let l = read_window_layout(&root, "pro").expect("layout");
+        assert_eq!(l.size, (1100.0, 800.0));
+        assert_eq!(l.position, Some((240.0, 130.0)));
+    }
+
+    #[test]
+    fn parses_legacy_size_only() {
+        let root = write_layout("legacy", "1280 800");
+        let l = read_window_layout(&root, "pro").expect("layout");
+        assert_eq!(l.size, (1280.0, 800.0));
+        assert_eq!(
+            l.position, None,
+            "no position tokens -> None, not a failure"
+        );
+    }
+
+    #[test]
+    fn parses_negative_positions() {
+        // Monitor left of / above the primary has negative coordinates.
+        let root = write_layout("negative", "960 720 -1920.5 -8");
+        let l = read_window_layout(&root, "pro").expect("layout");
+        assert_eq!(l.position, Some((-1920.5, -8.0)));
+    }
+
+    #[test]
+    fn clamps_size_to_mode_floor() {
+        let root = write_layout("clamp", "100 100 0 0");
+        let l = read_window_layout(&root, "pro").expect("layout");
+        assert_eq!(l.size, (960.0, 720.0), "pro floor is the design size");
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        let root = write_layout("garbage", "not-a-number");
+        assert!(read_window_layout(&root, "pro").is_none());
+        let root = write_layout("height-missing", "960");
+        assert!(read_window_layout(&root, "pro").is_none());
+        let root = temp_root("absent");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(read_window_layout(&root, "pro").is_none());
+    }
 }

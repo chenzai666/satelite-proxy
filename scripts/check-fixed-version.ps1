@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$expectedVersion = "1.0.43"
+$expectedVersion = "1.0.44"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
 $packageVersion = (Get-Content -LiteralPath (Join-Path $repoRoot "package.json") -Raw |

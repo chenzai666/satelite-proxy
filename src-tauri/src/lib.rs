@@ -198,7 +198,7 @@ pub fn run() {
             // node-latency-changed notifications.
             state::set_app_handle(app.handle().clone());
             window_ctrl::apply_main_window_icon(app.handle());
-            window_ctrl::restore_main_window_size(app.handle());
+            window_ctrl::restore_main_window_layout(app.handle());
             window_ctrl::apply_window_theme(app.handle());
             if let Some(state) = app.try_state::<AppState>() {
                 if let Ok(status) = state.proxy_status() {
