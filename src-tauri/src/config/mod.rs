@@ -15,7 +15,8 @@ pub use builder::{
     subscription_proxy_port, BuildOptions, SidecarPlan, SidecarPort, DIAG_INBOUND_PORT,
     DIAG_INBOUND_TAG, DIAG_SELECTOR_TAG, SUBSCRIPTION_PROXY_USERNAME,
 };
-pub use custom::inspect_singbox_config;
+pub use custom::{inspect_singbox_config, inspect_mihomo_config, inspect_xray_config};
+pub use write::{raw_subscription_path, remove_raw_subscription, write_raw_subscription};
 pub use dns_build::lookup_hosts;
 pub use dns_files::dump_dns_rules_file;
 pub use mihomo::{build_mihomo_config, build_mihomo_sidecar_config};

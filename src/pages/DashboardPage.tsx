@@ -638,16 +638,17 @@ function coreDisplayName(kind: string | null | undefined): string {
   }
 
   const customProfiles = useMemo(
-    () => subs.filter((s) => s.source_kind === "singbox"),
+    () => subs.filter((s) => s.source_kind === "custom"),
     [subs],
   );
   const selectedCustomId =
     proxy?.runtime_source === "singbox" ? (proxy.runtime_profile_id ?? null) : null;
-  // Custom sing-box profiles cannot run under the Xray/mihomo cores (they
-  // always use the sing-box binary); grey them out while a foreign core is
-  // active. The "generated" option stays live — it generates for the active
-  // core. While a custom profile IS running, core_type truthfully reports
-  // singbox, so switching between profiles / back to generated keeps working.
+  // Custom profiles launch whichever kernel their config targets (sing-box /
+  // mihomo / Xray), independent of settings.core_type; grey them out while a
+  // foreign generated core is active to keep the picker readable. The
+  // "generated" option stays live — it generates for the active core. While
+  // a custom profile IS running, core_type truthfully reports its kernel, so
+  // switching between profiles / back to generated keeps working.
   const foreignCore =
     proxy?.core_type === "xray" || proxy?.core_type === "mihomo";
 
@@ -880,7 +881,7 @@ function coreDisplayName(kind: string | null | undefined): string {
   const heroSub = !detailsReady && running
     ? null
     : customRuntime
-      ? t("config.singboxReadonly")
+      ? t("config.customReadonly")
       : running
         ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
             .filter(Boolean)
@@ -1710,7 +1711,7 @@ function coreDisplayName(kind: string | null | undefined): string {
               <>
                 <div>
                   <span className="kv-k">{t("config.singbox")}</span>
-                  <span className="kv-v">{t("config.singboxReadonly")}</span>
+                  <span className="kv-v">{t("config.customReadonly")}</span>
                 </div>
                 <div>
                   <span className="kv-k">IN</span>

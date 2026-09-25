@@ -67,6 +67,7 @@ pub fn draft_to_node(
         udp: draft.udp,
         config,
         source: Some("manual".into()),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     }
@@ -274,6 +275,9 @@ fn parse_shadow_tls_opts(opts: Option<&str>) -> Result<ShadowTlsOpts, String> {
 
 fn build_config(draft: &ManualNodeDraft, protocol: Protocol) -> Result<ProtocolConfig, String> {
     match protocol {
+        Protocol::Unknown => {
+            return Err("unknown protocol cannot be built from a form draft".into())
+        }
         Protocol::Shadowsocks => {
             let plugin = opt_nonempty(&draft.plugin);
             let plugin_opts = opt_nonempty(&draft.plugin_opts);
@@ -472,6 +476,9 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
         }
     }
     match &node.config {
+        // Raw-passthrough node: no modeled protocol fields. Editing is
+        // rejected at the command level; keep the round-trip lossless.
+        ProtocolConfig::Unknown => {}
         ProtocolConfig::Shadowsocks {
             method,
             password,

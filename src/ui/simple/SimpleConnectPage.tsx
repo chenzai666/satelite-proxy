@@ -243,7 +243,7 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
   const heroSub = !nodeReady && running
     ? null
     : customRuntime
-      ? t("config.singboxReadonly")
+      ? t("config.customReadonly")
       : running
         ? [node?.protocol?.toUpperCase(), testing ? "…" : fmtLatency(node?.latency_ms)]
             .filter(Boolean)

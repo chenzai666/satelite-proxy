@@ -136,8 +136,10 @@ export interface SubscriptionTraffic {
 export interface SubscriptionView {
   id: string;
   name: string;
-  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
+  source_kind: "url" | "file" | "text" | "node" | "custom" | string;
   source_display: string;
+  /** Kernel type of a custom profile: singbox | mihomo | xray. */
+  custom_kind?: string | null;
   last_update: number;
   node_count: number;
   enabled: boolean;
@@ -154,7 +156,9 @@ export interface SubscriptionView {
 export interface SubscriptionDetail {
   id: string;
   name: string;
-  source_kind: "url" | "file" | "text" | "node" | "singbox" | string;
+  source_kind: "url" | "file" | "text" | "node" | "custom" | string;
+  /** Kernel type of a custom profile: singbox | mihomo | xray. */
+  custom_kind?: string | null;
   url?: string | null;
   path?: string | null;
   content?: string | null;
@@ -176,6 +180,29 @@ export interface SubscriptionDetail {
 export interface SubscriptionUrlEntry {
   id: string;
   url: string;
+}
+
+/** One node a core cannot serve, with the filter's reason. */
+export interface CoreUnsupportedItem {
+  name: string;
+  /** Original clash `type` string when known, else the protocol key. */
+  type_label: string;
+  reason: string;
+}
+
+/** Per-core node-support stats for a subscription's raw body (backend
+ *  `CoreSupportReport`). */
+export interface CoreSupportReport {
+  format: string;
+  total_entries: number;
+  recognized: number;
+  cores: { singbox: number; mihomo: number; xray: number };
+  unsupported: {
+    singbox: CoreUnsupportedItem[];
+    mihomo: CoreUnsupportedItem[];
+    xray: CoreUnsupportedItem[];
+  };
+  skipped: { name?: string | null; reason: string }[];
 }
 
 export interface ImportResult {
@@ -292,7 +319,11 @@ export type ProtocolConfig =
       mtu?: number;
       network?: string;
       congestion_controller?: string;
-    };
+    }
+  /** Raw-passthrough node (mihomo-native type the app doesn't model, e.g.
+   *  ssr / mieru) — no modeled fields; emitted verbatim from `raw` in
+   *  mihomo generation. */
+  | { protocol: "unknown" };
 
 /** TLS layer — mirrors Rust `TlsConfig`. REALITY fields only carry values on
  * reality nodes; the section is hidden when TLS is fully off. */
@@ -391,9 +422,9 @@ export interface ExitIpInfo {
   source: string;
 }
 
-export type AddSourceKind = "url" | "file" | "text" | "node" | "singbox";
+export type AddSourceKind = "url" | "file" | "text" | "node" | "custom";
 
-export type ProfileKind = "subscription" | "local" | "singbox";
+export type ProfileKind = "subscription" | "local" | "custom";
 export type LocalKind = "node" | "multi";
 export type ConfigInputMode = "paste" | "file";
 

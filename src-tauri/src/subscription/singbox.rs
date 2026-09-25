@@ -183,6 +183,7 @@ fn parse_outbound(value: &Value) -> Result<ParseOutbound, String> {
     let display = name.unwrap_or_else(|| format!("{type_lc}-{server}-{port}"));
     let udp = get_bool(map, &["udp"]);
     let (tls, transport, config) = match protocol {
+        Protocol::Unknown => unreachable!("sing-box json never yields Unknown"),
         Protocol::Shadowsocks => parse_ss(map)?,
         Protocol::Vmess => parse_vmess(map)?,
         Protocol::Vless => parse_vless(map)?,
@@ -215,6 +216,7 @@ fn parse_outbound(value: &Value) -> Result<ParseOutbound, String> {
         udp,
         config,
         source: Some(type_str),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     }))

@@ -3,7 +3,7 @@ use crate::domain::{
 };
 use crate::services::import::{
     canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
-    import_from_singbox, import_from_text, import_from_url_with_id, SubscriptionProxy,
+    import_from_custom, import_from_text, import_from_url_with_id, SubscriptionProxy,
 };
 use crate::state::AppState;
 use crate::subscription::node_to_draft;
@@ -300,8 +300,10 @@ pub async fn add_subscription_node(
     persist_import(&app, &state, outcome)
 }
 
+/// Add a complete custom config ("自定义配置"). The kernel type (sing-box /
+/// mihomo / Xray) is detected from the body itself.
 #[tauri::command]
-pub async fn add_subscription_singbox(
+pub async fn add_subscription_custom(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: Option<String>,
@@ -309,7 +311,7 @@ pub async fn add_subscription_singbox(
     path: Option<String>,
 ) -> Result<ImportResult, String> {
     let body = load_inline_body(content, path).await?;
-    let outcome = import_singbox_blocking(name, body, None).await?;
+    let outcome = import_custom_blocking(name, body, None).await?;
     persist_import(&app, &state, outcome)
 }
 
@@ -429,9 +431,9 @@ pub async fn update_subscription(
             o.subscription.via_proxy = false;
             (o, None, false)
         }
-        "singbox" => {
+        "custom" | "singbox" => {
             let body = load_inline_body(content, path).await?;
-            let mut o = import_singbox_blocking(Some(display_name), body, Some(id.clone())).await?;
+            let mut o = import_custom_blocking(Some(display_name), body, Some(id.clone())).await?;
             o.subscription.via_proxy = false;
             (o, None, false)
         }
@@ -563,8 +565,8 @@ async fn refresh_subscription_once(
             )
             .await?
         }
-        crate::domain::SubscriptionSource::Singbox { content } => {
-            import_singbox_blocking(
+        crate::domain::SubscriptionSource::Custom { content, .. } => {
+            import_custom_blocking(
                 Some(existing.name.clone()),
                 content.clone(),
                 Some(id.clone()),
@@ -638,16 +640,16 @@ async fn import_node_blocking(
     .map_err(|error| format!("subscription node task: {error}"))?
 }
 
-async fn import_singbox_blocking(
+async fn import_custom_blocking(
     name: Option<String>,
     content: String,
     existing_id: Option<String>,
 ) -> Result<crate::services::import::ImportOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        import_from_singbox(name, content, existing_id).map_err(|error| error.to_string())
+        import_from_custom(name, content, existing_id).map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("subscription singbox task: {error}"))?
+    .map_err(|error| format!("subscription custom-config task: {error}"))?
 }
 
 async fn load_inline_body(content: Option<String>, path: Option<String>) -> Result<String, String> {
@@ -679,8 +681,73 @@ pub fn remove_subscription(
         .with_store_mut(|store| store.remove_subscription(&id))
         .map_err(|e| e.to_string())?;
     crate::config::remove_custom_config(&state.app_data_dir, &id);
+    crate::config::remove_raw_subscription(&state.app_data_dir, &id);
     queue_rebuild_if_enabled_set_changed(&app, &state, &before, "remove");
     Ok(())
+}
+
+/// Verbatim config body of a subscription, as last fetched / pasted — powers
+/// the "view raw config" modal. Node profiles have no config body (None);
+/// text / custom profiles fall back to their stored content when the raw
+/// file predates this feature.
+#[tauri::command(async)]
+/// Resolve the stored verbatim body of a subscription: the raw snapshot
+/// file when present; text/custom profiles fall back to their stored
+/// content (profiles whose file predates the snapshot feature). Node
+/// profiles have no config body at all.
+fn stored_raw_body(state: &AppState, store: &crate::storage::AppStore, id: &str) -> Option<String> {
+    let sub = store.get_subscription(id)?;
+    match &sub.source {
+        SubscriptionSource::Node { .. } => None,
+        SubscriptionSource::Text { content } | SubscriptionSource::Custom { content, .. } => Some(
+            std::fs::read_to_string(crate::config::raw_subscription_path(
+                &state.app_data_dir,
+                id,
+            ))
+            .unwrap_or_else(|_| content.clone()),
+        ),
+        _ => std::fs::read_to_string(crate::config::raw_subscription_path(
+            &state.app_data_dir,
+            id,
+        ))
+        .ok()
+        .filter(|body| !body.trim().is_empty()),
+    }
+}
+
+#[tauri::command(async)]
+pub fn get_subscription_raw_config(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<String>, String> {
+    state
+        .with_store(|store| Ok(stored_raw_body(&state, store, &id)))
+        .map_err(|e| e.to_string())
+}
+
+/// Per-core node-support stats for a subscription's raw body — the
+/// "内核支持详情" panel. Re-parses the body with the current parser and
+/// evaluates each node against all three cores' support predicates.
+#[tauri::command(async)]
+pub fn get_subscription_core_support(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<crate::services::core_support::CoreSupportReport>, String> {
+    let body = state
+        .with_store(|store| {
+            // NotFound for a bad id; None for node profiles (no body).
+            if store.get_subscription(&id).is_none() {
+                return Err(crate::error::AppError::NotFound(id.clone()));
+            }
+            Ok(stored_raw_body(&state, store, &id))
+        })
+        .map_err(|e| e.to_string())?;
+    match body {
+        None => Ok(None),
+        Some(body) => crate::services::core_support::core_support_report(&body)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+    }
 }
 
 #[tauri::command(async)]
@@ -694,7 +761,12 @@ pub fn list_subscription_nodes(
                 .nodes
                 .iter()
                 .filter(|n| n.subscription_id == id)
-                .map(|n| n.node.clone())
+                .map(|n| {
+                    // Raw body is generation-only — keep the wire payload lean.
+                    let mut node = n.node.clone();
+                    node.raw = None;
+                    node
+                })
                 .collect())
         })
         .map_err(|e| e.to_string())
@@ -714,10 +786,22 @@ fn persist_import_replacing(
     outcome: crate::services::import::ImportOutcome,
     remove_id: Option<&str>,
 ) -> Result<ImportResult, String> {
-    if let crate::domain::SubscriptionSource::Singbox { content } = &outcome.subscription.source {
-        crate::config::write_custom_config(&state.app_data_dir, &outcome.subscription.id, content)
-            .map_err(|e| e.to_string())?;
+    if let crate::domain::SubscriptionSource::Custom { content, kind } =
+        &outcome.subscription.source
+    {
+        crate::config::write_custom_config(
+            &state.app_data_dir,
+            &outcome.subscription.id,
+            content,
+            *kind,
+        )
+        .map_err(|e| e.to_string())?;
     }
+    // Persist the verbatim body for the "view raw config" modal — URL / file
+    // imports would otherwise discard it after parsing. Best-effort: a write
+    // failure must not fail the import itself.
+    let raw_body = outcome.raw_body.clone();
+    let raw_id = outcome.subscription.id.clone();
     let node_count = outcome.subscription.node_count;
     let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
@@ -768,6 +852,11 @@ fn persist_import_replacing(
             ))
         })
         .map_err(|e| e.to_string())?;
+    if let Some(body) = raw_body {
+        if let Err(error) = crate::config::write_raw_subscription(&state.app_data_dir, &raw_id, &body) {
+            crate::app_log::warn("subscription", format!("{raw_id}: 保存原始配置失败：{error}"));
+        }
+    }
     if node_set_changed || policy_changed {
         // Node ids are content hashes, so a refreshed subscription may rename
         // or rotate nodes. The running core still holds outbounds built from

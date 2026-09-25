@@ -1801,6 +1801,7 @@ mod scan_decision_tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

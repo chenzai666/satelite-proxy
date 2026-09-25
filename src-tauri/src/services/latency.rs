@@ -597,6 +597,7 @@ mod tests {
                 obfs_password: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

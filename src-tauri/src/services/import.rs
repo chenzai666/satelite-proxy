@@ -1,11 +1,12 @@
 use crate::domain::ManualNodeDraft;
 use crate::domain::{
-    ParseResult, ProxyNode, Subscription, SubscriptionFormat, SubscriptionSource,
+    CustomConfigKind, ParseResult, ProxyNode, Subscription, SubscriptionFormat, SubscriptionSource,
     SubscriptionTraffic,
 };
 use crate::error::{AppError, AppResult};
 use crate::subscription::{
-    parse_manual_draft, parse_single_uri, parse_subscription, validate_complete_singbox_config,
+    detect_custom_config_kind, parse_manual_draft, parse_single_uri, parse_subscription,
+    validate_complete_singbox_config, validate_custom_mihomo_config, validate_custom_xray_config,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -33,6 +34,7 @@ pub(crate) fn canonical_subscription_url(input: &str) -> Option<String> {
 }
 
 pub struct ImportOutcome {
+    pub raw_body: Option<String>,
     pub subscription: Subscription,
     pub nodes: Vec<ProxyNode>,
     /// Nodes the parser could not import, with reasons — surfaced to the UI
@@ -201,6 +203,7 @@ pub async fn import_from_url_with_id(
         .or(disposition_name)
         .unwrap_or_else(|| name_from_url(&url));
     let content = String::from_utf8_lossy(&bytes).into_owned();
+    let raw_body = content.clone();
     let mut outcome = tokio::task::spawn_blocking(move || -> AppResult<ImportOutcome> {
         let body_traffic = parse_userinfo_from_content(&content);
         let parsed = parse_subscription(&content)?;
@@ -223,6 +226,7 @@ pub async fn import_from_url_with_id(
     // Priority: HTTP header > body comment > remark node names
     outcome.subscription.traffic =
         SubscriptionTraffic::merge(traffic, outcome.subscription.traffic);
+    outcome.raw_body = Some(raw_body);
     Ok(outcome)
 }
 
@@ -805,6 +809,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -855,6 +860,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -1003,6 +1009,7 @@ proxies:
                 packet_encoding: "xudp".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -1128,18 +1135,27 @@ pub fn import_from_text(
     Ok(outcome)
 }
 
-pub fn import_from_singbox(
+pub fn import_from_custom(
     name: Option<String>,
     content: String,
     existing_id: Option<String>,
 ) -> AppResult<ImportOutcome> {
-    let normalized = validate_complete_singbox_config(&content)?;
+    if content.len() > MAX_BODY_BYTES {
+        return Err(AppError::Io("自定义配置超过 8MB 限制".into()));
+    }
+    let kind = detect_custom_config_kind(&content)?;
+    let normalized = match kind {
+        CustomConfigKind::Singbox => validate_complete_singbox_config(&content)?,
+        CustomConfigKind::Mihomo => validate_custom_mihomo_config(&content)?,
+        CustomConfigKind::Xray => validate_custom_xray_config(&content)?,
+    };
     let display_name = name
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "sing-box".into());
-    let source = SubscriptionSource::Singbox {
-        content: normalized,
+        .unwrap_or_else(|| kind.as_str().into());
+    let source = SubscriptionSource::Custom {
+        content: normalized.clone(),
+        kind,
     };
     let parsed = crate::domain::ParseResult {
         nodes: Vec::new(),
@@ -1150,6 +1166,8 @@ pub fn import_from_singbox(
     let mut outcome = build_outcome(display_name, source, parsed, existing_id, false);
     outcome.subscription.auto_update = false;
     outcome.subscription.enabled = false;
+    outcome.subscription.format = Some(kind.as_str().to_string());
+    outcome.raw_body = Some(normalized);
     Ok(outcome)
 }
 
@@ -1204,6 +1222,7 @@ fn import_parsed_content(
         None
     };
     let mut outcome = build_outcome(display_name, source, parsed, existing_id, extract_quota);
+    outcome.raw_body = Some(content.to_string());
     if extract_quota {
         outcome.subscription.traffic =
             SubscriptionTraffic::merge(body_traffic, outcome.subscription.traffic);
@@ -1286,6 +1305,7 @@ fn build_outcome(
         subscription,
         nodes,
         skipped,
+        raw_body: None,
     }
 }
 
@@ -1335,8 +1355,10 @@ fn subscription_id(source: &SubscriptionSource) -> String {
                 );
             }
         }
-        SubscriptionSource::Singbox { content } => {
-            hasher.update(b"singbox|");
+        SubscriptionSource::Custom { content, kind } => {
+            hasher.update(b"custom|");
+            hasher.update(kind.as_str().as_bytes());
+            hasher.update(b"|");
             hasher.update(content.as_bytes());
         }
     }
@@ -1376,7 +1398,7 @@ fn name_from_url(url: &str) -> String {
         .unwrap_or_else(|| "Subscription".into())
 }
 
-fn format_label(f: SubscriptionFormat) -> String {
+pub(crate) fn format_label(f: SubscriptionFormat) -> String {
     match f {
         SubscriptionFormat::ClashYaml => "clash_yaml".into(),
         SubscriptionFormat::UriList => "uri_list".into(),

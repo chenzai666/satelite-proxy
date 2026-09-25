@@ -2,13 +2,15 @@ import { confirmAction } from "../confirmAction";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   activateSubscription,
+  addSubscriptionCustom,
   addSubscriptionFile,
   addSubscriptionNode,
-  addSubscriptionSingbox,
   addSubscriptionText,
   addSubscriptionUrl,
   getSettings,
   getSubscription,
+  getSubscriptionCoreSupport,
+  getSubscriptionRawConfig,
   listSubscriptions,
   listSubscriptionUrls,
   peekSettings,
@@ -29,6 +31,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useI18n } from "../i18n";
 import { ErrorModal } from "../components/ErrorModal";
 import type {
+  CoreSupportReport,
   ImportResult,
   SubscriptionTraffic,
   SubscriptionUrlEntry,
@@ -195,9 +198,34 @@ function localizeExpireText(text: string, locale: string, neverLabel: string): s
   return text;
 }
 
+/** Config-type pill label: custom profiles show their kernel; node
+ *  subscriptions show the detected source format (clash_yaml → mihomo,
+ *  singbox_json → sing-box, URI lists → URI). Null = no pill (manual). */
+function typeTagLabel(
+  t: (key: import("../i18n").MessageKey) => string,
+  item: SubscriptionView,
+): string | null {
+  if (item.source_kind === "custom") {
+    if (item.custom_kind === "mihomo") return t("config.typeMihomo");
+    if (item.custom_kind === "xray") return t("config.typeXray");
+    return t("config.typeSingbox");
+  }
+  switch (item.format) {
+    case "clash_yaml":
+      return t("config.typeMihomo");
+    case "singbox_json":
+      return t("config.typeSingbox");
+    case "uri_list":
+      return t("config.typeUri");
+    case "base64_uri_list":
+      return t("config.typeBase64Uri");
+    default:
+      return null;
+  }
+}
+
 /** Compact FlClash-style traffic: thin bar + "used / total · expire". */
-function TrafficBlock({ traffic }: { traffic?: SubscriptionTraffic | null }) {
-  const { t, locale } = useI18n();
+function TrafficBlock({ traffic }: { traffic?: SubscriptionTraffic | null }) {  const { t, locale } = useI18n();
   const tr = trafficStats(traffic);
   if (!tr) return null;
 
@@ -327,6 +355,16 @@ export function ConfigPage() {
   const [renameProfile, setRenameProfile] = useState<SubscriptionView | null>(
     null,
   );
+  // Raw-config viewer: `null` = closed, body starts undefined (loading).
+  const [rawProfile, setRawProfile] = useState<SubscriptionView | null>(null);
+  const [rawBody, setRawBody] = useState<string | null | undefined>(undefined);
+  const [rawCopied, setRawCopied] = useState(false);
+  // Core-support panel: `null` = closed, report starts undefined (loading).
+  const [supportProfile, setSupportProfile] = useState<SubscriptionView | null>(null);
+  const [supportReport, setSupportReport] = useState<CoreSupportReport | null | undefined>(
+    undefined,
+  );
+  const [supportCopied, setSupportCopied] = useState(false);
 
   const busy = refreshingAll || actionId != null;
 
@@ -445,7 +483,7 @@ export function ConfigPage() {
         d.source_kind === "file" ||
         d.source_kind === "text" ||
         d.source_kind === "node" ||
-        d.source_kind === "singbox"
+        d.source_kind === "custom"
           ? d.source_kind
           : "url";
       const isUriOnlyNode =
@@ -512,8 +550,8 @@ export function ConfigPage() {
         );
       } else if (payload.kind === "text") {
         importResult = await addSubscriptionText(name, payload.content ?? "");
-      } else if (payload.kind === "singbox") {
-        importResult = await addSubscriptionSingbox(name, payload.content ?? "", null);
+      } else if (payload.kind === "custom") {
+        importResult = await addSubscriptionCustom(name, payload.content ?? "", null);
       } else {
         importResult = await addSubscriptionNode(
           name,
@@ -647,14 +685,110 @@ export function ConfigPage() {
     }
   }
 
+  /** ⋮ → 查看配置: fetch the saved verbatim body (falls back to stored
+   *  content for text/custom profiles whose raw file predates the feature). */
+  async function openRawConfig(profile: SubscriptionView) {
+    setRawProfile(profile);
+    setRawBody(undefined);
+    setRawCopied(false);
+    try {
+      const body = await getSubscriptionRawConfig(profile.id);
+      setRawBody(body ?? null);
+    } catch {
+      setRawBody(null);
+    }
+  }
+
+  async function copyRawBody() {
+    if (!rawBody) return;
+    try {
+      await navigator.clipboard.writeText(rawBody);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = rawBody;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setRawCopied(true);
+    window.setTimeout(() => setRawCopied(false), 1500);
+  }
+
+  /** ⋮ → 内核支持: re-parse the saved raw body and show per-core counts. */
+  async function openCoreSupport(profile: SubscriptionView) {
+    setSupportProfile(profile);
+    setSupportReport(undefined);
+    setSupportCopied(false);
+    try {
+      const report = await getSubscriptionCoreSupport(profile.id);
+      setSupportReport(report ?? null);
+    } catch {
+      setSupportReport(null);
+    }
+  }
+
+  /** Copyable analysis report — the format real-user feedback is made of:
+   *  per-core counts, per-node exclusion reasons, parse-level drops. */
+  async function copySupportReport() {
+    const profile = supportProfile;
+    const report = supportReport;
+    if (!profile || !report) return;
+    let version = "";
+    try {
+      version = await getVersion();
+    } catch {
+      version = "?";
+    }
+    const coreName = (k: "singbox" | "mihomo" | "xray") =>
+      k === "singbox" ? t("config.typeSingbox") : k === "mihomo" ? t("config.typeMihomo") : t("config.typeXray");
+    const lines: string[] = [
+      `=== ${t("config.supportReportTitle")} v${version} ===`,
+      `${t("config.reportProfile", { name: profile.name })}（${report.format}）`,
+      `${t("config.supportTotal", { n: report.total_entries })} · ${t("config.supportRecognized", { n: report.recognized })} · ${t("config.skipped", { n: report.skipped.length })}`,
+      "",
+      (["singbox", "mihomo", "xray"] as const)
+        .map((k) => `${coreName(k)} ${report.cores[k]}/${report.total_entries}`)
+        .join(" · "),
+    ];
+    for (const k of ["singbox", "mihomo", "xray"] as const) {
+      const items = report.unsupported[k];
+      if (!items.length) continue;
+      lines.push("", t("config.supportUnsupportedSection", { core: coreName(k), n: items.length }));
+      items.forEach((item, i) => {
+        lines.push(`  ${i + 1}. ${item.name}（${item.type_label}）— ${item.reason}`);
+      });
+    }
+    if (report.skipped.length > 0) {
+      lines.push("", t("config.supportSkippedSection", { n: report.skipped.length }));
+      report.skipped.forEach((item, i) => {
+        lines.push(`  ${i + 1}. ${item.name || t("config.skippedUnnamed")} — ${item.reason}`);
+      });
+    }
+    const text = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    setSupportCopied(true);
+    window.setTimeout(() => setSupportCopied(false), 1500);
+  }
+
   function renderCard(item: SubscriptionView) {
-    const generated = item.source_kind !== "singbox";
+    const generated = item.source_kind !== "custom";
     // Custom mode: switching the active profile is a runtime-source change
     // (homepage picker) — subscription / local cards become read-only.
     const clickable = generated && runtimeSource === "generated";
     const customActive =
       !generated && runtimeSource === `singbox:${item.id}`;
     const generatedActive = clickable && item.enabled;
+    const typeTag = typeTagLabel(t, item);
     return (
       <article
         key={item.id}
@@ -742,6 +876,16 @@ export function ConfigPage() {
                         {t("config.menuUpdate")}
                       </button>
                     )}
+                    {item.source_kind !== "node" && <>
+                      <button type="button" role="menuitem" className="sub-menu-item" disabled={busy}
+                        onClick={() => { setMenuId(null); void openRawConfig(item); }}>
+                        {t("config.menuViewConfig")}
+                      </button>
+                      <button type="button" role="menuitem" className="sub-menu-item" disabled={busy}
+                        onClick={() => { setMenuId(null); void openCoreSupport(item); }}>
+                        {t("config.menuSupport")}
+                      </button>
+                    </>}
                     {item.node_count > 0 && (
                         <button
                           type="button"
@@ -777,13 +921,14 @@ export function ConfigPage() {
             {generated ? (
               <span>{t("config.nodes", { n: item.node_count })}</span>
             ) : (
-              <span>{t("config.singboxReadonly")}</span>
+              <span>{t("config.customReadonly")}</span>
             )}
             {item.skipped_count > 0 && (
               <span className="warn">
                 {t("config.skipped", { n: item.skipped_count })}
               </span>
             )}
+            {typeTag && <span className="sub-type-tag">{typeTag}</span>}
             {item.auto_update && (
               <span
                 className="muted"
@@ -924,14 +1069,14 @@ export function ConfigPage() {
             empty={t("config.groupLocalEmpty")}
             items={items.filter(
               (item) =>
-                item.source_kind !== "url" && item.source_kind !== "singbox",
+                item.source_kind !== "url" && item.source_kind !== "custom",
             )}
             renderCard={(item) => renderCard(item)}
           />
           <ConfigGroup
-            title={t("config.groupSingbox")}
-            empty={t("config.groupSingboxEmpty")}
-            items={items.filter((item) => item.source_kind === "singbox")}
+            title={t("config.groupCustom")}
+            empty={t("config.groupCustomEmpty")}
+            items={items.filter((item) => item.source_kind === "custom")}
             renderCard={(item) => renderCard(item)}
           />
         </div>
@@ -956,6 +1101,186 @@ export function ConfigPage() {
         }}
         onSubmit={(p) => void handleSubmit(p)}
       />
+      {rawProfile && (
+        <div className="modal-backdrop">
+          <div className="modal raw-config-modal">
+            <header className="modal-header">
+              <h2>
+                {t("config.rawTitle")}
+                {rawProfile.name ? ` · ${rawProfile.name}` : ""}
+                {typeTagLabel(t, rawProfile) && (
+                  <span className="sub-type-tag">
+                    {typeTagLabel(t, rawProfile)}
+                  </span>
+                )}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setRawProfile(null)}
+                aria-label={t("common.close")}
+              >
+                ×
+              </button>
+            </header>
+            <div className="modal-body">
+              {rawBody === undefined ? (
+                <div className="empty">{t("common.loading")}</div>
+              ) : rawBody === null ? (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                  {t("config.rawNone")}
+                </p>
+              ) : (
+                <pre className="raw-config-pre">{rawBody}</pre>
+              )}
+            </div>
+            <footer className="modal-footer">
+              <GlassButton onClick={() => setRawProfile(null)}>
+                {t("common.close")}
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                disabled={!rawBody}
+                onClick={() => void copyRawBody()}
+              >
+                {rawCopied ? t("common.copied") : t("config.rawCopy")}
+              </GlassButton>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {supportProfile && (
+        <div className="modal-backdrop">
+          <div className="modal support-modal">
+            <header className="modal-header">
+              <h2>
+                {t("config.supportTitle")}
+                {supportProfile.name ? ` · ${supportProfile.name}` : ""}
+              </h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setSupportProfile(null)}
+                aria-label={t("common.close")}
+              >
+                ×
+              </button>
+            </header>
+            <div className="modal-body">
+              {supportReport === undefined ? (
+                <div className="empty">{t("common.loading")}</div>
+              ) : supportReport === null ? (
+                <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                  {t("config.rawNone")}
+                </p>
+              ) : (
+                <>
+                  <div className="support-summary">
+                    <span className="sub-type-tag">{supportReport.format}</span>
+                    <span className="muted">
+                      {t("config.supportTotal", { n: supportReport.total_entries })}
+                    </span>
+                    <span className="muted">
+                      {t("config.supportRecognized", { n: supportReport.recognized })}
+                    </span>
+                    {supportReport.skipped.length > 0 && (
+                      <span className="warn">
+                        {t("config.skipped", { n: supportReport.skipped.length })}
+                      </span>
+                    )}
+                  </div>
+                  {(
+                    [
+                      ["sing-box", supportReport.cores.singbox],
+                      ["mihomo", supportReport.cores.mihomo],
+                      ["Xray", supportReport.cores.xray],
+                    ] as const
+                  ).map(([label, count]) => {
+                    const total = Math.max(supportReport.total_entries, 1);
+                    const pct = Math.round((count / total) * 100);
+                    return (
+                      <div className="support-row" key={label}>
+                        <span className="support-row-label">{label}</span>
+                        <div className="support-bar" role="progressbar" aria-label={label}>
+                          <div className="support-bar-fill" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="support-row-count">
+                          {count} / {supportReport.total_entries}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {(
+                    [
+                      ["singbox", supportReport.unsupported.singbox],
+                      ["mihomo", supportReport.unsupported.mihomo],
+                      ["xray", supportReport.unsupported.xray],
+                    ] as const
+                  ).map(([core, items]) =>
+                    items.length === 0 ? null : (
+                      <div className="support-skipped" key={core}>
+                        <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                          {t("config.supportUnsupportedSection", {
+                            core:
+                              core === "singbox"
+                                ? t("config.typeSingbox")
+                                : core === "mihomo"
+                                  ? t("config.typeMihomo")
+                                  : t("config.typeXray"),
+                            n: items.length,
+                          })}
+                        </p>
+                        <ul className="skipped-report-list">
+                          {items.map((item, i) => (
+                            <li key={i} title={item.reason}>
+                              <span className="skipped-item-name">{item.name}</span>
+                              <span className="muted skipped-item-type">{item.type_label}</span>
+                              <span className="muted skipped-item-reason">{item.reason}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ),
+                  )}
+                  <div className="support-skipped">
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>
+                      {supportReport.skipped.length > 0
+                        ? t("config.supportSkippedSection", { n: supportReport.skipped.length })
+                        : t("config.supportSkippedNone")}
+                    </p>
+                    {supportReport.skipped.length > 0 && (
+                      <ul className="skipped-report-list">
+                        {supportReport.skipped.map((item, i) => (
+                          <li key={i} title={item.reason}>
+                            <span className="skipped-item-name">
+                              {item.name || t("config.skippedUnnamed")}
+                            </span>
+                            <span className="muted skipped-item-reason">{item.reason}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+            <footer className="modal-footer">
+              <GlassButton onClick={() => setSupportProfile(null)}>
+                {t("common.close")}
+              </GlassButton>
+              <GlassButton
+                variant="primary"
+                disabled={!supportReport}
+                onClick={() => void copySupportReport()}
+              >
+                {supportCopied ? t("common.copied") : t("config.supportCopyReport")}
+              </GlassButton>
+            </footer>
+          </div>
+        </div>
+      )}
+
       <EditLocalNodesModal
         open={!!renameProfile}
         profileId={renameProfile?.id ?? null}

@@ -1,10 +1,40 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+/// Kernel a complete custom config ("自定义配置") targets. Detected at import
+/// from the body itself (sing-box JSON / mihomo Clash YAML / Xray JSON).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CustomConfigKind {
+    Singbox,
+    Mihomo,
+    Xray,
+}
+
+impl CustomConfigKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Singbox => "singbox",
+            Self::Mihomo => "mihomo",
+            Self::Xray => "xray",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "singbox" | "sing-box" => Some(Self::Singbox),
+            "mihomo" | "clash" => Some(Self::Mihomo),
+            "xray" => Some(Self::Xray),
+            _ => None,
+        }
+    }
+}
+
 /// How a subscription was imported.
 ///
 /// Serialized so older builds (url/file only) still load the store: `text` /
-/// `node` are written as `kind=file` plus a `profile` marker. New builds read
-/// both the compatible form and the explicit `text`/`node` tags.
+/// `node` / `custom` are written as `kind=file` plus a `profile` marker. New
+/// builds read both the compatible form and the explicit tags. Legacy
+/// `singbox` profiles load back as `Custom { kind: Singbox }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubscriptionSource {
     Url {
@@ -21,20 +51,23 @@ pub enum SubscriptionSource {
     Node {
         uri: Option<String>,
     },
-    /// Complete sing-box JSON, launched as-is (not generated).
-    Singbox {
+    /// Complete config (sing-box JSON / mihomo YAML / Xray JSON), launched
+    /// as-is with the matching kernel (not generated).
+    Custom {
         content: String,
+        kind: CustomConfigKind,
     },
 }
 
 const NODE_SENTINEL: &str = "satelite:node";
 const TEXT_SENTINEL: &str = "satelite:text";
 const SINGBOX_SENTINEL: &str = "satelite:singbox";
+const CUSTOM_SENTINEL: &str = "satelite:custom";
 
 impl SubscriptionSource {
     /// Whether this profile feeds nodes into the generated sing-box config.
     pub fn contributes_nodes(&self) -> bool {
-        !matches!(self, Self::Singbox { .. })
+        !matches!(self, Self::Custom { .. })
     }
 
     pub fn is_remote(&self) -> bool {
@@ -55,6 +88,11 @@ struct SourceWire {
     uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
+    /// Custom-config kernel (`singbox`/`mihomo`/`xray`) — present for
+    /// `profile == "custom"` sources. Absent on legacy `singbox` profiles,
+    /// which load back as `Custom { kind: Singbox }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    config_kind: Option<String>,
 }
 
 impl Serialize for SubscriptionSource {
@@ -67,6 +105,7 @@ impl Serialize for SubscriptionSource {
                 content: None,
                 uri: None,
                 profile: None,
+                config_kind: None,
             },
             Self::File { path } => SourceWire {
                 kind: "file".into(),
@@ -75,6 +114,7 @@ impl Serialize for SubscriptionSource {
                 content: None,
                 uri: None,
                 profile: None,
+                config_kind: None,
             },
             Self::Text { content } => SourceWire {
                 kind: "file".into(),
@@ -83,6 +123,7 @@ impl Serialize for SubscriptionSource {
                 content: Some(content.clone()),
                 uri: None,
                 profile: Some("text".into()),
+                config_kind: None,
             },
             Self::Node { uri } => SourceWire {
                 kind: "file".into(),
@@ -91,14 +132,16 @@ impl Serialize for SubscriptionSource {
                 content: None,
                 uri: uri.clone(),
                 profile: Some("node".into()),
+                config_kind: None,
             },
-            Self::Singbox { content } => SourceWire {
+            Self::Custom { content, kind } => SourceWire {
                 kind: "file".into(),
                 url: None,
-                path: Some(SINGBOX_SENTINEL.into()),
+                path: Some(CUSTOM_SENTINEL.into()),
                 content: Some(content.clone()),
                 uri: None,
-                profile: Some("singbox".into()),
+                profile: Some("custom".into()),
+                config_kind: Some(kind.as_str().into()),
             },
         };
         wire.serialize(serializer)
@@ -136,9 +179,22 @@ fn source_from_wire(wire: SourceWire) -> Result<SubscriptionSource, String> {
             uri: wire.uri.filter(|s| !s.trim().is_empty()),
         });
     }
-    if kind == "singbox" || profile == "singbox" || path == SINGBOX_SENTINEL {
-        return Ok(SubscriptionSource::Singbox {
+    if kind == "custom" || profile == "custom" || path == CUSTOM_SENTINEL {
+        let cfg_kind = wire
+            .config_kind
+            .as_deref()
+            .and_then(CustomConfigKind::parse)
+            .unwrap_or(CustomConfigKind::Singbox);
+        return Ok(SubscriptionSource::Custom {
             content: wire.content.unwrap_or_default(),
+            kind: cfg_kind,
+        });
+    }
+    // Legacy wire shape from builds that only knew sing-box custom configs.
+    if kind == "singbox" || profile == "singbox" || path == SINGBOX_SENTINEL {
+        return Ok(SubscriptionSource::Custom {
+            content: wire.content.unwrap_or_default(),
+            kind: CustomConfigKind::Singbox,
         });
     }
     if kind == "file" || kind.is_empty() {
@@ -295,6 +351,9 @@ pub struct SubscriptionView {
     pub source_kind: String,
     /// Display-only source (URL may be redacted; file = basename).
     pub source_display: String,
+    /// Kernel type of a custom profile: `singbox` / `mihomo` / `xray`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_kind: Option<String>,
     pub last_update: i64,
     pub node_count: u32,
     pub enabled: bool,
@@ -317,6 +376,9 @@ pub struct SubscriptionDetail {
     pub id: String,
     pub name: String,
     pub source_kind: String,
+    /// Kernel type of a custom profile: `singbox` / `mihomo` / `xray`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_kind: Option<String>,
     pub url: Option<String>,
     pub path: Option<String>,
     /// Pasted config body (text profiles).
@@ -347,34 +409,39 @@ pub struct SubscriptionDetail {
 
 impl Subscription {
     pub fn to_view(&self) -> SubscriptionView {
-        let (source_kind, source_display) = match &self.source {
-            SubscriptionSource::Url { url } => ("url".into(), mask_url_for_display(url)),
+        let (source_kind, source_display, custom_kind) = match &self.source {
+            SubscriptionSource::Url { url } => ("url".into(), mask_url_for_display(url), None),
             SubscriptionSource::File { path } => {
                 let name = std::path::Path::new(path)
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or(path)
                     .to_string();
-                ("file".into(), name)
+                ("file".into(), name, None)
             }
             SubscriptionSource::Text { content } => {
                 let label = first_nonempty_line(content).unwrap_or_else(|| "pasted config".into());
-                ("text".into(), truncate_display(&label, 48))
+                ("text".into(), truncate_display(&label, 48), None)
             }
             SubscriptionSource::Node { uri } => {
                 let display = uri
                     .as_deref()
                     .map(mask_share_uri)
                     .unwrap_or_else(|| "manual node".into());
-                ("node".into(), display)
+                ("node".into(), display, None)
             }
-            SubscriptionSource::Singbox { .. } => ("singbox".into(), "sing-box".into()),
+            SubscriptionSource::Custom { kind, .. } => (
+                "custom".into(),
+                kind.as_str().into(),
+                Some(kind.as_str().into()),
+            ),
         };
         SubscriptionView {
             id: self.id.clone(),
             name: self.name.clone(),
             source_kind,
             source_display,
+            custom_kind,
             last_update: self.last_update,
             node_count: self.node_count,
             enabled: self.enabled,
@@ -392,6 +459,7 @@ impl Subscription {
             id: self.id.clone(),
             name: self.name.clone(),
             source_kind: source_kind.into(),
+            custom_kind: None,
             url: None,
             path: None,
             content: None,
@@ -425,9 +493,10 @@ impl Subscription {
                 uri: uri.clone(),
                 ..base("node")
             },
-            SubscriptionSource::Singbox { content } => SubscriptionDetail {
+            SubscriptionSource::Custom { content, kind } => SubscriptionDetail {
                 content: Some(content.clone()),
-                ..base("singbox")
+                custom_kind: Some(kind.as_str().to_string()),
+                ..base("custom")
             },
         }
     }
@@ -537,15 +606,43 @@ mod source_serde_tests {
     }
 
     #[test]
-    fn singbox_roundtrip_uses_compatible_file_tag() {
-        let src = SubscriptionSource::Singbox {
-            content: "{\"inbounds\":[],\"outbounds\":[]}".into(),
+    fn custom_roundtrip_carries_config_kind() {
+        let src = SubscriptionSource::Custom {
+            content: "proxies: []".into(),
+            kind: CustomConfigKind::Mihomo,
         };
         let json = serde_json::to_value(&src).unwrap();
         assert_eq!(json["kind"], "file");
-        assert_eq!(json["profile"], "singbox");
+        assert_eq!(json["profile"], "custom");
+        assert_eq!(json["path"], "satelite:custom");
+        assert_eq!(json["config_kind"], "mihomo");
         let back: SubscriptionSource = serde_json::from_value(json).unwrap();
         assert_eq!(src, back);
+    }
+
+    #[test]
+    fn legacy_singbox_wire_loads_as_custom_singbox() {
+        let src: SubscriptionSource =
+            serde_json::from_str(r#"{"kind":"singbox","content":"{\"outbounds\":[]}"}"#).unwrap();
+        assert_eq!(
+            src,
+            SubscriptionSource::Custom {
+                content: "{\"outbounds\":[]}".into(),
+                kind: CustomConfigKind::Singbox,
+            }
+        );
+        // Old store files with the compatible file+profile shape load too.
+        let src: SubscriptionSource = serde_json::from_str(
+            r#"{"kind":"file","path":"satelite:singbox","profile":"singbox","content":"{}"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            src,
+            SubscriptionSource::Custom {
+                content: "{}".into(),
+                kind: CustomConfigKind::Singbox,
+            }
+        );
     }
 
     #[test]

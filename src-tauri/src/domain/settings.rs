@@ -412,7 +412,10 @@ fn default_core_type() -> String {
     "singbox".into()
 }
 
-/// Kernel launch source. Custom sing-box profiles never overwrite `active.json`.
+/// Kernel launch source. `Singbox { id }` (wire `singbox:<id>`) selects a
+/// stored custom config profile — the name is historical: the kind now
+/// varies (sing-box / mihomo / Xray, see `SubscriptionSource::Custom`).
+/// Custom profiles never overwrite `active.*`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeSource {
     Generated,

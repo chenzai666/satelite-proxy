@@ -52,13 +52,59 @@ function parseCustomMinutes(raw: string): number | null {
 
 function kindToProfile(kind: AddSourceKind): ProfileKind {
   if (kind === "url") return "subscription";
-  if (kind === "singbox") return "singbox";
+  if (kind === "custom") return "custom";
   return "local";
 }
 
 function kindToLocal(kind: AddSourceKind, hasManualForm?: boolean): LocalKind {
   if (kind === "node" && hasManualForm) return "node";
   return "multi";
+}
+
+/** Client-side mirror of the backend `detect_custom_config_kind` heuristic —
+ *  advisory only (shows a detected-type hint under the textarea); the
+ *  backend remains authoritative and validates on submit. */
+export function detectCustomKind(
+  content: string,
+): "singbox" | "mihomo" | "xray" | null {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("{")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const obj = parsed as Record<string, unknown>;
+    const entries = [
+      ...(Array.isArray(obj.outbounds) ? obj.outbounds : []),
+      ...(Array.isArray(obj.inbounds) ? obj.inbounds : []),
+    ];
+    let hasType = false;
+    let hasProtocol = false;
+    for (const entry of entries) {
+      if (entry !== null && typeof entry === "object") {
+        const map = entry as Record<string, unknown>;
+        if (typeof map.type === "string") hasType = true;
+        if (typeof map.protocol === "string") hasProtocol = true;
+      }
+    }
+    if (hasProtocol && !hasType) return "xray";
+    if (hasType && !hasProtocol) return "singbox";
+    return null;
+  }
+  if (
+    /^\s*(proxies|proxy-groups|mixed-port|port|socks-port|listeners|rules|external-controller|tun)\s*:/m.test(
+      trimmed,
+    )
+  ) {
+    return "mihomo";
+  }
+  return null;
 }
 
 interface Props {
@@ -178,7 +224,7 @@ export function AddConfigModal({
 
   function currentKind(): AddSourceKind {
     if (profile === "subscription") return "url";
-    if (profile === "singbox") return "singbox";
+    if (profile === "custom") return "custom";
     if (localKind === "node") return "node";
     return "text";
   }
@@ -201,7 +247,7 @@ export function AddConfigModal({
     };
     if (kind === "url") payload.url = url.trim();
     if (kind === "url" && userAgent.trim()) payload.userAgent = userAgent.trim();
-    if (kind === "text" || kind === "singbox") payload.content = content.trim();
+    if (kind === "text" || kind === "custom") payload.content = content.trim();
     if (kind === "node") {
       payload.node = {
         ...node,
@@ -220,8 +266,18 @@ export function AddConfigModal({
     !busy &&
     !customIntervalInvalid &&
     ((kind === "url" && url.trim().length > 0) ||
-      ((kind === "text" || kind === "singbox") && content.trim().length > 0) ||
+      ((kind === "text" || kind === "custom") && content.trim().length > 0) ||
       (kind === "node" && name.trim().length > 0 && nodeDraftReady(node)));
+  const detectedKind =
+    profile === "custom" && content.trim().length > 0
+      ? detectCustomKind(content)
+      : null;
+  const detectedLabel = (k: "singbox" | "mihomo" | "xray") =>
+    k === "singbox"
+      ? t("config.typeSingbox")
+      : k === "mihomo"
+        ? t("config.typeMihomo")
+        : t("config.typeXray");
   const normalizedUrl = url.trim();
   const canonicalUrl = canonicalSubscriptionUrl(normalizedUrl);
   const duplicateUrl =
@@ -270,7 +326,7 @@ export function AddConfigModal({
               ariaLabel={t("modal.typeAria")}
               disabled={busy}
               onChange={(v) => {
-                if (v === "subscription" || v === "singbox") {
+                if (v === "subscription" || v === "custom") {
                   setProfile(v);
                 } else {
                   setProfile("local");
@@ -281,14 +337,14 @@ export function AddConfigModal({
                 { value: "subscription", label: t("modal.tabSubscription") },
                 { value: "manual", label: t("modal.tabManual") },
                 { value: "parse", label: t("modal.tabParse") },
-                { value: "singbox", label: t("modal.tabSingbox") },
+                { value: "custom", label: t("modal.tabCustom") },
               ]}
             />
             <span className="field-hint muted">
               {profile === "subscription"
                 ? t("modal.hintSubscription")
-                : profile === "singbox"
-                  ? t("modal.hintSingbox")
+                : profile === "custom"
+                  ? t("modal.hintCustom")
                   : localKind === "node"
                     ? t("modal.hintManual")
                     : t("modal.hintParse")}
@@ -306,8 +362,8 @@ export function AddConfigModal({
               placeholder={
                 profile === "subscription"
                   ? t("modal.namePhSubscription")
-                  : profile === "singbox"
-                    ? t("modal.namePhSingbox")
+                  : profile === "custom"
+                    ? t("modal.namePhCustom")
                     : localKind === "node"
                       ? t("modal.namePhManual")
                       : t("modal.namePhParse")
@@ -414,7 +470,7 @@ export function AddConfigModal({
             />
           )}
 
-          {(profile === "singbox" ||
+          {(profile === "custom" ||
             (profile === "local" && localKind === "multi")) && (
               <>
                 <div className="field">
@@ -453,8 +509,8 @@ export function AddConfigModal({
                 )}
                 <label className="field">
                   <span>
-                    {profile === "singbox"
-                      ? t("modal.contentSingbox")
+                    {profile === "custom"
+                      ? t("modal.contentCustom")
                       : t("modal.content")}
                   </span>
                   <textarea
@@ -465,14 +521,26 @@ export function AddConfigModal({
                     value={content}
                     onChange={(e) => setContent(e.target.value)}
                     placeholder={
-                      profile === "singbox"
-                        ? t("modal.contentPhSingbox")
+                      profile === "custom"
+                        ? t("modal.contentPhCustom")
                         : t("modal.contentPhParse")
                     }
                     disabled={busy}
-                    rows={profile === "singbox" ? 12 : 8}
+                    rows={profile === "custom" ? 12 : 8}
                   />
                 </label>
+                {profile === "custom" && content.trim().length > 0 && (
+                  <span
+                    className={`field-hint ${
+                      detectedKind ? "detect-ok" : "field-warning"
+                    }`}
+                    role="status"
+                  >
+                    {detectedKind
+                      ? t("modal.detectedAs", { kind: detectedLabel(detectedKind) })
+                      : t("modal.detectUnknown")}
+                  </span>
+                )}
               </>
             )}
 
@@ -481,8 +549,8 @@ export function AddConfigModal({
               ? isEdit
                 ? t("modal.hintSubEdit")
                 : t("modal.hintSubNew")
-              : profile === "singbox"
-                ? t("modal.hintSingboxTail")
+              : profile === "custom"
+                ? t("modal.hintCustomTail")
                 : localKind === "node"
                   ? t("modal.hintManualTail")
                   : t("modal.hintParseTail")}

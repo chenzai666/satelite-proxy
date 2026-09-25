@@ -253,7 +253,10 @@ impl CoreKind {
     /// the single source of truth lives on the protocol enum.
     pub fn supports(self, protocol: Protocol) -> bool {
         match self {
-            Self::SingBox => true,
+            // sing-box serves every modeled protocol (its own rejects happen
+            // at generation time, §9.21) — except raw-passthrough Unknown
+            // nodes, which have no generator path at all.
+            Self::SingBox => !matches!(protocol, Protocol::Unknown),
             Self::Xray => protocol.xray_supported(),
             Self::Mihomo => protocol.mihomo_supported(),
         }
@@ -268,8 +271,38 @@ impl CoreKind {
     /// stay listed and are force-delegated to the Xray sidecar when
     /// multi-core mode is on (the sing-box generator rejects them natively).
     pub fn supports_node(self, node: &crate::domain::ProxyNode) -> bool {
+        // Single source of truth lives in `node_unsupported_reason` — the
+        // bool is just its negation, so the support panel's reasons can
+        // never drift from the actual filter.
+        self.node_unsupported_reason(node).is_none()
+    }
+
+    /// Why this core cannot serve the node (`None` = supported). Mirrors
+    /// every rule of the old `supports_node` and feeds the core-support
+    /// panel's report; static strings keep listing hot paths allocation-free.
+    pub fn node_unsupported_reason(self, node: &crate::domain::ProxyNode) -> Option<&'static str> {
+        // A raw Clash entry is authoritative for the mihomo kernel: mihomo
+        // parses its own dialect natively, so the (lossy, sing-box-shaped)
+        // model projection must not gate it — generation embeds the entry
+        // verbatim. Kernel-impossible shapes stay excluded (Naive/Tor/
+        // ShadowTls have no mihomo outbound). Every other core keeps the
+        // model-based rules below, unchanged.
+        if self == Self::Mihomo && node.raw.is_some() {
+            return match node.protocol {
+                crate::domain::Protocol::Naive => Some("mihomo 无 naive 类型出站（内核不支持）"),
+                crate::domain::Protocol::Tor => Some("mihomo 无 tor 类型出站（内核不支持）"),
+                crate::domain::Protocol::ShadowTls => {
+                    Some("mihomo 无独立 shadow-tls 类型出站（仅可作 ss 插件，需原文透传）")
+                }
+                _ => None,
+            };
+        }
         if !self.supports(node.protocol) {
-            return false;
+            return Some(match self {
+                Self::SingBox => "未建模类型：仅 mihomo 内核支持原文透传",
+                Self::Xray => "Xray 不支持该协议",
+                Self::Mihomo => "mihomo 不支持该协议",
+            });
         }
         if self == Self::Xray {
             let reality = node
@@ -284,12 +317,12 @@ impl CoreKind {
                         | Some(crate::domain::Transport::Xhttp { .. })
                 )
             {
-                return false;
+                return Some("Xray 的 REALITY 仅支持 tcp/grpc/xhttp 传输");
             }
             // Xray's hysteria transport has no obfs field.
             if let crate::domain::ProtocolConfig::Hysteria2 { obfs, .. } = &node.config {
                 if obfs.as_deref().is_some_and(|o| !o.is_empty()) {
-                    return false;
+                    return Some("Xray 的 hysteria2 传输无 obfs 字段");
                 }
             }
             // Xray v26 removed the h2/http transport at config load — such
@@ -297,7 +330,7 @@ impl CoreKind {
             // rejects them with the same rule; the list filter keeps them
             // hidden under Xray like any other unsupported shape).
             if matches!(node.transport, Some(crate::domain::Transport::Http { .. })) {
-                return false;
+                return Some("Xray v26 已移除 h2/http 传输");
             }
             // Xray v26 rejects every non-AEAD Shadowsocks stream cipher at
             // config load (aes-*-cfb, rc4-md5, ...). Keep the node visible in
@@ -320,7 +353,7 @@ impl CoreKind {
                             | "plain"
                     );
                 if !aead_or_2022 {
-                    return false;
+                    return Some("Xray 仅支持 AEAD/SS2022 系 Shadowsocks 加密");
                 }
             }
         }
@@ -332,14 +365,14 @@ impl CoreKind {
             }
         ) && matches!(self, Self::Mihomo | Self::Xray)
         {
-            return false;
+            return Some("该内核不支持模型重建的 ss+shadow-tls 组合");
         }
         if matches!(self, Self::Mihomo)
             && matches!(node.transport, Some(crate::domain::Transport::Xhttp { .. }))
         {
-            return false;
+            return Some("mihomo 的 xhttp 传输需原文透传");
         }
-        true
+        None
     }
 
     /// A user-selected node must remain usable even when the active Xray
@@ -350,7 +383,11 @@ impl CoreKind {
     /// This deliberately does not apply to background smart selection: an
     /// automatic policy must not silently change the user's active core.
     pub fn manual_node_fallback(self, node: &crate::domain::ProxyNode) -> Option<Self> {
-        (self == Self::Xray && !self.supports_node(node)).then_some(Self::SingBox)
+        if self == Self::Xray && !self.supports_node(node) {
+            [Self::SingBox, Self::Mihomo].into_iter().find(|kind| kind.supports_node(node))
+        } else {
+            None
+        }
     }
 }
 
@@ -372,6 +409,62 @@ fn mihomo_home_args(config: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Protocol, ProtocolConfig, ProxyNode};
+
+    fn raw_node(protocol: Protocol) -> ProxyNode {
+        ProxyNode {
+            id: String::new(),
+            name: "n".into(),
+            protocol,
+            server: "a.example.com".into(),
+            port: 443,
+            tls: None,
+            transport: None,
+            udp: None,
+            config: ProtocolConfig::Unknown,
+            source: None,
+            raw: Some(
+                "name: n
+type: ss
+"
+                .into(),
+            ),
+            latency_ms: None,
+            latency_at: None,
+        }
+    }
+
+    #[test]
+    fn raw_entries_pass_only_mihomo_except_kernel_impossible() {
+        let unknown = raw_node(Protocol::Unknown);
+        assert!(CoreKind::Mihomo.supports_node(&unknown));
+        assert!(!CoreKind::SingBox.supports_node(&unknown));
+        assert!(!CoreKind::Xray.supports_node(&unknown));
+
+        // mihomo has no outbound for these types — raw must not resurrect them.
+        for protocol in [Protocol::Naive, Protocol::Tor, Protocol::ShadowTls] {
+            assert!(!CoreKind::Mihomo.supports_node(&raw_node(protocol)));
+        }
+
+        // ss+shadow-tls in raw form is mihomo-native (plugin shape kept
+        // verbatim); the model-based exclusion only applies without raw.
+        let mut ss_st = raw_node(Protocol::Shadowsocks);
+        ss_st.config = ProtocolConfig::Shadowsocks {
+            method: "aes-256-gcm".into(),
+            password: "x".into(),
+            plugin: None,
+            plugin_opts: None,
+            shadow_tls: Some(crate::domain::ShadowTlsOpts {
+                host: "h".into(),
+                password: "p".into(),
+                version: 3,
+                fingerprint: None,
+            }),
+        };
+        assert!(CoreKind::Mihomo.supports_node(&ss_st));
+        ss_st.raw = None;
+        assert!(!CoreKind::Mihomo.supports_node(&ss_st));
+    }
 
     #[test]
     fn parses_version_output() {
@@ -537,6 +630,7 @@ mod tests {
                     },
                 },
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             }
@@ -634,6 +728,7 @@ mod tests {
                 obfs_password: Some("obfspw".into()),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };

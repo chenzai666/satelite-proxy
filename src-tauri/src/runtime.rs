@@ -12,7 +12,8 @@ use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
 use crate::core::CoreKind;
-use crate::domain::{ChainHop, Protocol, ProxyNode, RuntimeSource, SubscriptionSource};
+use crate::domain::{ChainHop, CustomConfigKind, Protocol, ProxyNode, RuntimeSource, SubscriptionSource};
+use crate::config::{inspect_mihomo_config, inspect_xray_config};
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
@@ -421,8 +422,9 @@ impl Runtime {
             custom_has_tun: self.custom_has_tun,
             custom_inbound_port: self.custom_inbound_port,
             core_memory_bytes,
-            // Report the ACTUAL running kind: custom sing-box profiles always
-            // run the sing-box binary even when settings.core_type is xray.
+            // Report the ACTUAL running kind: custom profiles run whichever
+            // kernel their config targets, even when settings.core_type
+            // names another core.
             core_type: if self.core.is_running() {
                 self.core.kind().as_str().to_string()
             } else {
@@ -1815,20 +1817,62 @@ impl Runtime {
         profile_id: &str,
         enable_system_proxy: bool,
     ) -> AppResult<ProxyStatus> {
-        let (name, content) = store
+        let (_name, content, kind) = store
             .subscriptions
             .iter()
             .find(|s| s.id == profile_id)
             .and_then(|s| match &s.source {
-                SubscriptionSource::Singbox { content } => Some((s.name.clone(), content.clone())),
+                SubscriptionSource::Custom { content, kind } => {
+                    Some((s.name.clone(), content.clone(), *kind))
+                }
                 _ => None,
             })
-            .ok_or_else(|| AppError::Core("selected sing-box profile was not found".into()))?;
-        let _ = name;
+            .ok_or_else(|| AppError::Core("selected custom config profile was not found".into()))?;
 
-        crate::subscription::validate_complete_singbox_config(&content)?;
-        let insight = inspect_singbox_config(&content);
-        let config_path = write_custom_config(app_data_dir, profile_id, &content)?;
+        match kind {
+            CustomConfigKind::Singbox => self.start_custom_singbox(
+                app_data_dir,
+                resource_dir,
+                store,
+                profile_id,
+                &content,
+                enable_system_proxy,
+            ),
+            CustomConfigKind::Mihomo => self.start_custom_mihomo(
+                app_data_dir,
+                resource_dir,
+                store,
+                profile_id,
+                &content,
+                enable_system_proxy,
+            ),
+            CustomConfigKind::Xray => self.start_custom_xray(
+                app_data_dir,
+                resource_dir,
+                store,
+                profile_id,
+                &content,
+                enable_system_proxy,
+            ),
+        }
+    }
+
+    /// Launch a complete sing-box JSON as-is (config re-validated here so a
+    /// hand-edited store cannot inject a broken document).
+    #[allow(clippy::too_many_arguments)]
+    fn start_custom_singbox(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        profile_id: &str,
+        content: &str,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        crate::subscription::validate_complete_singbox_config(content)?;
+        let insight = inspect_singbox_config(content);
+        let config_path =
+            write_custom_config(app_data_dir, profile_id, content, CustomConfigKind::Singbox)?;
 
         if let Some(port) = insight.inbound_port {
             ensure_listen_port_available(port, "Inbound")?;
@@ -1872,7 +1916,7 @@ impl Runtime {
             let port = insight.clash_api_port.unwrap_or(9090);
             let secret = insight.clash_api_secret.clone().unwrap_or_default();
             let api = ClashApi::new(host, port, &secret);
-            let (ok, _) = self.wait_clash_api_ready(elevated, &api, None);
+            let (ok, _) = self.wait_clash_api_ready(elevated, &api, insight.inbound_port);
             if !ok {
                 let log_hint = self.core_startup_log_hint();
                 let _ = self.core.stop();
@@ -1895,37 +1939,224 @@ impl Runtime {
             };
         } else {
             self.api = None;
-            let wait_started = Instant::now();
-            let mut ok = false;
-            while wait_started.elapsed() < Duration::from_secs(4) {
-                self.core.poll();
-                if self.core.is_running() {
-                    ok = true;
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            if !ok {
-                let log_hint = self.core.last_error().unwrap_or_default();
-                return Err(AppError::Core(format!(
-                    "sing-box failed to stay running{hint}",
-                    hint = if log_hint.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {log_hint}")
-                    }
-                )));
-            }
+            self.wait_custom_process_alive("sing-box")?;
         }
         self.core_started_at = Some(now_unix_secs());
 
         if enable_system_proxy {
             if insight.inbound_port.is_some() {
-                let _ = self.set_system_proxy(store, true);
+                if let Err(error) = self.set_system_proxy(store, true) {
+                    let _ = self.core.stop();
+                    self.api = None;
+                    self.core_started_at = None;
+                    return Err(error);
+                }
             }
         }
 
         Ok(self.status(store))
+    }
+
+    /// Launch a complete mihomo (Clash YAML) config as-is. External
+    /// controller (Clash API) is honored when present — hot switching and
+    /// connection monitoring work exactly like a generated mihomo config.
+    #[allow(clippy::too_many_arguments)]
+    fn start_custom_mihomo(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        profile_id: &str,
+        content: &str,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        crate::subscription::validate_custom_mihomo_config(content)?;
+        let insight = inspect_mihomo_config(content);
+        let config_path =
+            write_custom_config(app_data_dir, profile_id, content, CustomConfigKind::Mihomo)?;
+
+        if let Some(port) = insight.inbound_port {
+            ensure_listen_port_available(port, "Inbound")?;
+        }
+        if let Some(port) = insight.clash_api_port {
+            ensure_listen_port_available(port, "Clash API")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Mihomo);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("mihomo binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // GEOSITE/GEOIP rules hard-fail when geodata is missing (mihomo's own
+        // download dials through the not-yet-started proxies) — same policy
+        // as the generated mihomo path. The custom config sits at
+        // `config/custom-<id>.yaml`, so `mihomo_home_args` derives the shared
+        // `<data>/mihomo` home this geodata lands in.
+        crate::core::ensure_mihomo_geodata(app_data_dir, resource_dir, None)?;
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = insight.has_tun;
+        self.core.start_with_ports(
+            CoreKind::Mihomo,
+            &bin,
+            &config_path,
+            &log_dir,
+            insight.inbound_port.unwrap_or(0),
+            insight.clash_api_port,
+            &[],
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+        self.custom_inbound_port = insight.inbound_port;
+        self.custom_has_clash_api = insight.has_clash_api();
+        self.custom_has_tun = insight.has_tun;
+
+        if insight.has_clash_api() {
+            let host = insight.clash_api_host.as_deref().unwrap_or("127.0.0.1");
+            let port = insight.clash_api_port.unwrap_or(9090);
+            let secret = insight.clash_api_secret.clone().unwrap_or_default();
+            let api = ClashApi::new(host, port, &secret);
+            let (ok, _) = self.wait_clash_api_ready(elevated, &api, insight.inbound_port);
+            if !ok {
+                let log_hint = self.core_startup_log_hint();
+                let _ = self.core.stop();
+                let detail = if log_hint.is_empty() {
+                    format!("mihomo started but clash_api not responding at {host}:{port}")
+                } else {
+                    format!(
+                        "mihomo started but clash_api not responding at {host}:{port}\n--- log ---\n{log_hint}"
+                    )
+                };
+                return Err(AppError::Core(detail));
+            }
+            self.api = Some(api);
+            store.settings.clash_api_secret = if secret.is_empty() {
+                None
+            } else {
+                Some(secret)
+            };
+        } else {
+            self.api = None;
+            self.wait_custom_process_alive("mihomo")?;
+        }
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            if insight.inbound_port.is_some() {
+                if let Err(error) = self.set_system_proxy(store, true) {
+                    let _ = self.core.stop();
+                    self.api = None;
+                    self.core_started_at = None;
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(self.status(store))
+    }
+
+    /// Launch a complete Xray JSON as-is. Stock Xray configs carry no
+    /// Clash-compatible REST API — readiness is process-alive only, and
+    /// traffic/connection panels stay empty (same as generated Xray mode).
+    #[allow(clippy::too_many_arguments)]
+    fn start_custom_xray(
+        &mut self,
+        app_data_dir: &Path,
+        resource_dir: Option<&Path>,
+        store: &mut AppStore,
+        profile_id: &str,
+        content: &str,
+        enable_system_proxy: bool,
+    ) -> AppResult<ProxyStatus> {
+        crate::subscription::validate_custom_xray_config(content)?;
+        let insight = inspect_xray_config(content);
+        let config_path =
+            write_custom_config(app_data_dir, profile_id, content, CustomConfigKind::Xray)?;
+
+        if let Some(port) = insight.inbound_port {
+            ensure_listen_port_available(port, "Inbound")?;
+        }
+
+        let (bin, _src) = resolve_core_bin(app_data_dir, resource_dir, CoreKind::Xray);
+        let bin = bin.ok_or_else(|| {
+            AppError::Core("Xray binary not found; download it on the Settings core tab".into())
+        })?;
+
+        // geosite:/geoip: matchers (and the tun adapter on Windows) resolve
+        // through asset files next to the binary.
+        crate::core::ensure_geodata(app_data_dir, resource_dir, None)?;
+        #[cfg(target_os = "windows")]
+        if insight.has_tun {
+            crate::core::ensure_wintun(app_data_dir, resource_dir, None)?;
+        }
+
+        let log_dir = app_data_dir.join("logs");
+        let elevated = insight.has_tun;
+        self.core.start_with_ports(
+            CoreKind::Xray,
+            &bin,
+            &config_path,
+            &log_dir,
+            insight.inbound_port.unwrap_or(0),
+            None,
+            &[],
+            elevated,
+            resource_dir,
+        )?;
+        self.last_config_path = Some(config_path.clone());
+        self.last_binary_path = Some(bin.clone());
+        self.custom_inbound_port = insight.inbound_port;
+        self.custom_has_clash_api = false;
+        self.custom_has_tun = insight.has_tun;
+
+        self.api = None;
+        self.xray_metrics = None;
+        self.wait_custom_process_alive("Xray")?;
+        self.core_started_at = Some(now_unix_secs());
+
+        if enable_system_proxy {
+            if insight.inbound_port.is_some() {
+                if let Err(error) = self.set_system_proxy(store, true) {
+                    let _ = self.core.stop();
+                    self.api = None;
+                    self.core_started_at = None;
+                    return Err(error);
+                }
+            }
+        }
+
+        Ok(self.status(store))
+    }
+
+    /// Readiness for custom configs without a control API: the process must
+    /// stay alive briefly (config errors exit within the first moments; the
+    /// manager's pre-start check already rejected outright-invalid files).
+    fn wait_custom_process_alive(&mut self, label: &str) -> AppResult<()> {
+        let wait_started = Instant::now();
+        let mut stable_since: Option<Instant> = None;
+        while wait_started.elapsed() < Duration::from_secs(4) {
+            self.core.poll();
+            if self.core.is_running() {
+                let since = stable_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(500) {
+                    return Ok(());
+                }
+            } else {
+                stable_since = None;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let log_hint = self.core_startup_log_hint();
+        Err(AppError::Core(format!(
+            "{label} failed to stay running{hint}",
+            hint = if log_hint.is_empty() {
+                String::new()
+            } else {
+                format!(": {log_hint}")
+            }
+        )))
     }
 
     /// Toggle system HTTP(S)/SOCKS proxy independently of core running state.
@@ -1936,7 +2167,7 @@ impl Runtime {
                 let port = if store.settings.runtime_source().is_custom() {
                     self.custom_inbound_port.ok_or_else(|| {
                         AppError::Core(
-                            "当前自写配置没有 mixed/http/socks inbound，无法刷新系统代理".into(),
+                            "当前自定义配置没有 mixed/http 入站，无法刷新系统代理".into(),
                         )
                     })?
                 } else {
@@ -1950,7 +2181,7 @@ impl Runtime {
             let port = if store.settings.runtime_source().is_custom() {
                 self.custom_inbound_port.ok_or_else(|| {
                     AppError::Core(
-                        "当前自写配置没有 mixed/http/socks inbound，无法开启系统代理".into(),
+                        "当前自定义配置没有可用的 HTTP 代理入站（mixed/http），无法开启系统代理".into(),
                     )
                 })?
             } else {
@@ -2634,6 +2865,7 @@ mod sidecar_plan_tests {
             udp: Some(true),
             config,
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

@@ -1792,6 +1792,7 @@ mod tests {
                 packet_encoding: "xudp".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -3097,6 +3098,7 @@ mod tests {
                 udp: None,
                 config: protocol,
                 source: None,
+                raw: None,
                 latency_ms: None,
                 latency_at: None,
             }

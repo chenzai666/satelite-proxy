@@ -270,6 +270,7 @@ mod kernel_selection_poll_tests {
                             password: "x".into(),
                         },
                         source: None,
+                        raw: None,
                         latency_ms: None,
                         latency_at: None,
                     }],
@@ -421,6 +422,7 @@ mod kernel_selection_poll_tests {
                             password: "x".into(),
                         },
                         source: None,
+                        raw: None,
                         latency_ms: None,
                         latency_at: None,
                     }],
@@ -480,7 +482,7 @@ mod kernel_selection_poll_tests {
                             server: "example.com".into(), port: 443,
                             tls: None, transport: None, udp: None,
                             config: crate::domain::ProtocolConfig::Trojan { password: "test".into() },
-                            source: None, latency_ms: None, latency_at: None,
+                            source: None, raw: None, latency_ms: None, latency_at: None,
                         }],
                     )?;
                     Ok(())

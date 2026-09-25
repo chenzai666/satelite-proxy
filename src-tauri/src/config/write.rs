@@ -1,4 +1,5 @@
 use crate::config::builder::BuiltConfig;
+use crate::domain::CustomConfigKind;
 use crate::error::{AppError, AppResult};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,28 +13,72 @@ pub fn active_config_path(app_data_dir: &Path) -> PathBuf {
     config_dir(app_data_dir).join("active.json")
 }
 
-pub fn custom_config_dir(app_data_dir: &Path) -> PathBuf {
-    config_dir(app_data_dir).join("custom")
+/// Custom ("自定义配置") profiles live directly under `config/` as
+/// `custom-<id>.<ext>` — NOT in a subdirectory. mihomo derives its `-d` home
+/// from the config path (`parent().parent().join("mihomo")`), so nesting one
+/// level deeper would point its geodata home at `config/mihomo` instead of
+/// the shared `<data>/mihomo`.
+pub fn custom_config_path(app_data_dir: &Path, id: &str, kind: CustomConfigKind) -> PathBuf {
+    let ext = match kind {
+        CustomConfigKind::Singbox | CustomConfigKind::Xray => "json",
+        CustomConfigKind::Mihomo => "yaml",
+    };
+    config_dir(app_data_dir).join(format!("custom-{}.{}", sanitize_profile_id(id), ext))
 }
 
-pub fn custom_config_path(app_data_dir: &Path, id: &str) -> PathBuf {
-    custom_config_dir(app_data_dir).join(format!("{}.json", sanitize_profile_id(id)))
-}
-
-/// Persist a user sing-box document as-is. Never writes `active.json`.
-pub fn write_custom_config(app_data_dir: &Path, id: &str, raw: &str) -> AppResult<PathBuf> {
-    let dir = custom_config_dir(app_data_dir);
+/// Persist a complete custom config as-is. Never writes `active.*`.
+pub fn write_custom_config(
+    app_data_dir: &Path,
+    id: &str,
+    raw: &str,
+    kind: CustomConfigKind,
+) -> AppResult<PathBuf> {
+    let dir = config_dir(app_data_dir);
     fs::create_dir_all(&dir)?;
-    let path = custom_config_path(app_data_dir, id);
-    let tmp = dir.join(format!("{}.json.tmp", sanitize_profile_id(id)));
+    let sanitized = sanitize_profile_id(id);
+    let path = custom_config_path(app_data_dir, id, kind);
+    let tmp = dir.join(format!("custom-{sanitized}.tmp"));
     fs::write(&tmp, raw.as_bytes())?;
     fs::rename(&tmp, &path)?;
     Ok(path)
 }
 
+/// Drop every on-disk trace of a custom profile: both extensions (the kind
+/// may have changed across edits) plus the legacy `config/custom/<id>.json`
+/// layout from builds that only knew sing-box.
 pub fn remove_custom_config(app_data_dir: &Path, id: &str) {
-    let path = custom_config_path(app_data_dir, id);
-    let _ = fs::remove_file(path);
+    let sanitized = sanitize_profile_id(id);
+    for ext in ["json", "yaml"] {
+        let _ = fs::remove_file(config_dir(app_data_dir).join(format!("custom-{sanitized}.{ext}")));
+    }
+    let _ = fs::remove_file(
+        config_dir(app_data_dir)
+            .join("custom")
+            .join(format!("{sanitized}.json")),
+    );
+}
+
+/// Raw subscription bodies (verbatim as fetched / pasted) live in their own
+/// folder so a multi-MB airport config never bloats `store.json`. Written on
+/// every successful import; read by the "view raw config" modal.
+pub fn raw_subscription_path(app_data_dir: &Path, id: &str) -> PathBuf {
+    app_data_dir
+        .join("subscriptions")
+        .join(format!("{}.txt", sanitize_profile_id(id)))
+}
+
+pub fn write_raw_subscription(app_data_dir: &Path, id: &str, body: &str) -> AppResult<()> {
+    let dir = app_data_dir.join("subscriptions");
+    fs::create_dir_all(&dir)?;
+    let sanitized = sanitize_profile_id(id);
+    let tmp = dir.join(format!("{sanitized}.tmp"));
+    fs::write(&tmp, body.as_bytes())?;
+    fs::rename(&tmp, raw_subscription_path(app_data_dir, id))?;
+    Ok(())
+}
+
+pub fn remove_raw_subscription(app_data_dir: &Path, id: &str) {
+    let _ = fs::remove_file(raw_subscription_path(app_data_dir, id));
 }
 
 fn sanitize_profile_id(id: &str) -> String {
@@ -182,12 +227,21 @@ mod tests {
         write_active_config(&dir, &built).unwrap();
         let user =
             r#"{"inbounds":[{"type":"mixed","listen_port":1080}],"outbounds":[{"type":"direct"}]}"#;
-        let custom = write_custom_config(&dir, "abc123", user).unwrap();
-        assert!(custom.ends_with(std::path::Path::new("custom").join("abc123.json")));
+        let custom = write_custom_config(&dir, "abc123", user, CustomConfigKind::Singbox).unwrap();
+        assert!(custom.ends_with("custom-abc123.json"));
         assert_eq!(fs::read_to_string(&custom).unwrap(), user);
+        let mihomo_yaml = "mixed-port: 7890\nproxies: []\n";
+        let mihomo_path =
+            write_custom_config(&dir, "abc123", mihomo_yaml, CustomConfigKind::Mihomo).unwrap();
+        // mihomo homes derive from parent().parent() — the file must sit at
+        // config/ top level so `-d` lands on <data>/mihomo, not config/mihomo.
+        assert!(mihomo_path.ends_with("custom-abc123.yaml"));
+        assert_eq!(mihomo_path.parent().unwrap(), config_dir(&dir));
         let active_after: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(active_config_path(&dir)).unwrap()).unwrap();
         assert_eq!(active_after, active_before);
+        remove_custom_config(&dir, "abc123");
+        assert!(!mihomo_path.exists());
         let _ = fs::remove_dir_all(dir);
     }
 }

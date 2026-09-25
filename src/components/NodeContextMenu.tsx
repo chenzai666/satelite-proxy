@@ -82,6 +82,7 @@ export function NodeContextMenu({
         type="button"
         className="node-context-menu-item"
         role="menuitem"
+        disabled={node.protocol === "unknown"}
         onClick={() => {
           onEdit(node);
           onClose();

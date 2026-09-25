@@ -104,16 +104,27 @@ export function addSubscriptionNode(
   });
 }
 
-export function addSubscriptionSingbox(
+export function addSubscriptionCustom(
   name: string | null,
   content: string | null,
   path: string | null = null,
 ) {
-  return invoke<ImportResult>("add_subscription_singbox", {
+  return invoke<ImportResult>("add_subscription_custom", {
     name,
     content,
     path,
   });
+}
+
+export function getSubscriptionRawConfig(id: string) {
+  return invoke<string | null>("get_subscription_raw_config", { id });
+}
+
+export function getSubscriptionCoreSupport(id: string) {
+  return invoke<import("./types").CoreSupportReport | null>(
+    "get_subscription_core_support",
+    { id },
+  );
 }
 
 export function readImportFile(path: string) {
@@ -123,7 +134,7 @@ export function readImportFile(path: string) {
 export function updateSubscription(input: {
   id: string;
   name: string | null;
-  kind: "url" | "file" | "text" | "node" | "singbox";
+  kind: "url" | "file" | "text" | "node" | "custom";
   url?: string | null;
   path?: string | null;
   content?: string | null;

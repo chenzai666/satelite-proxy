@@ -232,6 +232,21 @@ pub fn apply_udp_node_compatibility(nodes: &mut [ProxyNode], allow_insecure: boo
             node_changed = true;
         }
         if node_changed {
+            if let Some(raw) = node.raw.as_mut() {
+                if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(raw) {
+                    if let Some(map) = value.as_mapping_mut() {
+                        if allow_insecure {
+                            map.insert(serde_yaml::Value::String("skip-cert-verify".into()), serde_yaml::Value::Bool(true));
+                        }
+                        if node.protocol == Protocol::Tuic {
+                            map.insert(serde_yaml::Value::String("alpn".into()), serde_yaml::to_value(&tls.alpn).unwrap_or_default());
+                        }
+                        if let Ok(updated) = serde_yaml::to_string(&value) {
+                            *raw = updated;
+                        }
+                    }
+                }
+            }
             changed += 1;
         }
     }
@@ -2247,6 +2262,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: Some("ss".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -2270,6 +2286,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: Some("ss2".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -2299,6 +2316,7 @@ mod tests {
                 zero_rtt_handshake: false,
             },
             source: Some("tuic".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -3838,6 +3856,7 @@ mod tests {
                 security: "auto".into(),
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         };
@@ -4519,6 +4538,7 @@ mod tests {
                 obfs_password: obfs_password.map(String::from),
             },
             source: Some("hysteria2".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
@@ -4540,6 +4560,7 @@ mod tests {
                 packet_encoding: "xudp".into(),
             },
             source: Some("vless".into()),
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }

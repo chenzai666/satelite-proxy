@@ -3550,6 +3550,149 @@ button.node-card:disabled,
   white-space: nowrap;
 }
 
+/* —— Raw-config viewer (subscription / custom ⋮ → 查看配置) ——
+   Read-only verbatim body as last fetched / pasted. */
+.raw-config-modal {
+  width: min(720px, 100%);
+  max-height: min(82vh, 760px);
+  display: flex;
+  flex-direction: column;
+  /* A long unwrapped line inside the <pre> body has a min-content width of
+     thousands of px. `.modal` keeps overflow:visible (SolidSelect popovers),
+     which preserves the grid item's content-based automatic minimum — the
+     backdrop's implicit grid track then sizes to that and place-items:center
+     parks this box thousands of px off-screen (blank blurred backdrop; the
+     box measures x≈4300 in a 960px window). No popovers live here, so clip:
+     a non-visible overflow drops the automatic minimum and the track sizes
+     to the specified width. */
+  overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.raw-config-modal .modal-body {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.raw-config-pre {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  min-height: 120px;
+  max-height: 54vh;
+  overflow: auto;
+  white-space: pre;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  user-select: text;
+}
+
+/* Config-type capsule (sing-box / mihomo / Xray / URI) — right end of the
+   card's meta row (node count line); also used in the raw-config header. */
+.sub-type-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.66rem;
+  line-height: 1;
+  padding: 0.24rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--muted);
+}
+
+/* Push the capsule to the far right of the meta row, past skipped warnings. */
+.sub-card-meta .sub-type-tag {
+  margin-left: auto;
+}
+
+/* Detected-config-type hint under the custom-config textarea. */
+.field-hint.detect-ok {
+  color: var(--success, #34c77b);
+}
+
+/* —— Core-support panel (subscription ⋮ → 内核支持) —— */
+.support-modal {
+  width: min(560px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.support-modal .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.support-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+.support-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.78rem;
+}
+
+.support-row-label {
+  width: 4.5rem;
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.support-bar {
+  flex: 1;
+  min-width: 0;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.support-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.support-row-count {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.support-skipped .skipped-report-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* Type label next to the node name in unsupported lists. */
+.support-skipped .skipped-item-type {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  padding: 0.08rem 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  flex-shrink: 0;
+}
+
 .conn-time {
   white-space: nowrap;
   font-size: 0.8rem;
@@ -6051,6 +6194,10 @@ button.check.on {
 .system-proxy-restart-body p {
   margin: 0;
   line-height: 1.65;
+}
+
+.modal > .modal-footer {
+  padding: 0 1rem 0.9rem;
 }
 
 /* ErrorModal — standard surface for exception reports (invoke/core/load

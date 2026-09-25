@@ -45,13 +45,21 @@ pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
 
     for (idx, item) in proxies.iter().enumerate() {
         match parse_proxy_entry(item) {
-            Ok(node) => nodes.push(node.with_computed_id()),
-            Err(reason) => {
-                let name = as_mapping(item)
-                    .and_then(|m| get_str(m, &["name"]))
-                    .or_else(|| Some(format!("index-{idx}")));
-                skipped.push(SkippedProxy { name, reason });
+            Ok(mut node) => {
+                // Verbatim body for lossless mihomo generation (the model is
+                // a projection; see `ProxyNode::raw`).
+                node.raw = raw_entry_body(item);
+                nodes.push(node.with_computed_id());
             }
+            Err(reason) => match rescue_unmodeled_entry(item, idx) {
+                Some(node) => nodes.push(node.with_computed_id()),
+                None => {
+                    let name = as_mapping(item)
+                        .and_then(|m| get_str(m, &["name"]))
+                        .or_else(|| Some(format!("index-{idx}")));
+                    skipped.push(SkippedProxy { name, reason });
+                }
+            },
         }
     }
 
@@ -64,6 +72,49 @@ pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
         skipped,
         format: SubscriptionFormat::ClashYaml,
         clash_config: Some(content.to_string()),
+    })
+}
+
+/// mihomo-native proxy types this app does not model. Entries of these
+/// types are rescued into `Protocol::Unknown` raw-passthrough nodes instead
+/// of parse-level skips — listed under the mihomo core, where generation
+/// embeds the verbatim entry. sing-box/Xray keep filtering them (the
+/// `Unknown` protocol is in neither support set). Keep this list aligned
+/// with mihomo's own `adapters/outbound` set.
+pub const MIHOMO_UNMODELED_TYPES: &[&str] = &["ssr", "mieru"];
+
+/// Compact YAML serialization of one proxy entry, for verbatim re-emit.
+fn raw_entry_body(item: &Value) -> Option<String> {
+    let body = serde_yaml::to_string(item).ok()?;
+    let trimmed = body.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Best-effort node for a Clash type this app doesn't model but mihomo
+/// serves natively (see [`MIHOMO_UNMODELED_TYPES`]). `raw` carries the full
+/// definition; the model fields are UI projections only.
+fn rescue_unmodeled_entry(value: &Value, idx: usize) -> Option<ProxyNode> {
+    let map = as_mapping(value)?;
+    let type_str = get_str(map, &["type"])?;
+    let type_lc = type_str.to_ascii_lowercase();
+    if !MIHOMO_UNMODELED_TYPES.contains(&type_lc.as_str()) {
+        return None;
+    }
+    let name = get_str(map, &["name"]).unwrap_or_else(|| format!("index-{idx}"));
+    Some(ProxyNode {
+        id: String::new(),
+        name,
+        protocol: Protocol::Unknown,
+        server: get_str(map, &["server"]).unwrap_or_default(),
+        port: get_u16(map, &["port"]).unwrap_or(0),
+        tls: None,
+        transport: None,
+        udp: get_bool(map, &["udp"]),
+        config: ProtocolConfig::Unknown,
+        source: Some(type_str),
+        raw: raw_entry_body(value),
+        latency_ms: None,
+        latency_at: None,
     })
 }
 
@@ -97,6 +148,11 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
 
     let udp = get_bool(map, &["udp"]);
     let (tls, transport, config) = match protocol {
+        // Unknown never dispatches here — the rescue path builds those
+        // nodes directly (no model fields to parse).
+        Protocol::Unknown => {
+            return Err("unmodeled type".to_string());
+        }
         Protocol::Shadowsocks => parse_ss(map)?,
         Protocol::Vmess => parse_vmess(map)?,
         Protocol::Vless => parse_vless(map)?,
@@ -127,6 +183,7 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
         udp,
         config,
         source: Some(type_str),
+        raw: None,
         latency_ms: None,
         latency_at: None,
     })
@@ -968,7 +1025,77 @@ fn parse_transport(map: &serde_yaml::Mapping) -> Result<Option<Transport>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ProtocolConfig;
+    use crate::domain::{Protocol, ProtocolConfig};
+
+    #[test]
+    fn parsed_entries_carry_verbatim_raw_bodies() {
+        let yaml = "proxies:
+  - name: A
+    type: ss
+    server: a.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: x
+";
+        let parsed = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(parsed.nodes.len(), 1);
+        let raw = parsed.nodes[0].raw.as_deref().unwrap();
+        assert!(raw.contains("cipher: aes-256-gcm"), "raw={raw}");
+    }
+
+    #[test]
+    fn mihomo_unmodeled_types_are_rescued_with_raw() {
+        let yaml = "proxies:
+  - name: SSR-1
+    type: ssr
+    server: s.example.com
+    port: 443
+    cipher: aes-256-cfb
+    password: x
+    protocol: auth_aes128_md5
+  - name: broken
+    type: ss
+    server: c.example.com
+    port: 1
+    cipher: aes-256-gcm
+";
+        let parsed = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(parsed.nodes.len(), 1, "ssr rescued");
+        assert_eq!(parsed.skipped.len(), 1, "missing-password ss still skipped");
+        let node = &parsed.nodes[0];
+        assert_eq!(node.protocol, Protocol::Unknown);
+        assert_eq!(node.source.as_deref(), Some("ssr"));
+        assert!(node.raw.as_deref().unwrap().contains("auth_aes128_md5"));
+        assert!(matches!(node.config, ProtocolConfig::Unknown));
+        // Id is raw-hash based → stable across refreshes of the same body.
+        let id_again = {
+            let again = parse_clash_yaml(yaml).unwrap();
+            again.nodes[0].id.clone()
+        };
+        assert_eq!(node.id, id_again);
+    }
+
+    #[test]
+    fn unrecognized_types_stay_skipped() {
+        let yaml = "proxies:
+  - name: A
+    type: ss
+    server: a.example.com
+    port: 8388
+    cipher: aes-256-gcm
+    password: x
+  - name: X
+    type: quantum
+    server: q.example.com
+    port: 1
+";
+        let parsed = parse_clash_yaml(yaml).unwrap();
+        assert_eq!(parsed.nodes.len(), 1);
+        assert_eq!(parsed.skipped.len(), 1);
+        assert!(parsed.skipped[0]
+            .reason
+            .contains("unsupported type: quantum"));
+    }
 
     const SAMPLE: &str = r#"
 proxies:
@@ -1062,9 +1189,18 @@ proxies:
     fn parses_mixed_clash_proxies() {
         let result = parse_clash_yaml(SAMPLE).expect("parse ok");
         assert_eq!(result.format, SubscriptionFormat::ClashYaml);
-        assert_eq!(result.nodes.len(), 8);
-        assert_eq!(result.skipped.len(), 1);
-        assert!(result.skipped[0].reason.contains("unsupported type: ssr"));
+        // ssr is a mihomo-native unmodeled type — rescued as a raw-passthrough
+        // node instead of a parse skip (mihomo core only).
+        assert_eq!(result.nodes.len(), 9);
+        assert_eq!(result.skipped.len(), 0);
+        let ssr = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "SSR-skip")
+            .expect("ssr rescued");
+        assert_eq!(ssr.protocol, Protocol::Unknown);
+        assert_eq!(ssr.source.as_deref(), Some("ssr"));
+        assert!(ssr.raw.is_some());
         let ss = result.nodes.iter().find(|n| n.name == "SS-HK").expect("ss");
         assert_eq!(ss.protocol, Protocol::Shadowsocks);
         assert_eq!(ss.server, "ss.example.com");

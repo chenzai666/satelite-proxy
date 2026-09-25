@@ -12,7 +12,7 @@ pub use manual::{draft_to_node, node_to_draft, parse_manual_draft, parse_single_
 pub use singbox::{looks_like_singbox_json, parse_singbox_json, validate_complete_singbox_config};
 pub use uri::{parse_uri_list, serialize_share_uri};
 
-use crate::domain::{ParseResult, SubscriptionFormat};
+use crate::domain::{CustomConfigKind, ParseResult, SubscriptionFormat};
 use crate::error::{AppError, AppResult};
 use base64::{engine::general_purpose, Engine as _};
 
@@ -27,6 +27,115 @@ pub(super) fn ensure_entry_limit(count: usize) -> AppResult<()> {
         });
     }
     Ok(())
+}
+
+/// Detect which kernel a complete custom config ("自定义配置") targets.
+///
+/// sing-box JSON and Xray JSON both carry `inbounds`/`outbounds` arrays — the
+/// discriminator is the entry shape: sing-box entries have `type`, Xray
+/// entries have `protocol`. mihomo is Clash YAML with any well-known top-level
+/// key (`proxies` / `mixed-port` / …).
+pub fn detect_custom_config_kind(content: &str) -> AppResult<CustomConfigKind> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::EmptySubscription);
+    }
+
+    if looks_like_json(trimmed) {
+        let value: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|e| AppError::SubscriptionParse(format!("invalid json: {e}")))?;
+        let obj = value.as_object().ok_or_else(|| {
+            AppError::SubscriptionParse(
+                "自定义配置必须是完整配置对象（sing-box / Xray JSON 或 mihomo YAML）".into(),
+            )
+        })?;
+        let entries = obj
+            .get("outbounds")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .chain(
+                obj.get("inbounds")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten(),
+            );
+        let mut has_type = false;
+        let mut has_protocol = false;
+        for entry in entries {
+            let Some(map) = entry.as_object() else {
+                continue;
+            };
+            if map.get("type").and_then(|v| v.as_str()).is_some() {
+                has_type = true;
+            }
+            if map.get("protocol").and_then(|v| v.as_str()).is_some() {
+                has_protocol = true;
+            }
+        }
+        if has_protocol && !has_type {
+            return Ok(CustomConfigKind::Xray);
+        }
+        if has_type && !has_protocol {
+            return Ok(CustomConfigKind::Singbox);
+        }
+        return Err(AppError::SubscriptionParse(
+            "无法识别 JSON 配置类型：sing-box 条目需含 type 字段，Xray 条目需含 protocol 字段（mihomo 配置请使用 YAML）"
+                .into(),
+        ));
+    }
+
+    if looks_like_clash_yaml(trimmed) {
+        return Ok(CustomConfigKind::Mihomo);
+    }
+
+    Err(AppError::SubscriptionParse(
+        "无法识别配置类型：支持 sing-box JSON（outbounds 含 type）、Xray JSON（outbounds 含 protocol）、mihomo Clash YAML（含 proxies / mixed-port 等）"
+            .into(),
+    ))
+}
+
+/// mihomo custom config: must parse as a YAML mapping. Detection already
+/// required a known Clash key; deeper validation is mihomo's own `-t` check
+/// at start time.
+pub fn validate_custom_mihomo_config(content: &str) -> AppResult<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::EmptySubscription);
+    }
+    let value: serde_yaml::Value = serde_yaml::from_str(trimmed)
+        .map_err(|e| AppError::SubscriptionParse(format!("mihomo 配置必须是合法 YAML：{e}")))?;
+    if value.as_mapping().is_none() {
+        return Err(AppError::SubscriptionParse(
+            "mihomo 配置必须是 YAML 键值映射，不能是列表或片段".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Xray custom config: JSON object with a non-empty `outbounds` array
+/// (`inbounds` optional — API-only configs exist).
+pub fn validate_custom_xray_config(content: &str) -> AppResult<String> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::EmptySubscription);
+    }
+    let value: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| AppError::SubscriptionParse(format!("Xray 配置必须是合法 JSON：{e}")))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| AppError::SubscriptionParse("Xray 配置必须是 JSON 对象".into()))?;
+    let outbounds = obj
+        .get("outbounds")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| AppError::SubscriptionParse("Xray 配置必须包含 outbounds 数组".into()))?;
+    if outbounds.is_empty() {
+        return Err(AppError::SubscriptionParse(
+            "Xray 配置的 outbounds 不能为空".into(),
+        ));
+    }
+    serde_json::to_string_pretty(&value)
+        .map_err(|e| AppError::SubscriptionParse(format!("serialize xray config: {e}")))
 }
 
 /// Detect format and parse subscription / config body
@@ -259,5 +368,34 @@ proxies:
         let r = parse_subscription(json).unwrap();
         assert_eq!(r.format, SubscriptionFormat::SingboxJson);
         assert_eq!(r.nodes[0].name, "T1");
+    }
+
+    #[test]
+    fn detect_custom_kind_discriminates_json_shapes() {
+        let singbox = r#"{"inbounds":[{"type":"mixed","listen_port":7890}],"outbounds":[{"type":"direct","tag":"direct"}]}"#;
+        assert_eq!(
+            detect_custom_config_kind(singbox).unwrap(),
+            CustomConfigKind::Singbox
+        );
+        let xray = r#"{"inbounds":[{"protocol":"socks","port":10808}],"outbounds":[{"protocol":"freedom","tag":"direct"}]}"#;
+        assert_eq!(
+            detect_custom_config_kind(xray).unwrap(),
+            CustomConfigKind::Xray
+        );
+        let clash = "mixed-port: 7890\nproxies:\n  - name: a\n    type: ss\n    server: a.com\n    port: 1\n    cipher: aes-256-gcm\n    password: x\n";
+        assert_eq!(
+            detect_custom_config_kind(clash).unwrap(),
+            CustomConfigKind::Mihomo
+        );
+        assert!(detect_custom_config_kind("hello world").is_err());
+        assert!(detect_custom_config_kind("{\"dns\":{\"servers\":[]}}").is_err());
+    }
+
+    #[test]
+    fn validate_custom_configs_reject_incomplete_bodies() {
+        assert!(validate_custom_mihomo_config("- a\n- b").is_err());
+        assert!(validate_custom_mihomo_config("mixed-port: 7890").is_ok());
+        assert!(validate_custom_xray_config(r#"{"outbounds":[]}"#).is_err());
+        assert!(validate_custom_xray_config(r#"{"outbounds":[{"protocol":"freedom"}]}"#).is_ok());
     }
 }

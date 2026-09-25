@@ -28,6 +28,13 @@ pub enum Protocol {
     /// under the mihomo main core, delegated to the mihomo sidecar
     /// (multi-core mode) under sing-box, filtered otherwise.
     Masque,
+    /// A Clash type this app doesn't model but the mihomo kernel serves
+    /// natively (ssr / mieru — see `MIHOMO_UNMODELED_TYPES`). The node rides
+    /// on `raw` verbatim passthrough in mihomo generation; the model fields
+    /// (name/server/port) are best-effort projections for the UI. No core
+    /// serves it at protocol level — only `CoreKind::supports_node` admits
+    /// it for mihomo when a raw body exists.
+    Unknown,
 }
 
 impl Protocol {
@@ -50,6 +57,7 @@ impl Protocol {
             Self::AnyTls => "anytls",
             Self::Snell => "snell",
             Self::Masque => "masque",
+            Self::Unknown => "unknown",
         }
     }
 
@@ -119,7 +127,10 @@ impl Protocol {
     /// missing, plus a standalone ShadowTLS proxy type (ss+shadow-tls
     /// plugin would need its own field mapping).
     pub fn mihomo_supported(self) -> bool {
-        !matches!(self, Self::Naive | Self::Tor | Self::ShadowTls)
+        !matches!(
+            self,
+            Self::Naive | Self::Tor | Self::ShadowTls | Self::Unknown
+        )
     }
 }
 
@@ -208,6 +219,9 @@ pub struct ShadowTlsOpts {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "protocol", rename_all = "lowercase")]
 pub enum ProtocolConfig {
+    /// Placeholder for `Protocol::Unknown` raw-passthrough nodes — no
+    /// modeled fields; the mihomo generator emits the raw entry verbatim.
+    Unknown,
     Shadowsocks {
         method: String,
         password: String,
@@ -404,6 +418,12 @@ pub struct ProxyNode {
     /// Original clash `type` string or uri scheme for debugging.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Verbatim YAML of the original Clash proxy entry. Every clash-parsed
+    /// node carries it; mihomo generation re-emits it as-is (lossless — the
+    /// model is a lossy projection for UI/other cores). For
+    /// `Protocol::Unknown` nodes this is the ONLY source of truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
     /// Last measured latency in milliseconds (TCP connect or delay API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u32>,
@@ -432,6 +452,15 @@ impl ProxyNode {
     }
 
     pub fn with_computed_id(mut self) -> Self {
+        if matches!(self.protocol, Protocol::Unknown) {
+            // Unmodeled types have no trustworthy model identity — hash the
+            // verbatim entry so the id tracks the actual definition.
+            let mut hasher = Sha256::new();
+            hasher.update(b"raw|");
+            hasher.update(self.raw.as_deref().unwrap_or(&self.name).as_bytes());
+            self.id = hex::encode(&hasher.finalize()[..16]);
+            return self;
+        }
         self.id = Self::compute_id(
             &self.server,
             self.port,
@@ -443,6 +472,9 @@ impl ProxyNode {
 
     /// Same outbound credentials — ignore display-name fragments.
     pub fn identity_key(&self) -> String {
+        if matches!(self.protocol, Protocol::Unknown) {
+            return format!("unknown|{}", self.raw.as_deref().unwrap_or(&self.name));
+        }
         format!(
             "{}|{}|{}|{}",
             self.protocol.as_str(),
@@ -498,6 +530,7 @@ fn tag_prefix(id: &str) -> String {
 
 fn config_identity(config: &ProtocolConfig) -> String {
     match config {
+        ProtocolConfig::Unknown => String::new(),
         ProtocolConfig::Shadowsocks {
             password, method, ..
         } => {
@@ -770,6 +803,7 @@ mod tests {
                 shadow_tls: None,
             },
             source: None,
+            raw: None,
             latency_ms: None,
             latency_at: None,
         }
