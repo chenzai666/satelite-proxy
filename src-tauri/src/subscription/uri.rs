@@ -81,6 +81,7 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
     let fragment = share_component(&node.name);
 
     match &node.config {
+        ProtocolConfig::Unknown => Err("该原文透传节点暂不支持生成分享链接，请使用原始配置导入".into()),
         ProtocolConfig::Shadowsocks {
             method,
             password,
