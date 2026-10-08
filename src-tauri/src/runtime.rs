@@ -8,12 +8,14 @@ use crate::config::{
     write_active_config, write_active_yaml_config, write_custom_config,
     write_mihomo_sidecar_config, write_xray_sidecar_config, BuildOptions, SidecarPlan,
 };
+use crate::config::{inspect_mihomo_config, inspect_xray_config};
 use crate::core::manager::{CoreManager, CoreState};
 use crate::core::read_process_rss_bytes;
 use crate::core::resolve_core_bin;
 use crate::core::CoreKind;
-use crate::domain::{ChainHop, CustomConfigKind, Protocol, ProxyNode, RuntimeSource, SubscriptionSource};
-use crate::config::{inspect_mihomo_config, inspect_xray_config};
+use crate::domain::{
+    ChainHop, CustomConfigKind, Protocol, ProxyNode, RuntimeSource, SubscriptionSource,
+};
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
@@ -2181,7 +2183,8 @@ impl Runtime {
             let port = if store.settings.runtime_source().is_custom() {
                 self.custom_inbound_port.ok_or_else(|| {
                     AppError::Core(
-                        "当前自定义配置没有可用的 HTTP 代理入站（mixed/http），无法开启系统代理".into(),
+                        "当前自定义配置没有可用的 HTTP 代理入站（mixed/http），无法开启系统代理"
+                            .into(),
                     )
                 })?
             } else {
@@ -2436,6 +2439,15 @@ pub(crate) fn compute_sidecar_plan(
     chains: &[crate::domain::ProxyChain],
     nodes: &[ProxyNode],
 ) -> Option<SidecarPlan> {
+    compute_sidecar_plan_impl(settings, chains, nodes, true)
+}
+
+fn compute_sidecar_plan_impl(
+    settings: &crate::domain::AppSettings,
+    chains: &[crate::domain::ProxyChain],
+    nodes: &[ProxyNode],
+    log_skips: bool,
+) -> Option<SidecarPlan> {
     if !settings.multi_core_enabled {
         return None;
     }
@@ -2502,30 +2514,38 @@ pub(crate) fn compute_sidecar_plan(
             continue;
         }
         if !target.supports_node(node) {
-            crate::app_log::warn(
-                "sidecar",
-                format!(
-                    "节点「{}」的协议组合 {} 不支持，保持原生出站",
-                    node.name,
-                    target.as_str()
-                ),
-            );
+            if log_skips {
+                crate::app_log::warn(
+                    "sidecar",
+                    format!(
+                        "节点「{}」的协议组合 {} 不支持，保持原生出站",
+                        node.name,
+                        target.as_str()
+                    ),
+                );
+            }
             continue;
         }
         let Some(delta) = u16::try_from(next_index).ok() else {
-            crate::app_log::warn("sidecar", "委托端口超出 u16 范围，提前截断委托计划");
+            if log_skips {
+                crate::app_log::warn("sidecar", "委托端口超出 u16 范围，提前截断委托计划");
+            }
             break;
         };
         let Some(port) = base.checked_add(delta) else {
-            crate::app_log::warn("sidecar", "委托端口超出 u16 范围，提前截断委托计划");
+            if log_skips {
+                crate::app_log::warn("sidecar", "委托端口超出 u16 范围，提前截断委托计划");
+            }
             break;
         };
         next_index += 1;
         if reserved.contains(&port) {
-            crate::app_log::warn(
-                "sidecar",
-                format!("候选端口 {port} 与主配置监听端口冲突，该节点保持原生出站"),
-            );
+            if log_skips {
+                crate::app_log::warn(
+                    "sidecar",
+                    format!("候选端口 {port} 与主配置监听端口冲突，该节点保持原生出站"),
+                );
+            }
             continue;
         }
         ports.push(crate::config::SidecarPort {
@@ -2534,10 +2554,12 @@ pub(crate) fn compute_sidecar_plan(
             kind: target,
         });
         if ports.len() >= SIDECAR_MAX_NODES {
-            crate::app_log::warn(
-                "sidecar",
-                format!("委托节点超过 {SIDECAR_MAX_NODES} 个上限，其余保持 sing-box 原生出站"),
-            );
+            if log_skips {
+                crate::app_log::warn(
+                    "sidecar",
+                    format!("委托节点超过 {SIDECAR_MAX_NODES} 个上限，其余保持 sing-box 原生出站"),
+                );
+            }
             break;
         }
     }
@@ -2546,6 +2568,18 @@ pub(crate) fn compute_sidecar_plan(
     } else {
         Some(SidecarPlan { ports })
     }
+}
+
+/// Actual delegated membership, not merely protocol candidacy. Use the same
+/// port reservations, chain exclusions and limits as configuration generation.
+pub(crate) fn delegated_node_ids(
+    settings: &crate::domain::AppSettings,
+    chains: &[crate::domain::ProxyChain],
+    nodes: &[ProxyNode],
+) -> std::collections::HashSet<String> {
+    compute_sidecar_plan_impl(settings, chains, nodes, false)
+        .map(|plan| plan.ports.into_iter().map(|entry| entry.node_id).collect())
+        .unwrap_or_default()
 }
 
 /// macOS-only: find a `utunN` index with no existing interface, for Xray's
@@ -2888,6 +2922,79 @@ mod sidecar_plan_tests {
             port,
             kind,
         }
+    }
+
+    fn unknown_node(id: &str) -> ProxyNode {
+        let mut n = node(id, Protocol::Unknown);
+        n.config = ProtocolConfig::Unknown;
+        n.raw = Some("type: openvpn\nserver: o.example.com\nport: 1194\nca: xxx".into());
+        n
+    }
+
+    #[test]
+    fn unknown_raw_nodes_delegate_only_when_enabled_and_pinned() {
+        let mut store = sidecar_store();
+        let nodes = vec![unknown_node("ov1")];
+        assert!(delegated_node_ids(&store.settings, &store.chains, &nodes).is_empty());
+        store
+            .settings
+            .protocol_cores
+            .push(crate::domain::ProtocolCoreItem {
+                protocol: "unknown".into(),
+                core: "mihomo".into(),
+            });
+        assert!(delegated_node_ids(&store.settings, &store.chains, &nodes).contains("ov1"));
+        let mut rawless = nodes[0].clone();
+        rawless.raw = None;
+        assert!(delegated_node_ids(&store.settings, &[], &[rawless]).is_empty());
+        store.settings.multi_core_enabled = false;
+        assert!(delegated_node_ids(&store.settings, &[], &nodes).is_empty());
+        store.settings.multi_core_enabled = true;
+        store.settings.core_type = "xray".into();
+        assert!(delegated_node_ids(&store.settings, &[], &nodes).is_empty());
+        store.settings.core_type = "singbox".into();
+        store
+            .settings
+            .set_runtime_source(crate::domain::RuntimeSource::Singbox {
+                id: "custom".into(),
+            });
+        assert!(delegated_node_ids(&store.settings, &[], &nodes).is_empty());
+    }
+
+    #[test]
+    fn delegated_membership_respects_ports_chains_and_capacity() {
+        let mut store = sidecar_store();
+        store.settings.protocol_cores = vec![crate::domain::ProtocolCoreItem {
+            protocol: "unknown".into(),
+            core: "mihomo".into(),
+        }];
+        let nodes: Vec<_> = (0..(SIDECAR_MAX_NODES + 5))
+            .map(|i| unknown_node(&format!("ov{i}")))
+            .collect();
+        store.settings.api_port = store.settings.sidecar_port;
+        let ids = delegated_node_ids(&store.settings, &[], &nodes);
+        assert!(!ids.contains("ov0"), "reserved port must not be admitted");
+        assert_eq!(ids.len(), SIDECAR_MAX_NODES);
+        assert!(
+            !ids.contains(&nodes.last().unwrap().id),
+            "capacity overflow must not be admitted"
+        );
+        store.settings.api_port = 19090;
+        let chains = vec![ProxyChain::new(
+            "chain",
+            vec![
+                ChainHop::Node {
+                    node_id: "ov0".into(),
+                },
+                ChainHop::Node {
+                    node_id: "ov1".into(),
+                },
+            ],
+        )];
+        let ids = delegated_node_ids(&store.settings, &chains, &nodes);
+        assert!(!ids.contains("ov0"));
+        assert!(!ids.contains("ov1"));
+        assert!(ids.contains("ov2"));
     }
 
     #[test]

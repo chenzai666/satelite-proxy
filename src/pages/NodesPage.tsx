@@ -37,6 +37,7 @@ import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap
 import { copyNodeShareText } from "../nodeShare";
 import { clipboardNodePayload } from "../nodeClipboard";
 import { createLatencyResultBuffer } from "../latencyStream";
+import { mergeUnsupportedIds } from "../nodeLatencyState";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
@@ -48,7 +49,7 @@ const NODE_GROUP_H = 30;
 // subscription names were truncated even when the window still had room.
 // The minimums also make the list horizontally scrollable instead of
 // squeezing every cell into unreadable slivers on a narrow window.
-const NODE_LIST_COLS = "38px minmax(300px,3fr) 104px minmax(140px,1fr) 82px 100px";
+const NODE_LIST_COLS = "38px minmax(260px,3fr) minmax(160px,1.4fr) 104px minmax(140px,1fr) 82px 100px";
 const GRID_GAP = 10;
 
 function isEditingTarget(target: EventTarget | null): boolean {
@@ -59,27 +60,18 @@ function isEditingTarget(target: EventTarget | null): boolean {
 
 /** Flat render items for the grouped list (headers share the row height so
  *  the fixed-size virtualizer math stays exact). */
-type ListItem =
-  | {
+type GroupHeaderItem = {
       type: "group";
       key: string;
       label: string;
       flag?: string;
       count: number;
+      nodes: ProxyNode[];
       h: number;
-    }
-  | { type: "node"; n: ProxyNode; h: number };
+    };
+type ListItem = GroupHeaderItem | { type: "node"; n: ProxyNode; h: number };
 /** Grid items are row-granular: one item is one visual row of cards. */
-type GridItem =
-  | {
-      type: "group";
-      key: string;
-      label: string;
-      flag?: string;
-      count: number;
-      h: number;
-    }
-  | { type: "row"; nodes: ProxyNode[]; h: number };
+type GridItem = GroupHeaderItem | { type: "row"; nodes: ProxyNode[]; h: number };
 
 function gridColumns() {
   if (window.innerWidth <= 720) return 2;
@@ -162,6 +154,7 @@ export function NodesPage() {
   const [customLatency, setCustomLatency] = useState<CustomLatencyMap>(new Map());
   const [testing, setTesting] = useState(false);
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
+  const [testingGroupKey, setTestingGroupKey] = useState<string | null>(null);
   // Which probe the current/last run used — "real" rides the kernel's proxy
   // path, "ping" is direct TCP; drives button labels and the unsupported note.
   const [testKind, setTestKind] = useState<"real" | "ping">("real");
@@ -405,6 +398,7 @@ export function NodesPage() {
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
+          nodes: g.nodes,
           h: NODE_GROUP_H,
         });
       }
@@ -435,6 +429,7 @@ export function NodesPage() {
           label: g.label,
           flag: g.flag,
           count: g.nodes.length,
+          nodes: g.nodes,
           h: NODE_GROUP_H + GRID_GAP,
         });
       }
@@ -548,10 +543,13 @@ export function NodesPage() {
     }
   }
 
-  async function onTestNodes(ids: string[], kind: "real" | "ping" = "real") {
+  async function onTestNodes(
+    ids: string[], kind: "real" | "ping" = "real", groupKey: string | null = null,
+  ) {
     if (testing || ids.length === 0) return;
     if (kind === "real" && xrayCore) return;
     setTesting(true);
+    setTestingGroupKey(groupKey);
     setTestKind(kind);
     setError(null);
     // Custom mode probes the extracted (unsaved) nodes — ids come from the
@@ -573,10 +571,7 @@ export function NodesPage() {
     // frame (see latencyStream.ts).
     const buffer = createLatencyResultBuffer((batch) => {
       setUnsupportedIds((prev) => {
-        const next = new Set(prev);
-        for (const r of batch.values())
-          if (r.method === "unsupported") next.add(r.id);
-        return next;
+        return mergeUnsupportedIds(prev, batch.keys(), batch.values());
       });
       if (customRuntime) {
         // Session-only — remember results across filter / sort / page reloads.
@@ -626,9 +621,9 @@ export function NodesPage() {
           ? await pingNodesLatency(ids, 3000, buffer.push)
           : await testNodesLatency(ids, 3000, buffer.push);
       buffer.flushNow();
-      setUnsupportedIds(
-        new Set(batch.results.filter((r) => r.method === "unsupported").map((r) => r.id)),
-      );
+      setUnsupportedIds((prev) => {
+        return mergeUnsupportedIds(prev, idSet, batch.results);
+      });
     } catch (e) {
       buffer.flushNow();
       setError(typeof e === "string" ? e : String(e));
@@ -636,6 +631,7 @@ export function NodesPage() {
     } finally {
       setTesting(false);
       setTestingIds(new Set());
+      setTestingGroupKey(null);
       // Custom results are session-only — keep the merged values instead of
       // re-reading the latency-less extracted list.
       if (!customRuntime) await reload();
@@ -828,6 +824,36 @@ export function NodesPage() {
   }
 
 
+  function renderGroupActions(item: GroupHeaderItem) {
+    if (customRuntime || item.nodes.length === 0) return null;
+    const groupTesting = testing && testingGroupKey === item.key;
+    return (
+      <span className="node-group-actions">
+        {(["real", "ping"] as const).map(kind => {
+          const hint = kind === "real" ? t("nodes.groupTestRealHint") : t("nodes.groupTestPingHint");
+          return (
+            <button
+              key={kind}
+              type="button"
+              className="node-group-test-btn"
+              disabled={testing || batchBusy || loading || (kind === "real" && xrayCore)}
+              title={kind === "real" && xrayCore ? t("nodes.realLatencyXrayUnsupported") : hint}
+              aria-label={hint}
+              onClick={event => {
+                event.stopPropagation();
+                void onTestNodes(item.nodes.map(node => node.id), kind, item.key);
+              }}
+            >
+              {groupTesting && testKind === kind
+                ? <span className="lat-spinner" aria-hidden />
+                : kind === "real" ? "◉" : "∿"}
+            </button>
+          );
+        })}
+      </span>
+    );
+  }
+
   function renderGroupRow(item: Extract<ListItem, { type: "group" }>) {
     const open = !collapsedGroups.has(item.key);
     return (
@@ -844,6 +870,7 @@ export function NodesPage() {
           {item.label}
         </span>
         <span className="node-group-count mono">{item.count}</span>
+        {renderGroupActions(item)}
       </div>
     );
   }
@@ -865,6 +892,7 @@ export function NodesPage() {
           {item.label}
         </span>
         <span className="node-group-count mono">{item.count}</span>
+        {renderGroupActions(item)}
       </div>
     );
   }
@@ -942,11 +970,11 @@ export function NodesPage() {
         </span>
         <span className="node-list-identity">
           <div className="node-list-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
-          {n.subscription_name ? (
-            <div className="node-sub-label" title={n.subscription_name}>
-              {n.subscription_name}
-            </div>
-          ) : null}
+        </span>
+        <span className="node-list-sub">
+          <span className="node-sub-label" title={n.subscription_name}>
+            {n.subscription_name || "—"}
+          </span>
         </span>
         <span className="node-proto-tags" title={n.protocol}>
           <code>{n.protocol}</code>
@@ -1223,6 +1251,7 @@ export function NodesPage() {
             <div className="node-list-head" style={{ gridTemplateColumns: NODE_LIST_COLS }}>
               <span />
               <span>{t("nodes.sortName")}</span>
+              <span>{t("nodes.groupSub")}</span>
               <span>proto</span>
               <span>host</span>
               <span>port</span>

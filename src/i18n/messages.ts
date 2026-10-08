@@ -440,7 +440,7 @@ const en = {
   "settings.multiCoreFollowMain": "Follow main core",
   "settings.multiCoreMasqueDisabled": "Disabled",
   "settings.multiCoreTableHint":
-    "Pinned protocols egress through the chosen sidecar core (Xray or mihomo — e.g. Hysteria2 works on either). MASQUE is mihomo-only (sing-box and Xray have no masque outbound): unpinned it reads Disabled and its nodes are filtered from the config. Unsupported transport combinations fall back to native sing-box outbounds automatically.",
+    "Pinned protocols egress through the chosen sidecar core (Xray or mihomo — e.g. Hysteria2 works on either). MASQUE is mihomo-only (sing-box and Xray have no masque outbound): unpinned it reads Disabled and its nodes are filtered from the config. OpenVPN / SSR / Mieru covers unmodeled mihomo-native types (OpenVPN / SSR / Mieru, carried as verbatim raw entries): pinning it routes those nodes through the mihomo sidecar, and the installed mihomo version must support the raw type. Unsupported transport combinations fall back to native sing-box outbounds automatically.",
   "settings.multiCoreNoProtocols":
     "No protocol is pinned to a sidecar yet — the sidecar process starts once you route at least one protocol below.",
   "settings.multiCorePort": "Sidecar base port",
@@ -565,6 +565,8 @@ const en = {
     "Xray has no delay API, so real-latency tests are unavailable — use the TCP ping test or switch core",
   "nodes.pingTest": "Ping test",
   "nodes.pingTestHint": "Fast direct TCP check, 30 concurrent",
+  "nodes.groupTestRealHint": "Test real latency — this group only",
+  "nodes.groupTestPingHint": "Ping test — this group only",
   "nodes.pinging": "Pinging…",
   "nodes.pingUnsupported": "Protocol doesn't support ping",
   "nodes.groupBy": "Group",
@@ -1669,7 +1671,7 @@ const zh: Record<MessageKey, string> = {
   "settings.multiCoreFollowMain": "跟随主内核",
   "settings.multiCoreMasqueDisabled": "未启用",
   "settings.multiCoreTableHint":
-    "已钉选的协议经所选副内核转发（Xray 或 mihomo——如 Hysteria2 两者皆可）。MASQUE 仅 mihomo 支持（sing-box 与 Xray 均无 masque 出站），未钉选时显示未启用、其节点被过滤出配置；传输组合不被目标内核支持时自动回退 sing-box 原生出站。",
+    "已钉选的协议经所选副内核转发（Xray 或 mihomo——如 Hysteria2 两者皆可）。MASQUE 仅 mihomo 支持（sing-box 与 Xray 均无 masque 出站），未钉选时显示未启用、其节点被过滤出配置；OpenVPN / SSR / Mieru 覆盖未建模的 mihomo 原生类型（OpenVPN / SSR / Mieru，以原文条目透传承载），钉选后这些节点经 mihomo 副进程转发、仍需已安装的 mihomo 版本支持对应类型；传输组合不被目标内核支持时自动回退 sing-box 原生出站。",
   "settings.multiCoreNoProtocols":
     "尚未把任何协议钉到副内核——至少在下方把一个协议选为 Xray / mihomo 后，副进程才会启动。",
   "settings.multiCorePort": "副进程端口基址",
@@ -1791,6 +1793,8 @@ const zh: Record<MessageKey, string> = {
     "Xray 内核无延迟测试接口，无法测真实延迟——可使用 Ping 测试或切换内核",
   "nodes.pingTest": "Ping 测试",
   "nodes.pingTestHint": "TCP 直连快速探测，并发 30",
+  "nodes.groupTestRealHint": "测真实延迟——仅该分组",
+  "nodes.groupTestPingHint": "Ping 测试——仅该分组",
   "nodes.pinging": "Ping 中…",
   "nodes.pingUnsupported": "协议不支持 Ping",
   "nodes.groupBy": "分组",

@@ -6,7 +6,7 @@ on:
     branches:
       - main
     tags:
-      - "v1.0.45"
+      - "v1.0.46"
 
 permissions:
   contents: read
@@ -70,7 +70,7 @@ jobs:
 
       - name: 确认弹窗安全回归测试
         shell: pwsh
-        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs scripts/test-node-clipboard.mjs
+        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs scripts/test-node-clipboard.mjs scripts/test-node-groups.mjs
 
       - name: 规则侧栏浏览器回归测试
         shell: pwsh
@@ -108,6 +108,8 @@ jobs:
           # 否则 Tauri build.rs 会按基础配置查找未下载的 Xray/Mihomo 文件。
           $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --test parse_subscription
 
       - name: Windows 剪贴板 Unicode 回归测试
         shell: pwsh
@@ -115,6 +117,19 @@ jobs:
           # 仅在临时 CI runner 覆盖剪贴板，不在用户机器运行此 ignored 测试。
           $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib tray::clipboard_tests::clipboard_roundtrip_preserves_unicode -- --ignored
+
+      - name: 预取 Mihomo 供原文配置兼容验证
+        shell: bash
+        run: bash scripts/ci-fetch-with-retry.sh scripts/fetch-bundled-mihomo-windows-amd64.ps1
+
+      - name: Mihomo 原文及副核配置真实内核校验
+        shell: pwsh
+        run: |
+          # 仅配置 -t 校验，不启动代理、不连接测试节点。安装包仍只内置 sing-box。
+          $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_openvpn_raw_validates -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_sidecar_config_validates -- --ignored
 
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -134,7 +149,7 @@ jobs:
 
   release:
     name: 发布 GitHub Release
-    if: github.ref == 'refs/tags/v1.0.45'
+    if: github.ref == 'refs/tags/v1.0.46'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -166,7 +181,7 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
-              --notes-file docs/release-1.0.45.md \
+              --notes-file docs/release-1.0.46.md \
               --title "Satelite $GITHUB_REF_NAME"
           fi
           # gh release upload --clobber 可能因按标签查询的缓存漏掉旧资产而报 422。
@@ -181,4 +196,4 @@ jobs:
             done
           done
           gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.zip --repo "$GITHUB_REPOSITORY"
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.45.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file docs/release-1.0.46.md

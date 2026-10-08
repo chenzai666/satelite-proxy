@@ -2343,7 +2343,7 @@ button {
  */
 .node-list {
   width: 100%;
-  min-width: 764px;
+  min-width: 884px;
   font-size: 0.875rem;
 }
 
@@ -2519,6 +2519,52 @@ button {
   border-radius: var(--radius);
   border-top: 1px solid var(--success-border);
   border-bottom: 1px solid var(--success-border);
+}
+
+/* Per-group header test buttons (right edge of the band): real latency ◉ /
+   ping ∿ scoped to the group's nodes — same monochrome glyphs as the
+   toolbar buttons. Sized to stay inside the 30px header band. */
+.node-group-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+
+.node-group-test-btn {
+  width: 1.35rem;
+  height: 1.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  /* Soft neutral tint — reads as a small chip on the group band without
+     competing with the toolbar's primary buttons. */
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.node-group-test-btn .lat-spinner {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-width: 1.5px;
+}
+
+.node-group-test-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--muted) 26%, transparent);
+}
+
+.node-group-test-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .node-virtual-spacer {
@@ -3086,6 +3132,12 @@ button.node-card:disabled,
 
 .node-list-name {
   font-weight: 500;
+}
+
+/* Subscription column cell (list view): lets the inner .node-sub-label
+   shrink so its ellipsis kicks in instead of clipping hard. */
+.node-list-sub {
+  min-width: 0;
 }
 
 .node-card-meta {
@@ -4545,7 +4597,7 @@ tr.rule-row:hover {
 }
 
 /* buttons — exclude nav/seg/icon/node cards/switch/menu/radio from primary */
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.core-radio):not(.node-select-dot):not(.node-latency-action):not(.node-context-menu-item) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.core-radio):not(.node-select-dot):not(.node-latency-action):not(.node-context-menu-item):not(.react-flow__controls-button):not(.node-fav-btn):not(.node-group-test-btn) {
   border-radius: var(--radius-pill);
   border: 1px solid transparent;
   padding: 0.42rem 0.95rem;
@@ -4558,7 +4610,7 @@ button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card)
   color: var(--on-primary);
 }
 
-button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.core-radio):not(.node-select-dot):not(.node-latency-action):not(.node-context-menu-item):hover:not(:disabled) {
+button:not(.nav-item):not(.topnav-item):not(.seg):not(.icon-btn):not(.node-card):not(.rule-menu-trigger):not(.rule-menu-item):not(.sub-menu-trigger):not(.sub-menu-item):not(.btn-pill):not(.solid-select-trigger):not(.solid-select-option):not(.topnav-theme-btn):not(.ui-mode-menu-trigger):not(.ui-mode-menu-item):not(.simple-orbit-btn):not(.simple-node-item):not(.simple-node-card):not(.simple-link-row):not(.glass-btn):not(.glass-switch):not(.tray-icon-pick):not(.simple-spark):not(.simple-hero-traffic):not(.simple-hero-subs):not(.corner-link):not(.core-radio):not(.node-select-dot):not(.node-latency-action):not(.node-context-menu-item):not(.react-flow__controls-button):not(.node-fav-btn):not(.node-group-test-btn):hover:not(:disabled) {
   background: var(--primary-hover);
   box-shadow: 0 0 14px var(--primary-glow);
 }
@@ -6638,6 +6690,13 @@ button.check.on {
 
 .instrument-kv .kv-v {
   color: var(--muted);
+  display: inline-block;
+  vertical-align: bottom;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Exit-IP row of the network-probe card. Keep IPv6 answers on one line and
@@ -7238,6 +7297,10 @@ button.check.on {
   font-size: 1.12rem;
   line-height: 1.22;
   white-space: normal;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .instrument-subscription-names.wrap > span {

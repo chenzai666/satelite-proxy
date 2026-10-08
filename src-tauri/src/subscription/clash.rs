@@ -81,7 +81,7 @@ pub fn parse_clash_yaml(content: &str) -> AppResult<ParseResult> {
 /// embeds the verbatim entry. sing-box/Xray keep filtering them (the
 /// `Unknown` protocol is in neither support set). Keep this list aligned
 /// with mihomo's own `adapters/outbound` set.
-pub const MIHOMO_UNMODELED_TYPES: &[&str] = &["ssr", "mieru"];
+pub const MIHOMO_UNMODELED_TYPES: &[&str] = &["ssr", "mieru", "openvpn"];
 
 /// Compact YAML serialization of one proxy entry, for verbatim re-emit.
 fn raw_entry_body(item: &Value) -> Option<String> {
@@ -1053,6 +1053,18 @@ mod tests {
     cipher: aes-256-cfb
     password: x
     protocol: auth_aes128_md5
+  - name: OVPN-1
+    type: openvpn
+    server: o.example.com
+    port: 1194
+    protocol: udp
+    cipher: AES-256-GCM
+    username: u
+    password: p
+    ca: |
+      -----BEGIN CERTIFICATE-----
+      MIIB
+      -----END CERTIFICATE-----
   - name: broken
     type: ss
     server: c.example.com
@@ -1060,8 +1072,19 @@ mod tests {
     cipher: aes-256-gcm
 ";
         let parsed = parse_clash_yaml(yaml).unwrap();
-        assert_eq!(parsed.nodes.len(), 1, "ssr rescued");
+        assert_eq!(parsed.nodes.len(), 2, "ssr+openvpn rescued");
         assert_eq!(parsed.skipped.len(), 1, "missing-password ss still skipped");
+        let ovpn = parsed
+            .nodes
+            .iter()
+            .find(|n| n.name == "OVPN-1")
+            .expect("openvpn rescued");
+        assert_eq!(ovpn.protocol, Protocol::Unknown);
+        assert_eq!(ovpn.source.as_deref(), Some("openvpn"));
+        assert_eq!(ovpn.server, "o.example.com");
+        assert_eq!(ovpn.port, 1194);
+        assert!(ovpn.raw.as_deref().unwrap().contains("AES-256-GCM"));
+        assert!(matches!(ovpn.config, ProtocolConfig::Unknown));
         let node = &parsed.nodes[0];
         assert_eq!(node.protocol, Protocol::Unknown);
         assert_eq!(node.source.as_deref(), Some("ssr"));

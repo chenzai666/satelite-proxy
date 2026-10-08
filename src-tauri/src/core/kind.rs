@@ -299,7 +299,7 @@ impl CoreKind {
         }
         if !self.supports(node.protocol) {
             return Some(match self {
-                Self::SingBox => "未建模类型：仅 mihomo 内核支持原文透传",
+                Self::SingBox => "未建模类型：仅 mihomo 支持原文透传（多核模式可委托 mihomo）",
                 Self::Xray => "Xray 不支持该协议",
                 Self::Mihomo => "mihomo 不支持该协议",
             });
@@ -384,7 +384,9 @@ impl CoreKind {
     /// automatic policy must not silently change the user's active core.
     pub fn manual_node_fallback(self, node: &crate::domain::ProxyNode) -> Option<Self> {
         if self == Self::Xray && !self.supports_node(node) {
-            [Self::SingBox, Self::Mihomo].into_iter().find(|kind| kind.supports_node(node))
+            [Self::SingBox, Self::Mihomo]
+                .into_iter()
+                .find(|kind| kind.supports_node(node))
         } else {
             None
         }

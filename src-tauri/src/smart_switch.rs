@@ -521,12 +521,17 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         c.set_phase(Phase::Probing);
     }
 
-    let (current_id, nodes, probe_url) = {
+    let (current_id, nodes, probe_url, delegated_ids) = {
         let store = state.lock_store();
         (
             store.settings.current_node_id.clone(),
             store.enabled_nodes(),
             store.settings.probe_url.clone(),
+            crate::runtime::delegated_node_ids(
+                &store.settings,
+                &store.chains,
+                &store.enabled_nodes(),
+            ),
         )
     };
     let (clash, core_kind) = {
@@ -535,10 +540,11 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
     };
     // Main-node candidates must be servable by the running core (a core may drop
     // REALITY nodes — they pass TCP probes and would win the race, then the
-    // pick is rejected by the switch guard).
+    // pick is rejected by the switch guard) — or delegated to a sidecar the
+    // running core forwards to, which the switch guard admits equally.
     let nodes: Vec<_> = nodes
         .into_iter()
-        .filter(|n| core_kind.supports_node(n))
+        .filter(|n| core_kind.supports_node(n) || delegated_ids.contains(&n.id))
         .collect();
 
     if nodes.is_empty() {
@@ -702,7 +708,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
     // (with a throttled log) instead of parking the round on a worker — a
     // stuck lock holder must never stop the patrol. Guards live in blocks so
     // they provably never cross an await.
-    let (enabled, custom, current_id, nodes, probe_url) = {
+    let (enabled, custom, current_id, nodes, probe_url, delegated_ids) = {
         let Some(store) = state.try_lock_store() else {
             note_round_skipped("store");
             return Ok(());
@@ -713,6 +719,11 @@ async fn tick(state: &AppState) -> Result<(), String> {
             store.settings.current_node_id.clone(),
             store.enabled_nodes(),
             store.settings.probe_url.clone(),
+            crate::runtime::delegated_node_ids(
+                &store.settings,
+                &store.chains,
+                &store.enabled_nodes(),
+            ),
         )
     };
     // Custom sing-box configs manage their own outbounds — nothing to switch.
@@ -727,10 +738,11 @@ async fn tick(state: &AppState) -> Result<(), String> {
         };
         (rt.clash_api_clone(), rt.core.kind())
     };
-    // See select_best_now: only core-servable nodes are candidates.
+    // See select_best_now: only core-servable (or sidecar-delegated) nodes
+    // are candidates.
     let nodes: Vec<_> = nodes
         .into_iter()
-        .filter(|n| core_kind.supports_node(n))
+        .filter(|n| core_kind.supports_node(n) || delegated_ids.contains(&n.id))
         .collect();
 
     let Some(current_id) = current_id else {
@@ -1458,9 +1470,17 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
 
-    let (all_nodes, probe_url) = {
+    let (all_nodes, probe_url, delegated_ids) = {
         let store = state.lock_store();
-        (store.enabled_nodes(), store.settings.probe_url.clone())
+        (
+            store.enabled_nodes(),
+            store.settings.probe_url.clone(),
+            crate::runtime::delegated_node_ids(
+                &store.settings,
+                &store.chains,
+                &store.enabled_nodes(),
+            ),
+        )
     };
     let (clash, core_kind) = {
         let rt = state.lock_runtime();
@@ -1472,10 +1492,11 @@ async fn tick_smart_rules(state: &AppState) -> Result<(), String> {
     // Only nodes the running core can actually serve are pool members in
     // the generated config (e.g. unsupported node shapes — which can pass TCP
     // probes beautifully and would otherwise win the score race, then the
-    // switch PUT of their tag 400s as a non-member).
+    // switch PUT of their tag 400s as a non-member) — sidecar-delegated ones
+    // included, their tags are members of the very same groups.
     let nodes: Vec<ProxyNode> = all_nodes
         .into_iter()
-        .filter(|n| core_kind.supports_node(n))
+        .filter(|n| core_kind.supports_node(n) || delegated_ids.contains(&n.id))
         .collect();
 
     for pool in pools {
@@ -1848,9 +1869,17 @@ pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(),
     if !state.is_core_running() {
         return Ok(());
     }
-    let (all_nodes, probe_url) = {
+    let (all_nodes, probe_url, delegated_ids) = {
         let store = state.lock_store();
-        (store.enabled_nodes(), store.settings.probe_url.clone())
+        (
+            store.enabled_nodes(),
+            store.settings.probe_url.clone(),
+            crate::runtime::delegated_node_ids(
+                &store.settings,
+                &store.chains,
+                &store.enabled_nodes(),
+            ),
+        )
     };
     let (clash, core_kind) = {
         let rt = state.lock_runtime();
@@ -1859,7 +1888,7 @@ pub async fn refresh_smart_rule_now(state: &AppState, rule: &Rule) -> Result<(),
     let api = clash;
     let nodes: Vec<_> = all_nodes
         .into_iter()
-        .filter(|n| core_kind.supports_node(n))
+        .filter(|n| core_kind.supports_node(n) || delegated_ids.contains(&n.id))
         .collect();
     let Some(api) = api else {
         return Ok(());

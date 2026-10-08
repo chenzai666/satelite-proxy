@@ -1884,7 +1884,15 @@ impl AppState {
                 } else {
                     None
                 };
-                if !core_kind.supports_node(node) && fallback_core.is_none() {
+                if !core_kind.supports_node(node)
+                    && fallback_core.is_none()
+                    && !crate::runtime::delegated_node_ids(
+                        &store.settings,
+                        &store.chains,
+                        &store.enabled_nodes(),
+                    )
+                    .contains(&node.id)
+                {
                     return Err(crate::error::AppError::Core(format!(
                         "{} 内核不支持该节点（协议/传输/REALITY 限制），请切换内核或选择其他节点",
                         core_kind.display_name()
@@ -2082,10 +2090,13 @@ impl AppState {
             Ok(true)
         });
         match persisted {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => return,
             Err(e) => {
-                app_log::warn("auto_select", format!("persist kernel selection failed: {e}"));
+                app_log::warn(
+                    "auto_select",
+                    format!("persist kernel selection failed: {e}"),
+                );
                 return;
             }
         }

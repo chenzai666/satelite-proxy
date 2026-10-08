@@ -5,8 +5,17 @@ fn fixture_clash_yaml() {
     let yaml = include_str!("fixtures/clash_sample.yaml");
     let result = parse_subscription(yaml).expect("parse fixture");
     assert_eq!(result.format, SubscriptionFormat::ClashYaml);
-    assert_eq!(result.nodes.len(), 5);
-    assert_eq!(result.skipped.len(), 1);
+    assert_eq!(result.nodes.len(), 6);
+    // Nothing skipped since the mihomo-unmodeled rescue (ssr/mieru/openvpn):
+    // the fixture's ssr entry rides along as a raw-passthrough Unknown node.
+    assert_eq!(result.skipped.len(), 0);
+    let ssr = result
+        .nodes
+        .iter()
+        .find(|n| n.name == "unsupported-ssr")
+        .expect("ssr rescued");
+    assert_eq!(ssr.protocol, Protocol::Unknown);
+    assert!(ssr.raw.as_deref().unwrap().contains("type: ssr"));
 
     let names: Vec<_> = result.nodes.iter().map(|n| n.name.as_str()).collect();
     assert!(names.contains(&"SS-HK"));

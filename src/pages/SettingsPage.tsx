@@ -942,7 +942,10 @@ export function SettingsPage() {
    *  behavior (endpoint-shaped, excluded from delegation in
    *  `compute_sidecar_plan`). Nodes whose exact transport combo the target
    *  core rejects (e.g. REALITY+ws on Xray) fall back to native sing-box
-   *  outbounds at build time. */
+   *  outbounds at build time. The "unknown" row covers rescued raw-passthrough
+   *  types (OpenVPN / SSR / Mieru — Clash entries the app doesn't model but
+   *  mihomo serves verbatim): mihomo-only, same unpinned = filtered semantics
+   *  as masque. */
   const MULTICORE_PROTOCOLS: {
     value: string;
     label: string;
@@ -960,6 +963,12 @@ export function SettingsPage() {
     {
       value: "masque",
       label: "MASQUE",
+      cores: ["mihomo"],
+      autoDisabled: true,
+    },
+    {
+      value: "unknown",
+      label: "OpenVPN / SSR / Mieru",
       cores: ["mihomo"],
       autoDisabled: true,
     },

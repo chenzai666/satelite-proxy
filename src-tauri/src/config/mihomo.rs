@@ -106,12 +106,17 @@ pub fn build_mihomo_config(
     let mut raw_name_to_tag = std::collections::HashMap::<String, String>::new();
     let mut ambiguous_names = std::collections::HashSet::new();
     for (node, _) in &entries {
-        let original_name = node.raw.as_deref()
+        let original_name = node
+            .raw
+            .as_deref()
             .and_then(|raw| serde_yaml::from_str::<Yaml>(raw).ok())
             .and_then(|raw| raw.get("name").and_then(Yaml::as_str).map(str::to_owned))
             .unwrap_or_else(|| node.name.clone());
         let tag = outbound_tag(node);
-        if raw_name_to_tag.insert(original_name.clone(), tag.clone()).is_some_and(|old| old != tag) {
+        if raw_name_to_tag
+            .insert(original_name.clone(), tag.clone())
+            .is_some_and(|old| old != tag)
+        {
             ambiguous_names.insert(original_name);
         }
     }
@@ -142,22 +147,35 @@ pub fn build_mihomo_config(
     }
     // Reject dangling or cyclic dependencies, including chains whose target
     // was rejected later in the list. Never silently route them directly.
-    let dependencies: std::collections::HashMap<String, Option<String>> = emitted.iter()
+    let dependencies: std::collections::HashMap<String, Option<String>> = emitted
+        .iter()
         .zip(&proxies)
-        .map(|(node, map)| (outbound_tag(node), map.get(str_yaml("dialer-proxy"))
-            .and_then(Yaml::as_str).map(str::to_owned)))
+        .map(|(node, map)| {
+            (
+                outbound_tag(node),
+                map.get(str_yaml("dialer-proxy"))
+                    .and_then(Yaml::as_str)
+                    .map(str::to_owned),
+            )
+        })
         .collect();
     for start in dependencies.keys() {
         let mut current = start.as_str();
         let mut visited = std::collections::HashSet::new();
         loop {
             if !visited.insert(current) {
-                return Err(AppError::Config("订阅 dialer-proxy 存在循环引用，请检查原始配置".into()));
+                return Err(AppError::Config(
+                    "订阅 dialer-proxy 存在循环引用，请检查原始配置".into(),
+                ));
             }
             match dependencies.get(current) {
                 Some(Some(next)) => current = next,
                 Some(None) => break,
-                None => return Err(AppError::Config("订阅 dialer-proxy 引用了不可用节点，请检查原始配置".into())),
+                None => {
+                    return Err(AppError::Config(
+                        "订阅 dialer-proxy 引用了不可用节点，请检查原始配置".into(),
+                    ))
+                }
             }
         }
     }
@@ -396,6 +414,77 @@ pub fn build_mihomo_sidecar_config(entries: &[(ProxyNode, u16)]) -> AppResult<Bu
         )));
     }
 
+    // Raw entries name their dialer by the subscription's original name.
+    // Only successfully emitted proxies may satisfy that dependency.
+    let mut names = std::collections::HashMap::new();
+    let mut ambiguous = std::collections::HashSet::new();
+    for (node, _) in entries {
+        let tag = outbound_tag(node);
+        if !tags.contains(&tag) {
+            continue;
+        }
+        let name = node
+            .raw
+            .as_deref()
+            .and_then(|raw| serde_yaml::from_str::<Yaml>(raw).ok())
+            .and_then(|raw| raw.get("name").and_then(Yaml::as_str).map(str::to_owned))
+            .unwrap_or_else(|| node.name.clone());
+        if names
+            .insert(name.clone(), tag.clone())
+            .is_some_and(|old| old != tag)
+        {
+            ambiguous.insert(name);
+        }
+    }
+    let mut dependencies = std::collections::HashMap::new();
+    for proxy in &mut proxies {
+        let mapping = proxy.as_mapping_mut().expect("emitted proxy is a mapping");
+        let tag = mapping
+            .get(str_yaml("name"))
+            .and_then(Yaml::as_str)
+            .expect("emitted proxy has a tag")
+            .to_owned();
+        let target = mapping
+            .get(str_yaml("dialer-proxy"))
+            .and_then(Yaml::as_str)
+            .map(str::to_owned);
+        let target_tag = match target {
+            Some(name) => {
+                let target_tag = names
+                    .get(&name)
+                    .filter(|_| !ambiguous.contains(&name))
+                    .ok_or_else(|| {
+                        AppError::Config(
+                            "副内核 dialer-proxy 引用了未委托或重名节点，请检查配置".into(),
+                        )
+                    })?
+                    .clone();
+                mapping.insert(str_yaml("dialer-proxy"), str_yaml(&target_tag));
+                Some(target_tag)
+            }
+            None => None,
+        };
+        dependencies.insert(tag, target_tag);
+    }
+    for start in dependencies.keys() {
+        let mut current = start.as_str();
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            if !visited.insert(current) {
+                return Err(AppError::Config("副内核 dialer-proxy 存在循环引用".into()));
+            }
+            match dependencies.get(current) {
+                Some(Some(next)) => current = next,
+                Some(None) => break,
+                None => {
+                    return Err(AppError::Config(
+                        "副内核 dialer-proxy 引用了不可用节点".into(),
+                    ))
+                }
+            }
+        }
+    }
+
     let mut root = Mapping::new();
     root.insert(str_yaml("mode"), str_yaml("rule"));
     root.insert(str_yaml("log-level"), str_yaml("warning"));
@@ -593,7 +682,9 @@ fn load_source_policy_plan(
         .iter()
         .zip(tags.iter())
         .flat_map(|(node, tag)| {
-            let original = node.raw.as_deref()
+            let original = node
+                .raw
+                .as_deref()
                 .and_then(|raw| serde_yaml::from_str::<Yaml>(raw).ok())
                 .and_then(|raw| raw.get("name").and_then(Yaml::as_str).map(str::to_owned));
             std::iter::once((node.name.clone(), tag.clone()))
@@ -2068,6 +2159,168 @@ mod tests {
         serde_yaml::from_str(&built.yaml).expect("generated yaml parses")
     }
 
+    /// A rescued openvpn entry: `Protocol::Unknown` + verbatim raw body
+    /// (parse path: `MIHOMO_UNMODELED_TYPES`). Model fields are projections —
+    /// generation must embed the raw entry with only the name rewritten.
+    fn openvpn_node(name: &str) -> ProxyNode {
+        let mut n = ss_node(name);
+        n.protocol = Protocol::Unknown;
+        n.config = ProtocolConfig::Unknown;
+        n.server = "o.example.com".into();
+        n.port = 1194;
+        n.raw = Some(format!(
+            "name: {name}\ntype: openvpn\nserver: o.example.com\nport: 1194\n\
+             protocol: udp\ncipher: AES-256-GCM\nusername: u\npassword: p\n\
+             ca: |\n  -----BEGIN CERTIFICATE-----\n  MIIBfake\n  -----END CERTIFICATE-----\n"
+        ));
+        n
+    }
+
+    #[test]
+    fn openvpn_unknown_raw_passthrough_shape() {
+        let node = openvpn_node("ov");
+        let tag = node_tag_of(&node);
+        // Main config: verbatim entry under the rewritten tag.
+        let built = build_mihomo_config(&[node.clone()], &default_opts()).expect("build");
+        let doc = parse(&built);
+        let proxy = &doc["proxies"][0];
+        assert_eq!(proxy["type"].as_str(), Some("openvpn"));
+        assert_eq!(proxy["name"].as_str(), Some(tag.as_str()));
+        assert_eq!(proxy["server"].as_str(), Some("o.example.com"));
+        assert_eq!(proxy["cipher"].as_str(), Some("AES-256-GCM"));
+        assert!(
+            proxy["ca"]
+                .as_str()
+                .is_some_and(|c| c.contains("BEGIN CERTIFICATE")),
+            "ca block must ride along verbatim"
+        );
+        // Sidecar config: same entry + the loopback listener pinned to it.
+        let side = build_mihomo_sidecar_config(&[(node, 20890u16)]).expect("sidecar build");
+        let sdoc = parse(&side);
+        assert_eq!(sdoc["proxies"][0]["type"].as_str(), Some("openvpn"));
+        assert_eq!(sdoc["listeners"][0]["proxy"].as_str(), Some(tag.as_str()));
+    }
+
+    /// Self-signed CA for the openvpn live test — mihomo PEM-parses the
+    /// inline `ca` block at config build, so it must be a real certificate.
+    const OPENVPN_LIVE_CA: &str = "-----BEGIN CERTIFICATE-----
+MIIC7zCCAdegAwIBAgIUYB9B48G3fOOaO6yVD+VTrk4WFO8wDQYJKoZIhvcNAQEL
+BQAwIDEeMBwGA1UEAwwVc2F0ZWxpdGUtb3BlbnZwbi10ZXN0MB4XDTI2MTAwMzA2
+MDIwNFoXDTM2MDkzMDA2MDIwNFowIDEeMBwGA1UEAwwVc2F0ZWxpdGUtb3BlbnZw
+bi10ZXN0MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvS2Z1eVieLjP
+4brEefHlcqe04At5B7CeZmrtrvZwRZ18f+g34dzBWXjxJ4oAQRGavHODdSP1cSaa
+aiOuDT37wM7WwL9TtThoef2zscvk8fzONBWkemSGMJ6a+VP/ytV/zJzA/x6Q2+UH
+z2IoJJ9+XcikZh+QwsTB945KPSN1Nd4BSU3a8KoYJMNX0k+tgSJpmcurzxA+GTDW
+MGi1/Kk1p055rTBv5e8wlcIn4q5HIeTsFBjeDjo358s1fJht8LVSl3HtIwGlP9QK
+i6IZl/fgjb5PxzEcEuzqYFZ08eGYzgvwza2JcFa4MSWdrm5TaG+HRnSPdWMNZFu0
+gUhSJyR+RQIDAQABoyEwHzAdBgNVHQ4EFgQUj+/JU80URdTG7GpITSlcz9gmOrIw
+DQYJKoZIhvcNAQELBQADggEBAItyx5QkJVM+RMu7c2Br98vHrMl+qhv74r7JSKGH
+FM42IlOYqDhdSkjp4h8JxyNrZ2uRCNHtH8ikDoV2BElSY5fIakblpljssz2RCe4L
+maTUjO61EhaFZaQOLNkgJqrp3ATW1vWmUInvM86mg72udWT6pDnVnEAU+KwYv/xM
+hmGz28We73k6iersHQf5kWsaRQTpITVUgE2EHAg5kB+yNuRR6ixG+dbke7ZWmqfb
+3rxAHfPYvKtB3zbtjMOfxUjfBPeZWAs793oXrxdqM+x+7aBy+byJYGyYqrgBm9eh
+Dh8aZf9uMe34poL6mGQxVWTsiVWSiQbcgOzxHI8Bu6Vebx4=
+-----END CERTIFICATE-----
+";
+
+    /// `cargo test --lib config::mihomo::tests::live_mihomo_openvpn_raw_validates -- --ignored`
+    #[test]
+    #[ignore]
+    fn live_mihomo_openvpn_raw_validates() {
+        let bin = crate::core::find_bundled_core(None, CoreKind::Mihomo)
+            .expect("bundled mihomo binary — run the fetch-bundled-mihomo script");
+        let mut node = openvpn_node("live");
+        node.raw = Some(format!(
+            "name: live\ntype: openvpn\nserver: 127.0.0.1\nport: 1194\nprotocol: udp\n\
+             cipher: AES-256-GCM\nusername: u\npassword: p\nca: |\n{}\n",
+            OPENVPN_LIVE_CA
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+        let main = build_mihomo_config(&[node.clone()], &default_opts()).expect("main build");
+        let side = build_mihomo_sidecar_config(&[(node, 20890u16)]).expect("sidecar build");
+        for (label, built) in [("main", &main), ("sidecar", &side)] {
+            let tmp = std::env::temp_dir().join(format!(
+                "satelite-mihomo-openvpn-live-{label}-{}-{}.yaml",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&tmp, &built.yaml).unwrap();
+            let output = std::process::Command::new(&bin)
+                .args(["-t", "-f"])
+                .arg(&tmp)
+                .output()
+                .expect("spawn mihomo");
+            let _ = std::fs::remove_file(&tmp);
+            assert!(
+                output.status.success(),
+                "mihomo -t rejected the {label} openvpn config:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    fn sidecar_raw_dialer_rewrites_original_name_after_rename() {
+        let mut first = openvpn_node("original");
+        first.name = "renamed".into();
+        first.id = "first".into();
+        let mut second = openvpn_node("second");
+        second.id = "second".into();
+        second
+            .raw
+            .as_mut()
+            .unwrap()
+            .push_str("dialer-proxy: original\n");
+        let doc = parse(
+            &build_mihomo_sidecar_config(&[(first.clone(), 20890), (second, 20891)]).unwrap(),
+        );
+        assert_eq!(
+            doc["proxies"][1]["dialer-proxy"].as_str(),
+            Some(outbound_tag(&first).as_str())
+        );
+    }
+
+    #[test]
+    fn sidecar_raw_dialer_rejects_missing_ambiguous_and_cyclic_dependencies() {
+        let mut first = openvpn_node("first");
+        first.id = "first".into();
+        first
+            .raw
+            .as_mut()
+            .unwrap()
+            .push_str("dialer-proxy: missing\n");
+        assert!(build_mihomo_sidecar_config(&[(first.clone(), 20890)]).is_err());
+        first.raw = openvpn_node("first").raw;
+        let mut second = openvpn_node("second");
+        second.id = "second".into();
+        second
+            .raw
+            .as_mut()
+            .unwrap()
+            .push_str("dialer-proxy: first\n");
+        let mut duplicate = first.clone();
+        duplicate.id = "duplicate".into();
+        assert!(build_mihomo_sidecar_config(&[
+            (first.clone(), 20890),
+            (second.clone(), 20891),
+            (duplicate, 20892)
+        ])
+        .is_err());
+        first
+            .raw
+            .as_mut()
+            .unwrap()
+            .push_str("dialer-proxy: second\n");
+        assert!(build_mihomo_sidecar_config(&[(first, 20890), (second, 20891)]).is_err());
+    }
+
     fn raw_node(name: &str, protocol: Protocol, config: ProtocolConfig, raw: &str) -> ProxyNode {
         ProxyNode {
             id: String::new(),
@@ -2222,7 +2475,11 @@ dialer-proxy: 不存在的节点
         let proxies = proxies_of(&doc);
         // The orphan (unresolvable dialer-proxy) is dropped; the other two
         // survive, and the front's dialer-proxy points at the back's TAG.
-        assert_eq!(proxies.len(), 3, "orphan dropped; explicit DIRECT preserved");
+        assert_eq!(
+            proxies.len(),
+            3,
+            "orphan dropped; explicit DIRECT preserved"
+        );
         assert_eq!(built.outbound_tags.len(), 2);
         let back_tag = built
             .outbound_tags
@@ -2251,8 +2508,15 @@ dialer-proxy: 不存在的节点
         let mut nodes = crate::subscription::parse_clash_yaml("proxies:\n  - {name: front, type: trojan, server: a.example, port: 443, password: a, dialer-proxy: back}\n  - {name: back, type: trojan, server: b.example, port: 443, password: b}\n").unwrap().nodes;
         nodes[1].name = "本地改名".into();
         let doc = parse(&build_mihomo_config(&nodes, &default_opts()).unwrap());
-        assert_eq!(doc["proxies"][0]["dialer-proxy"].as_str(), Some(outbound_tag(&nodes[1]).as_str()));
-        nodes[1].raw.as_mut().unwrap().push_str("\ndialer-proxy: front\n");
+        assert_eq!(
+            doc["proxies"][0]["dialer-proxy"].as_str(),
+            Some(outbound_tag(&nodes[1]).as_str())
+        );
+        nodes[1]
+            .raw
+            .as_mut()
+            .unwrap()
+            .push_str("\ndialer-proxy: front\n");
         assert!(build_mihomo_config(&nodes, &default_opts()).is_err());
     }
 
