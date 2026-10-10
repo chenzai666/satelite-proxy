@@ -36,6 +36,7 @@ import { useNodeDragSort } from "../hooks/useNodeDragSort";
 import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
 import { clipboardNodePayload } from "../nodeClipboard";
+import { shouldDeleteSelectedNodes } from "../nodeShortcuts";
 import { createLatencyResultBuffer } from "../latencyStream";
 import { mergeUnsupportedIds } from "../nodeLatencyState";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
@@ -177,6 +178,7 @@ export function NodesPage() {
   const [shareNotice, setShareNotice] = useState<string | null>(null);
   const [copyBusy, setCopyBusy] = useState(false);
   const clipboardBusyRef = useRef(false);
+  const deletePendingRef = useRef(false);
   const noticeTimerRef = useRef<number | null>(null);
 
   useEffect(() => () => {
@@ -681,16 +683,18 @@ export function NodesPage() {
   }, [customRuntime, shareNode, editNode, detailNode, error, contextMenu, selectAllMatching]);
 
   async function deleteSelected(ids: string[]) {
-    if (batchBusy || ids.length === 0) return;
-    const confirmed = await confirmAction(
-      ids.length === 1
-        ? t("nodes.deleteConfirm", { name: nodes.find((node) => node.id === ids[0])?.name ?? ids[0] })
-        : t("nodes.deleteSelectedConfirm", { n: ids.length }),
-    );
-    if (!confirmed) return;
-    setBatchBusy(true);
-    setError(null);
+    if (customRuntime || batchBusy || deletePendingRef.current || ids.length === 0) return;
+    // Guard before opening the native confirmation, not just during IPC.
+    deletePendingRef.current = true;
     try {
+      const confirmed = await confirmAction(
+        ids.length === 1
+          ? t("nodes.deleteConfirm", { name: nodes.find((node) => node.id === ids[0])?.name ?? ids[0] })
+          : t("nodes.deleteSelectedConfirm", { n: ids.length }),
+      );
+      if (!confirmed) return;
+      setBatchBusy(true);
+      setError(null);
       await deleteNodes(ids);
       setSelectedIds((current) => {
         const next = new Set(current);
@@ -701,9 +705,28 @@ export function NodesPage() {
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      deletePendingRef.current = false;
       setBatchBusy(false);
     }
   }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const ids = displayed.filter((node) => selectedIds.has(node.id)).map((node) => node.id);
+      if (!shouldDeleteSelectedNodes(event, {
+        editing: isEditingTarget(event.target) || isEditingTarget(document.activeElement),
+        dialogOpen: !!(shareNode || editNode || detailNode || error || contextMenu ||
+          document.querySelector('[role="dialog"], [aria-modal="true"]')),
+        readOnly: customRuntime,
+        busy: batchBusy || copyBusy || deletePendingRef.current || clipboardBusyRef.current,
+        selectedCount: ids.length,
+      })) return;
+      event.preventDefault();
+      void deleteSelected(ids);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   async function copyShareLink(node: ProxyNode) {
     try {

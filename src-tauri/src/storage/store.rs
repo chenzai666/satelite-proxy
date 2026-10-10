@@ -54,6 +54,10 @@ pub struct AppStore {
     /// local edits can be reapplied without modifying the remote subscription.
     #[serde(default)]
     pub node_overrides: std::collections::BTreeMap<String, ProxyNode>,
+    /// Source before local editing, for field-wise three-way refresh merges.
+    /// Old overrides without a base remain authoritative (never guess edits).
+    #[serde(default)]
+    pub node_override_bases: std::collections::BTreeMap<String, ProxyNode>,
     /// Nodes deleted locally, keyed by `subscription-id|source-node-id`.
     /// Tombstones keep remote subscription refreshes from restoring them.
     #[serde(default)]
@@ -761,7 +765,11 @@ impl AppStore {
         mut nodes: Vec<ProxyNode>,
     ) -> AppResult<()> {
         let id = sub.id.clone();
-        let appended: Vec<_> = self.nodes.iter().filter(|entry| {
+        let old_order: Vec<_> = self.ordered_nodes().into_iter()
+            .map(|entry| (entry.subscription_id.clone(), entry.node.id.clone())).collect();
+        let insertion = self.nodes.iter().position(|entry| entry.subscription_id == id)
+            .unwrap_or(self.nodes.len());
+        let appended: Vec<_> = self.ordered_nodes().into_iter().filter(|entry| {
             entry.subscription_id == id && self.appended_node_ids.contains(
                 &Self::node_override_key(&id, &entry.node.id))
         }).cloned().collect();
@@ -771,7 +779,26 @@ impl AppStore {
             .iter()
             .filter(|entry| entry.subscription_id == id && !self.appended_node_ids.contains(
                 &Self::node_override_key(&id, &entry.node.id)))
+            .map(|entry| {
+                let source = self.node_override_bases.get(&Self::node_override_key(&id, &entry.node.id))
+                    .unwrap_or(&entry.node);
+                PreviousSubscriptionNode {
+                    id: entry.node.id.clone(), instance: source.instance_key(),
+                    identity: source.identity_key(), name: subscription_match_key(source),
+                }
+            })
             .collect();
+        // Name fallback is safe only when unique on BOTH sides, within this
+        // profile and protocol/source. Appended clones are never candidates.
+        let mut old_names = std::collections::HashMap::new();
+        let mut new_names = std::collections::HashMap::new();
+        for entry in &previous {
+            *old_names.entry(entry.name.clone()).or_insert(0usize) += 1;
+        }
+        let source_names: Vec<_> = nodes.iter().map(subscription_match_key).collect();
+        for name in &source_names {
+            *new_names.entry(name.clone()).or_insert(0usize) += 1;
+        }
         let mut used: std::collections::HashSet<String> = self
             .nodes
             .iter()
@@ -779,7 +806,7 @@ impl AppStore {
                 &Self::node_override_key(&id, &entry.node.id)))
             .map(|entry| entry.node.id.chars().take(16).collect())
             .collect();
-        for node in &mut nodes {
+        for (node, name) in nodes.iter_mut().zip(source_names) {
             use sha2::{Digest, Sha256};
             let legacy = hex::encode(
                 &Sha256::digest(
@@ -810,19 +837,27 @@ impl AppStore {
             }
             let found = previous
                 .iter()
-                .position(|entry| entry.node.id == node.id || entry.node.id == legacy)
+                .position(|entry| entry.id == node.id || entry.id == legacy)
                 .or_else(|| {
+                    let instance = node.instance_key();
                     previous
                         .iter()
-                        .position(|entry| entry.node.instance_key() == node.instance_key())
+                        .position(|entry| entry.instance == instance)
                 })
                 .or_else(|| {
+                    if old_names.get(&name) != Some(&1) || new_names.get(&name) != Some(&1) {
+                        return None;
+                    }
+                    previous.iter().position(|entry| entry.name == name)
+                })
+                .or_else(|| {
+                    let identity = node.identity_key();
                     previous
                         .iter()
-                        .position(|entry| entry.node.identity_key() == node.identity_key())
+                        .position(|entry| entry.identity == identity)
                 });
             if let Some(index) = found {
-                node.id = previous.remove(index).node.id.clone();
+                node.id = previous.remove(index).id;
             }
             let base = node.id.clone();
             let mut salt = 0;
@@ -847,28 +882,54 @@ impl AppStore {
         } else {
             self.subscriptions.push(sub);
         }
+        let mut replacement = Vec::with_capacity(nodes.len() + appended.len());
         for mut node in nodes {
             let source_id = node.id.clone();
+            let source = node.clone();
             self.apply_node_alias(&mut node);
-            if let Some(edited) = self
-                .node_overrides
-                .get(&Self::node_override_key(&id, &source_id))
-            {
-                let mut edited = edited.clone();
-                // Routing, selections and rule pins refer to the source id.
-                // Never let a local field edit silently create a new node id.
-                edited.id = source_id;
-                edited.latency_ms = None;
-                edited.latency_at = None;
-                node = edited;
+            let key = Self::node_override_key(&id, &source_id);
+            if let Some(edited) = self.node_overrides.get(&key) {
+                node = if let Some(base) = self.node_override_bases.get(&key) {
+                    merge_node_edit(base, edited, &source)
+                } else {
+                    // Legacy edits have no reliable source snapshot. Preserve
+                    // them rather than silently discarding credentials/fields.
+                    edited.clone()
+                };
+                node.id = source_id;
+                node.source = source.source.clone();
+                node.latency_ms = None;
+                node.latency_at = None;
+                if self.node_override_bases.contains_key(&key) {
+                    self.node_override_bases.insert(key.clone(), source);
+                }
+                self.node_overrides.insert(key, node.clone());
             }
-            self.nodes.push(StoredNode {
+            replacement.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
                 latency_method: None,
             });
         }
-        self.nodes.extend(appended);
+        replacement.extend(appended);
+        let replacement_ids: Vec<_> = replacement.iter().map(|entry| entry.node.id.clone()).collect();
+        self.nodes.splice(insertion..insertion, replacement);
+        // Reset only this profile to subscription order; preserve other
+        // profiles' relative custom order and keep manual nodes at the end.
+        let mut order = Vec::new();
+        let mut inserted = false;
+        for (profile, node_id) in old_order {
+            if profile == id {
+                if !inserted {
+                    order.extend(replacement_ids.iter().cloned());
+                    inserted = true;
+                }
+            } else {
+                order.push(node_id);
+            }
+        }
+        if !inserted { order.extend(replacement_ids); }
+        self.node_order = order;
         self.gc_favorite_nodes();
         Ok(())
     }
@@ -1252,6 +1313,7 @@ impl AppStore {
         let prefix = format!("{subscription_id}|");
         self.node_overrides
             .retain(|key, _| !key.starts_with(&prefix));
+        self.node_override_bases.retain(|key, _| !key.starts_with(&prefix));
         self.deleted_node_ids
             .retain(|key| !key.starts_with(&prefix));
         self.appended_node_ids.retain(|key| !key.starts_with(&prefix));
@@ -1264,6 +1326,10 @@ impl AppStore {
             .find(|entry| entry.node.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
         let subscription_id = stored.subscription_id.clone();
+        let key = Self::node_override_key(&subscription_id, id);
+        if !self.node_overrides.contains_key(&key) {
+            self.node_override_bases.insert(key, stored.node.clone());
+        }
         let source = stored.node.source.clone();
         edited.id = stored.node.id.clone();
         edited.source = source;
@@ -1288,6 +1354,7 @@ impl AppStore {
         let key = Self::node_override_key(&stored.subscription_id, id);
         self.appended_node_ids.remove(&key);
         self.node_overrides.remove(&key);
+        self.node_override_bases.remove(&key);
         self.deleted_node_ids.insert(key);
         self.gc_favorite_nodes();
         if let Some(subscription) = self
@@ -1323,8 +1390,12 @@ impl AppStore {
             .iter_mut()
             .find(|n| n.node.id == id)
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        node.node.name = name.clone();
         let subscription_id = node.subscription_id.clone();
+        let key = Self::node_override_key(&subscription_id, id);
+        if !self.node_overrides.contains_key(&key) {
+            self.node_override_bases.insert(key, node.node.clone());
+        }
+        node.node.name = name.clone();
         let edited = node.node.clone();
         // Scope new renames to this profile and node, never to a shared backend.
         // Legacy aliases remain readable for older saved data.
@@ -2149,6 +2220,61 @@ fn same_rules_ignoring_storage_fields(left: &[Rule], right: &[Rule]) -> bool {
     canonical(left) == canonical(right)
 }
 
+struct PreviousSubscriptionNode {
+    id: String,
+    instance: String,
+    identity: String,
+    name: (String, String, String),
+}
+
+fn subscription_match_key(node: &ProxyNode) -> (String, String, String) {
+    // A legacy local rename kept its original Clash raw body. Use that source
+    // name only for matching, never change the effective/display/share name.
+    let name = node.raw.as_deref().and_then(|raw| serde_yaml::from_str::<serde_yaml::Value>(raw).ok())
+        .and_then(|value| value.get("name").and_then(serde_yaml::Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| node.name.clone());
+    (node.protocol.as_str().to_owned(), node.source.clone().unwrap_or_default(), name)
+}
+
+fn merge_edit_value(base: Option<&Value>, local: Option<&Value>, latest: Option<&Value>) -> Option<Value> {
+    if local == base { return latest.cloned(); }
+    if let (Some(Value::Object(base)), Some(Value::Object(local)), Some(Value::Object(latest))) =
+        (base, local, latest)
+    {
+        // Tagged union variants must remain whole (e.g. Ws -> Grpc).
+        if ["protocol", "type", "kind"].iter().any(|key| {
+            base.get(*key) != local.get(*key) || base.get(*key) != latest.get(*key)
+        }) { return Some(Value::Object(local.clone())); }
+        let keys: std::collections::BTreeSet<_> = base.keys().chain(local.keys()).chain(latest.keys()).collect();
+        let mut merged = Map::new();
+        for key in keys {
+            if let Some(value) = merge_edit_value(base.get(key), local.get(key), latest.get(key)) {
+                merged.insert(key.clone(), value);
+            }
+        }
+        return Some(Value::Object(merged));
+    }
+    // Arrays and explicitly added/removed fields are atomic local edits.
+    local.cloned()
+}
+
+fn merge_node_edit(base: &ProxyNode, local: &ProxyNode, latest: &ProxyNode) -> ProxyNode {
+    if local.protocol != base.protocol { return local.clone(); }
+    if latest.protocol != base.protocol {
+        let mut merged = latest.clone();
+        if local.name != base.name { merged.name = local.name.clone(); }
+        return merged;
+    }
+    let merged = (|| {
+        let base = serde_json::to_value(base).ok()?;
+        let local = serde_json::to_value(local).ok()?;
+        let latest = serde_json::to_value(latest).ok()?;
+        serde_json::from_value(merge_edit_value(Some(&base), Some(&local), Some(&latest))?).ok()
+    })();
+    // Corrupt/incompatible data must not discard an explicit local edit.
+    merged.unwrap_or_else(|| local.clone())
+}
+
 fn parse_store(raw: &str) -> Result<AppStore, serde_json::Error> {
     let value: Value = serde_json::from_str(raw)?;
     Ok(store_from_json(value))
@@ -2226,6 +2352,11 @@ fn store_from_json(value: Value) -> AppStore {
     if let Some(value) = obj.get("node_overrides") {
         if let Ok(overrides) = serde_json::from_value(value.clone()) {
             store.node_overrides = overrides;
+        }
+    }
+    if let Some(value) = obj.get("node_override_bases") {
+        if let Ok(bases) = serde_json::from_value(value.clone()) {
+            store.node_override_bases = bases;
         }
     }
     if let Some(value) = obj.get("deleted_node_ids") {
@@ -4135,6 +4266,143 @@ mod tests {
 
         store.remove_subscription("id-s").unwrap();
         assert!(store.node_overrides.is_empty());
+        assert!(store.node_override_bases.is_empty());
+    }
+
+    #[test]
+    fn refresh_uses_source_order_replaces_remote_nodes_and_preserves_manual_clones() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let a = sample_hy2("a", "HK");
+        let mut b = sample_hy2("b", "US");
+        b.server = "us.example.test".into();
+        let mut gone = sample_hy2("gone", "Removed");
+        gone.server = "gone.example.test".into();
+        store.upsert_subscription(sub.clone(), vec![a.clone(), b.clone(), gone]).unwrap();
+        store.upsert_subscription(sample_url_sub("t"), vec![sample_hy2("t1", "Other 1"), sample_hy2("t2", "Other 2")]).unwrap();
+        store.append_nodes_to_profile(Some("id-s"), vec![a.clone()]).unwrap();
+        let clone_id = store.nodes.iter().find(|entry| entry.node.name == "HK-clone").unwrap().node.id.clone();
+        let mut edited_clone = store.find_node(&clone_id).unwrap().clone();
+        edited_clone.port = 8443;
+        store.update_node(&clone_id, edited_clone).unwrap();
+        store.node_order = vec!["t2".into(), "a".into(), "gone".into(), "t1".into(), clone_id.clone(), "b".into()];
+        let mut c = sample_hy2("c", "JP");
+        c.server = "jp.example.test".into();
+        for _ in 0..3 {
+            store.upsert_subscription(sub.clone(), vec![b.clone(), a.clone(), c.clone()]).unwrap();
+            assert_eq!(store.ordered_nodes().iter().map(|entry| entry.node.id.as_str()).collect::<Vec<_>>(),
+                vec!["t2", "b", "a", "c", clone_id.as_str(), "t1"]);
+            assert_eq!(store.nodes.len(), 6);
+            assert!(store.find_node("gone").is_none());
+            assert_eq!(store.find_node(&clone_id).unwrap().port, 8443);
+            assert_eq!(store.get_subscription("id-s").unwrap().node_count, 4);
+        }
+        let restored = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        assert_eq!(restored.node_order, store.node_order);
+        assert!(restored.appended_node_ids.contains(&AppStore::node_override_key("id-s", &clone_id)));
+    }
+
+    #[test]
+    fn refresh_rotated_parameters_keeps_selection_and_only_actual_local_edits() {
+        use crate::domain::ProtocolConfig;
+        let mut store = AppStore::default();
+        let source = sample_hy2("old", "HK");
+        store.upsert_subscription(sample_url_sub("s"), vec![source.clone()]).unwrap();
+        store.settings.current_node_id = Some("old".into());
+        store.selected_nodes_by_subscription.insert("id-s".into(), "old".into());
+        store.toggle_favorite_node("old").unwrap();
+        store.rename_node("old", "我的香港".into()).unwrap();
+        let mut local = store.find_node("old").unwrap().clone();
+        local.port = 8443; // Explicit local port pin; password/server remain remote.
+        store.update_node("old", local).unwrap();
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        for generation in 1..=2 {
+            let mut remote = source.clone();
+            remote.server = format!("new-{generation}.example.test");
+            remote.port = 9443;
+            if let ProtocolConfig::Hysteria2 { password, .. } = &mut remote.config {
+                *password = format!("rotated-{generation}");
+            }
+            remote = remote.with_computed_id();
+            store.upsert_subscription(sample_url_sub("s"), vec![remote.clone()]).unwrap();
+            let effective = store.find_node("old").unwrap();
+            assert_eq!(effective.name, "我的香港");
+            assert_eq!(effective.server, remote.server);
+            assert_eq!(effective.port, 8443);
+            assert_eq!(effective.config, remote.config);
+            assert_eq!(store.nodes.len(), 1);
+            assert_eq!(store.settings.current_node_id.as_deref(), Some("old"));
+            assert_eq!(store.selected_nodes_by_subscription["id-s"], "old");
+            assert!(store.favorite_nodes.contains("old"));
+            store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        }
+        store.delete_node("old").unwrap();
+        assert!(store.node_override_bases.is_empty());
+    }
+
+    #[test]
+    fn refresh_name_fallback_is_unique_and_never_crosses_profiles_or_clones() {
+        let mut store = AppStore::default();
+        let a = sample_hy2("a", "Same");
+        let mut b = sample_hy2("b", "Same");
+        b.server = "other.example.test".into();
+        store.upsert_subscription(sample_url_sub("s"), vec![a.clone(), b]).unwrap();
+        store.upsert_subscription(sample_url_sub("t"), vec![sample_hy2("t", "Same")]).unwrap();
+        store.rename_node("a", "local".into()).unwrap();
+        let mut remote = a.clone();
+        remote.server = "rotated.example.test".into();
+        remote = remote.with_computed_id();
+        store.upsert_subscription(sample_url_sub("s"), vec![remote.clone()]).unwrap();
+        assert!(store.find_node("a").is_none(), "ambiguous old source names must not be matched");
+        assert_eq!(store.find_node(&remote.id).unwrap().name, "Same");
+        assert_eq!(store.find_node("t").unwrap().server, a.server);
+
+        // One old name, two new names: do not arbitrarily pin either new node.
+        let mut one = remote.clone();
+        one.server = "one.example.test".into();
+        one = one.with_computed_id();
+        let mut two = remote.clone();
+        two.server = "two.example.test".into();
+        two = two.with_computed_id();
+        store.upsert_subscription(sample_url_sub("s"), vec![one.clone(), two.clone()]).unwrap();
+        assert!(store.find_node(&remote.id).is_none());
+        assert!(store.find_node(&one.id).is_some());
+        assert!(store.find_node(&two.id).is_some());
+    }
+
+    #[test]
+    fn refresh_rename_keeps_latest_raw_but_explicit_model_edits_keep_raw_cleared() {
+        let mut store = AppStore::default();
+        let mut source = sample_hy2("a", "HK");
+        source.raw = Some("name: HK\ntype: hysteria2\npassword: old\n".into());
+        store.upsert_subscription(sample_url_sub("s"), vec![source.clone()]).unwrap();
+        store.rename_node("a", "local".into()).unwrap();
+        let mut remote = source.clone();
+        remote.raw = Some("name: HK\ntype: hysteria2\npassword: new\n".into());
+        store.upsert_subscription(sample_url_sub("s"), vec![remote.clone()]).unwrap();
+        assert_eq!(store.find_node("a").unwrap().raw, remote.raw);
+        let mut local = store.find_node("a").unwrap().clone();
+        local.raw = None;
+        local.port = 8443;
+        store.update_node("a", local).unwrap();
+        store.upsert_subscription(sample_url_sub("s"), vec![remote]).unwrap();
+        assert!(store.find_node("a").unwrap().raw.is_none());
+        assert_eq!(store.find_node("a").unwrap().port, 8443);
+    }
+
+    #[test]
+    fn legacy_overrides_without_source_baseline_are_preserved_conservatively() {
+        let mut store = AppStore::default();
+        let source = sample_hy2("a", "HK");
+        store.upsert_subscription(sample_url_sub("s"), vec![source.clone()]).unwrap();
+        let mut local = source.clone();
+        local.server = "local.example.test".into();
+        store.node_overrides.insert(AppStore::node_override_key("id-s", "a"), local);
+        // Simulate pre-fix persistence: there is no trustworthy editing base.
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        store.upsert_subscription(sample_url_sub("s"), vec![source]).unwrap();
+        assert_eq!(store.find_node("a").unwrap().server, "local.example.test");
+        assert!(store.node_override_bases.is_empty());
     }
 
     #[test]
@@ -4302,8 +4570,8 @@ mod tests {
             .unwrap();
         assert!(store.favorite_nodes.contains("a"));
 
-        // 同时改变实际后端和 ID，避免被旧 ID 迁移逻辑正确地视为同一节点。
-        let mut moved = sample_hy2("a-new-ip", "HK-01-Renamed");
+        // 原节点被不同名称和后端的新节点替换，不能仅凭同配置迁移收藏。
+        let mut moved = sample_hy2("a-new-ip", "Different node");
         moved.server = "203.0.113.20".into();
         store
             .upsert_subscription(sample_url_sub("s"), vec![moved])
