@@ -3110,6 +3110,24 @@ button.node-card:disabled,
   min-height: 1.3em;
 }
 
+.node-policy-selection {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 0.65rem;
+  font-weight: 500;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-card:has(> .node-policy-selection) {
+  gap: 0.15rem;
+}
+
 .node-card-menu {
   position: absolute;
   right: 0.4rem;

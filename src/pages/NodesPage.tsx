@@ -34,6 +34,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useNodeDragSort } from "../hooks/useNodeDragSort";
+import { useMihomoNodeSelection } from "../hooks/useMihomoNodeSelection";
 import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
@@ -150,6 +151,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
   const { t, locale } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const policySelections = useMihomoNodeSelection(policyManaged, nodes);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [total, setTotal] = useState(0);
@@ -974,7 +976,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
   });
 
   function renderNodeRow(n: ProxyNode) {
-    const active = n.id === currentId;
+    const selectedBy = policySelections.get(n.id) ?? [];
+    const active = policyManaged ? selectedBy.length > 0 : n.id === currentId;
     const isTesting = testingIds.has(n.id);
     const selected = selectedIds.has(n.id);
     return (
@@ -1004,7 +1007,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
           <button
             type="button"
             className="node-select-dot"
-            aria-label={`切换到 ${n.name}`}
+            aria-label={policyManaged ? t("mihomoGroups.nodeSelectedState", { name: n.name }) : `切换到 ${n.name}`}
+            title={policyManaged ? t("mihomoGroups.nodeSelectionHint") : undefined}
             aria-pressed={active}
             disabled={policyManaged || customRuntime || busyId === n.id || batchBusy}
             onClick={(event) => {
@@ -1017,6 +1021,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
         </span>
         <span className="node-list-identity">
           <div className="node-list-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
+          {policyManaged && selectedBy.length > 0 && <span className="node-policy-selection" title={selectedBy.join("、")}>{t("mihomoGroups.selectedBy", { groups: selectedBy.join("、") })}</span>}
         </span>
         <span className="node-list-sub">
           <span className="node-sub-label" title={n.subscription_name}>
@@ -1057,7 +1062,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
   }
 
   function renderNodeCard(n: ProxyNode) {
-    const active = n.id === currentId;
+    const selectedBy = policySelections.get(n.id) ?? [];
+    const active = policyManaged ? selectedBy.length > 0 : n.id === currentId;
     const isTesting = testingIds.has(n.id);
     const selected = selectedIds.has(n.id);
     return (
@@ -1083,7 +1089,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
           <button
             type="button"
             className="node-select-dot"
-            aria-label={`切换到 ${n.name}`}
+            aria-label={policyManaged ? t("mihomoGroups.nodeSelectedState", { name: n.name }) : `切换到 ${n.name}`}
+            title={policyManaged ? t("mihomoGroups.nodeSelectionHint") : undefined}
             aria-pressed={active}
             disabled={policyManaged || customRuntime || busyId === n.id || batchBusy}
             onClick={(event) => {
@@ -1102,6 +1109,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
         </div>
         {!customRuntime && <button type="button" className="node-card-menu" aria-label={t("nodes.contextMenu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>}
         <div className="node-card-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
+        {policyManaged && selectedBy.length > 0 && <span className="node-policy-selection" title={selectedBy.join("、")}>{t("mihomoGroups.selectedBy", { groups: selectedBy.join("、") })}</span>}
         <div className="node-card-footer">
           <span className="node-sub-label" title={n.subscription_name ?? ""}>
             {n.subscription_name}

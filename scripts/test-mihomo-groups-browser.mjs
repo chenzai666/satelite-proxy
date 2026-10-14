@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
+import { mkdir } from "node:fs/promises";
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
 const browser = await chromium.launch({ headless: true });
 try {
@@ -15,13 +16,49 @@ try {
   await page.mouse.move(target.x + 45, target.y + 6, { steps: 12 }); await page.mouse.up();
   await page.waitForFunction(() => window.mihomoFixture.order[0] === "🤖 AI 域名");
   assert.equal(await page.locator("[data-group-name]").first().getAttribute("data-group-name"), "🤖 AI 域名");
-  await page.locator('[data-group-name="🤖 AI 域名"] select').selectOption("b");
+  await page.locator('[data-group-name="🤖 AI 域名"] select').selectOption("node-b");
   await page.waitForFunction(() => window.mihomoFixture.switches.length === 1);
-  assert.deepEqual(await page.evaluate(() => window.mihomoFixture.switches), [["🤖 AI 域名", "b"]]);
+  assert.deepEqual(await page.evaluate(() => window.mihomoFixture.switches), [["🤖 AI 域名", "node-b"]]);
   await page.getByRole("button", { name: "节点管理", exact: true }).click();
   await page.locator("[data-node-id]").first().waitFor();
   assert.equal(await page.locator(".node-select-dot:not(:disabled)").count(), 0);
   assert.equal(await page.evaluate(() => window.mihomoFixture.nodeSelections), 0);
+  async function pressed(page, id) {
+    await page.waitForFunction(id => document.querySelector(`[data-node-id="${id}"] .node-select-dot`)?.getAttribute("aria-pressed") === "true", id);
+  }
+  await pressed(page, "a"); await pressed(page, "b");
+  assert.equal(await page.locator('[data-node-id="c"] .node-select-dot').getAttribute("aria-pressed"), "false", "旧 current_node_id 不能冒充组选点");
+  assert.match(await page.locator('[data-node-id="a"] .node-policy-selection').innerText(), /🚀 节点选择.*📈 自动选择/);
+  assert.match(await page.locator('[data-node-id="b"] .node-policy-selection').innerText(), /🤖 AI 域名/);
+  // Kernel automatic selection while the management page remains mounted.
+  await page.evaluate(() => { window.mihomoFixture.groups.find(g => g.name === "auto").now = "node-b"; });
+  await page.waitForFunction(() => document.querySelector('[data-node-id="a"] .node-select-dot')?.getAttribute("aria-pressed") === "false");
+  await pressed(page, "b");
+  await page.evaluate(() => { window.mihomoFixture.failGroups = true; });
+  await page.waitForFunction(() => document.querySelectorAll('.node-select-dot[aria-pressed="true"]').length === 0);
+  await page.evaluate(() => { window.mihomoFixture.failGroups = false; });
+  await pressed(page, "b");
+  assert.equal(await page.locator(".node-batch-toolbar").count(), 0, "策略组选点不勾选批量操作节点");
+  await mkdir("test-results", { recursive: true });
+  await page.screenshot({ path: "test-results/mihomo-node-selection-list.png" });
+  await page.getByRole("button", { name: "网格", exact: true }).click();
+  await pressed(page, "b");
+  assert.match(await page.locator('[data-node-id="b"] .node-policy-selection').innerText(), /🤖 AI 域名/);
+  await page.screenshot({ path: "test-results/mihomo-node-selection-grid.png" });
+  await page.evaluate(() => { window.mihomoFixture.mode = "direct"; return window.mihomoFixture.pushStatus(); });
+  await page.waitForFunction(() => document.querySelectorAll('.node-select-dot[aria-pressed="true"]').length === 0);
+  await page.evaluate(() => { window.mihomoFixture.mode = "global"; return window.mihomoFixture.pushStatus(); });
+  await pressed(page, "b");
+  assert.match(await page.locator('[data-node-id="b"] .node-policy-selection').innerText(), /GLOBAL/);
+  // A delayed response from the previous running session must not repaint after stop.
+  await page.evaluate(() => { window.mihomoFixture.mode = "rule"; window.mihomoFixture.holdGroups = true; return window.mihomoFixture.pushStatus(); });
+  await page.waitForFunction(() => window.mihomoFixture.heldRequests > 0);
+  await page.evaluate(() => { window.mihomoFixture.running = false; return window.mihomoFixture.pushStatus(); });
+  await page.evaluate(() => window.mihomoFixture.releaseHeld());
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('.node-select-dot[aria-pressed="true"]').count(), 0);
+  await page.evaluate(() => { window.mihomoFixture.running = true; return window.mihomoFixture.pushStatus(); });
+  await pressed(page, "b");
   await page.getByRole("button", { name: "Mihomo 策略组", exact: true }).click();
   await page.locator('[data-group-name="🤖 AI 域名"]').waitFor();
   assert.equal(await page.locator("[data-group-name]").first().getAttribute("data-group-name"), "🤖 AI 域名", "页面重挂载恢复排序");
@@ -32,5 +69,18 @@ try {
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await page.waitForFunction(() => window.mihomoFixture.saves === 1);
   assert.deepEqual(errors, []);
-  console.log("Mihomo 节点页回归通过：默认策略组、拖拽/持久排序、组内选点、节点管理禁用直选、模板拉取与显式保存");
+  const simple = await browser.newPage({ viewport: { width: 420, height: 900 } });
+  simple.on("pageerror", error => errors.push(error.message));
+  await simple.goto("http://127.0.0.1:1440/scripts/ui-smoke/mihomo.html?simple");
+  await simple.locator('[data-group-name="proxy"]').waitFor();
+  await simple.locator('[data-group-name="🤖 AI 域名"] select').selectOption("node-b");
+  await simple.getByRole("button", { name: "节点管理", exact: true }).click();
+  await pressed(simple, "a"); await pressed(simple, "b");
+  assert.equal(await simple.locator('[data-node-id="c"] .node-select-dot').getAttribute("aria-pressed"), "false");
+  assert.match(await simple.locator('[data-node-id="b"] .node-policy-selection').innerText(), /🤖 AI 域名/);
+  await simple.screenshot({ path: "test-results/mihomo-node-selection-simple.png" });
+  await simple.evaluate(() => { window.mihomoFixture.mode = "direct"; return window.mihomoFixture.pushStatus(); });
+  await simple.waitForFunction(() => document.querySelectorAll('.node-select-dot[aria-pressed="true"]').length === 0);
+  assert.deepEqual(errors, []);
+  console.log("Mihomo 节点页回归通过：拖拽/持久排序、组内选点、专业/简洁节点管理联动、自动组选点、模式/停止清理及迟到回包保护、模板拉取与显式保存");
 } finally { await browser.close(); }

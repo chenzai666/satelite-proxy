@@ -40,6 +40,7 @@ import { useI18n } from "../../i18n";
 import { ErrorModal } from "../../components/ErrorModal";
 import { waitForCoreRestart } from "../../coreBusy";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
+import { useMihomoNodeSelection } from "../../hooks/useMihomoNodeSelection";
 import { copyNodeShareText } from "../../nodeShare";
 import { createLatencyResultBuffer } from "../../latencyStream";
 import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
@@ -115,6 +116,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
   const [nodeTotal, setNodeTotal] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const policySelections = useMihomoNodeSelection(policyManaged, nodes);
   const [runtimeSource, setRuntimeSource] = useState("generated");
   const [xrayCore, setXrayCore] = useState(false);
   // Session-only latency results for custom-mode nodes (not persisted backend-side).
@@ -562,11 +564,13 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
               />
             )}
             {filtered.slice(nodeRange.start, nodeRange.end).map((n) => {
-              const active = n.id === currentId;
+              const selectedBy = policySelections.get(n.id) ?? [];
+              const active = policyManaged ? selectedBy.length > 0 : n.id === currentId;
               const selected = selectedIds.has(n.id);
               return (
                 <li key={n.id}>
                   <div
+                    data-node-id={n.id}
                     className={`simple-node-item ${active ? "active" : ""} ${selected ? "selected" : ""}`}
                     onClick={(event) => {
                       if (!customRuntime && (event.ctrlKey || event.metaKey)) toggleSelected(n.id);
@@ -580,7 +584,8 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
                     <button
                       type="button"
                       className="node-select-dot simple-radio"
-                      aria-label={`切换到 ${n.name}`}
+                      aria-label={policyManaged ? t("mihomoGroups.nodeSelectedState", { name: n.name }) : `切换到 ${n.name}`}
+                      title={policyManaged ? t("mihomoGroups.nodeSelectionHint") : undefined}
                       aria-pressed={active}
                       disabled={policyManaged || busy || customRuntime || batchBusy}
                       onClick={(event) => {
@@ -593,7 +598,9 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
                     <span className="simple-node-proto mono">
                       {n.protocol.toUpperCase()}
                     </span>
-                    <span className="simple-node-item-name">{n.name}</span>
+                    <span className="simple-node-item-name">{n.name}
+                      {policyManaged && selectedBy.length > 0 && <span className="node-policy-selection" title={selectedBy.join("、")}>{t("mihomoGroups.selectedBy", { groups: selectedBy.join("、") })}</span>}
+                    </span>
                     <button
                       type="button"
                       className="node-latency-action"
