@@ -144,7 +144,11 @@ pub(super) fn share(node: &ProxyNode, settings: &SudokuSettings) -> Result<Strin
         hm: mask.mode,
         ht: mask.tls,
         hh: mask.host,
-        hx: mask.multiplex,
+        hx: if mask.multiplex.trim().is_empty() {
+            settings.multiplex.clone().unwrap_or_default()
+        } else {
+            mask.multiplex
+        },
         hy: mask.path_root,
         n: Some(node.name.clone()),
         padding_min: Some(min),
@@ -163,16 +167,29 @@ pub(super) fn clash_settings(map: &serde_yaml::Mapping) -> Result<SudokuSettings
     let mut settings: SudokuSettings =
         serde_yaml::from_value(serde_yaml::Value::Mapping(map.clone()))
             .map_err(|_| "sudoku: invalid parameter types")?;
-    if settings.httpmask.is_none() {
-        use super::yaml_util::{get_bool, get_str};
-        settings.httpmask = Some(SudokuHttpMask {
-            disable: !get_bool(map, &["http-mask"]).unwrap_or(true),
-            mode: get_str(map, &["http-mask-mode"]).unwrap_or_default(),
-            tls: get_bool(map, &["http-mask-tls"]).unwrap_or(false),
-            host: get_str(map, &["http-mask-host"]).unwrap_or_default(),
-            path_root: get_str(map, &["path-root"]).unwrap_or_default(),
-            multiplex: get_str(map, &["http-mask-multiplex"]).unwrap_or_default(),
-        });
+    use super::yaml_util::{get_bool, get_str};
+    let flat = SudokuHttpMask {
+        disable: !get_bool(map, &["http-mask"]).unwrap_or(true),
+        mode: get_str(map, &["http-mask-mode"]).unwrap_or_default(),
+        tls: get_bool(map, &["http-mask-tls"]).unwrap_or(false),
+        host: get_str(map, &["http-mask-host"]).unwrap_or_default(),
+        path_root: get_str(map, &["path-root"]).unwrap_or_default(),
+        multiplex: get_str(map, &["http-mask-multiplex"]).unwrap_or_default(),
+    };
+    if let Some(mask) = settings.httpmask.as_mut() {
+        // Same nested-over-flat precedence as Mihomo: booleans and host
+        // always override; empty mode/path/mux inherit their flat aliases.
+        if mask.mode.is_empty() {
+            mask.mode = flat.mode;
+        }
+        if mask.path_root.trim().is_empty() {
+            mask.path_root = flat.path_root;
+        }
+        if mask.multiplex.trim().is_empty() {
+            mask.multiplex = flat.multiplex;
+        }
+    } else {
+        settings.httpmask = Some(flat);
     }
     settings.validate()?;
     Ok(settings)
@@ -258,5 +275,25 @@ mod tests {
         assert_eq!(report.cores.singbox, 0);
         assert_eq!(report.cores.mihomo, 1);
         assert_eq!(report.cores.xray, 0);
+    }
+
+    #[test]
+    fn sudoku_share_puts_top_level_mux_in_the_official_field() {
+        let node = parse_subscription("proxies:\n- {name: test, type: sudoku, server: host, port: 443, key: test-key, multiplex: on, http-mask-mode: ws, path-root: api, httpmask: {tls: true, host: cdn.example.com}}").unwrap().nodes.remove(0);
+        let ProtocolConfig::Sudoku { settings } = &node.config else {
+            panic!()
+        };
+        let shared = share(&node, settings).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(
+            &general_purpose::URL_SAFE_NO_PAD
+                .decode(shared.strip_prefix("sudoku://").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["hx"], "on");
+        assert_eq!(payload["hm"], "ws");
+        assert_eq!(payload["hy"], "api");
+        assert_eq!(payload["hh"], "cdn.example.com");
+        assert_eq!(payload["ht"], true);
     }
 }

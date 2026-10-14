@@ -429,7 +429,7 @@ export type ProfileKind = "subscription" | "local" | "custom";
 export type LocalKind = "node" | "multi";
 export type ConfigInputMode = "paste" | "file";
 
-/** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
+/** Mihomo Sudoku options, mirroring Rust SudokuSettings. */
 export interface SudokuSettings {
   key: string;
   "aead-method"?: string;
@@ -443,6 +443,7 @@ export interface SudokuSettings {
   httpmask?: { disable: boolean; mode: string; tls: boolean; host: string; "path-root": string; multiplex: string };
 }
 
+/** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
 export interface ManualNodeDraft {
   sudokuOptionsJson?: string | null;
   protocol: string;

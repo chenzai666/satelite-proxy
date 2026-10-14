@@ -36,3 +36,10 @@ test("accepts v2rayN base64 body for backend parsing", () => {
     Buffer.from("vless://id@example.com:443#HK\nss://payload#US").toString("base64"));
   assert.equal(clipboardNodePayload(Buffer.from("ordinary text without a node").toString("base64")), null);
 });
+
+test("accepts Sudoku official short links directly and inside base64 subscriptions", () => {
+  const uri = `sudoku://${Buffer.from(JSON.stringify({ h: "example.com", p: 443, k: "test-key" })).toString("base64url")}`;
+  assert.equal(clipboardNodePayload(uri), uri);
+  const body = Buffer.from(uri).toString("base64");
+  assert.equal(clipboardNodePayload(body), body);
+});
