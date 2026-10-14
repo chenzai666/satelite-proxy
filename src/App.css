@@ -4159,6 +4159,13 @@ body.ruleset-dragging .ruleset-item:not(.selected):hover {
   gap: 0.48rem;
 }
 
+.mihomo-group-row[data-group-name] { cursor: grab; }
+.mihomo-policy-link { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px; }
+.mihomo-nodes-page > .settings-embed { margin-top: 16px; }
+.mihomo-template-modal { width: min(900px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
+.mihomo-template-modal .modal-body { overflow-y: auto; min-height: 0; padding: 20px; display: grid; gap: 12px; }
+.mihomo-template-modal .config-paste { min-height: 150px; }
+
 .mihomo-group-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, 42%);

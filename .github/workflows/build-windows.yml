@@ -92,6 +92,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-node-delete-browser.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-mihomo-groups-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
 
       - name: 保存规则侧栏测试截图
@@ -134,6 +136,8 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_sidecar_config_validates -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_sudoku_validates -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_user_template_validates -- --ignored
 
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

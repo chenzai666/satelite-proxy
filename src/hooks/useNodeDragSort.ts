@@ -1,7 +1,7 @@
 import { useEffect, useRef, type PointerEvent } from "react";
 
 /** Pointer events work in WebView2/WKWebView and keep virtual lists enabled. */
-export function useNodeDragSort(onDrop: (id: string, target: string, after: boolean) => void) {
+export function useNodeDragSort(onDrop: (id: string, target: string, after: boolean) => void, attribute: "nodeId" | "groupName" = "nodeId") {
   const callback = useRef(onDrop);
   callback.current = onDrop;
   const cleanup = useRef<() => void>(() => {});
@@ -25,8 +25,9 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
     const oldCursor = document.body.style.cursor;
     function markTarget() {
       target?.classList.remove("node-drop-before", "node-drop-after");
-      target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-node-id]") ?? null;
-      if (target?.dataset.nodeId === id) target = null;
+      const selector = attribute === "nodeId" ? "[data-node-id]" : "[data-group-name]";
+      target = document.elementFromPoint(x, y)?.closest<HTMLElement>(selector) ?? null;
+      if (target?.dataset[attribute] === id) target = null;
       if (target) {
         const rect = target.getBoundingClientRect();
         after = target.classList.contains("node-card") ? x > rect.left + rect.width / 2 : y > rect.top + rect.height / 2;
@@ -52,7 +53,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
         suppressClick.current = true;
         const rect = origin.getBoundingClientRect();
         preview = origin.cloneNode(true) as HTMLElement;
-        preview.removeAttribute("data-node-id");
+        delete preview.dataset[attribute];
         preview.setAttribute("aria-hidden", "true");
         Object.assign(preview.style, {
           position: "fixed", top: `${rect.top / zoom}px`, left: `${rect.left / zoom}px`,
@@ -67,7 +68,7 @@ export function useNodeDragSort(onDrop: (id: string, target: string, after: bool
       if (active) e.preventDefault();
     }
     function finish(commit: boolean) {
-      const targetId = target?.dataset.nodeId;
+      const targetId = target?.dataset[attribute];
       const shouldCommit = commit && active && targetId;
       active = false;
       cancelAnimationFrame(frame);

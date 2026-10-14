@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   closeAllConnections,
   getProxyStatus,
+  getMihomoTemplate,
+  saveMihomoTemplate,
+  fetchMihomoTemplate,
+  reorderMihomoGroups,
   listMihomoProxyGroups,
   onProxySnapshot,
   selectMihomoProxyGroup,
@@ -11,8 +15,10 @@ import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { useNodeDragSort } from "../hooks/useNodeDragSort";
+import { moveMihomoGroup } from "../mihomoGroupOrder";
 import { useI18n } from "../i18n";
-import type { MihomoProxyGroup } from "../types";
+import type { MihomoProxyGroup, MihomoTemplateView } from "../types";
 
 interface Props {
   embedded?: boolean;
@@ -23,6 +29,7 @@ interface Props {
 }
 
 function groupLabel(group: MihomoProxyGroup) {
+  if (group.labels?.[group.name]) return group.labels[group.name];
   if (group.name === "GLOBAL") return "🌐 GLOBAL";
   if (group.name === "proxy") return "🚀 节点选择";
   if (group.name === "auto") return "📈 自动选择";
@@ -69,6 +76,51 @@ export function MihomoGroupsPage({
   const [error, setError] = useState<string | null>(null);
   const liveStatusKeyRef = useRef<string | null>(null);
   const groupRequestRef = useRef(0);
+  const [profile, setProfile] = useState<MihomoTemplateView | null>(null);
+  const [groupOrder, setGroupOrder] = useState<string[]>([]);
+  const [showTemplate, setShowTemplate] = useState(false);
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [orderBusy, setOrderBusy] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    void getMihomoTemplate().then(next => {
+      if (!disposed) { setProfile(next); setGroupOrder(next.group_order); }
+    }).catch(reason => { if (!disposed) setError(String(reason)); });
+    return () => { disposed = true; };
+  }, []);
+
+  const orderedGroups = useMemo(() => {
+    const ranks = new Map(groupOrder.map((name, i) => [name, i]));
+    return [...groups].sort((a,b) => (ranks.get(a.name) ?? Number.MAX_SAFE_INTEGER) - (ranks.get(b.name) ?? Number.MAX_SAFE_INTEGER));
+  }, [groups, groupOrder]);
+  const groupDrag = useNodeDragSort((id, target, after) => {
+    const next = moveMihomoGroup(orderedGroups.map(g => g.name), id, target, after);
+    setOrderBusy(true);
+    void reorderMihomoGroups(next).then(setGroupOrder).catch(reason => setError(String(reason)))
+      .finally(() => setOrderBusy(false));
+  }, "groupName");
+
+  async function saveTemplate() {
+    if (!profile || templateBusy) return;
+    setTemplateBusy(true);
+    try {
+      const next = await saveMihomoTemplate(profile.template, profile.use_for_active);
+      setProfile(next); setShowTemplate(false);
+      ++groupRequestRef.current; setGroups([]);
+      // Status events and the normal refresh repopulate after the debounced restart.
+    } catch (reason) { setError(String(reason)); }
+    finally { setTemplateBusy(false); }
+  }
+
+  async function fetchTemplate() {
+    if (!profile || templateBusy) return;
+    setTemplateBusy(true);
+    try {
+      const ini = await fetchMihomoTemplate(profile.template.url);
+      setProfile(p => p ? { ...p, template: { ...p.template, ini } } : p);
+    } catch (reason) { setError(String(reason)); }
+    finally { setTemplateBusy(false); }
+  }
 
   const statusKey = (status: Awaited<ReturnType<typeof getProxyStatus>>) =>
     `${status.running ? "running" : "stopped"}:${status.core_type ?? ""}:${status.outbound_mode ?? ""}`;
@@ -148,8 +200,8 @@ export function MihomoGroupsPage({
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return groups;
-    return groups.filter((group) => {
+    if (!needle) return orderedGroups;
+    return orderedGroups.filter((group) => {
       const text = [
         groupLabel(group),
         group.now,
@@ -160,7 +212,7 @@ export function MihomoGroupsPage({
         .toLowerCase();
       return text.includes(needle);
     });
-  }, [groups, query]);
+  }, [orderedGroups, query]);
 
   async function switchGroup(group: MihomoProxyGroup, member: string) {
     if (!member || member === group.now) return;
@@ -236,6 +288,7 @@ export function MihomoGroupsPage({
       ) : null}
 
       <div className="card mihomo-groups-tools">
+        <GlassButton disabled={!profile} onClick={() => setShowTemplate(true)}>{t("mihomoGroups.template")}</GlassButton>
         <input
           className="rules-filter"
           value={query}
@@ -266,7 +319,8 @@ export function MihomoGroupsPage({
             const selector = group.group_type.toLowerCase() === "selector";
             const busy = busyGroup === group.name;
             return (
-              <section className="card mihomo-group-row" key={group.name}>
+              <section className="card mihomo-group-row" key={group.name} data-group-name={group.name}
+                onPointerDown={event => groupDrag.onPointerDown(event, group.name, !modeBusy && !busyGroup && !orderBusy && filtered.length > 1)}>
                 <div className="mihomo-group-summary">
                   <div className="mihomo-group-title-line">
                     <strong>{groupLabel(group)}</strong>
@@ -304,6 +358,23 @@ export function MihomoGroupsPage({
         </div>
       )}
       {error ? <ErrorModal message={error} onClose={() => setError(null)} /> : null}
+      {showTemplate && profile ? <div className="modal-backdrop"><section className="modal mihomo-template-modal" role="dialog" aria-modal="true" aria-label={t("mihomoGroups.template")}>
+        <header className="modal-header"><h2>{t("mihomoGroups.template")}</h2>
+          <GlassButton disabled={templateBusy} onClick={() => setShowTemplate(false)}>{t("common.cancel")}</GlassButton></header>
+        <div className="modal-body">
+          <p className="muted">{t("mihomoGroups.templateHint")}</p>
+          <label className="field"><span>{t("mihomoGroups.templateUrl")}</span>
+            <input value={profile.template.url} disabled={templateBusy} onChange={e => setProfile({ ...profile, template: { ...profile.template, url: e.target.value } })} /></label>
+          <GlassButton disabled={templateBusy} onClick={() => void fetchTemplate()}>{t("mihomoGroups.fetchTemplate")}</GlassButton>
+          <label className="field"><span>INI</span><textarea className="config-paste" rows={10} spellCheck={false} disabled={templateBusy}
+            value={profile.template.ini} onChange={e => setProfile({ ...profile, template: { ...profile.template, ini: e.target.value } })} /></label>
+          <label className="field"><span>{t("mihomoGroups.overrides")}</span><textarea className="config-paste" rows={10} spellCheck={false} disabled={templateBusy}
+            value={profile.template.override_yaml} onChange={e => setProfile({ ...profile, template: { ...profile.template, override_yaml: e.target.value } })} /></label>
+          <label><input type="checkbox" disabled={templateBusy} checked={profile.use_for_active}
+            onChange={e => setProfile({ ...profile, use_for_active: e.target.checked })} /> {t("mihomoGroups.useTemplate")}</label>
+        </div>
+        <footer className="modal-footer"><GlassButton disabled={templateBusy} onClick={() => void saveTemplate()}>{t("common.save")}</GlassButton></footer>
+      </section></div> : null}
     </>
   );
 

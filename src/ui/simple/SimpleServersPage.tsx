@@ -10,6 +10,7 @@ import {
   getNodeShareUri,
   getProxyStatus,
   getSettings,
+  peekSettings,
   listCustomConfigNodes,
   listNodeIds,
   listNodesPage,
@@ -30,6 +31,7 @@ import {
 } from "../../components/AddConfigModal";
 import { GlassButton } from "../../components/GlassButton";
 import { GlassSeg } from "../../components/GlassSeg";
+import { MihomoGroupsPage } from "../../pages/MihomoGroupsPage";
 import { EditLocalNodesModal } from "../../components/EditLocalNodesModal";
 import { NodeContextMenu, type NodeContextMenuState } from "../../components/NodeContextMenu";
 import { NodeShareModal } from "../../components/NodeShareModal";
@@ -88,6 +90,25 @@ function LatencyLabel({
 }
 
 export function SimpleServersPage() {
+  const { t } = useI18n();
+  const { prefill } = useImportIntent();
+  const [core, setCore] = useState(() => peekSettings()?.core_type ?? "singbox");
+  const [tab, setTab] = useState("groups");
+  useEffect(() => {
+    let disposed = false;
+    void getSettings().then(s => { if (!disposed) setCore(s.core_type ?? "singbox"); }).catch(() => undefined);
+    const unsubscribe = onProxySnapshot(s => { if (!disposed && s.core_type) setCore(s.core_type as "singbox" | "mihomo" | "xray"); });
+    return () => { disposed = true; unsubscribe(); };
+  }, []);
+  useEffect(() => { if (prefill) setTab("manage"); }, [prefill]);
+  if (core !== "mihomo") return <SimpleNodeManagementPage />;
+  return <div className="simple-page">
+    <GlassSeg value={tab} options={[{ value: "groups", label: t("mihomoGroups.title") }, { value: "manage", label: t("mihomoGroups.manageNodes") }]} onChange={setTab} />
+    {tab === "groups" ? <MihomoGroupsPage embedded /> : <SimpleNodeManagementPage policyManaged />}
+  </div>;
+}
+
+function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: boolean }) {
   const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -230,6 +251,7 @@ export function SimpleServersPage() {
   });
 
   async function onSelectNode(id: string) {
+    if (policyManaged) return;
     if (busy || switching || batchBusy || id === currentId) return;
     setBusy(true);
     setError(null);
@@ -560,7 +582,7 @@ export function SimpleServersPage() {
                       className="node-select-dot simple-radio"
                       aria-label={`切换到 ${n.name}`}
                       aria-pressed={active}
-                      disabled={busy || customRuntime || batchBusy}
+                      disabled={policyManaged || busy || customRuntime || batchBusy}
                       onClick={(event) => {
                         event.stopPropagation();
                         void onSelectNode(n.id);

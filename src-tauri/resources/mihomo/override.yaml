@@ -1,0 +1,40 @@
+# 端口、控制接口、模式和 TUN 由 Satelite 管理；保留现有 mixed 2080。
+allow-lan: true
+log-level: info
+ipv6: false
+dns:
+  enable: true
+  ipv6: false
+  listen: 0.0.0.0:7874
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver: [223.5.5.5, 119.29.29.29]
+  direct-nameserver: [223.5.5.5, 119.29.29.29]
+  direct-nameserver-follow-policy: true
+  proxy-server-nameserver: [223.5.5.5, 119.29.29.29]
+  nameserver: [https://dns.alidns.com/dns-query, https://doh.pub/dns-query]
+  # 外部 DoH 经主代理组请求，避免隐藏的远程 DNS 直连。
+  fallback: ['https://1.1.1.1/dns-query#proxy', 'https://dns.google/dns-query#proxy']
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr: [240.0.0.0/4]
+  fake-ip-filter:
+    - '*.lan'
+    - '*.local'
+    - localhost.ptlogin2.qq.com
+    - dns.msftncsi.com
+    - www.msftconnecttest.com
+    - www.msftncsi.com
+    - time.windows.com
+    - time.nist.gov
+    - time.apple.com
+    - time.asia.apple.com
+    - '*.ntp.org.cn'
+    - '*.pool.ntp.org'
+    - 'stun.*.*'
+    - 'stun.*.*.*'
+    - '*.stun.*.*'
+    - '*.stun.*.*.*'
+    - '*.msftconnecttest.com'
+    - '*.msftncsi.com'

@@ -407,6 +407,14 @@ pub async fn set_core_type(
                 // with the restart below). Protocol pins are kept, so
                 // switching back only needs the switch re-flipped.
                 store.settings.enforce_multi_core_scope();
+                if parsed == crate::core::CoreKind::Mihomo
+                    && store
+                        .subscriptions
+                        .iter()
+                        .any(|s| s.enabled && store.mihomo_template_subscriptions.contains(&s.id))
+                {
+                    store.settings.auto_select = crate::domain::AutoSelectMode::Off;
+                }
                 Ok(store.settings.clone())
             })
             .map_err(|e| e.to_string())?;

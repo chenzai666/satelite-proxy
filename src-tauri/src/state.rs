@@ -1789,7 +1789,7 @@ impl AppState {
         &self,
         groups: &mut [crate::api::ClashProxyGroup],
     ) -> AppResult<()> {
-        let labels = self.with_store(|store| {
+        let (labels, order) = self.with_store(|store| {
             let mut labels = std::collections::BTreeMap::from([
                 ("GLOBAL".to_string(), "🌐 GLOBAL".to_string()),
                 ("proxy".to_string(), "🚀 节点选择".to_string()),
@@ -1803,8 +1803,26 @@ impl AppState {
                     stored.node.name.clone(),
                 );
             }
-            Ok(labels)
+            if store
+                .subscriptions
+                .iter()
+                .any(|s| s.enabled && store.mihomo_template_subscriptions.contains(&s.id))
+            {
+                labels.extend(store.mihomo_template.group_labels());
+            }
+            Ok((labels, store.mihomo_group_order.clone()))
         })?;
+        let ranks: std::collections::HashMap<&str, usize> = order
+            .iter()
+            .enumerate()
+            .map(|(i, name)| (name.as_str(), i))
+            .collect();
+        groups.sort_by_key(|group| {
+            ranks
+                .get(group.name.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
         for group in groups {
             group.labels = labels.clone();
         }

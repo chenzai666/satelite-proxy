@@ -1046,6 +1046,19 @@ export function listMihomoProxyGroups() {
   return invoke<MihomoProxyGroup[]>("list_mihomo_proxy_groups");
 }
 
+export function getMihomoTemplate() {
+  return invoke<import("./types").MihomoTemplateView>("get_mihomo_template");
+}
+export function saveMihomoTemplate(template: import("./types").MihomoTemplate, useForActive: boolean) {
+  return invoke<import("./types").MihomoTemplateView>("save_mihomo_template", { template, useForActive });
+}
+export function fetchMihomoTemplate(url: string) {
+  return invoke<string>("fetch_mihomo_template", { url });
+}
+export function reorderMihomoGroups(ids: string[]) {
+  return invoke<string[]>("reorder_mihomo_groups", { ids });
+}
+
 export function selectMihomoProxyGroup(group: string, member: string) {
   return invoke<MihomoProxyGroup[]>("select_mihomo_proxy_group", {
     group,

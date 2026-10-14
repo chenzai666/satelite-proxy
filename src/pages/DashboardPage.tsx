@@ -38,7 +38,6 @@ import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
-import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import type {
   AutoSelectMode,
   CoreKind,
@@ -1353,7 +1352,7 @@ function coreDisplayName(kind: string | null | undefined): string {
               value={autoSelectMode}
               ready={statusReady}
               ariaLabel={t("dashboard.autoSelect")}
-              disabled={modeBusy || !statusReady || customRuntime}
+              disabled={modeBusy || !statusReady || customRuntime || proxy?.core_type === "mihomo"}
               disabledValues={
                 new Set(
                   [
@@ -1792,7 +1791,9 @@ function coreDisplayName(kind: string | null | undefined): string {
       </section>
 
       {proxy?.core_type === "mihomo" ? (
-        <MihomoGroupsPage embedded compact showMode={false} />
+        <div className="card mihomo-policy-link"><span>{t("mihomoGroups.dashboardNotice")}</span>
+          <GlassButton onClick={onGoNodes}>{t("mihomoGroups.title")}</GlassButton>
+        </div>
       ) : null}
 
       {showPreview && result && (

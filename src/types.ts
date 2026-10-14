@@ -751,6 +751,17 @@ export interface MihomoProxyGroup {
   labels?: Record<string, string>;
 }
 
+export interface MihomoTemplate {
+  url: string;
+  ini: string;
+  override_yaml: string;
+}
+export interface MihomoTemplateView {
+  template: MihomoTemplate;
+  use_for_active: boolean;
+  group_order: string[];
+}
+
 export type RuleType =
   | "domain"
   | "domain_suffix"

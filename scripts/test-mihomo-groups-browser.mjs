@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { pathToFileURL } from "node:url";
+const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
+const browser = await chromium.launch({ headless: true });
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/mihomo.html");
+  await page.locator('[data-group-name="proxy"]').waitFor();
+  assert.equal(await page.locator("[data-node-id]").count(), 0, "Mihomo 节点页默认策略组");
+  const source = await page.locator('[data-group-name="🤖 AI 域名"] .mihomo-group-summary').boundingBox();
+  const target = await page.locator('[data-group-name="proxy"]').boundingBox();
+  await page.mouse.move(source.x + 45, source.y + 15); await page.mouse.down();
+  await page.mouse.move(target.x + 45, target.y + 6, { steps: 12 }); await page.mouse.up();
+  await page.waitForFunction(() => window.mihomoFixture.order[0] === "🤖 AI 域名");
+  assert.equal(await page.locator("[data-group-name]").first().getAttribute("data-group-name"), "🤖 AI 域名");
+  await page.locator('[data-group-name="🤖 AI 域名"] select').selectOption("b");
+  await page.waitForFunction(() => window.mihomoFixture.switches.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.mihomoFixture.switches), [["🤖 AI 域名", "b"]]);
+  await page.getByRole("button", { name: "节点管理", exact: true }).click();
+  await page.locator("[data-node-id]").first().waitFor();
+  assert.equal(await page.locator(".node-select-dot:not(:disabled)").count(), 0);
+  assert.equal(await page.evaluate(() => window.mihomoFixture.nodeSelections), 0);
+  await page.getByRole("button", { name: "Mihomo 策略组", exact: true }).click();
+  await page.locator('[data-group-name="🤖 AI 域名"]').waitFor();
+  assert.equal(await page.locator("[data-group-name]").first().getAttribute("data-group-name"), "🤖 AI 域名", "页面重挂载恢复排序");
+  await page.getByRole("button", { name: "规则模板与基础覆写", exact: true }).click();
+  await page.getByRole("button", { name: "拉取 INI，保存后生效", exact: true }).click();
+  await page.waitForFunction(() => window.mihomoFixture.fetched === 1);
+  assert.equal(await page.evaluate(() => window.mihomoFixture.saves), 0, "拉取不能自动覆写");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await page.waitForFunction(() => window.mihomoFixture.saves === 1);
+  assert.deepEqual(errors, []);
+  console.log("Mihomo 节点页回归通过：默认策略组、拖拽/持久排序、组内选点、节点管理禁用直选、模板拉取与显式保存");
+} finally { await browser.close(); }

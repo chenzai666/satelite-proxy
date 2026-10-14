@@ -7,6 +7,7 @@ import {
   getNodeShareUri,
   getProxyStatus,
   getSettings,
+  peekSettings,
   listAllNodes,
   listCustomConfigNodes,
   listNodeIds,
@@ -33,6 +34,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { waitForCoreRestart } from "../coreBusy";
 import { useVirtualRange } from "../hooks/useVirtualRange";
 import { useNodeDragSort } from "../hooks/useNodeDragSort";
+import { MihomoGroupsPage } from "./MihomoGroupsPage";
 import { filterCustomNodes, applyCustomLatency, sortNodes, type CustomLatencyMap } from "../customNodes";
 import { copyNodeShareText } from "../nodeShare";
 import { clipboardNodePayload } from "../nodeClipboard";
@@ -124,6 +126,27 @@ function latencyClass(ms?: number | null) {
 }
 
 export function NodesPage() {
+  const { t } = useI18n();
+  const [core, setCore] = useState<string | null>(() => peekSettings()?.core_type ?? null);
+  const [tab, setTab] = useState("groups");
+  useEffect(() => {
+    let disposed = false;
+    void getSettings().then(s => { if (!disposed) setCore(s.core_type ?? "singbox"); }).catch(() => { if (!disposed) setCore("singbox"); });
+    const unsubscribe = onProxySnapshot(s => { if (!disposed && s.core_type) setCore(s.core_type); });
+    return () => { disposed = true; unsubscribe(); };
+  }, []);
+  if (core === null) return <div className="page empty muted">{t("common.loading")}</div>;
+  if (core !== "mihomo") return <NodeManagementPage />;
+  return <div className="page mihomo-nodes-page">
+    <GlassSeg value={tab} options={[
+      { value: "groups", label: t("mihomoGroups.title") },
+      { value: "manage", label: t("mihomoGroups.manageNodes") },
+    ]} onChange={setTab} />
+    {tab === "groups" ? <MihomoGroupsPage embedded /> : <NodeManagementPage policyManaged />}
+  </div>;
+}
+
+function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean }) {
   const { t, locale } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -514,6 +537,7 @@ export function NodesPage() {
   );
 
   async function onSelect(id: string) {
+    if (policyManaged) return;
     if (busyId || switching || batchBusy) return;
     setBusyId(id);
     setError(null);
@@ -982,7 +1006,7 @@ export function NodesPage() {
             className="node-select-dot"
             aria-label={`切换到 ${n.name}`}
             aria-pressed={active}
-            disabled={customRuntime || busyId === n.id || batchBusy}
+            disabled={policyManaged || customRuntime || busyId === n.id || batchBusy}
             onClick={(event) => {
               event.stopPropagation();
               void onSelect(n.id);
@@ -1061,7 +1085,7 @@ export function NodesPage() {
             className="node-select-dot"
             aria-label={`切换到 ${n.name}`}
             aria-pressed={active}
-            disabled={customRuntime || busyId === n.id || batchBusy}
+            disabled={policyManaged || customRuntime || busyId === n.id || batchBusy}
             onClick={(event) => {
               event.stopPropagation();
               void onSelect(n.id);

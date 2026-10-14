@@ -1,5 +1,6 @@
 mod chain;
 mod dns;
+mod mihomo_profile;
 mod node;
 mod rule;
 mod settings;
@@ -8,6 +9,7 @@ mod sudoku;
 
 pub use chain::{pool_outbound_tag_for_id, ChainHop, NodePool, PoolMode, ProxyChain};
 pub use dns::*;
+pub use mihomo_profile::*;
 pub use node::*;
 pub use rule::{
     build_builtin_remote_set, build_user_rule_preset, builtin_remote_ip_only, builtin_remote_spec,

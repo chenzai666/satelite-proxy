@@ -192,6 +192,17 @@ pub fn build_mihomo_config(
 
     let tags: Vec<String> = supported.iter().map(outbound_tag).collect();
     let selected_tag = resolve_selected_tag(&supported, &tags, opts.current_node_id.as_deref());
+    let template = super::mihomo_template::template_from_configs(&opts.mihomo_configs)
+        .map_err(AppError::Config)?;
+    let mut policy_opts = opts.clone();
+    if let Some(template) = &template {
+        policy_opts.mihomo_configs =
+            vec![
+                super::mihomo_template::render_template(template, &supported)
+                    .map_err(AppError::Config)?,
+            ];
+    }
+    let opts = &policy_opts;
     // A Clash subscription is the source of truth for its own policy groups
     // and routing rules. URI/base64/sing-box subscriptions have no such
     // document and continue through Satelite's generated fallback groups.
@@ -271,7 +282,27 @@ pub fn build_mihomo_config(
 
     // —— rules ——
     let rules = if let Some(plan) = source_plan.as_ref().filter(|plan| use_source_policy) {
-        build_source_rules(opts, &plan.rules, &plan.rewrites)
+        if template.is_some() {
+            let mut rules: Vec<String> = plan
+                .rules
+                .iter()
+                .map(|rule| {
+                    let mut tokens: Vec<String> = rule.split(',').map(str::to_owned).collect();
+                    if let Some(target) = tokens.last_mut() {
+                        if let Some(rewritten) = plan.rewrites.get(target.as_str()) {
+                            *target = rewritten.clone();
+                        }
+                    }
+                    tokens.join(",")
+                })
+                .collect();
+            if opts.block_quic {
+                rules.insert(0, "AND,((NETWORK,udp),(DST-PORT,443)),REJECT".into());
+            }
+            rules
+        } else {
+            build_source_rules(opts, &plan.rules, &plan.rewrites)
+        }
     } else {
         build_rules(opts, &remote_provider_tags, &remote_policy_group_tags)
     };
@@ -340,6 +371,20 @@ pub fn build_mihomo_config(
         Yaml::Sequence(rules.into_iter().map(Yaml::String).collect()),
     );
 
+    if let Some(template) = &template {
+        super::mihomo_template::apply_overrides(
+            &mut root,
+            &template.override_yaml,
+            opts.mixed_port,
+            opts.api_port,
+        )
+        .map_err(AppError::Config)?;
+        if opts.outbound_mode != OutboundMode::Rule {
+            if let Some(dns) = root.get_mut(str_yaml("dns")) {
+                rewrite_template_dns_proxy(dns, opts.outbound_mode);
+            }
+        }
+    }
     let yaml = serde_yaml::to_string(&root)
         .map_err(|e| AppError::Config(format!("serialize mihomo config: {e}")))?;
     Ok(BuiltMihomoConfig {
@@ -347,6 +392,29 @@ pub fn build_mihomo_config(
         outbound_tags: tags,
         selected_tag,
     })
+}
+
+fn rewrite_template_dns_proxy(value: &mut Yaml, mode: OutboundMode) {
+    match value {
+        Yaml::String(url) if url.ends_with("#proxy") => {
+            if mode == OutboundMode::Global {
+                *url = format!("{}#GLOBAL", url.trim_end_matches("#proxy"));
+            } else {
+                *url = url.trim_end_matches("#proxy").to_string();
+            }
+        }
+        Yaml::Mapping(map) => {
+            for (_, child) in map {
+                rewrite_template_dns_proxy(child, mode);
+            }
+        }
+        Yaml::Sequence(items) => {
+            for child in items {
+                rewrite_template_dns_proxy(child, mode);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Loopback listener name prefix for the sidecar config (mirrors the Xray
@@ -687,7 +755,8 @@ fn load_source_policy_plan(
                 .as_deref()
                 .and_then(|raw| serde_yaml::from_str::<Yaml>(raw).ok())
                 .and_then(|raw| raw.get("name").and_then(Yaml::as_str).map(str::to_owned));
-            std::iter::once((node.name.clone(), tag.clone()))
+            std::iter::once((tag.clone(), tag.clone()))
+                .chain(std::iter::once((node.name.clone(), tag.clone())))
                 .chain(original.map(|name| (name, tag.clone())))
         })
         .collect();
@@ -787,7 +856,8 @@ fn load_source_policy_plan(
             Yaml::String("proxies".into()),
             Yaml::Sequence(members.iter().map(|member| str_yaml(member)).collect()),
         );
-        if index == main_index {
+        if index == main_index && !opts.mihomo_configs[0].contains("satelite-template-policy: true")
+        {
             let default = if opts.auto_select.is_kernel()
                 && members.iter().any(|member| member == AUTO_GROUP)
             {
@@ -2270,6 +2340,96 @@ Dh8aZf9uMe34poL6mGQxVWTsiVWSiQbcgOzxHI8Bu6Vebx4=
                 "mihomo -t rejected the {label} openvpn config:\n{}{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
+            );
+        }
+    }
+
+    #[test]
+    fn user_template_overrides_subscription_policy_and_uses_2080() {
+        let node = ss_node("manual node");
+        let template = crate::domain::MihomoTemplate::default();
+        let mut opts = default_opts();
+        opts.mihomo_configs = vec![super::super::mihomo_template::encode_template(&template)];
+        let doc = parse(&build_mihomo_config(&[node.clone()], &opts).unwrap());
+        assert_eq!(doc["mixed-port"].as_u64(), Some(2080));
+        assert!(doc.get("port").is_none() && doc.get("socks-port").is_none());
+        assert_eq!(
+            doc["dns"]["direct-nameserver-follow-policy"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(doc["dns"]["enhanced-mode"].as_str(), Some("fake-ip"));
+        assert_eq!(doc["dns"]["ipv6"].as_bool(), Some(false));
+        assert_eq!(doc["proxy-groups"].as_sequence().unwrap().len(), 18);
+        let groups = doc["proxy-groups"].as_sequence().unwrap();
+        let manual = groups
+            .iter()
+            .find(|g| g["name"].as_str() == Some("🚀 手动选择"))
+            .unwrap();
+        assert!(manual["proxies"]
+            .as_sequence()
+            .unwrap()
+            .contains(&str_yaml(&outbound_tag(&node))));
+        assert_eq!(
+            doc["rules"].as_sequence().unwrap().last().unwrap().as_str(),
+            Some("MATCH,🐟 其他域名")
+        );
+        for mode in [OutboundMode::Global, OutboundMode::Direct] {
+            opts.outbound_mode = mode;
+            let next = parse(&build_mihomo_config(&[node.clone()], &opts).unwrap());
+            let groups = next["proxy-groups"].as_sequence().unwrap();
+            assert_eq!(
+                groups.len(),
+                if mode == OutboundMode::Global { 1 } else { 0 }
+            );
+            if mode == OutboundMode::Global {
+                assert_eq!(groups[0]["name"].as_str(), Some("GLOBAL"));
+            }
+            let fallback = next["dns"]["fallback"][0].as_str().unwrap();
+            assert!(!fallback.ends_with("#proxy"));
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_mihomo_user_template_validates() {
+        let bin = crate::core::find_bundled_core(None, CoreKind::Mihomo).expect("bundled Mihomo");
+        let mut opts = default_opts();
+        opts.mihomo_configs = vec![crate::config::mihomo_template::encode_template(
+            &crate::domain::MihomoTemplate::default(),
+        )];
+        for mode in [
+            OutboundMode::Rule,
+            OutboundMode::Global,
+            OutboundMode::Direct,
+        ] {
+            opts.outbound_mode = mode;
+            let built = build_mihomo_config(&[ss_node("node")], &opts).unwrap();
+            let mut doc: Yaml = serde_yaml::from_str(&built.yaml).unwrap();
+            // Use the inline cache equivalent so validation does not depend
+            // on external rule-list availability or consume subscription data.
+            if let Some(providers) = doc.get_mut("rule-providers").and_then(Yaml::as_mapping_mut) {
+                for (_, provider) in providers {
+                    *provider = serde_yaml::from_str("type: inline\nbehavior: classical\npayload: ['DOMAIN-SUFFIX,example.test']").unwrap();
+                }
+            }
+            let temp = std::env::temp_dir().join(format!(
+                "satelite-template-{:?}-{}.yaml",
+                mode,
+                std::process::id()
+            ));
+            std::fs::write(&temp, serde_yaml::to_string(&doc).unwrap()).unwrap();
+            let output = std::process::Command::new(&bin)
+                .args(["-t", "-f"])
+                .arg(&temp)
+                .output()
+                .unwrap();
+            let _ = std::fs::remove_file(&temp);
+            assert!(
+                output.status.success(),
+                "Mihomo rejected {:?}: {}{}",
+                mode,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
         }
     }
