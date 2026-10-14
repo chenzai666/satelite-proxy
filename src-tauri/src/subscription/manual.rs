@@ -407,6 +407,42 @@ fn build_config(draft: &ManualNodeDraft, protocol: Protocol) -> Result<ProtocolC
             obfs_host: opt_nonempty(&draft.host),
             mode: None,
         }),
+        Protocol::Sudoku => {
+            let mut options = if let Some(text) = opt_nonempty(&draft.sudoku_options_json) {
+                serde_json::from_str::<serde_json::Value>(&text)
+                    .map_err(|_| "sudoku: invalid options JSON")?
+            } else {
+                serde_json::json!({"aead-method": "chacha20-poly1305"})
+            };
+            let map = options
+                .as_object_mut()
+                .ok_or("sudoku: options must be a JSON object")?;
+            let allowed = [
+                "key",
+                "aead-method",
+                "padding-min",
+                "padding-max",
+                "table-type",
+                "custom-table",
+                "custom-tables",
+                "multiplex",
+                "enable-pure-downlink",
+                "httpmask",
+            ];
+            if map.keys().any(|k| !allowed.contains(&k.as_str())) {
+                return Err(
+                    "sudoku: unknown option; use documented Mihomo Sudoku field names".into(),
+                );
+            }
+            map.insert(
+                "key".into(),
+                serde_json::json!(req(&draft.password, "key")?),
+            );
+            let settings: crate::domain::SudokuSettings =
+                serde_json::from_value(options).map_err(|_| "sudoku: invalid parameter types")?;
+            settings.validate()?;
+            Ok(ProtocolConfig::Sudoku { settings })
+        }
         Protocol::Masque => Ok(ProtocolConfig::Masque {
             private_key: req(&draft.private_key, "private_key")?,
             public_key: req(&draft.public_key, "public_key")?,
@@ -640,6 +676,14 @@ pub fn node_to_draft(node: &ProxyNode) -> ManualNodeDraft {
             if draft.host.is_none() {
                 draft.host = obfs_host.clone();
             }
+        }
+        ProtocolConfig::Sudoku { settings } => {
+            draft.password = Some(settings.key.clone());
+            let mut value = serde_json::to_value(settings).unwrap_or_default();
+            if let Some(map) = value.as_object_mut() {
+                map.remove("key");
+            }
+            draft.sudoku_options_json = serde_json::to_string_pretty(&value).ok();
         }
         ProtocolConfig::Masque {
             private_key,

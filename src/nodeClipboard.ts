@@ -2,7 +2,7 @@
 const shareSchemes = new Set([
   "ss", "vmess", "vless", "trojan", "hysteria2", "hy2", "tuic",
   "socks", "socks5", "hysteria", "hy", "shadowtls", "ssh",
-  "naive", "naive+https", "naive+quic", "tor", "anytls", "snell",
+  "naive", "naive+https", "naive+quic", "tor", "anytls", "snell", "sudoku",
 ]);
 
 function isShareLink(line: string): boolean {

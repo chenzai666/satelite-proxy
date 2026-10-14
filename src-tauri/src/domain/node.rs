@@ -28,6 +28,8 @@ pub enum Protocol {
     /// under the mihomo main core, delegated to the mihomo sidecar
     /// (multi-core mode) under sing-box, filtered otherwise.
     Masque,
+    /// Official Sudoku protocol; served by Mihomo, not Xray finalmask.
+    Sudoku,
     /// A Clash type this app doesn't model but the mihomo kernel serves
     /// natively (ssr / mieru — see `MIHOMO_UNMODELED_TYPES`). The node rides
     /// on `raw` verbatim passthrough in mihomo generation; the model fields
@@ -57,6 +59,7 @@ impl Protocol {
             Self::AnyTls => "anytls",
             Self::Snell => "snell",
             Self::Masque => "masque",
+            Self::Sudoku => "sudoku",
             Self::Unknown => "unknown",
         }
     }
@@ -80,12 +83,17 @@ impl Protocol {
             "anytls" => Some(Self::AnyTls),
             "snell" => Some(Self::Snell),
             "masque" => Some(Self::Masque),
+            "sudoku" => Some(Self::Sudoku),
             _ => None,
         }
     }
 
     pub fn from_singbox_type(t: &str) -> Option<Self> {
-        Self::from_clash_type(t)
+        if t.eq_ignore_ascii_case("sudoku") {
+            None
+        } else {
+            Self::from_clash_type(t)
+        }
     }
 
     /// True for protocols that never accept a plain TCP connect on
@@ -219,6 +227,9 @@ pub struct ShadowTlsOpts {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "protocol", rename_all = "lowercase")]
 pub enum ProtocolConfig {
+    Sudoku {
+        settings: super::sudoku::SudokuSettings,
+    },
     /// Placeholder for `Protocol::Unknown` raw-passthrough nodes — no
     /// modeled fields; the mihomo generator emits the raw entry verbatim.
     Unknown,
@@ -531,6 +542,7 @@ fn tag_prefix(id: &str) -> String {
 fn config_identity(config: &ProtocolConfig) -> String {
     match config {
         ProtocolConfig::Unknown => String::new(),
+        ProtocolConfig::Sudoku { settings } => serde_json::to_string(settings).unwrap_or_default(),
         ProtocolConfig::Shadowsocks {
             password, method, ..
         } => {
@@ -685,6 +697,8 @@ pub struct ManualNodeDraft {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sudoku_options_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

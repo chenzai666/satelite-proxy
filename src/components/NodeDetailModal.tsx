@@ -178,6 +178,11 @@ function ProtoRows({ config }: { config: ProtocolConfig | undefined }) {
         </>
       );
     case "masque":
+    case "sudoku":
+      if (config.protocol === "sudoku") return <>
+        <Row label={t("nodeDraft.sudokuKey")} value={config.settings.key} />
+        <Row label={t("nodeDraft.sudokuOptions")} value={JSON.stringify({ ...config.settings, key: undefined }, null, 2)} />
+      </>;
       return (
         <>
           <Row label="Private Key" value={config.private_key} />

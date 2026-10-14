@@ -226,6 +226,7 @@ export interface ShadowTlsOpts {
  * (serde tag "protocol", lowercase). Used by the node-detail modal only;
  * consumers elsewhere treat it opaquely. */
 export type ProtocolConfig =
+  | { protocol: "sudoku"; settings: SudokuSettings }
   | {
       protocol: "shadowsocks";
       method: string;
@@ -429,7 +430,21 @@ export type LocalKind = "node" | "multi";
 export type ConfigInputMode = "paste" | "file";
 
 /** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
+export interface SudokuSettings {
+  key: string;
+  "aead-method"?: string;
+  "padding-min"?: number;
+  "padding-max"?: number;
+  "table-type"?: string;
+  "custom-table"?: string;
+  "custom-tables"?: string[];
+  multiplex?: string;
+  "enable-pure-downlink"?: boolean;
+  httpmask?: { disable: boolean; mode: string; tls: boolean; host: string; "path-root": string; multiplex: string };
+}
+
 export interface ManualNodeDraft {
+  sudokuOptionsJson?: string | null;
   protocol: string;
   server: string;
   port: number;

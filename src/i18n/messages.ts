@@ -1163,6 +1163,10 @@ const en = {
 
   // manual node draft form (16-protocol conditional fields)
   "nodeDraft.masqueOption": "MASQUE (mihomo only)",
+  "nodeDraft.sudokuKey": "SudoKu key",
+  "nodeDraft.sudokuOption": "SudoKu (Mihomo only)",
+  "nodeDraft.sudokuOptions": "Advanced SudoKu options (JSON, optional)",
+  "nodeDraft.sudokuHint": "Requires Mihomo. Options use Mihomo field names and preserve HTTPMask, padding, table layouts and multiplexing. An empty form defaults to ChaCha20-Poly1305; imported encryption choices are retained.",
   "nodeDraft.xhttpOption": "XHTTP (Xray only)",
   "nodeDraft.protocol": "Protocol",
   "nodeDraft.protocolAria": "Protocol",
@@ -2363,6 +2367,10 @@ const zh: Record<MessageKey, string> = {
   "modal.importing": "导入中…",
 
   "nodeDraft.masqueOption": "MASQUE（仅 mihomo）",
+  "nodeDraft.sudokuKey": "SudoKu 密钥",
+  "nodeDraft.sudokuOption": "SudoKu（仅 Mihomo）",
+  "nodeDraft.sudokuOptions": "SudoKu 高级参数（JSON，可选）",
+  "nodeDraft.sudokuHint": "需要 Mihomo。高级参数使用 Mihomo 字段名，保留 HTTPMask、填充、自定义表与复用设置。新建时留空默认使用 ChaCha20-Poly1305；导入的加密选择保持原样。",
   "nodeDraft.xhttpOption": "XHTTP（仅 Xray）",
   "nodeDraft.protocol": "协议",
   "nodeDraft.protocolAria": "协议",

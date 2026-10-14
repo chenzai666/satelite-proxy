@@ -233,10 +233,16 @@ pub fn apply_udp_node_compatibility(nodes: &mut [ProxyNode], allow_insecure: boo
                 if let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(raw) {
                     if let Some(map) = value.as_mapping_mut() {
                         if allow_insecure {
-                            map.insert(serde_yaml::Value::String("skip-cert-verify".into()), serde_yaml::Value::Bool(true));
+                            map.insert(
+                                serde_yaml::Value::String("skip-cert-verify".into()),
+                                serde_yaml::Value::Bool(true),
+                            );
                         }
                         if node.protocol == Protocol::Tuic {
-                            map.insert(serde_yaml::Value::String("alpn".into()), serde_yaml::to_value(&tls.alpn).unwrap_or_default());
+                            map.insert(
+                                serde_yaml::Value::String("alpn".into()),
+                                serde_yaml::to_value(&tls.alpn).unwrap_or_default(),
+                            );
                         }
                         if let Ok(updated) = serde_yaml::to_string(&value) {
                             *raw = updated;
@@ -1634,6 +1640,11 @@ fn node_to_outbound_tagged(
     }
     // Same model for MASQUE — sing-box has no masque outbound at all; the
     // mihomo sidecar (or the mihomo main core) is the only egress path.
+    if matches!(node.protocol, Protocol::Sudoku) {
+        return Err(AppError::Config(
+            "SudoKu 需要 Mihomo：请切换 Mihomo，或开启多核模式并将 SudoKu 指定到 Mihomo".into(),
+        ));
+    }
     if matches!(node.protocol, Protocol::Masque) {
         return Err(AppError::Config(
             "masque 协议 sing-box 不支持：该节点已从本次生成的配置中过滤（开启多核模式并将该协议指向 mihomo，或切换 mihomo 内核即可使用）"
@@ -4337,6 +4348,35 @@ mod tests {
         node.id = id.into();
         node.name = name.into();
         node
+    }
+
+    #[test]
+    fn sudoku_delegation_preserves_tag_and_never_builds_a_fake_native_outbound() {
+        let node = crate::subscription::parse_clash_yaml("proxies:\n- {name: sudoku, type: sudoku, server: example.com, port: 443, key: test-key}").unwrap().nodes.remove(0);
+        assert!(build_singbox_config(&[node.clone()], &sidecar_opts(None)).is_err());
+        let mut settings = crate::domain::AppSettings::default();
+        settings.multi_core_enabled = true;
+        settings.protocol_cores = vec![crate::domain::ProtocolCoreItem {
+            protocol: "sudoku".into(),
+            core: "mihomo".into(),
+        }];
+        let plan = crate::runtime::compute_sidecar_plan(&settings, &[], &[node.clone()])
+            .expect("Sudoku delegation");
+        assert_eq!(plan.ports[0].kind, crate::core::CoreKind::Mihomo);
+        let built =
+            build_singbox_config(&[node.clone()], &sidecar_opts(Some(plan.clone()))).unwrap();
+        let tag = outbound_tag(&node);
+        let outbound = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["tag"] == tag)
+            .unwrap();
+        assert_eq!(outbound["type"], "socks");
+        assert_eq!(outbound["server"], "127.0.0.1");
+        assert_eq!(outbound["server_port"], plan.ports[0].port);
+        settings.protocol_cores[0].core = "xray".into();
+        assert!(crate::runtime::compute_sidecar_plan(&settings, &[], &[node]).is_none());
     }
 
     #[test]

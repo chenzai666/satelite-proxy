@@ -4,6 +4,7 @@ mod clash;
 mod json_util;
 mod manual;
 mod singbox;
+mod sudoku;
 mod uri;
 mod yaml_util;
 
@@ -283,6 +284,7 @@ fn is_proxy_uri(line: &str) -> bool {
         || lower.starts_with("tor://")
         || lower.starts_with("anytls://")
         || lower.starts_with("snell://")
+        || lower.starts_with("sudoku://")
 }
 
 fn try_decode_base64_body(s: &str) -> Option<String> {

@@ -71,9 +71,14 @@ pub fn core_support_report(content: &str) -> AppResult<CoreSupportReport> {
     let mut unsupported = CoreUnsupported::default();
     for node in &parsed.nodes {
         let check =
-            |kind: CoreKind, list: &mut Vec<CoreUnsupportedItem>, count: &mut usize| match kind
-                .node_unsupported_reason(node)
+            |kind: CoreKind, list: &mut Vec<CoreUnsupportedItem>, count: &mut usize| match if kind
+                == CoreKind::SingBox
+                && node.protocol == crate::domain::Protocol::Sudoku
             {
+                Some("SudoKu 需由 Mihomo 主内核或多核模式的 Mihomo 副内核处理")
+            } else {
+                kind.node_unsupported_reason(node)
+            } {
                 Some(reason) => list.push(unsupported_item(node, reason)),
                 None => *count += 1,
             };

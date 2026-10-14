@@ -68,6 +68,7 @@ pub fn parse_uri_line(line: &str) -> Result<ProxyNode, String> {
         "tor" => parse_tor_uri(line),
         "anytls" => parse_anytls_uri(line),
         "snell" => parse_snell_uri(line),
+        "sudoku" => super::sudoku::parse_uri(line),
         _ => Err(format!("unsupported uri scheme: {scheme}")),
     }
 }
@@ -81,7 +82,9 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
     let fragment = share_component(&node.name);
 
     match &node.config {
-        ProtocolConfig::Unknown => Err("该原文透传节点暂不支持生成分享链接，请使用原始配置导入".into()),
+        ProtocolConfig::Unknown => {
+            Err("该原文透传节点暂不支持生成分享链接，请使用原始配置导入".into())
+        }
         ProtocolConfig::Shadowsocks {
             method,
             password,
@@ -337,6 +340,7 @@ pub fn serialize_share_uri(node: &ProxyNode) -> Result<String, String> {
             push_optional_query(&mut query, "mode", mode.clone());
             Ok(share_uri("snell", psk, Some(&endpoint), query, &fragment))
         }
+        ProtocolConfig::Sudoku { settings } => super::sudoku::share(node, settings),
         ProtocolConfig::WireGuard { .. } => {
             Err("WireGuard 节点没有统一的分享链接格式，请使用导出配置".into())
         }

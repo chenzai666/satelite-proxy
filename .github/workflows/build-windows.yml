@@ -132,6 +132,8 @@ jobs:
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_openvpn_raw_validates -- --ignored
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_sidecar_config_validates -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib config::mihomo::tests::live_mihomo_sudoku_validates -- --ignored
 
       - name: 上传安装包
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

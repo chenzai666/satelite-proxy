@@ -1580,6 +1580,7 @@ fn other_name(config: &ProtocolConfig) -> &'static str {
         ProtocolConfig::AnyTls { .. } => "anytls",
         ProtocolConfig::Snell { .. } => "snell",
         ProtocolConfig::Masque { .. } => "masque",
+        ProtocolConfig::Sudoku { .. } => "sudoku",
         _ => "unknown",
     }
 }

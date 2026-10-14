@@ -1654,6 +1654,7 @@ fn node_to_mihomo_proxy(node: &ProxyNode) -> Mapping {
             Protocol::Hysteria => "hysteria",
             Protocol::Ssh => "ssh",
             Protocol::Masque => "masque",
+            Protocol::Sudoku => "sudoku",
             _ => unreachable!("filtered by CoreKind::Mihomo::supports upstream"),
         }),
     );
@@ -1836,6 +1837,13 @@ fn node_to_mihomo_proxy(node: &ProxyNode) -> Mapping {
         }
         // Unsupported protocols were filtered before mapping; nothing to add.
         _ => {}
+    }
+
+    if let ProtocolConfig::Sudoku { settings } = &node.config {
+        if let Ok(Yaml::Mapping(options)) = serde_yaml::to_value(settings) {
+            m.extend(options);
+        }
+        return m;
     }
 
     // MASQUE carries TLS inherently (HTTP/3): mihomo takes sni /
@@ -2263,6 +2271,68 @@ Dh8aZf9uMe34poL6mGQxVWTsiVWSiQbcgOzxHI8Bu6Vebx4=
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr),
             );
+        }
+    }
+
+    #[test]
+    fn sudoku_import_edit_main_and_sidecar_keep_options() {
+        let original = crate::subscription::parse_clash_yaml("proxies:\n- {name: test, type: sudoku, server: 127.0.0.1, port: 443, key: 123e4567-e89b-12d3-a456-426614174000, aead-method: chacha20-poly1305, table-type: prefer_ascii, padding-min: 2, padding-max: 7, enable-pure-downlink: false, httpmask: {mode: ws, tls: true, host: cdn.example.com, path-root: api}}")
+            .unwrap().nodes.remove(0);
+        let edited = crate::subscription::draft_to_node(
+            &crate::subscription::node_to_draft(&original),
+            None,
+        )
+        .unwrap();
+        for node in [original, edited] {
+            let main = parse(&build_mihomo_config(&[node.clone()], &default_opts()).unwrap());
+            let side = parse(&build_mihomo_sidecar_config(&[(node.clone(), 20890)]).unwrap());
+            for doc in [main, side] {
+                assert_eq!(doc["proxies"][0]["type"].as_str(), Some("sudoku"));
+                assert_eq!(
+                    doc["proxies"][0]["httpmask"]["path-root"].as_str(),
+                    Some("api")
+                );
+                assert_eq!(doc["proxies"][0]["padding-min"].as_u64(), Some(2));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn live_mihomo_sudoku_validates() {
+        let bin = crate::core::find_bundled_core(None, CoreKind::Mihomo).expect("bundled Mihomo");
+        let yaml = "proxies:\n- {name: sudoku, type: sudoku, server: 127.0.0.1, port: 443, key: 123e4567-e89b-12d3-a456-426614174000, aead-method: chacha20-poly1305, table-type: prefer_ascii, enable-pure-downlink: false, custom-tables: [xpxvvpvv], httpmask: {mode: ws, tls: true, host: cdn.example.com, path-root: api}, multiplex: on}";
+        let original = crate::subscription::parse_clash_yaml(yaml)
+            .unwrap()
+            .nodes
+            .remove(0);
+        let edited = crate::subscription::draft_to_node(
+            &crate::subscription::node_to_draft(&original),
+            None,
+        )
+        .unwrap();
+        for (index, node) in [original, edited].into_iter().enumerate() {
+            let main = build_mihomo_config(&[node.clone()], &default_opts()).unwrap();
+            let side = build_mihomo_sidecar_config(&[(node, 20890)]).unwrap();
+            for (label, built) in [("main", main), ("side", side)] {
+                let tmp = std::env::temp_dir().join(format!(
+                    "satelite-sudoku-{index}-{label}-{}.yaml",
+                    std::process::id()
+                ));
+                std::fs::write(&tmp, built.yaml).unwrap();
+                let output = std::process::Command::new(&bin)
+                    .args(["-t", "-f"])
+                    .arg(&tmp)
+                    .output()
+                    .unwrap();
+                let _ = std::fs::remove_file(&tmp);
+                assert!(
+                    output.status.success(),
+                    "Mihomo rejected Sudoku {index}/{label}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
     }
 

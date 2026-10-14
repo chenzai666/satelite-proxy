@@ -966,6 +966,7 @@ export function SettingsPage() {
       cores: ["mihomo"],
       autoDisabled: true,
     },
+    { value: "sudoku", label: "SudoKu", cores: ["mihomo"], autoDisabled: true },
     {
       value: "unknown",
       label: "OpenVPN / SSR / Mieru",

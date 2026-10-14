@@ -4,6 +4,7 @@ mod node;
 mod rule;
 mod settings;
 mod subscription;
+mod sudoku;
 
 pub use chain::{pool_outbound_tag_for_id, ChainHop, NodePool, PoolMode, ProxyChain};
 pub use dns::*;
@@ -20,3 +21,4 @@ pub use rule::{
 };
 pub use settings::*;
 pub use subscription::*;
+pub use sudoku::*;

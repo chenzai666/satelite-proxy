@@ -15,6 +15,7 @@ export const NODE_PROTOCOLS = [
   { value: "anytls", label: "AnyTLS" },
   { value: "snell", label: "Snell" },
   { value: "masque", label: "MASQUE" },
+  { value: "sudoku", label: "SudoKu" },
   { value: "hysteria", label: "Hysteria" },
   { value: "ssh", label: "SSH" },
   { value: "wireguard", label: "WireGuard" },
@@ -98,6 +99,7 @@ export function nodeDraftReady(draft: ManualNodeDraft): boolean {
     case "trojan":
     case "hysteria2":
     case "anytls":
+    case "sudoku":
       return !!(draft.password ?? "").trim();
     case "vmess":
     case "vless":
@@ -142,7 +144,7 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
 
   const protocolOptions = NODE_PROTOCOLS.map((o) => ({
     value: o.value,
-    label: o.value === "masque" ? t("nodeDraft.masqueOption") : o.label,
+    label: o.value === "masque" ? t("nodeDraft.masqueOption") : o.value === "sudoku" ? t("nodeDraft.sudokuOption") : o.label,
   }));
   const networkOptions = NETWORKS.map((o) => ({
     value: o.value,
@@ -474,6 +476,24 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
               />
             </label>
           </div>
+        </>
+      )}
+
+      {p === "sudoku" && (
+        <>
+          <label className="field">
+            <span>{t("nodeDraft.sudokuKey")}</span>
+            <input type="password" autoComplete="off" value={value.password ?? ""}
+              onChange={(e) => set({ password: e.target.value })} disabled={disabled} />
+          </label>
+          <label className="field">
+            <span>{t("nodeDraft.sudokuOptions")}</span>
+            <textarea className="config-paste" spellCheck={false} rows={8}
+              value={value.sudokuOptionsJson ?? ""}
+              placeholder={'{"aead-method":"chacha20-poly1305","table-type":"prefer_ascii"}'}
+              onChange={(e) => set({ sudokuOptionsJson: e.target.value })} disabled={disabled} />
+          </label>
+          <p className="muted">{t("nodeDraft.sudokuHint")}</p>
         </>
       )}
 

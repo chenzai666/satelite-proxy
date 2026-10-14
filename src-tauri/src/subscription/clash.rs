@@ -170,6 +170,13 @@ fn parse_proxy_entry(value: &Value) -> Result<ProxyNode, String> {
         Protocol::AnyTls => parse_anytls(map)?,
         Protocol::Snell => parse_snell(map)?,
         Protocol::Masque => parse_masque(map)?,
+        Protocol::Sudoku => (
+            None,
+            None,
+            ProtocolConfig::Sudoku {
+                settings: super::sudoku::clash_settings(map)?,
+            },
+        ),
     };
 
     Ok(ProxyNode {
