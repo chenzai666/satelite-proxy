@@ -35,7 +35,9 @@ mockIPC((command, payload) => {
   if (command === "reorder_mihomo_groups") { state.order = (payload as { ids: string[] }).ids; return state.order; }
   if (command === "list_mihomo_proxy_groups") {
     if (state.failGroups) throw new Error("fixture group read failed");
-    const result = state.mode === "global" ? [{ ...groups[0], name: "GLOBAL", now: "node-b" }] : state.mode === "direct" ? [] : groups;
+    // Real IPC returns a serialized snapshot, not the fixture's mutable array.
+    // Clone before delaying too, so late replies truly contain old selections.
+    const result = structuredClone(state.mode === "global" ? [{ ...groups[0], name: "GLOBAL", now: "node-b" }] : state.mode === "direct" ? [] : groups);
     if (state.holdGroups) {
       state.heldRequests++;
       return new Promise(resolve => { state.releaseHeld = () => { state.holdGroups = false; resolve(result); }; });
@@ -44,7 +46,7 @@ mockIPC((command, payload) => {
   }
   if (command === "select_mihomo_proxy_group") {
     const { group, member } = payload as { group: string; member: string };
-    state.switches.push([group, member]); groups.find(g => g.name === group)!.now = member; return groups;
+    state.switches.push([group, member]); groups.find(g => g.name === group)!.now = member; return structuredClone(groups);
   }
   if (command === "set_outbound_mode") { state.mode = (payload as { mode: string }).mode; return status(); }
   if (command === "set_current_node") { state.nodeSelections++; return {}; }
