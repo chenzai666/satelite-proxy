@@ -731,6 +731,7 @@ const en = {
   // rules
   "rules.title": "Rules",
   "mihomoGroups.title": "Mihomo policy groups",
+  "mihomoGroups.routing": "Routing by policy groups",
   "mihomoGroups.manageNodes": "Manage nodes",
   "mihomoGroups.template": "Rules and base overrides",
   "mihomoGroups.templateUrl": "INI template URL",
@@ -1964,6 +1965,7 @@ const zh: Record<MessageKey, string> = {
 
   "rules.title": "规则",
   "mihomoGroups.title": "Mihomo 策略组",
+  "mihomoGroups.routing": "按策略组分流",
   "mihomoGroups.manageNodes": "节点管理",
   "mihomoGroups.template": "规则模板与基础覆写",
   "mihomoGroups.templateUrl": "INI 模板地址",

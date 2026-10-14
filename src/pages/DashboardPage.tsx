@@ -872,7 +872,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           name: proxy?.runtime_profile_name || t("config.singbox"),
         })
       : running
-        ? currentNode?.name ?? t("dashboard.disconnected")
+        ? proxy?.core_type === "mihomo" ? t("mihomoGroups.routing") : currentNode?.name ?? t("dashboard.disconnected")
         : isError
           ? t("dashboard.errorTitle")
           : t("dashboard.disconnected");
@@ -882,7 +882,7 @@ function coreDisplayName(kind: string | null | undefined): string {
     : customRuntime
       ? t("config.customReadonly")
       : running
-        ? [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
+        ? proxy?.core_type === "mihomo" ? t("mihomoGroups.dashboardNotice") : [currentNode?.protocol?.toUpperCase(), fmtLatency(currentNode?.latency_ms)]
             .filter(Boolean)
             .join(" · ")
         : t("dashboard.desc");

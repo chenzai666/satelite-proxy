@@ -485,6 +485,10 @@ mod kernel_selection_poll_tests {
                             source: None, raw: None, latency_ms: None, latency_at: None,
                         }],
                     )?;
+                    // This regression deliberately exercises the legacy
+                    // application-side smart selector, not a user-template group.
+                    store.mihomo_template_subscriptions.clear();
+                    store.settings.auto_select = crate::domain::AutoSelectMode::Smart;
                     Ok(())
                 }).expect("seed state");
                 let listener = TcpListener::bind("127.0.0.1:0").expect("fake api");
@@ -1796,6 +1800,7 @@ impl AppState {
                 ("auto".to_string(), "📈 自动选择".to_string()),
                 ("DIRECT".to_string(), "DIRECT · 直连".to_string()),
                 ("REJECT".to_string(), "REJECT · 拦截".to_string()),
+                ("Satelite-DIRECT".to_string(), "DIRECT · 直连".to_string()),
             ]);
             for stored in &store.nodes {
                 labels.insert(

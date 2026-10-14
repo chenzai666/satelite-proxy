@@ -913,9 +913,7 @@ impl AppStore {
             }
             self.subscriptions.push(sub);
         }
-        if self.settings.core_type == "mihomo" && self.mihomo_template_subscriptions.contains(&id) {
-            self.settings.auto_select = crate::domain::AutoSelectMode::Off;
-        }
+        self.enforce_mihomo_template_selection();
         let mut replacement = Vec::with_capacity(nodes.len() + appended.len());
         for mut node in nodes {
             let source_id = node.id.clone();
@@ -1327,6 +1325,7 @@ impl AppStore {
     /// Preserve a valid live selection (including mix mode). Otherwise restore
     /// an enabled profile's remembered node, then fall back to its first node.
     pub fn ensure_current_node_valid(&mut self) {
+        self.enforce_mihomo_template_selection();
         self.selected_nodes_by_subscription
             .retain(|sub_id, node_id| {
                 self.subscriptions
@@ -1370,6 +1369,17 @@ impl AppStore {
             sub.enabled = false;
         } else {
             sub.enabled = true;
+        }
+    }
+
+    fn enforce_mihomo_template_selection(&mut self) {
+        if self.settings.core_type == "mihomo"
+            && self
+                .subscriptions
+                .iter()
+                .any(|s| s.enabled && self.mihomo_template_subscriptions.contains(&s.id))
+        {
+            self.settings.auto_select = crate::domain::AutoSelectMode::Off;
         }
     }
 
@@ -3433,10 +3443,36 @@ mod tests {
         let restored = store_from_json(serde_json::to_value(&store).unwrap());
         assert_eq!(restored.mihomo_template, store.mihomo_template);
         assert_eq!(restored.mihomo_group_order, store.mihomo_group_order);
-        assert_eq!(restored.mihomo_template_subscriptions, store.mihomo_template_subscriptions);
+        assert_eq!(
+            restored.mihomo_template_subscriptions,
+            store.mihomo_template_subscriptions
+        );
         let legacy = store_from_json(serde_json::json!({ "subscriptions": [old] }));
         assert!(legacy.mihomo_template_subscriptions.is_empty());
-        assert_eq!(legacy.mihomo_template, crate::domain::MihomoTemplate::default());
+        assert_eq!(
+            legacy.mihomo_template,
+            crate::domain::MihomoTemplate::default()
+        );
+    }
+
+    #[test]
+    fn inactive_template_import_keeps_legacy_smart_mode_until_activation() {
+        let mut store = AppStore::default();
+        store.settings.core_type = "mihomo".into();
+        store.settings.auto_select = crate::domain::AutoSelectMode::Smart;
+        store.subscriptions.push(sample_url_sub("existing"));
+        let mut added = sample_url_sub("new");
+        added.enabled = false;
+        store.upsert_subscription(added.clone(), vec![]).unwrap();
+        assert_eq!(
+            store.settings.auto_select,
+            crate::domain::AutoSelectMode::Smart
+        );
+        store.activate_subscription(&added.id).unwrap();
+        assert_eq!(
+            store.settings.auto_select,
+            crate::domain::AutoSelectMode::Off
+        );
     }
 
     fn sample_url_sub(name: &str) -> Subscription {
