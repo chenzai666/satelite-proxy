@@ -183,7 +183,7 @@ Windows 系统代理会同时更新注册表、当前 LAN 连接以及已有拨�
 
 支持 Clash YAML 的 `type: sudoku`、官方 Base64URL JSON 格式的 `sudoku://` 链接，以及包含这些链接的 Base64 订阅。可手动添加、右键编辑、Ctrl+C 分享和 Ctrl+V 追加到当前配置。密钥单独填写；高级参数 JSON 使用 Mihomo 字段名，保留加密方式、填充、自定义表、下行模式、HTTPMask 与复用。
 
-SudoKu 由 Mihomo 处理：直接选择 Mihomo 主内核，或在 sing-box 主内核下开启“设置 → 多核模式”，将 SudoKu 指定为 Mihomo（需先下载内核）。官方项目要求 Mihomo 高于 1.19.21，本项目下载脚本默认 1.19.30；不把 Xray 的同名传输混淆当作兼容协议。
+SudoKu 由 Mihomo 处理：先在设置中下载 Mihomo，手动选择 SudoKu 节点时，若当前内核不能处理且没有有效副内核委托，会自动切换到 Mihomo。也可以在 sing-box 主内核下开启“设置 → 多核模式”，将 SudoKu 指定为 Mihomo，此时选择节点保留 sing-box 主监听。后台智能选路不会自动改变主内核。官方项目要求 Mihomo 高于 1.19.21，本项目下载脚本默认 1.19.30；不把 Xray 的同名传输混淆当作兼容协议。
 
 分享链接采用官方短链字段；名称、填充率、UDP 开关及独立复用设置通过附加 JSON 字段在 Satelite 间保留。其他客户端对这些扩展的支持不同，官方客户端会忽略扩展并使用其填充默认值。加密及 HTTPMask 参数必须与服务器一致；导入明确指定的 `none` 会保持原样，新建节点默认 ChaCha20-Poly1305。
 

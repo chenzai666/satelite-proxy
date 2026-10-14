@@ -16,6 +16,8 @@
 
 2026-10-14（1.0.46 同版本）：加入独立 Protocol::Sudoku/ProtocolConfig::Sudoku{settings}。domain/sudoku.rs 为 Mihomo 参数模型；subscription/sudoku.rs 独立实现官方 Base64URL JSON 短链（h/p/k/a/e/x/t/ts/hd/hm/ht/hh/hx/hy），URI/Base64/Clash YAML 导入、编辑及分享接入。分享 JSON 扩展 n/padding_min/padding_max/u/multiplex 保留本地名称与参数，官方接收端忽略这些扩展（填充采用其默认）。官方 URI 的缺省值与 Mihomo YAML 不同，不能混用：URI 缺 AEAD=none、纯下行=!x、填充=5/15；YAML 默认 AEAD=chacha20-poly1305、纯下行=true、填充=10/30。旧扁平 HTTPMask 字段归一为嵌套对象。ManualNodeDraft.sudoku_options_json（前端 sudokuOptionsJson）编辑可选协议参数 JSON，key 由 password 字段承载，错误不输出凭据。Mihomo 主核/副核发射原文或建模参数；sing-box 无原生出站，按多核 SudoKu→Mihomo 钉选委托，Xray 不支持且不可把 finalmask Sudoku 当作同一协议。列表保留可见以便配置委托，能力报告明确主核不原生支持。CI 新增真实 Mihomo -t 验证导入原文与编辑后主/副配置；README 与发布说明同步。所有客户端/Rust 构建仍只在 Actions。
 
+SudoKu 手动选点补充：manual_node_fallback 对 sing-box/Xray 返回 Mihomo，state 先检查实际 delegated_node_ids，已有效委托则抑制主核切换；切主核后 enforce_multi_core_scope，日志不再限定 Xray。不用于后台自动选点，安装内核仍走现有按需下载入口。
+
 2026-10-12：移除 sing-box 生成器中固定私人反代域名的路由、urltest 出站和周期健康检查；所有反代地址按用户规则和 route.final 分流，不自动注入旧域名别名。普通 Direct/Proxy 策略不承诺直连失败自动回退。README 同步至 1.0.46，说明订阅刷新、手动节点、字段覆盖与快捷键。不得重新引入私人地址特例或把主页 URL 探测等同于 API 可用性。
 
 2026-10-10 **1.0.46 同版本修复**：订阅刷新只替换该配置的订阅节点，按新订阅原顺序重建该配置排序，本地追加节点置于其后且参数不变；其他配置的相对排序不变。手动拖拽仍可用，但下次订阅刷新恢复订阅顺序。匹配优先旧 ID/后端实例，同配置、同协议/source 的唯一原始名称可匹配服务端地址/端口/凭据轮换；两侧重名不猜测，手动 clone 不参与订阅源匹配。`node_override_bases` 保存首次本地编辑前的节点，刷新用三方字段合并，只保留实际手改字段；未编辑字段与原文随订阅更新，显式清除 raw 继续保持清除，协议/传输变体不混拼。新字段由宽容读取器显式恢复并随单节点/配置删除清理；旧覆盖没有 baseline 时保守保留完整编辑，不伪造差异。节点页 Delete 复用确认后的批量删除，输入/弹窗/只读配置/修饰键/长按均不触发，确认前加防重入。新增 Rust 刷新、Node 快捷键及真实 NodesPage 隔离浏览器夹具回归；客户端构建仍仅 Actions。用户授权先验证成功，再移动 v1.0.46 标签并覆盖 Release 两包，不自动替换当前客户端。

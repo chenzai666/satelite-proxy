@@ -1880,7 +1880,20 @@ impl AppState {
                 // selection may therefore switch cores; background smart
                 // selection remains constrained to the currently chosen core.
                 let fallback_core = if manual {
-                    core_kind.manual_node_fallback(node)
+                    let fallback = core_kind.manual_node_fallback(node);
+                    if fallback.is_some()
+                        && core_kind == crate::core::CoreKind::SingBox
+                        && crate::runtime::delegated_node_ids(
+                            &store.settings,
+                            &store.chains,
+                            &store.enabled_nodes(),
+                        )
+                        .contains(&node.id)
+                    {
+                        None
+                    } else {
+                        fallback
+                    }
                 } else {
                     None
                 };
@@ -1951,6 +1964,7 @@ impl AppState {
         let (settings, was_kernel) = self.with_store_mut(|store| {
             if let Some(fallback) = fallback_core {
                 store.settings.core_type = fallback.as_str().to_string();
+                store.settings.enforce_multi_core_scope();
             }
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             store.remember_current_node();
@@ -1960,7 +1974,7 @@ impl AppState {
             app_log::info(
                 "core",
                 format!(
-                    "selected node is not Xray-compatible; active core automatically switched to {}",
+                    "selected node requires a compatible core; active core automatically switched to {}",
                     fallback.display_name()
                 ),
             );

@@ -271,6 +271,18 @@ mod tests {
         assert_eq!(parsed.skipped.len(), 1);
         assert!(!crate::core::CoreKind::Xray.supports_node(&parsed.nodes[0]));
         assert!(crate::core::CoreKind::Mihomo.supports_node(&parsed.nodes[0]));
+        assert_eq!(
+            crate::core::CoreKind::Xray.manual_node_fallback(&parsed.nodes[0]),
+            Some(crate::core::CoreKind::Mihomo)
+        );
+        assert_eq!(
+            crate::core::CoreKind::SingBox.manual_node_fallback(&parsed.nodes[0]),
+            Some(crate::core::CoreKind::Mihomo)
+        );
+        assert_eq!(
+            crate::core::CoreKind::Mihomo.manual_node_fallback(&parsed.nodes[0]),
+            None
+        );
         let report = crate::services::core_support::core_support_report(mixed).unwrap();
         assert_eq!(report.cores.singbox, 0);
         assert_eq!(report.cores.mihomo, 1);

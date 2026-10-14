@@ -383,6 +383,9 @@ impl CoreKind {
     /// This deliberately does not apply to background smart selection: an
     /// automatic policy must not silently change the user's active core.
     pub fn manual_node_fallback(self, node: &crate::domain::ProxyNode) -> Option<Self> {
+        if node.protocol == crate::domain::Protocol::Sudoku && self != Self::Mihomo {
+            return Some(Self::Mihomo);
+        }
         if self == Self::Xray && !self.supports_node(node) {
             [Self::SingBox, Self::Mihomo]
                 .into_iter()
