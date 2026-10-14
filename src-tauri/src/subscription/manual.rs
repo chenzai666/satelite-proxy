@@ -438,8 +438,9 @@ fn build_config(draft: &ManualNodeDraft, protocol: Protocol) -> Result<ProtocolC
                 "key".into(),
                 serde_json::json!(req(&draft.password, "key")?),
             );
-            let settings: crate::domain::SudokuSettings =
+            let mut settings: crate::domain::SudokuSettings =
                 serde_json::from_value(options).map_err(|_| "sudoku: invalid parameter types")?;
+            settings.normalize();
             settings.validate()?;
             Ok(ProtocolConfig::Sudoku { settings })
         }

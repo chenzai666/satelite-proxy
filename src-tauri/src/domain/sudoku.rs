@@ -43,6 +43,22 @@ pub struct SudokuSettings {
 }
 
 impl SudokuSettings {
+    pub fn normalize(&mut self) {
+        // Mihomo treats blank optional strings as absent. Some subscription
+        // exporters emit them explicitly; do not drop otherwise valid nodes.
+        for field in [
+            &mut self.aead_method,
+            &mut self.table_type,
+            &mut self.custom_table,
+            &mut self.multiplex,
+        ] {
+            *field = field
+                .take()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.key.trim().is_empty() {
             return Err("sudoku: missing key".into());

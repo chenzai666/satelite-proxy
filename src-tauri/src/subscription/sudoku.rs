@@ -191,6 +191,7 @@ pub(super) fn clash_settings(map: &serde_yaml::Mapping) -> Result<SudokuSettings
     } else {
         settings.httpmask = Some(flat);
     }
+    settings.normalize();
     settings.validate()?;
     Ok(settings)
 }
@@ -307,5 +308,18 @@ mod tests {
         assert_eq!(payload["hy"], "api");
         assert_eq!(payload["hh"], "cdn.example.com");
         assert_eq!(payload["ht"], true);
+    }
+
+    #[test]
+    fn sudoku_blank_optional_exporter_fields_use_kernel_defaults() {
+        let parsed = parse_subscription("proxies:\n- {name: test, type: sudoku, server: host, port: 443, key: test-key, aead-method: '', table-type: '', custom-table: '', multiplex: ''}").unwrap();
+        assert!(parsed.skipped.is_empty());
+        let shared = serialize_share_uri(&parsed.nodes[0]).unwrap();
+        let restored = parse_subscription(&shared).unwrap();
+        let ProtocolConfig::Sudoku { settings } = &restored.nodes[0].config else {
+            panic!()
+        };
+        assert_eq!(settings.aead_method.as_deref(), Some("chacha20-poly1305"));
+        assert_eq!(settings.table_type.as_deref(), Some("prefer_entropy"));
     }
 }
