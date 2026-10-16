@@ -5,3 +5,4 @@ pub mod exit_ip;
 pub mod http_body;
 pub mod import;
 pub mod latency;
+pub mod xray_latency;

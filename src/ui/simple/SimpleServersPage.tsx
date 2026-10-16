@@ -281,7 +281,6 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
 
   async function onTestNodes(ids: string[]) {
     if (testing || ids.length === 0) return;
-    if (xrayCore) return;
     const idSet = new Set(ids);
     setTesting(true);
     setTestingIds(idSet);
@@ -318,7 +317,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
         prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
-          if (r.method === "tcp" && n.latency_method === "clash_api") return n;
+          if (r.method === "tcp" && (n.latency_method === "clash_api" || n.latency_method === "xray_http")) return n;
           return {
             ...n,
             latency_ms: r.latency_ms ?? null,
@@ -496,9 +495,9 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
           <GlassButton
             variant="primary"
             icon="⚡"
-            disabled={testing || nodeTotal === 0 || xrayCore}
+            disabled={testing || nodeTotal === 0}
             onClick={() => void onTestAll()}
-            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testRealLatency")}
+            title={xrayCore ? t("nodes.realLatencyXrayHint") : t("nodes.testRealLatency")}
           >
             {testing ? t("nodes.testing") : t("nodes.testRealLatency")}
           </GlassButton>

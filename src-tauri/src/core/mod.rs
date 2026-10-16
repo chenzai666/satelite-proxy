@@ -3,7 +3,7 @@ mod download;
 #[cfg(target_os = "windows")]
 pub(crate) mod elevate;
 #[cfg(target_os = "windows")]
-mod job;
+pub(crate) mod job;
 pub mod kind;
 #[cfg(target_os = "macos")]
 mod macos_auth;

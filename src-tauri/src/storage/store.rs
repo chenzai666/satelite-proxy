@@ -1537,11 +1537,11 @@ impl AppStore {
         latency_at: i64,
         method: &str,
     ) -> bool {
-        if method != "clash_api" && method != "tcp" {
+        if method != "clash_api" && method != "tcp" && method != "xray_http" {
             return false;
         }
         if let Some(n) = self.nodes.iter_mut().find(|n| n.node.id == id) {
-            if method == "tcp" && n.latency_method.as_deref() == Some("clash_api") {
+            if method == "tcp" && matches!(n.latency_method.as_deref(), Some("clash_api" | "xray_http")) {
                 return false;
             }
             n.node.latency_ms = latency_ms;
@@ -5016,6 +5016,12 @@ mod tests {
         assert_eq!(store.nodes[0].node.latency_at, Some(300));
 
         assert!(!store.update_node_latency("n1", Some(5), 500, "unsupported"));
+        assert!(store.update_node_latency("n1", Some(180), 600, "xray_http"));
+        assert_eq!(store.nodes[0].latency_method.as_deref(), Some("xray_http"));
+        assert!(!store.update_node_latency("n1", Some(5), 700, "tcp"));
+        assert_eq!(store.nodes[0].node.latency_ms, Some(180));
+        assert!(store.update_node_latency("n1", None, 800, "xray_http"));
+        assert!(!store.update_node_latency("n1", Some(5), 900, "tcp"));
         assert!(!store.update_node_latency("missing", Some(5), 500, "tcp"));
     }
 

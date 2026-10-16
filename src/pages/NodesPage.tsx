@@ -575,7 +575,6 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
     ids: string[], kind: "real" | "ping" = "real", groupKey: string | null = null,
   ) {
     if (testing || ids.length === 0) return;
-    if (kind === "real" && xrayCore) return;
     setTesting(true);
     setTestingGroupKey(groupKey);
     setTestKind(kind);
@@ -624,7 +623,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
           // A direct TCP success must not paint over an earlier real
           // through-core failure/success. The backend enforces the same rule
           // in storage; this keeps the streaming UI consistent before reload.
-          if (r.method === "tcp" && n.latency_method === "clash_api") return n;
+          if (r.method === "tcp" && (n.latency_method === "clash_api" || n.latency_method === "xray_http")) return n;
           return {
             ...n,
             // null = failed → show timeout; number = success
@@ -885,8 +884,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
               key={kind}
               type="button"
               className="node-group-test-btn"
-              disabled={testing || batchBusy || loading || (kind === "real" && xrayCore)}
-              title={kind === "real" && xrayCore ? t("nodes.realLatencyXrayUnsupported") : hint}
+              disabled={testing || batchBusy || loading}
+              title={kind === "real" && xrayCore ? t("nodes.realLatencyXrayHint") : hint}
               aria-label={hint}
               onClick={event => {
                 event.stopPropagation();
@@ -1041,8 +1040,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
             type="button"
             className="node-latency-action"
             aria-label={`${t("nodes.testOneLatency")}：${n.name}`}
-            disabled={testing || customRuntime || batchBusy || xrayCore}
-            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testOneLatency")}
+            disabled={testing || customRuntime || batchBusy}
+            title={xrayCore ? t("nodes.realLatencyXrayHint") : t("nodes.testOneLatency")}
             onClick={(event) => {
               event.stopPropagation();
               void onTestNodes([n.id], "real");
@@ -1188,9 +1187,9 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
               follow the button color instead of rendering as color emoji. */}
           <GlassButton
             icon="◉"
-            disabled={testing || displayed.length === 0 || xrayCore}
+            disabled={testing || displayed.length === 0}
             onClick={() => void onTestLatency("real")}
-            title={xrayCore ? t("nodes.realLatencyXrayUnsupported") : t("nodes.testRealLatencyHint")}
+            title={xrayCore ? t("nodes.realLatencyXrayHint") : t("nodes.testRealLatencyHint")}
           >
             {testing && testKind === "real" ? t("nodes.testing") : t("nodes.testRealLatency")}
           </GlassButton>

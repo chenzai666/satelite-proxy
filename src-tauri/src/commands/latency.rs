@@ -12,7 +12,7 @@ pub struct LatencyBatchResult {
     pub tested: usize,
     pub ok: usize,
     pub failed: usize,
-    /// `clash_api` or `tcp`
+    /// `clash_api`, `xray_http`, `tcp`, or `mixed`
     pub method: String,
 }
 
@@ -48,7 +48,10 @@ fn load_nodes_in_display_order(
         .map_err(|e| e.to_string())
 }
 
-/// Test latency for each node: direct TCP connect for TCP-based protocols,
+/// Test latency for each node. Generated Xray profiles use isolated native
+/// HTTP probes even when the main core is stopped. Other cores retain
+/// through-kernel Clash delay probes, or direct TCP when unavailable.
+/// Legacy fallback: direct TCP connect for TCP-based protocols,
 /// clash delay API for UDP-only protocols (hysteria/hysteria2/tuic) when the
 /// core is running — a plain TCP connect to those ports always times out
 /// regardless of node health, so it can't report raw reachability for them.
@@ -75,23 +78,50 @@ pub async fn test_nodes_latency(
         });
     }
 
-    let probe_url = state.lock_store().settings.probe_url.clone();
-    let clash = state.lock_runtime().clash_api_clone();
+    let (core, probe_url, fragment, custom) = state
+        .with_store(|store| {
+            Ok((
+                store.settings.core_type.clone(),
+                store.settings.probe_url.clone(),
+                store.settings.tls_fragment_xray,
+                store.settings.runtime_source.is_custom(),
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     // Manual run: never serve cached numbers — every node is really probed.
     // The fresh results are still written to the shared probe cache for
     // background consumers (smart_switch ranking/health).
-    let results = probe_nodes_streaming(
-        &nodes,
-        timeout_ms,
-        Some(30),
-        clash,
-        probe_url,
-        |r| stream_result(&on_result, r),
-        false,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let results = if core == "xray" && !custom {
+        let (bin, _) = crate::core::inspect_core_bin(
+            &state.app_data_dir,
+            state.resource_dir.as_deref(),
+            crate::core::CoreKind::Xray,
+        );
+        let bin = bin.ok_or("未安装 Xray 内核，请先在设置中下载后再测速")?;
+        crate::services::xray_latency::probe_xray_nodes(
+            nodes,
+            bin,
+            probe_url,
+            timeout_ms,
+            fragment,
+            |r| stream_result(&on_result, r),
+        )
+        .await?
+    } else {
+        let clash = state.lock_runtime().clash_api_clone();
+        probe_nodes_streaming(
+            &nodes,
+            timeout_ms,
+            Some(30),
+            clash,
+            probe_url,
+            |r| stream_result(&on_result, r),
+            false,
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    };
 
     let changes = state
         .apply_latency_results(&results)
