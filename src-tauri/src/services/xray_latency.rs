@@ -159,7 +159,7 @@ fn probe_one(
         .build()
         .map_err(|_| "无法建立测速请求运行时")?;
     let tested = runtime.block_on(async {
-        let proxy = reqwest::Proxy::http(format!("http://{addr}"))
+        let proxy = reqwest::Proxy::all(format!("http://{addr}"))
             .map_err(|_| "无法建立本机测速代理")?
             .basic_auth("satelite-probe", &token);
         let client = reqwest::Client::builder()
