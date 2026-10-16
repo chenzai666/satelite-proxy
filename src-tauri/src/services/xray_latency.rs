@@ -307,7 +307,10 @@ mod tests {
 
     // Fake upstream accepts SOCKS5 and answers the tunneled HTTP request.
     // The destination is .invalid, so a direct/system-proxy bypass cannot pass.
-    fn socks_fixture(status: u16) -> (ProxyNode, Arc<AtomicUsize>, std::thread::JoinHandle<()>) {
+    fn socks_fixture(
+        status: u16,
+        tls: bool,
+    ) -> (ProxyNode, Arc<AtomicUsize>, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let node = node(listener.local_addr().unwrap().port());
@@ -350,9 +353,16 @@ mod tests {
                 };
                 let mut destination = vec![0; length + 2];
                 stream.read_exact(&mut destination).unwrap();
+                assert!(String::from_utf8_lossy(&destination).contains("probe.invalid"));
                 stream
                     .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
                     .unwrap();
+                if tls {
+                    // Record the HTTPS tunnel then close it. TLS must fail,
+                    // not fall back to direct or disable certificate checks.
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    continue;
+                }
                 let mut request = Vec::new();
                 while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
                     let mut byte = [0];
@@ -372,7 +382,7 @@ mod tests {
     fn live_xray_http_probe_uses_node_and_cleans_up() {
         let bin = crate::core::find_bundled_core(None, CoreKind::Xray).expect("bundled Xray");
         for status in [204, 503] {
-            let (node, seen, upstream) = socks_fixture(status);
+            let (node, seen, upstream) = socks_fixture(status, false);
             let tested = probe_one(
                 &bin,
                 &node,
@@ -388,6 +398,21 @@ mod tests {
             );
             assert_eq!(tested.is_ok(), status == 204, "{tested:?}");
         }
+        let (https_node, seen, upstream) = socks_fixture(204, true);
+        let tested = probe_one(
+            &bin,
+            &https_node,
+            "https://probe.invalid/generate_204",
+            1500,
+            false,
+        );
+        upstream.join().unwrap();
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "HTTPS must traverse the node: {tested:?}"
+        );
+        assert!(tested.is_err(), "a broken TLS tunnel cannot be a success");
         let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = reservation.local_addr().unwrap();
         drop(reservation);
