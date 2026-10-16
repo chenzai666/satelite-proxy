@@ -326,6 +326,9 @@ mod tests {
                         continue;
                     }
                 };
+                // Winsock can inherit the listener's nonblocking mode. Only
+                // accept is polled; a connected fixture stream uses timeouts.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
