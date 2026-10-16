@@ -84,7 +84,7 @@ pub async fn test_nodes_latency(
                 store.settings.core_type.clone(),
                 store.settings.probe_url.clone(),
                 store.settings.tls_fragment_xray,
-                store.settings.runtime_source.is_custom(),
+                crate::domain::RuntimeSource::parse(&store.settings.runtime_source).is_custom(),
             ))
         })
         .map_err(|e| e.to_string())?;
