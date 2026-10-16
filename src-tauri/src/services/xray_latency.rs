@@ -364,7 +364,7 @@ mod tests {
             assert_eq!(
                 seen.load(Ordering::SeqCst),
                 2,
-                "both probes must traverse the node"
+                "both probes must traverse the node; result: {tested:?}"
             );
             assert_eq!(tested.is_ok(), status == 204, "{tested:?}");
         }

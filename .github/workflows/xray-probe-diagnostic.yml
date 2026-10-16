@@ -1,0 +1,17 @@
+name: Xray 测速基础诊断
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: 获取固定 Xray
+        shell: pwsh
+        run: ./scripts/fetch-bundled-xray-windows-amd64.ps1
+      - name: 仅使用模拟节点检查标准输入与认证入口
+        shell: pwsh
+        run: node scripts/diagnose-xray-probe.mjs src-tauri/resources/bin/windows-amd64/xray.exe
