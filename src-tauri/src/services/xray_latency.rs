@@ -130,13 +130,6 @@ fn probe_one(
     let addr = reservation.local_addr().map_err(|_| "无法读取测速端口")?;
     let token = crate::config::generate_api_secret();
     let config = probe_config(node, addr.port(), &token, fragment)?;
-    let proxy = ureq::Proxy::new(format!("http://satelite-probe:{token}@{addr}"))
-        .map_err(|_| "无法建立本机测速代理")?;
-    let agent = ureq::AgentBuilder::new()
-        .proxy(proxy)
-        .redirects(0)
-        .timeout(Duration::from_millis(timeout_ms))
-        .build();
     drop(reservation);
     let mut process = spawn_probe(bin, config)?;
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -157,17 +150,44 @@ fn probe_one(
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    let request = || {
-        let started = Instant::now();
-        match agent.get(url).set("Connection", "close").call() {
-            Ok(response) if (200..300).contains(&response.status()) => {
-                Ok(started.elapsed().as_millis().min(u32::MAX as u128) as u32)
+    // ureq 2.12 sends lowercase `basic` in CONNECT authentication; Xray
+    // v26.3.27 accepts only `Basic`. reqwest emits the compatible scheme.
+    // This function runs only on blocking workers (or synchronous CI tests),
+    // never on a Tokio async worker. The private runtime is dropped here too.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "无法建立测速请求运行时")?;
+    let tested = runtime.block_on(async {
+        let proxy = reqwest::Proxy::http(format!("http://{addr}"))
+            .map_err(|_| "无法建立本机测速代理")?
+            .basic_auth("satelite-probe", &token);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .proxy(proxy)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(timeout_ms))
+            .pool_max_idle_per_host(0)
+            .build()
+            .map_err(|_| "无法建立测速 HTTP 客户端")?;
+        let request = || async {
+            let started = Instant::now();
+            match client
+                .get(url)
+                .header(reqwest::header::CONNECTION, "close")
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    Ok(started.elapsed().as_millis().min(u32::MAX as u128) as u32)
+                }
+                _ => Err("经该节点的 HTTP 测速失败：超时、连接/证书错误或非 2xx 响应".to_string()),
             }
-            _ => Err("经该节点的 HTTP 测速失败：超时、连接/证书错误或非 2xx 响应".to_string()),
-        }
-    };
-    let first = request();
-    let second = request();
+        };
+        let first = request().await;
+        let second = request().await;
+        second.or(first)
+    });
     // Check liveness after the request as well, avoiding a false success
     // from another service that won the bind race while Xray was exiting.
     if process
@@ -178,7 +198,7 @@ fn probe_one(
     {
         return Err("Xray 测速入口不可用，可能存在端口冲突".into());
     }
-    second.or(first)
+    tested
 }
 
 /// One batch globally, four bounded blocking workers. The permit is shared
