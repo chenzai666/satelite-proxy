@@ -41,7 +41,7 @@ import { copyNodeShareText } from "../nodeShare";
 import { clipboardNodePayload } from "../nodeClipboard";
 import { shouldDeleteSelectedNodes } from "../nodeShortcuts";
 import { createLatencyResultBuffer } from "../latencyStream";
-import { applyLatencyResult, applyNodeLatencyChange, clearLatencyForRetest } from "../nodeLatencyState";
+import { applyLatencyResult, applyNodeLatencyChange } from "../nodeLatencyState";
 import { NodeLatencyDisplay } from "../components/NodeLatencyDisplay";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
@@ -529,14 +529,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
     const idSet = new Set(ids);
     setTestingIds(idSet);
 
-    // clear prior latency so only spinner shows while testing
-    setNodes((prev) =>
-      prev.map((n) =>
-        idSet.has(n.id)
-          ? clearLatencyForRetest(n, kind)
-          : n,
-      ),
-    );
+    // Spinner 遮盖完整旧结果；降级/迟到回包被拒时仍显示原来的成功或失败。
 
     // Per-node streaming: the backend pushes each result over an IPC channel
     // the moment its probe completes; the buffer applies them per animation

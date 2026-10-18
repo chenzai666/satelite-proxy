@@ -26,9 +26,20 @@ export function isRealLatencyMethod(method?: string | null): boolean {
   return method === "clash_api" || !!method?.endsWith("_http");
 }
 
-/** 真延迟成功和失败均受保护；事件和流式回包共用时间戳及 TCP 降级保护。 */
+/** 与 store 的 reachability_only 判定一致，精确匹配旧版可达性提示。
+ * `unsupported:` 是本次节点参数探测的有效结果，必须正常接受。 */
+function isReachabilityOnly(update: LatencyFields): boolean {
+  return update.latency_method === "tcp" || (
+    update.latency_method === "unsupported" && (
+      update.latency_error === "QUIC-only protocol: no TCP port to ping — use the real-latency test with the core running" ||
+      update.latency_error === "core not running: start the proxy to test this protocol"
+    )
+  );
+}
+
+/** 真延迟成功和失败均受保护；事件、stream 和 batch 共用降级及时间戳保护。 */
 export function mergeNodeLatency<T extends LatencyFields>(node: T, update: LatencyFields): T {
-  if (update.latency_method === "tcp" && isRealLatencyMethod(node.latency_method)) return node;
+  if (isReachabilityOnly(update) && isRealLatencyMethod(node.latency_method)) return node;
   if (update.latency_at != null && node.latency_at != null && update.latency_at < node.latency_at) return node;
   return {
     ...node,
@@ -56,12 +67,6 @@ export function applyNodeLatencyChange<T extends LatencyFields>(node: T, change:
     latency_method: change.method,
     latency_error: change.latency_error,
   });
-}
-
-/** 保留方法和时间戳用于拒绝降级/迟到回包，重测时由 spinner 遮盖旧值。 */
-export function clearLatencyForRetest<T extends LatencyFields>(node: T, kind: "real" | "ping" = "real"): T {
-  if (kind === "ping" && isRealLatencyMethod(node.latency_method)) return node;
-  return { ...node, latency_ms: undefined, latency_error: null };
 }
 
 /** 合并本轮测速的不支持标记，不清除其他分组的结果。 */

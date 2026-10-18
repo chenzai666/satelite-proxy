@@ -264,7 +264,7 @@ fn spawn_core_probe(kind: CoreKind, bin: &Path, config: Value) -> Result<ProbeCh
             },
         ])
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     {
@@ -287,6 +287,11 @@ fn spawn_core_probe(kind: CoreKind, bin: &Path, config: Value) -> Result<ProbeCh
         owned
             .readers
             .push(collect_diagnostics(stderr, owned.diagnostics.clone()));
+    }
+    if let Some(stdout) = owned.child.stdout.take() {
+        owned
+            .readers
+            .push(collect_diagnostics(stdout, owned.diagnostics.clone()));
     }
     let mut stdin = owned.child.stdin.take().ok_or("测速进程输入不可用")?;
     owned.feeder = Some(std::thread::spawn(move || {
@@ -392,7 +397,10 @@ fn probe_one_with_core(
         };
         let first = request().await;
         let second = request().await;
-        second.or(first)
+        match (first, second) {
+            (_, Ok(ms)) | (Ok(ms), _) => Ok(ms),
+            (_, Err(error)) => Err(error),
+        }
     });
     // Check liveness after the request as well, avoiding a false success
     // from another service that won the bind race while Xray was exiting.

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   latencyState, isRealLatencyMethod, mergeNodeLatency,
-  applyLatencyResult, applyNodeLatencyChange, clearLatencyForRetest,
+  applyLatencyResult, applyNodeLatencyChange,
 } from "../src/nodeLatencyState.ts";
 import { applyCustomLatency } from "../src/customNodes.ts";
 import { createLatencyResultBuffer } from "../src/latencyStream.ts";
@@ -10,6 +11,8 @@ import { createLatencyFixtureClock } from "./ui-smoke/latencyFixtureClock.ts";
 
 const methods = ["xray_http", "singbox_http", "mihomo_http", "clash_api", "future_http"];
 const failures = ["timeout", "unsupported", "config", "tls", "connection", "http", "core", "missing_core"];
+const legacyNoCore = "core not running: start the proxy to test this protocol";
+const legacyQuicPing = "QUIC-only protocol: no TCP port to ping — use the real-latency test with the core running";
 const result = (method, ms, error = null, at = 20) => ({
   id: "a", name: "节点", method, latency_ms: ms, error, tested_at: at,
 });
@@ -61,26 +64,97 @@ test("TCP 成功/失败均不能覆盖所有 *_http 和 clash_api 的成功/失�
       assert.strictEqual(applyLatencyResult(node, result("tcp", tcpMs, "timeout: TCP", 30)), node);
       assert.strictEqual(applyNodeLatencyChange(node, change("tcp", tcpMs, "timeout: TCP", 30)), node);
     }
-    assert.strictEqual(clearLatencyForRetest(node, "ping"), node);
   }
   assert.equal(isRealLatencyMethod("tcp"), false);
   assert.equal(isRealLatencyMethod(undefined), false);
   assert.equal(applyLatencyResult({}, result("tcp", 12)).latency_ms, 12);
 });
 
-test("重测清理旧错误并保留保护元数据；成功清空错误，失败可替换旧分类", () => {
+test("legacy QUIC Ping 和停核错误保护所有真延迟成功/失败，节点参数不支持仍接受", () => {
+  for (const method of methods) for (const ms of [null, 123]) {
+    const node = applyLatencyResult({}, result(method, ms, ms == null ? "tls: 原安全错误" : null));
+    for (const error of [legacyNoCore, legacyQuicPing]) {
+      assert.strictEqual(applyLatencyResult(node, result("unsupported", null, error, 30)), node);
+      assert.strictEqual(applyNodeLatencyChange(node, change("unsupported", null, error, 30)), node);
+      // 未有真延迟时仍正常记录可达性测试结果。
+      assert.equal(applyLatencyResult({}, result("unsupported", null, error)).latency_method, "unsupported");
+    }
+    for (const error of ["unsupported: 此节点参数不受支持", "unsupported: QUIC-only 协议没有可供 TCP Ping 的端口",
+      "unsupported: 请先启动代理以测试此协议", `${legacyNoCore} extra`, null]) {
+      const updated = applyLatencyResult(node, result("unsupported", null, error, 30));
+      assert.notStrictEqual(updated, node);
+      assert.equal(updated.latency_method, "unsupported");
+      assert.equal(updated.latency_error, error);
+      assert.deepEqual(applyNodeLatencyChange(node, change("unsupported", null, error, 30)), updated);
+    }
+    // 旧错误文本仅在 method=unsupported 时表示 reachability_only。
+    assert.equal(applyLatencyResult(node, result("singbox_http", null, legacyNoCore, 30)).latency_at, 30);
+  }
+});
+
+test("两种节点页重测开始只切换 spinner，完整旧结果留待新结果接受后替换", () => {
+  for (const path of ["../src/pages/NodesPage.tsx", "../src/ui/simple/SimpleServersPage.tsx"]) {
+    const page = readFileSync(new URL(path, import.meta.url), "utf8");
+    const start = page.slice(page.indexOf("  async function onTestNodes("), page.indexOf("    const buffer = createLatencyResultBuffer"));
+    assert.match(start, /setTestingIds\(idSet\)/);
+    assert.doesNotMatch(start, /setNodes\(|clearLatencyForRetest|latency_(?:ms|at|error)\s*:/);
+    assert.match(page, /applyLatencyResult\(n, r\)/);
+    assert.match(page, /for \(const result of batch.results\) buffer.push\(result\)/);
+  }
+});
+
+test("新成功清空错误，新失败替换旧分类；拒绝降级时旧结果完整保留", () => {
   const node = applyLatencyResult({}, result("xray_http", null, "config: 旧配置"));
-  const cleared = clearLatencyForRetest(node);
-  assert.equal(cleared.latency_error, null);
-  assert.equal(cleared.latency_ms, undefined);
-  assert.equal(cleared.latency_at, 20);
-  assert.equal(cleared.latency_method, "xray_http");
-  assert.equal(node.latency_error, "config: 旧配置");
-  assert.strictEqual(applyLatencyResult(cleared, result("tcp", 1, null, 21)), cleared);
-  assert.equal(applyLatencyResult(cleared, result("xray_http", 10, null, 21)).latency_error, null);
-  assert.deepEqual(latencyState(applyLatencyResult(cleared, result("singbox_http", null, "core: 新错误", 21))),
+  assert.strictEqual(applyLatencyResult(node, result("tcp", 1, null, 21)), node);
+  assert.equal(applyLatencyResult(node, result("xray_http", 10, null, 21)).latency_error, null);
+  assert.deepEqual(latencyState(applyLatencyResult(node, result("singbox_http", null, "core: 新错误", 21))),
     { kind: "core", detail: "core: 新错误" });
   assert.equal(applyNodeLatencyChange(node, change("xray_http", 1, null, 21)).latency_error, null);
+});
+
+test("stream 停核提示、batch QUIC Ping 及 TCP 回退均保留重测前完整成功/失败", () => {
+  const oldWindow = globalThis.window;
+  let frame;
+  globalThis.window = {
+    requestAnimationFrame(callback) { frame = callback; return 1; },
+    cancelAnimationFrame() { frame = undefined; },
+  };
+  try {
+    for (const method of methods) for (const ms of [123, null]) {
+      const old = applyLatencyResult({}, result(method, ms, ms == null ? "tls: 旧失败" : null));
+      let node = old; // 重测仅显示 spinner，不修改节点。
+      const buffer = createLatencyResultBuffer(batch => {
+        for (const value of batch.values()) node = applyLatencyResult(node, value);
+      });
+      buffer.push(result("unsupported", null, legacyNoCore, 30));
+      frame();
+      assert.strictEqual(node, old);
+      // ping_nodes_streaming 在最终 batch 才将停核文本改写为 QUIC Ping 文本。
+      buffer.push(result("unsupported", null, legacyQuicPing, 30));
+      buffer.flushNow();
+      assert.strictEqual(node, old);
+      for (const tcpMs of [1, null]) {
+        buffer.push(result("tcp", tcpMs, tcpMs == null ? "timeout: TCP" : null, 31));
+        frame();
+        assert.strictEqual(node, old);
+        buffer.push(result("tcp", tcpMs, tcpMs == null ? "timeout: TCP" : null, 31));
+        buffer.flushNow();
+        assert.strictEqual(node, old);
+        assert.deepEqual(latencyState(node), latencyState(old));
+      }
+      // 真正的不支持节点参数结果必须替换旧值，并在下一次成功时清错。
+      buffer.push(result("unsupported", null, "unsupported: 此节点参数不受支持", 32));
+      buffer.flushNow();
+      assert.deepEqual(latencyState(node), { kind: "unsupported", detail: "unsupported: 此节点参数不受支持" });
+      buffer.push(result("singbox_http", 42, null, 33));
+      buffer.flushNow();
+      assert.equal(node.latency_error, null);
+      assert.deepEqual(latencyState(node), { kind: "success", ms: 42 });
+    }
+  } finally {
+    if (oldWindow === undefined) delete globalThis.window;
+    else globalThis.window = oldWindow;
+  }
 });
 
 test("事件及 stream 拒绝迟到回包，同秒事件可以携带新错误", () => {

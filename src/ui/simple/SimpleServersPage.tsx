@@ -43,7 +43,7 @@ import { useVirtualRange } from "../../hooks/useVirtualRange";
 import { useMihomoNodeSelection } from "../../hooks/useMihomoNodeSelection";
 import { copyNodeShareText } from "../../nodeShare";
 import { createLatencyResultBuffer } from "../../latencyStream";
-import { applyLatencyResult, applyNodeLatencyChange, clearLatencyForRetest } from "../../nodeLatencyState";
+import { applyLatencyResult, applyNodeLatencyChange } from "../../nodeLatencyState";
 import { NodeLatencyDisplay } from "../../components/NodeLatencyDisplay";
 import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
 
@@ -247,14 +247,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
     setTesting(true);
     setTestingIds(idSet);
     setError(null);
-    // Clear prior latency so UI shows spinner while probing.
-    setNodes((prev) =>
-      prev.map((n) =>
-        idSet.has(n.id)
-          ? clearLatencyForRetest(n)
-          : n,
-      ),
-    );
+    // Spinner 遮盖完整旧结果；只在接受新结果时替换旧延迟及错误。
     // Per-node streaming: the backend pushes each result over an IPC channel
     // the moment its probe completes; the buffer applies them per animation
     // frame (see latencyStream.ts).
