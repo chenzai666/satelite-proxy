@@ -17,6 +17,9 @@ export function latencyState(node: LatencyFields):
   const error = node.latency_error;
   const match = error?.match(/^(timeout|unsupported|config|tls|connection|http|core|missing_core):/);
   if (match) return { kind: match[1] as LatencyFailure, detail: error! };
+  // 旧 TCP/QUIC 探测返回固定文本；保留正确类型，但不展示任意旧错误详情。
+  if (error === "timeout") return { kind: "timeout" };
+  if (node.latency_method === "unsupported" && isReachabilityOnly(node)) return { kind: "unsupported" };
   if (error) return { kind: "failed" };
   if (node.latency_method === "unsupported") return { kind: "unsupported" };
   return { kind: node.latency_at != null ? "failed" : "untested" };

@@ -48,6 +48,11 @@ test("成功、未测和旧后端无错误兼容，失败不会统一误报超�
   assert.deepEqual(latencyState({}), { kind: "untested" });
   assert.deepEqual(latencyState({ latency_ms: null, latency_at: 0 }), { kind: "failed" });
   assert.deepEqual(latencyState({ latency_method: "unsupported" }), { kind: "unsupported" });
+  assert.deepEqual(latencyState({ latency_ms: null, latency_at: 20, latency_method: "tcp", latency_error: "timeout" }), { kind: "timeout" });
+  for (const error of [
+    "QUIC-only protocol: no TCP port to ping — use the real-latency test with the core running",
+    "core not running: start the proxy to test this protocol",
+  ]) assert.deepEqual(latencyState({ latency_method: "unsupported", latency_error: error }), { kind: "unsupported" });
   for (const ms of [0, 123]) {
     assert.deepEqual(latencyState({ latency_ms: ms, latency_error: "tls: 旧错误" }), { kind: "success", ms });
   }
