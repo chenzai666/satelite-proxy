@@ -66,7 +66,7 @@ pub struct LatencyResult {
     pub latency_ms: Option<u32>,
     pub error: Option<String>,
     pub tested_at: i64,
-    /// `clash_api` | `xray_http` | `tcp`
+    /// `clash_api` | `xray_http` | `singbox_http` | `tcp` | `unsupported`
     pub method: String,
 }
 

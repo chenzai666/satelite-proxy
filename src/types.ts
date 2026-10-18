@@ -362,7 +362,9 @@ export interface ProxyNode {
   source?: string;
   latency_ms?: number | null;
   latency_at?: number | null;
-  /** `clash_api` = through-core real latency; `tcp` = direct reachability. */
+  /** 后端已脱敏的测速错误；成功时为 null，旧版后端可省略。 */
+  latency_error?: string | null;
+  /** `clash_api` / `*_http` = 真延迟；`tcp` = 直连可达性。 */
   latency_method?: string | null;
   /** Present from list_all_nodes — owning subscription. */
   subscription_id?: string;
@@ -392,7 +394,7 @@ export interface LatencyResult {
   latency_ms?: number | null;
   error?: string | null;
   tested_at: number;
-  /** `tcp` | `clash_api` | `unsupported` (needs core running) */
+  /** `tcp` | `clash_api` | `xray_http` | `singbox_http` | `mihomo_http` | `unsupported` */
   method?: string;
 }
 
@@ -402,6 +404,7 @@ export interface NodeLatencyChange {
   name: string;
   latency_ms: number | null;
   latency_at: number | null;
+  latency_error?: string | null;
   method: string;
 }
 

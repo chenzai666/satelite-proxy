@@ -38,6 +38,7 @@ import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
+import { applyLatencyResult, applyNodeLatencyChange } from "../nodeLatencyState";
 import type {
   AutoSelectMode,
   CoreKind,
@@ -734,13 +735,8 @@ function coreDisplayName(kind: string | null | undefined): string {
       const r = batch.results.find((r) => r.id === currentNode.id);
       if (r) {
         setCurrentNode((n) =>
-          n
-            ? {
-                ...n,
-                latency_ms: r.latency_ms ?? null,
-                latency_at: r.tested_at,
-                latency_method: r.method ?? n.latency_method,
-              }
+          n && n.id === r.id
+            ? applyLatencyResult(n, r)
             : n,
         );
       }
@@ -789,19 +785,7 @@ function coreDisplayName(kind: string | null | undefined): string {
       onNodeLatencyChanged((change) => {
         setCurrentNode((node) => {
           if (!node || node.id !== change.id) return node;
-          if (
-            change.latency_at != null &&
-            node.latency_at != null &&
-            change.latency_at < node.latency_at
-          ) {
-            return node;
-          }
-          return {
-            ...node,
-            latency_ms: change.latency_ms,
-            latency_at: change.latency_at ?? node.latency_at,
-            latency_method: change.method,
-          };
+          return applyNodeLatencyChange(node, change);
         });
       }),
     [],

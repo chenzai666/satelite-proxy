@@ -41,7 +41,8 @@ import { copyNodeShareText } from "../nodeShare";
 import { clipboardNodePayload } from "../nodeClipboard";
 import { shouldDeleteSelectedNodes } from "../nodeShortcuts";
 import { createLatencyResultBuffer } from "../latencyStream";
-import { mergeUnsupportedIds } from "../nodeLatencyState";
+import { applyLatencyResult, applyNodeLatencyChange, clearLatencyForRetest } from "../nodeLatencyState";
+import { NodeLatencyDisplay } from "../components/NodeLatencyDisplay";
 import type { AutoSelectMode, ProxyNode, SortMode, ViewMode } from "../types";
 
 const VIRTUALIZE_AFTER = 200;
@@ -81,49 +82,6 @@ function gridColumns() {
   if (window.innerWidth <= 720) return 2;
   if (window.innerWidth <= 900) return 3;
   return 4;
-}
-
-/** Render latency cell: spinner / ms / timeout / needs-core / dash */
-function LatencyDisplay({
-  ms,
-  latencyAt,
-  testing,
-  unsupported,
-  unsupportedLabel,
-}: {
-  ms?: number | null;
-  latencyAt?: number | null;
-  testing: boolean;
-  unsupported?: boolean;
-  /** Overrides the default "start core" note — e.g. after a ping test the
-      QUIC-only note applies instead (the core isn't involved at all). */
-  unsupportedLabel?: string;
-}) {
-  const { t } = useI18n();
-  if (testing) {
-    return <span className="lat-spinner" aria-label={t("nodes.testingAria")} />;
-  }
-  if (unsupported) {
-    const label = unsupportedLabel ?? t("nodes.latencyNeedsCore");
-    return <span className="lat lat-none" title={label}>{label}</span>;
-  }
-  if (ms != null && ms >= 0) {
-    return (
-      <span className={`lat ${latencyClass(ms)}`}>{ms}ms</span>
-    );
-  }
-  // tested but no value → timeout
-  if (latencyAt != null) {
-    return <span className="lat lat-timeout">timeout</span>;
-  }
-  return <span className="lat lat-none">—</span>;
-}
-
-function latencyClass(ms?: number | null) {
-  if (ms == null || ms < 0) return "lat-none";
-  if (ms < 200) return "lat-good";
-  if (ms < 300) return "lat-ok";
-  return "lat-slow";
 }
 
 export function NodesPage() {
@@ -182,11 +140,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set());
   const [testingGroupKey, setTestingGroupKey] = useState<string | null>(null);
   // Which probe the current/last run used — "real" rides the kernel's proxy
-  // path, "ping" is direct TCP; drives button labels and the unsupported note.
+  // path, "ping" is direct TCP; drives button labels.
   const [testKind, setTestKind] = useState<"real" | "ping">("real");
-  // Node ids whose last test used method "unsupported" (UDP-only protocol,
-  // core not running) — shown as "start core to test" instead of "timeout".
-  const [unsupportedIds, setUnsupportedIds] = useState<Set<string>>(new Set());
   // Protocols delegated to a sidecar core (from settings, protocol → core) —
   // surfaced as a small badge so the egress path is visible per node.
   const [delegatedCores, setDelegatedCores] = useState<Map<string, string>>(
@@ -252,20 +207,10 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
         const index = prev.findIndex((node) => node.id === change.id);
         if (index < 0) return prev;
         const node = prev[index];
-        if (
-          change.latency_at != null &&
-          node.latency_at != null &&
-          change.latency_at < node.latency_at
-        ) {
-          return prev;
-        }
+        const updated = applyNodeLatencyChange(node, change);
+        if (updated === node) return prev;
         const next = [...prev];
-        next[index] = {
-          ...node,
-          latency_ms: change.latency_ms,
-          latency_at: change.latency_at ?? node.latency_at,
-          latency_method: change.method,
-        };
+        next[index] = updated;
         return sortMode === "latency" ? sortNodes(next, sortMode) : next;
       });
     });
@@ -588,7 +533,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
     setNodes((prev) =>
       prev.map((n) =>
         idSet.has(n.id)
-          ? { ...n, latency_ms: undefined, latency_at: undefined }
+          ? clearLatencyForRetest(n, kind)
           : n,
       ),
     );
@@ -597,15 +542,12 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
     // the moment its probe completes; the buffer applies them per animation
     // frame (see latencyStream.ts).
     const buffer = createLatencyResultBuffer((batch) => {
-      setUnsupportedIds((prev) => {
-        return mergeUnsupportedIds(prev, batch.keys(), batch.values());
-      });
       if (customRuntime) {
         // Session-only — remember results across filter / sort / page reloads.
         setCustomLatency((prev) => {
           const next = new Map(prev);
           for (const [id, r] of batch) {
-            next.set(id, { ms: r.latency_ms ?? null, at: r.tested_at });
+            next.set(id, { ms: r.latency_ms ?? null, at: r.tested_at, error: r.error, method: r.method });
           }
           return next;
         });
@@ -620,17 +562,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
         const next = prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
-          // A direct TCP success must not paint over an earlier real
-          // through-core failure/success. The backend enforces the same rule
-          // in storage; this keeps the streaming UI consistent before reload.
-          if (r.method === "tcp" && (n.latency_method === "clash_api" || n.latency_method === "xray_http")) return n;
-          return {
-            ...n,
-            // null = failed → show timeout; number = success
-            latency_ms: r.latency_ms ?? null,
-            latency_at: r.tested_at,
-            latency_method: r.method ?? n.latency_method,
-          };
+          return applyLatencyResult(n, r);
         });
         // Re-sort in place as results stream in so the latency sort mode
         // moves faster nodes to the top live, not just after reload.
@@ -647,10 +579,8 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
         : kind === "ping"
           ? await pingNodesLatency(ids, 3000, buffer.push)
           : await testNodesLatency(ids, 3000, buffer.push);
+      for (const result of batch.results) buffer.push(result);
       buffer.flushNow();
-      setUnsupportedIds((prev) => {
-        return mergeUnsupportedIds(prev, idSet, batch.results);
-      });
     } catch (e) {
       buffer.flushNow();
       setError(typeof e === "string" ? e : String(e));
@@ -847,10 +777,6 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
     }
     setEditNode(node);
   }
-  // After a ping run, "unsupported" means QUIC-only (unpingable), not "core
-  // stopped" — swap the cell note accordingly.
-  const pingNote = testKind === "ping" ? t("nodes.pingUnsupported") : undefined;
-
   // Optimistic favorite toggle: flip local state immediately, then confirm
   // with the backend. Reverts on failure (e.g. node no longer in the store).
   async function toggleFavorite(id: string) {
@@ -1047,12 +973,9 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
               void onTestNodes([n.id], "real");
             }}
           >
-            <LatencyDisplay
-              ms={n.latency_ms}
-              latencyAt={n.latency_at}
+            <NodeLatencyDisplay
+              node={n}
               testing={isTesting}
-              unsupported={unsupportedIds.has(n.id)}
-              unsupportedLabel={pingNote}
             />
           </button>
         </span>
@@ -1124,12 +1047,9 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
               void onTestNodes([n.id], "real");
             }}
           >
-            <LatencyDisplay
-              ms={n.latency_ms}
-              latencyAt={n.latency_at}
+            <NodeLatencyDisplay
+              node={n}
               testing={isTesting}
-              unsupported={unsupportedIds.has(n.id)}
-              unsupportedLabel={pingNote}
             />
           </button>
         </div>

@@ -43,6 +43,8 @@ import { useVirtualRange } from "../../hooks/useVirtualRange";
 import { useMihomoNodeSelection } from "../../hooks/useMihomoNodeSelection";
 import { copyNodeShareText } from "../../nodeShare";
 import { createLatencyResultBuffer } from "../../latencyStream";
+import { applyLatencyResult, applyNodeLatencyChange, clearLatencyForRetest } from "../../nodeLatencyState";
+import { NodeLatencyDisplay } from "../../components/NodeLatencyDisplay";
 import type { AutoSelectMode, ProxyNode, SortMode } from "../../types";
 
 const SORT_KEY = "simple.nodes.sortMode";
@@ -58,36 +60,6 @@ function readSortMode(): SortMode {
     /* ignore */
   }
   return "latency";
-}
-
-/** Latency colors: green <200 · yellow <300 · red ≥300 (same as Nodes / Connect). */
-function latencyClass(ms?: number | null) {
-  if (ms == null || ms < 0) return "lat-none";
-  if (ms < 200) return "lat-good";
-  if (ms < 300) return "lat-ok";
-  return "lat-slow";
-}
-
-function LatencyLabel({
-  ms,
-  testedAt,
-  testing,
-}: {
-  ms?: number | null;
-  testedAt?: number | null;
-  testing?: boolean;
-}) {
-  const { t } = useI18n();
-  if (testing) {
-    return <span className="lat lat-spinner" aria-label={t("simple.testingAria")} />;
-  }
-  if (ms != null && ms >= 0) {
-    return <span className={`lat mono ${latencyClass(ms)}`}>{ms}ms</span>;
-  }
-  if (testedAt != null) {
-    return <span className="lat lat-timeout mono">timeout</span>;
-  }
-  return <span className="lat lat-none mono">—</span>;
 }
 
 export function SimpleServersPage() {
@@ -163,20 +135,10 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
         const index = prev.findIndex((node) => node.id === change.id);
         if (index < 0) return prev;
         const node = prev[index];
-        if (
-          change.latency_at != null &&
-          node.latency_at != null &&
-          change.latency_at < node.latency_at
-        ) {
-          return prev;
-        }
+        const updated = applyNodeLatencyChange(node, change);
+        if (updated === node) return prev;
         const next = [...prev];
-        next[index] = {
-          ...node,
-          latency_ms: change.latency_ms,
-          latency_at: change.latency_at ?? node.latency_at,
-          latency_method: change.method,
-        };
+        next[index] = updated;
         return next;
       });
     });
@@ -289,7 +251,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
     setNodes((prev) =>
       prev.map((n) =>
         idSet.has(n.id)
-          ? { ...n, latency_ms: undefined, latency_at: undefined }
+          ? clearLatencyForRetest(n)
           : n,
       ),
     );
@@ -302,7 +264,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
         setCustomLatency((prev) => {
           const next = new Map(prev);
           for (const [id, r] of batch) {
-            next.set(id, { ms: r.latency_ms ?? null, at: r.tested_at });
+            next.set(id, { ms: r.latency_ms ?? null, at: r.tested_at, error: r.error, method: r.method });
           }
           return next;
         });
@@ -317,23 +279,16 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
         prev.map((n) => {
           const r = batch.get(n.id);
           if (!r) return n;
-          if (r.method === "tcp" && (n.latency_method === "clash_api" || n.latency_method === "xray_http")) return n;
-          return {
-            ...n,
-            latency_ms: r.latency_ms ?? null,
-            latency_at: r.tested_at,
-            latency_method: r.method ?? n.latency_method,
-          };
+          return applyLatencyResult(n, r);
         }),
       );
     });
     latencyBufferRef.current = buffer;
     try {
-      if (customRuntime) {
-        await testCustomNodesLatency(3000, buffer.push);
-      } else {
-        await testNodesLatency(ids, 3000, buffer.push);
-      }
+      const batch = customRuntime
+        ? await testCustomNodesLatency(3000, buffer.push)
+        : await testNodesLatency(ids, 3000, buffer.push);
+      for (const result of batch.results) buffer.push(result);
       buffer.flushNow();
     } catch (e) {
       buffer.flushNow();
@@ -611,9 +566,9 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
                         void onTestNodes([n.id]);
                       }}
                     >
-                      <LatencyLabel
-                        ms={n.latency_ms}
-                        testedAt={n.latency_at}
+                      <NodeLatencyDisplay
+                        node={n}
+                        mono
                         testing={testingIds.has(n.id)}
                       />
                     </button>

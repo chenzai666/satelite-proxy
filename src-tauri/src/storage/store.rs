@@ -17,6 +17,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const STORE_BACKUP_NAME: &str = "store.backup.json";
 const MAX_CORRUPT_SNAPSHOTS: usize = 3;
+const LEGACY_QUIC_PING_ERROR: &str =
+    "QUIC-only protocol: no TCP port to ping — use the real-latency test with the core running";
+const LEGACY_NO_CORE_ERROR: &str = "core not running: start the proxy to test this protocol";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppStore {
@@ -107,11 +110,13 @@ pub struct StoredNode {
     pub subscription_id: String,
     #[serde(flatten)]
     pub node: ProxyNode,
-    /// How the stored latency was obtained: `clash_api` is a real
-    /// through-core result, while `tcp` is only direct reachability. The
-    /// former takes priority so a TCP success cannot mask a dead proxy path.
+    /// `clash_api` and the isolated `*_http` probes measure the proxy path;
+    /// `tcp` only measures direct reachability and cannot replace them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_method: Option<String>,
+    /// Only the current probe's sanitized failure, never a previous result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_error: Option<String>,
 }
 
 impl AppStore {
@@ -937,10 +942,13 @@ impl AppStore {
                 }
                 self.node_overrides.insert(key, node.clone());
             }
+            node.latency_ms = None;
+            node.latency_at = None;
             replacement.push(StoredNode {
                 subscription_id: id.clone(),
                 node,
                 latency_method: None,
+                latency_error: None,
             });
         }
         replacement.extend(appended);
@@ -1069,6 +1077,7 @@ impl AppStore {
                 subscription_id: target.clone(),
                 node,
                 latency_method: None,
+                latency_error: None,
             });
         }
         if let Some(sub) = self.subscriptions.iter_mut().find(|s| s.id == target) {
@@ -1461,6 +1470,7 @@ impl AppStore {
         edited.latency_at = None;
         stored.node = edited.clone();
         stored.latency_method = None;
+        stored.latency_error = None;
         self.node_overrides.insert(
             Self::node_override_key(&subscription_id, id),
             edited.clone(),
@@ -1537,19 +1547,76 @@ impl AppStore {
         latency_at: i64,
         method: &str,
     ) -> bool {
-        if method != "clash_api" && method != "tcp" && method != "xray_http" {
+        self.update_node_latency_with_error(id, latency_ms, latency_at, method, None)
+    }
+
+    pub fn update_node_latency_with_error(
+        &mut self,
+        id: &str,
+        latency_ms: Option<u32>,
+        latency_at: i64,
+        method: &str,
+        error: Option<&str>,
+    ) -> bool {
+        if !matches!(
+            method,
+            "clash_api" | "tcp" | "xray_http" | "singbox_http" | "mihomo_http" | "unsupported"
+        ) {
             return false;
         }
         if let Some(n) = self.nodes.iter_mut().find(|n| n.node.id == id) {
-            if method == "tcp" && matches!(n.latency_method.as_deref(), Some("clash_api" | "xray_http")) {
+            let reachability_only = method == "tcp"
+                || (method == "unsupported"
+                    && matches!(error, Some(LEGACY_QUIC_PING_ERROR | LEGACY_NO_CORE_ERROR)));
+            if reachability_only
+                && matches!(
+                    n.latency_method.as_deref(),
+                    Some("clash_api" | "xray_http" | "singbox_http" | "mihomo_http")
+                )
+            {
                 return false;
             }
             n.node.latency_ms = latency_ms;
             n.node.latency_at = Some(latency_at);
             n.latency_method = Some(method.to_string());
+            // Services own detailed sanitization. Legacy raw errors must not
+            // reach disk/listings or reuse any previous failure.
+            n.latency_error = if latency_ms.is_none() {
+                Self::safe_latency_error(error)
+            } else {
+                None
+            };
             true
         } else {
             false
+        }
+    }
+
+    pub(crate) fn safe_latency_error(error: Option<&str>) -> Option<String> {
+        let error = error?;
+        let safe_prefix = error.split_once(':').is_some_and(|(prefix, _)| {
+            matches!(
+                prefix,
+                "timeout"
+                    | "unsupported"
+                    | "config"
+                    | "tls"
+                    | "connection"
+                    | "http"
+                    | "core"
+                    | "missing_core"
+            )
+        });
+        if safe_prefix {
+            return Some(error.to_owned());
+        }
+        match error {
+            LEGACY_QUIC_PING_ERROR => {
+                Some("unsupported: QUIC-only 协议没有可供 TCP Ping 的端口".into())
+            }
+            LEGACY_NO_CORE_ERROR => Some("unsupported: 请先启动代理以测试此协议".into()),
+            "timeout" => Some("timeout: 测速请求超时".into()),
+            _ => None,
         }
     }
 
@@ -2567,6 +2634,11 @@ fn store_from_json(value: Value) -> AppStore {
     // Persisted per-node edits are authoritative, including names used for
     // listing, config generation and share URI/QR export after a reload.
     for entry in &mut store.nodes {
+        if entry.node.latency_ms.is_some() || entry.node.latency_at.is_none() {
+            entry.latency_error = None;
+        } else {
+            entry.latency_error = AppStore::safe_latency_error(entry.latency_error.as_deref());
+        }
         let key = AppStore::node_override_key(&entry.subscription_id, &entry.node.id);
         if let Some(edited) = store.node_overrides.get(&key) {
             let mut effective = edited.clone();
@@ -2809,6 +2881,7 @@ mod tests {
                 latency_at: None,
             },
             latency_method: None,
+            latency_error: None,
         };
         // Legacy collision: same server/port/protocol, different creds, but
         // manually assigned the same id (simulating stale/corrupt data).
@@ -2863,6 +2936,7 @@ mod tests {
             subscription_id: "sub".into(),
             node,
             latency_method: None,
+            latency_error: None,
         });
         let set = RuleSet::new_user(
             "批量集",
@@ -2980,6 +3054,7 @@ mod tests {
                 latency_at: None,
             },
             latency_method: None,
+            latency_error: None,
         };
         let mut store = AppStore::default();
         store.nodes.push(mk_node("node-1", "东京 01", 8388));
@@ -3110,6 +3185,7 @@ mod tests {
             subscription_id: "sub".into(),
             node: node_pin,
             latency_method: None,
+            latency_error: None,
         });
         let (updated, _) = store
             .batch_set_rule_targets(
@@ -3517,6 +3593,7 @@ mod tests {
                 latency_at: None,
             },
             latency_method: None,
+            latency_error: None,
         }
     }
 
@@ -4971,6 +5048,7 @@ mod tests {
                 latency_at: None,
             },
             latency_method: None,
+            latency_error: None,
         }
     }
 
@@ -5000,29 +5078,354 @@ mod tests {
 
     #[test]
     fn update_node_latency_keeps_real_probe_over_tcp_ping() {
+        for method in ["clash_api", "xray_http", "singbox_http", "mihomo_http"] {
+            for latency in [Some(120), None] {
+                let mut store = AppStore::default();
+                store.nodes.push(mk_stored_node("n1", "HK-1"));
+                assert!(store.update_node_latency("n1", Some(40), 100, "tcp"));
+                assert!(store.update_node_latency_with_error(
+                    "n1",
+                    latency,
+                    200,
+                    method,
+                    Some("timeout: timeout")
+                ));
+                let before = serde_json::to_value(&store.nodes[0]).unwrap();
+                for tcp_latency in [Some(20), None] {
+                    assert!(
+                        !store.update_node_latency_with_error(
+                            "n1",
+                            tcp_latency,
+                            300,
+                            "tcp",
+                            Some("tcp: timeout")
+                        ),
+                        "{method}: {latency:?} must survive TCP {tcp_latency:?}"
+                    );
+                    assert_eq!(serde_json::to_value(&store.nodes[0]).unwrap(), before);
+                }
+                assert!(!store.update_node_latency_with_error(
+                    "n1",
+                    None,
+                    400,
+                    "invalid_method",
+                    Some("ignored")
+                ));
+                assert_eq!(serde_json::to_value(&store.nodes[0]).unwrap(), before);
+                assert!(!store.update_node_latency("missing", Some(5), 500, "tcp"));
+            }
+        }
+    }
+
+    #[test]
+    fn latency_errors_belong_only_to_the_current_failed_probe() {
         let mut store = AppStore::default();
         store.nodes.push(mk_stored_node("n1", "HK-1"));
+        for method in [
+            "tcp",
+            "clash_api",
+            "xray_http",
+            "singbox_http",
+            "mihomo_http",
+        ] {
+            for error in [Some("timeout: timeout"), Some("connection: refused"), None] {
+                assert!(store.update_node_latency_with_error("n1", None, 100, method, error));
+                assert_eq!(store.nodes[0].latency_error.as_deref(), error);
+            }
+            assert!(store.update_node_latency_with_error(
+                "n1",
+                None,
+                200,
+                method,
+                Some("timeout: timeout")
+            ));
+            // Existing callers carry no error: never reuse an older failure.
+            assert!(store.update_node_latency("n1", None, 300, method));
+            assert_eq!(store.nodes[0].latency_error, None);
+            assert!(store.update_node_latency_with_error(
+                "n1",
+                Some(42),
+                400,
+                method,
+                Some("stale error on success")
+            ));
+            assert_eq!(store.nodes[0].latency_error, None);
+        }
+    }
 
-        assert!(store.update_node_latency("n1", Some(40), 100, "tcp"));
-        assert!(store.update_node_latency("n1", Some(120), 200, "clash_api"));
-        assert_eq!(store.nodes[0].node.latency_ms, Some(120));
-        assert_eq!(store.nodes[0].latency_method.as_deref(), Some("clash_api"));
+    #[test]
+    fn latency_metadata_survives_save_reload_with_local_overrides() {
+        let path = test_store_path("latency-metadata");
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("latency");
+        store.subscriptions.push(sub.clone());
+        for (index, method) in ["clash_api", "xray_http", "singbox_http", "mihomo_http"]
+            .iter()
+            .enumerate()
+        {
+            for (suffix, latency) in [("ok", Some(123)), ("failed", None)] {
+                let id = format!("n{index}-{suffix}");
+                store.nodes.push(stored_node(&sub.id, &id));
+                // The override snapshot predates the probe and must not
+                // restore its empty latency fields over the current result.
+                store.rename_node(&id, format!("本地名称-{id}")).unwrap();
+                assert!(store.update_node_latency_with_error(
+                    &id,
+                    latency,
+                    1234,
+                    method,
+                    Some("timeout: timeout")
+                ));
+            }
+        }
+        let expected = serde_json::to_value(&store.nodes).unwrap();
+        store.save(&path).unwrap();
+        let mut loaded = AppStore::load(&path, None).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.nodes).unwrap(), expected);
+        let ids: Vec<_> = loaded.nodes.iter().map(|n| n.node.id.clone()).collect();
+        for id in ids {
+            assert!(!loaded.update_node_latency(&id, Some(1), 2345, "tcp"));
+            assert!(!loaded.update_node_latency(&id, None, 2346, "tcp"));
+        }
+        assert_eq!(serde_json::to_value(&loaded.nodes).unwrap(), expected);
+        loaded.save(&path).unwrap();
+        assert_eq!(
+            serde_json::to_value(&AppStore::load(&path, None).unwrap().nodes).unwrap(),
+            expected
+        );
+        let probes: Vec<_> = loaded
+            .nodes
+            .iter()
+            .map(|n| (n.node.id.clone(), n.latency_method.clone().unwrap()))
+            .collect();
+        for (id, method) in probes {
+            assert!(loaded.update_node_latency_with_error(
+                &id,
+                Some(42),
+                3456,
+                &method,
+                Some("discarded on success")
+            ));
+        }
+        loaded.save(&path).unwrap();
+        let recovered = AppStore::load(&path, None).unwrap();
+        assert!(recovered.nodes.iter().all(|n| n.node.latency_ms == Some(42)
+            && n.node.latency_at == Some(3456)
+            && n.latency_error.is_none()));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 
-        // A real failure is meaningful: TCP-connect success cannot pretend
-        // that a proxy path which just failed is healthy.
-        assert!(store.update_node_latency("n1", None, 300, "clash_api"));
-        assert!(!store.update_node_latency("n1", Some(20), 400, "tcp"));
-        assert_eq!(store.nodes[0].node.latency_ms, None);
-        assert_eq!(store.nodes[0].node.latency_at, Some(300));
+    #[test]
+    fn latency_error_is_optional_and_reload_clears_inconsistent_errors() {
+        let legacy = serde_json::to_value(stored_node("sub", "legacy")).unwrap();
+        assert!(legacy.get("latency_error").is_none());
+        let restored: StoredNode = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(restored.latency_error, None);
+        for (latency, tested_at, expected) in [
+            (Some(25), Some(100), None),
+            (None, None, None),
+            (None, Some(100), Some("timeout: timeout")),
+        ] {
+            let mut node = legacy.clone();
+            node["latency_ms"] = serde_json::json!(latency);
+            node["latency_at"] = serde_json::json!(tested_at);
+            node["latency_method"] = serde_json::json!("singbox_http");
+            node["latency_error"] = serde_json::json!("timeout: timeout");
+            let restored = store_from_json(serde_json::json!({"nodes": [node]}));
+            assert_eq!(restored.nodes[0].latency_error.as_deref(), expected);
+        }
+    }
 
-        assert!(!store.update_node_latency("n1", Some(5), 500, "unsupported"));
-        assert!(store.update_node_latency("n1", Some(180), 600, "xray_http"));
-        assert_eq!(store.nodes[0].latency_method.as_deref(), Some("xray_http"));
-        assert!(!store.update_node_latency("n1", Some(5), 700, "tcp"));
-        assert_eq!(store.nodes[0].node.latency_ms, Some(180));
-        assert!(store.update_node_latency("n1", None, 800, "xray_http"));
-        assert!(!store.update_node_latency("n1", Some(5), 900, "tcp"));
-        assert!(!store.update_node_latency("missing", Some(5), 500, "tcp"));
+    #[test]
+    fn unsupported_and_legacy_errors_persist_only_safe_messages() {
+        let path = test_store_path("unsupported-safe-errors");
+        let mut store = AppStore::default();
+        store.nodes.push(mk_stored_node("n1", "test"));
+        for (error, expected) in [
+            (
+                Some("unsupported: 此节点参数不受支持"),
+                Some("unsupported: 此节点参数不受支持"),
+            ),
+            (
+                Some(LEGACY_QUIC_PING_ERROR),
+                Some("unsupported: QUIC-only 协议没有可供 TCP Ping 的端口"),
+            ),
+            (
+                Some(LEGACY_NO_CORE_ERROR),
+                Some("unsupported: 请先启动代理以测试此协议"),
+            ),
+            (
+                Some("request failed: https://user:SECRET@example.com/private"),
+                None,
+            ),
+            (None, None),
+        ] {
+            assert!(store.update_node_latency_with_error("n1", None, 100, "unsupported", error));
+            store.save(&path).unwrap();
+            let restored = AppStore::load(&path, None).unwrap();
+            assert_eq!(
+                restored.nodes[0].latency_method.as_deref(),
+                Some("unsupported")
+            );
+            assert_eq!(restored.nodes[0].node.latency_at, Some(100));
+            assert_eq!(restored.nodes[0].latency_error.as_deref(), expected);
+            assert!(!serialize_store(&store).unwrap().contains("SECRET"));
+        }
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        for prefix in [
+            "timeout",
+            "unsupported",
+            "config",
+            "tls",
+            "connection",
+            "http",
+            "core",
+            "missing_core",
+        ] {
+            let safe = format!("{prefix}: 服务生成的安全消息");
+            assert_eq!(
+                AppStore::safe_latency_error(Some(&safe)).as_deref(),
+                Some(safe.as_str())
+            );
+        }
+        for method in [
+            "tcp",
+            "clash_api",
+            "xray_http",
+            "singbox_http",
+            "mihomo_http",
+        ] {
+            assert!(store.update_node_latency_with_error("n1", None, 200, method, Some("timeout")));
+            assert_eq!(
+                store.nodes[0].latency_error.as_deref(),
+                Some("timeout: 测速请求超时")
+            );
+            assert!(store.update_node_latency_with_error(
+                "n1",
+                None,
+                201,
+                method,
+                Some("raw stderr SECRET")
+            ));
+            assert_eq!(store.nodes[0].latency_error, None);
+            let mut value = serde_json::to_value(&store).unwrap();
+            value["nodes"][0]["latency_error"] = serde_json::json!("raw saved stderr SECRET");
+            let restored = store_from_json(value);
+            assert_eq!(restored.nodes[0].latency_error, None);
+            assert!(!serialize_store(&restored).unwrap().contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn legacy_ping_unsupported_does_not_replace_real_probe_results() {
+        for method in ["clash_api", "xray_http", "singbox_http", "mihomo_http"] {
+            for latency in [Some(42), None] {
+                let mut store = AppStore::default();
+                store.nodes.push(mk_stored_node("n1", "test"));
+                store.update_node_latency_with_error(
+                    "n1",
+                    latency,
+                    100,
+                    method,
+                    Some("tls: 安全错误"),
+                );
+                let before = serde_json::to_value(&store.nodes[0]).unwrap();
+                for error in [LEGACY_QUIC_PING_ERROR, LEGACY_NO_CORE_ERROR] {
+                    assert!(!store.update_node_latency_with_error(
+                        "n1",
+                        None,
+                        200,
+                        "unsupported",
+                        Some(error)
+                    ));
+                    assert_eq!(serde_json::to_value(&store.nodes[0]).unwrap(), before);
+                }
+                // A new isolated probe may legitimately report an unsupported shape.
+                assert!(store.update_node_latency_with_error(
+                    "n1",
+                    None,
+                    300,
+                    "unsupported",
+                    Some("unsupported: 此节点参数不受支持")
+                ));
+                assert_eq!(
+                    store.nodes[0].latency_method.as_deref(),
+                    Some("unsupported")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_and_edit_reset_latency_metadata_but_keep_appended_results() {
+        for edited in [false, true] {
+            let mut store = AppStore::default();
+            let sub = sample_url_sub("latency");
+            let mut source = stored_node(&sub.id, "remote").node;
+            store
+                .upsert_subscription(sub.clone(), vec![source.clone()])
+                .unwrap();
+            store.nodes.push(stored_node("other-sub", "other"));
+            assert!(store.update_node_latency_with_error(
+                "other",
+                None,
+                99,
+                "singbox_http",
+                Some("connection: refused")
+            ));
+            if edited {
+                let mut node = source.clone();
+                node.port = 8443;
+                store.update_node("remote", node).unwrap();
+            }
+            // Imported/copied latency is not a new measurement.
+            source.latency_ms = Some(999);
+            source.latency_at = Some(1);
+            store
+                .append_nodes_to_profile(Some(&sub.id), vec![source.clone()])
+                .unwrap();
+            let clone = store.nodes.last().unwrap();
+            let clone_id = clone.node.id.clone();
+            assert_eq!(clone.node.latency_ms, None);
+            assert_eq!(clone.node.latency_at, None);
+            assert_eq!(clone.latency_method, None);
+            assert_eq!(clone.latency_error, None);
+            for id in ["remote", clone_id.as_str()] {
+                assert!(store.update_node_latency_with_error(
+                    id,
+                    None,
+                    100,
+                    "mihomo_http",
+                    Some("timeout: timeout")
+                ));
+            }
+            store.upsert_subscription(sub, vec![source]).unwrap();
+            let remote = store.nodes.iter().find(|n| n.node.id == "remote").unwrap();
+            assert_eq!(remote.node.latency_ms, None);
+            assert_eq!(remote.node.latency_at, None);
+            assert_eq!(remote.latency_method, None);
+            assert_eq!(remote.latency_error, None);
+            let other = store.nodes.iter().find(|n| n.node.id == "other").unwrap();
+            assert_eq!(other.node.latency_at, Some(99));
+            assert_eq!(other.latency_method.as_deref(), Some("singbox_http"));
+            assert_eq!(other.latency_error.as_deref(), Some("connection: refused"));
+            let clone = store.nodes.iter().find(|n| n.node.id == clone_id).unwrap();
+            assert_eq!(clone.node.latency_at, Some(100));
+            assert_eq!(clone.latency_method.as_deref(), Some("mihomo_http"));
+            assert_eq!(clone.latency_error.as_deref(), Some("timeout: timeout"));
+            let edited_clone = clone.node.clone();
+            store.update_node(&clone_id, edited_clone).unwrap();
+            let reloaded = parse_store(&serialize_store(&store).unwrap()).unwrap();
+            let clone = reloaded
+                .nodes
+                .iter()
+                .find(|n| n.node.id == clone_id)
+                .unwrap();
+            assert_eq!(clone.node.latency_ms, None);
+            assert_eq!(clone.node.latency_at, None);
+            assert_eq!(clone.latency_method, None);
+            assert_eq!(clone.latency_error, None);
+        }
     }
 
     #[test]

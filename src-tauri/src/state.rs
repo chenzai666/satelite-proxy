@@ -1211,17 +1211,23 @@ impl AppState {
             .filter(|result| !result.id.is_empty())
             .filter_map(|result| {
                 store
-                    .update_node_latency(
+                    .update_node_latency_with_error(
                         &result.id,
                         result.latency_ms,
                         result.tested_at,
                         &result.method,
+                        result.error.as_deref(),
                     )
                     .then(|| NodeLatencyChange {
                         id: result.id.clone(),
                         name: result.name.clone(),
                         latency_ms: result.latency_ms,
                         latency_at: Some(result.tested_at),
+                        latency_error: if result.latency_ms.is_none() {
+                            AppStore::safe_latency_error(result.error.as_deref())
+                        } else {
+                            None
+                        },
                         method: result.method.clone(),
                     })
             })
@@ -2502,7 +2508,8 @@ pub struct NodeLatencyChange {
     pub name: String,
     pub latency_ms: Option<u32>,
     pub latency_at: Option<i64>,
-    /// `clash_api` (through-core) or `tcp` (direct reachability).
+    pub latency_error: Option<String>,
+    /// `clash_api` / isolated `*_http` (proxy path), or `tcp` (reachability).
     pub method: String,
 }
 
@@ -2698,6 +2705,132 @@ pub fn spawn_core_watchdog(app: tauri::AppHandle) {
             }
         })
         .ok();
+}
+
+#[cfg(test)]
+mod latency_tests {
+    use super::*;
+    use crate::services::latency::LatencyResult;
+
+    fn store_and_result(method: &str) -> (AppStore, LatencyResult) {
+        let node = crate::subscription::parse_singbox_json(
+            r#"{"outbounds":[{"type":"trojan","tag":"test","server":"example.com",
+                "server_port":443,"password":"test"}]}"#,
+        )
+        .unwrap()
+        .nodes
+        .remove(0);
+        let result = LatencyResult {
+            id: node.id.clone(),
+            name: node.name.clone(),
+            latency_ms: None,
+            error: Some("timeout: timeout".into()),
+            tested_at: 100,
+            method: method.into(),
+        };
+        let mut store = AppStore::default();
+        let mut stored = serde_json::to_value(node).unwrap();
+        stored["subscription_id"] = serde_json::json!("sub");
+        store.nodes.push(serde_json::from_value(stored).unwrap());
+        (store, result)
+    }
+
+    #[test]
+    fn accepted_latency_changes_sync_errors_and_filter_tcp_for_every_real_method() {
+        for method in ["clash_api", "xray_http", "singbox_http", "mihomo_http"] {
+            for latency in [Some(42), None] {
+                let (mut store, mut result) = store_and_result(method);
+                result.latency_ms = latency;
+                let changes = AppState::accepted_latency_changes(&mut store, &[result.clone()]);
+                assert_eq!(changes.len(), 1);
+                let change = &changes[0];
+                let stored = &store.nodes[0];
+                assert_eq!(change.id, stored.node.id);
+                assert_eq!(change.name, stored.node.name);
+                assert_eq!(change.latency_ms, stored.node.latency_ms);
+                assert_eq!(change.latency_at, stored.node.latency_at);
+                assert_eq!(
+                    Some(change.method.as_str()),
+                    stored.latency_method.as_deref()
+                );
+                assert_eq!(change.latency_error, stored.latency_error);
+                let expected = if latency.is_none() {
+                    Some("timeout: timeout")
+                } else {
+                    None
+                };
+                assert_eq!(change.latency_error.as_deref(), expected);
+                let payload = serde_json::to_value(change).unwrap();
+                assert_eq!(payload["latency_error"], serde_json::json!(expected));
+                let before = serde_json::to_value(&store.nodes[0]).unwrap();
+                result.method = "tcp".into();
+                result.tested_at = 200;
+                result.error = Some("tcp: timeout".into());
+                for tcp_latency in [Some(1), None] {
+                    result.latency_ms = tcp_latency;
+                    assert!(
+                        AppState::accepted_latency_changes(&mut store, &[result.clone()])
+                            .is_empty()
+                    );
+                    assert_eq!(serde_json::to_value(&store.nodes[0]).unwrap(), before);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_latency_changes_clear_old_errors_and_ignore_invalid_results() {
+        let (mut store, mut result) = store_and_result("xray_http");
+        AppState::accepted_latency_changes(&mut store, &[result.clone()]);
+        for error in [Some("connection: refused"), None] {
+            result.error = error.map(str::to_owned);
+            result.tested_at += 1;
+            let changes = AppState::accepted_latency_changes(&mut store, &[result.clone()]);
+            assert_eq!(changes[0].latency_error.as_deref(), error);
+            assert_eq!(store.nodes[0].latency_error.as_deref(), error);
+        }
+        result.latency_ms = Some(12);
+        result.error = Some("stale error on success".into());
+        let changes = AppState::accepted_latency_changes(&mut store, &[result.clone()]);
+        assert_eq!(changes[0].latency_error, None);
+        assert_eq!(store.nodes[0].latency_error, None);
+        assert_eq!(
+            serde_json::to_value(&changes[0]).unwrap()["latency_error"],
+            serde_json::Value::Null
+        );
+        let before = serde_json::to_value(&store.nodes).unwrap();
+        result.method = "invalid_method".into();
+        let mut empty = result.clone();
+        empty.method = "mihomo_http".into();
+        empty.id.clear();
+        let mut missing = empty.clone();
+        missing.id = "missing".into();
+        assert!(
+            AppState::accepted_latency_changes(&mut store, &[result, empty, missing]).is_empty()
+        );
+        assert_eq!(serde_json::to_value(&store.nodes).unwrap(), before);
+    }
+
+    #[test]
+    fn accepted_unsupported_and_legacy_errors_match_safe_stored_values() {
+        for (method, error, expected) in [
+            ("unsupported", "unsupported: 此节点参数不受支持", Some("unsupported: 此节点参数不受支持")),
+            ("unsupported", "QUIC-only protocol: no TCP port to ping — use the real-latency test with the core running", Some("unsupported: QUIC-only 协议没有可供 TCP Ping 的端口")),
+            ("unsupported", "core not running: start the proxy to test this protocol", Some("unsupported: 请先启动代理以测试此协议")),
+            ("tcp", "timeout", Some("timeout: 测速请求超时")),
+            ("clash_api", "raw stderr SECRET", None),
+            ("unsupported", "raw stderr SECRET", None),
+        ] {
+            let (mut store, mut result) = store_and_result(method);
+            result.error = Some(error.into());
+            let changes = AppState::accepted_latency_changes(&mut store, &[result]);
+            assert_eq!(changes.len(), 1);
+            assert_eq!(changes[0].method, method);
+            assert_eq!(changes[0].latency_error.as_deref(), expected);
+            assert_eq!(store.nodes[0].latency_error.as_deref(), expected);
+            assert!(!serde_json::to_string(&changes).unwrap().contains("SECRET"));
+        }
+    }
 }
 
 #[cfg(test)]

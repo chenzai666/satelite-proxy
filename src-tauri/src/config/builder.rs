@@ -1622,6 +1622,36 @@ fn node_to_outbound(node: &ProxyNode) -> AppResult<(String, Value, Vec<Value>)> 
     node_to_outbound_tagged(node, None)
 }
 
+/// 独立测速只发射目标节点及必要 detour，不接入主代理或直连兜底。
+pub fn build_singbox_probe_config(
+    node: &ProxyNode,
+    port: u16,
+    token: &str,
+    fragment: bool,
+) -> AppResult<Value> {
+    let (tag, outbound, mut outbounds) = node_to_outbound(node)?;
+    outbounds.push(outbound);
+    if fragment {
+        for outbound in &mut outbounds {
+            if let Some(tls) = outbound.get_mut("tls") {
+                if tls.get("enabled") == Some(&json!(true)) {
+                    tls["fragment"] = json!(true);
+                }
+            }
+        }
+    }
+    Ok(json!({
+        "log": { "level": "warn", "timestamp": false },
+        "dns": { "servers": [{ "type": "local", "tag": "probe-local" }] },
+        "inbounds": [{
+            "type": "http", "tag": "probe-in", "listen": "127.0.0.1", "listen_port": port,
+            "users": [{ "username": "satelite-probe", "password": token }]
+        }],
+        "outbounds": outbounds,
+        "route": { "final": tag, "default_domain_resolver": "probe-local" }
+    }))
+}
+
 /// Map a node using either its normal selectable tag or a chain-local clone
 /// tag. Chain clones must not mutate the node's ordinary direct outbound.
 fn node_to_outbound_tagged(

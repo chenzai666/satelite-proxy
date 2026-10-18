@@ -1,7 +1,9 @@
 import type { ProxyNode, SortMode } from "./types";
 
 /** Session-only latency values for custom-mode nodes (never persisted backend-side). */
-export type CustomLatencyMap = Map<string, { ms: number | null; at: number | null }>;
+export type CustomLatencyMap = Map<string, {
+  ms: number | null; at: number | null; error?: string | null; method?: string;
+}>;
 
 /** Overlay session latency results onto extracted nodes. */
 export function applyCustomLatency(
@@ -11,7 +13,8 @@ export function applyCustomLatency(
   if (map.size === 0) return nodes;
   return nodes.map((n) => {
     const v = map.get(n.id);
-    return v ? { ...n, latency_ms: v.ms, latency_at: v.at } : n;
+    return v ? { ...n, latency_ms: v.ms, latency_at: v.at,
+      latency_error: v.error ?? null, latency_method: v.method } : n;
   });
 }
 

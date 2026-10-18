@@ -4,6 +4,7 @@ import {
   getSettings,
   listAllNodes,
   listSubscriptions,
+  onNodeLatencyChanged,
   onProxySnapshot,
   peekProxyStatus,
   refreshProxyStatus,
@@ -18,6 +19,7 @@ import { SystemProxyRestartNotice } from "../../components/SystemProxyRestartNot
 import { useCaptureModeSwitch } from "../../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../../hooks/useVisibleInterval";
 import { useI18n } from "../../i18n";
+import { applyLatencyResult, applyNodeLatencyChange } from "../../nodeLatencyState";
 import type {
   ProxyNode,
   ProxyStatus,
@@ -100,22 +102,13 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
 
   const probeCurrent = useCallback(async (nodeId: string) => {
     setTesting(true);
-    setNode((prev) =>
-      prev && prev.id === nodeId
-        ? { ...prev, latency_ms: undefined, latency_at: undefined }
-        : prev,
-    );
     try {
       const batch = await testNodesLatency([nodeId], 3000);
       const r = batch.results.find((x) => x.id === nodeId);
       if (r) {
         setNode((prev) =>
           prev && prev.id === nodeId
-            ? {
-                ...prev,
-                latency_ms: r.latency_ms ?? null,
-                latency_at: r.tested_at,
-              }
+            ? applyLatencyResult(prev, r)
             : prev,
         );
       }
@@ -141,6 +134,10 @@ export function SimpleConnectPage({ onGoServers, onGoTraffic }: Props) {
   useEffect(() => {
     return onProxySnapshot((s) => setProxy(s));
   }, []);
+
+  useEffect(() => onNodeLatencyChanged((change) => {
+    setNode((prev) => prev?.id === change.id ? applyNodeLatencyChange(prev, change) : prev);
+  }), []);
 
   const onCaptureError = useCallback((msg: string) => {
     setError(msg);

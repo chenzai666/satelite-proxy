@@ -33,6 +33,8 @@ pub struct ListedNode {
     /// survive only for the stored node, not parsed subscription input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_error: Option<String>,
     /// Not part of `ProxyNode` — favorites are keyed on node id in a
     /// separate store set (`AppStore::favorite_nodes`) so they survive a
     /// subscription refresh that rebuilds every `ProxyNode` instance.
@@ -493,9 +495,13 @@ pub fn rename_node(
 pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNodeDraft, String> {
     state
         .with_store(|store| {
-            let node = store.find_node(&id).ok_or_else(|| AppError::NotFound(id.clone()))?;
+            let node = store
+                .find_node(&id)
+                .ok_or_else(|| AppError::NotFound(id.clone()))?;
             if node.protocol == crate::domain::Protocol::Unknown {
-                return Err(AppError::Config("原文透传节点暂不支持表单编辑，请编辑原始配置".into()));
+                return Err(AppError::Config(
+                    "原文透传节点暂不支持表单编辑，请编辑原始配置".into(),
+                ));
             }
             Ok(node_to_draft(node))
         })
@@ -536,7 +542,10 @@ pub fn update_node(
     })?;
     let (node, enabled) = state
         .with_store_mut(|store| {
-            if store.find_node(&id).is_some_and(|n| n.protocol == crate::domain::Protocol::Unknown) {
+            if store
+                .find_node(&id)
+                .is_some_and(|n| n.protocol == crate::domain::Protocol::Unknown)
+            {
                 return Err(AppError::Config("原文透传节点暂不支持表单编辑".into()));
             }
             let enabled = store.nodes.iter().any(|entry| {
@@ -685,6 +694,7 @@ pub fn list_all_nodes(state: State<'_, AppState>) -> Result<Vec<ListedNode>, Str
                         .unwrap_or("")
                         .to_string(),
                     latency_method: n.latency_method.clone(),
+                    latency_error: n.latency_error.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect())
@@ -772,6 +782,7 @@ pub fn list_nodes_page(
                         .unwrap_or("")
                         .to_string(),
                     latency_method: n.latency_method.clone(),
+                    latency_error: n.latency_error.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -834,6 +845,7 @@ pub fn list_node_ids(
                         .unwrap_or("")
                         .to_string(),
                     latency_method: n.latency_method.clone(),
+                    latency_error: n.latency_error.clone(),
                     favorite: store.favorite_nodes.contains(&n.node.id),
                 })
                 .collect();
@@ -853,13 +865,15 @@ fn extract_custom_nodes(
     sub_name: &str,
 ) -> Result<Vec<ListedNode>, String> {
     let build = |parsed: crate::domain::ParseResult| {
-        parsed.nodes
+        parsed
+            .nodes
             .into_iter()
             .map(|node| ListedNode {
                 node: wire_node(node),
                 subscription_id: sub_id.to_string(),
                 subscription_name: sub_name.to_string(),
                 latency_method: None,
+                latency_error: None,
                 // Custom-config nodes are parsed on demand from a raw config
                 // body, never stored in `AppStore.nodes` — there's no store
                 // access here and no id they could match in `favorite_nodes`.
@@ -1226,8 +1240,39 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert!(nodes.iter().all(|n| n.subscription_id == "sub1"));
         assert!(nodes.iter().all(|n| n.subscription_name == "My Config"));
+        assert!(nodes
+            .iter()
+            .all(|n| n.latency_method.is_none() && n.latency_error.is_none()));
         let names: Vec<&str> = nodes.iter().map(|n| n.node.name.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn listed_node_serializes_only_the_current_latency_error() {
+        let mut nodes = extract_custom_nodes(
+            SAMPLE,
+            crate::domain::CustomConfigKind::Singbox,
+            "sub1",
+            "My Config",
+        )
+        .unwrap();
+        let node = &mut nodes[0];
+        assert!(serde_json::to_value(&*node)
+            .unwrap()
+            .get("latency_error")
+            .is_none());
+        node.node.latency_at = Some(100);
+        node.latency_method = Some("singbox_http".into());
+        node.latency_error = Some("timeout: timeout".into());
+        let value = serde_json::to_value(&*node).unwrap();
+        assert_eq!(value["latency_method"], "singbox_http");
+        assert_eq!(value["latency_error"], "timeout: timeout");
+        assert_eq!(value["latency_at"], 100);
+        node.node.latency_ms = Some(42);
+        node.latency_error = None;
+        let value = serde_json::to_value(&*node).unwrap();
+        assert_eq!(value["latency_ms"], 42);
+        assert!(value.get("latency_error").is_none());
     }
 
     #[test]

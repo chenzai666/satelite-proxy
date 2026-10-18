@@ -12,7 +12,7 @@ pub struct LatencyBatchResult {
     pub tested: usize,
     pub ok: usize,
     pub failed: usize,
-    /// `clash_api`, `xray_http`, `tcp`, or `mixed`
+    /// `clash_api`, `xray_http`, `singbox_http`, `tcp`, or `mixed`
     pub method: String,
 }
 
@@ -78,12 +78,14 @@ pub async fn test_nodes_latency(
         });
     }
 
-    let (core, probe_url, fragment, custom) = state
+    let (core, probe_url, fragment, fragment_singbox, udp_tls_compat, custom) = state
         .with_store(|store| {
             Ok((
                 store.settings.core_type.clone(),
                 store.settings.probe_url.clone(),
                 store.settings.tls_fragment_xray,
+                store.settings.tls_fragment_singbox,
+                store.settings.udp_tls_compat,
                 crate::domain::RuntimeSource::parse(&store.settings.runtime_source).is_custom(),
             ))
         })
@@ -98,13 +100,19 @@ pub async fn test_nodes_latency(
             state.resource_dir.as_deref(),
             crate::core::CoreKind::Xray,
         );
-        let bin = bin.ok_or("未安装 Xray 内核，请先在设置中下载后再测速")?;
-        crate::services::xray_latency::probe_xray_nodes(
+        let (singbox, _) = crate::core::inspect_core_bin(
+            &state.app_data_dir,
+            state.resource_dir.as_deref(),
+            crate::core::CoreKind::SingBox,
+        );
+        crate::services::xray_latency::probe_xray_nodes_with_fallback(
             nodes,
-            bin,
+            crate::services::xray_latency::ProbeBinaries { xray: bin, singbox },
             probe_url,
             timeout_ms,
             fragment,
+            fragment_singbox,
+            udp_tls_compat,
             |r| stream_result(&on_result, r),
         )
         .await?

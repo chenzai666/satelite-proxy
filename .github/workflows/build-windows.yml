@@ -71,7 +71,7 @@ jobs:
 
       - name: 确认弹窗安全回归测试
         shell: pwsh
-        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs scripts/test-node-clipboard.mjs scripts/test-node-groups.mjs scripts/test-node-shortcuts.mjs scripts/test-mihomo-node-selection.mjs
+        run: node --test scripts/test-confirm-action.mjs scripts/test-rules-input.mjs scripts/test-node-clipboard.mjs scripts/test-node-groups.mjs scripts/test-node-shortcuts.mjs scripts/test-mihomo-node-selection.mjs scripts/test-node-latency-state.mjs
 
       - name: 规则侧栏浏览器回归测试
         shell: pwsh
@@ -134,6 +134,8 @@ jobs:
         run: |
           $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
           cargo test --manifest-path src-tauri/Cargo.toml --locked --lib services::xray_latency::tests::live_xray_http_probe_uses_node_and_cleans_up -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib services::xray_latency::live_protocol_tests:: -- --ignored
 
       - name: 预取 Mihomo 供原文配置兼容验证
         shell: bash
