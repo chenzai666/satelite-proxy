@@ -2,6 +2,8 @@ import { GlassSwitchControl } from "./GlassSwitchControl";
 import { SolidSelect } from "./SolidSelect";
 import { useI18n } from "../i18n";
 import type { ManualNodeDraft } from "../types";
+import { generateNodeUuid } from "../nodeUuid";
+import { GlassButton } from "./GlassButton";
 
 export const NODE_PROTOCOLS = [
   { value: "vless", label: "VLESS" },
@@ -266,7 +268,9 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
       {(p === "vless" || p === "vmess" || p === "tuic") && (
         <label className="field">
           <span>UUID</span>
+          <div className="file-row node-uuid-row">
           <input
+            aria-label="UUID"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
@@ -274,6 +278,11 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
             onChange={(e) => set({ uuid: e.target.value })}
             disabled={disabled}
           />
+          <GlassButton disabled={disabled} title={t("nodeDraft.generateUuidHint")}
+            onClick={(event) => { event.preventDefault(); set({ uuid: generateNodeUuid() }); }}>
+            {t("nodeDraft.generateUuid")}
+          </GlassButton>
+          </div>
         </label>
       )}
 

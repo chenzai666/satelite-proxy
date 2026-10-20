@@ -428,6 +428,8 @@ pub fn run() {
             commands::get_subscription_raw_config,
             commands::get_subscription_core_support,
             commands::read_import_file,
+            commands::read_qr_image,
+            commands::capture_qr_screen,
             commands::update_subscription,
             commands::refresh_subscription,
             commands::activate_subscription,

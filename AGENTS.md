@@ -14,6 +14,8 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-10-20 二维码导入与UUID生成：保留已有协议/订阅导入界面，不增加重复的协议菜单。ConfigPage 的 QrImportButton 提供屏幕扫描Ctrl+S及图片扫描；qrImport.ts只识别节点链接/HTTP订阅/一键订阅并预填AddConfigModal，显式确认后才导入，不打开或自动请求二维码地址。commands/qr.rs注册capture_qr_screen/read_qr_image；Windows GDI截取虚拟桌面，临时隐藏窗口后RAII恢复，PNG仅内存传递，不落盘/日志/剪贴板；非Windows明确提示用图片。图片16MB、32MP上限，jsQR在可终止Worker做反色/缩放/重叠分块扫描，30s超时，无远程识别服务；禁止输入框/弹窗/重复快捷键误触。NodeDraftFields对VLESS/VMess/TUIC提供显式生成UUID v4，nodeUuid.ts仅Web Crypto，按键不提交表单且禁用态同步。Node单测、隔离浏览器和CI-only真实桌面捕获回归纳入Windows Actions；本机不构建、不扫描用户屏幕、不替换运行客户端。版本继续1.0.46。
+
 2026-10-18 Xray 模式跨内核测速：commands/latency.rs 同时读取 tls_fragment_xray/tls_fragment_singbox/udp_tls_compat，仅读取 inspect_core_bin，不下载/切换主核。services/xray_latency.rs 先对节点副本调用 apply_udp_node_compatibility；TUIC/AnyTLS、HY2 obfs及需要 insecure 的普通TLS节点委托 sing-box，其余支持完整参数的节点用 Xray。config/builder.rs::build_singbox_probe_config 复用单节点生成器，无 direct兜底/主路由/控制器/TUN，认证loopback HTTP，stdin配置。两核共用一轮/并发4/双HTTP探测及子进程回收；stderr固定块排空，仅保留TLS/配置/超时分类，不输出原始凭据日志。StoredNode/ListedNode/NodeLatencyChange 增加可选 latency_error；TCP保护clash_api及*_http结果（成功失败），编辑/刷新保持metadata一致。专业/简洁显示安全错误类型；scripts前端回归和services/xray_latency_live_tests.rs真实HY2/TUIC/AnyTLS测试仅Actions运行。版本仍1.0.46，先验证后覆盖Release，不更新本地运行客户端。
 
 Xray HTTP 认证兼容补充：ureq2.12 的 CONNECT 使用小写 basic，Xray v26.3.27 parseBasicAuth 仅接受 Basic，独立测速改用 reqwest async 客户端并显式 no_proxy+本机认证代理。probe_one 仅在 spawn_blocking/同步测试执行，私有 current-thread Tokio runtime 在该阻塞线程创建/销毁，不在 async worker 嵌套 runtime；Clash API 原 ureq 路径不变。CI-only xray-probe-diagnostic.yml 用模拟参数隔离检查 stdin/认证，真实端到端测试断言不得放宽。Rust 编译缓存允许失败时保存，避免一次测试失败导致依赖重复全编译；不复用失败包发布。

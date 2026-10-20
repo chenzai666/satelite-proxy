@@ -92,6 +92,14 @@ export function appendClipboardNodes(content: string, subscriptionId: string | n
   return invoke<ImportResult>("append_clipboard_nodes", { content, subscriptionId });
 }
 
+export function captureQrScreen() {
+  return invoke<string>("capture_qr_screen");
+}
+
+export function readQrImage(path: string) {
+  return invoke<string>("read_qr_image", { path });
+}
+
 export function addSubscriptionNode(
   name: string | null,
   uri: string | null,

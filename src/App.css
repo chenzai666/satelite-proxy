@@ -6227,11 +6227,16 @@ button.check.on {
 }
 
 .file-row input {
+  min-width: 0;
   flex: 1;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 0.5rem 0.65rem;
 }
+
+.node-uuid-row .glass-btn { flex-shrink: 0; }
+.qr-scan-menu-item { display: flex; align-items: center; gap: 1rem; justify-content: space-between; }
+.qr-scan-menu-item kbd { color: var(--text-muted); font: inherit; white-space: nowrap; }
 
 .hint {
   margin: 0;

@@ -8,6 +8,7 @@ mod latency;
 mod logs;
 mod mihomo_profile;
 mod proxy;
+mod qr;
 mod rules;
 pub mod subscription;
 
@@ -21,5 +22,6 @@ pub use latency::*;
 pub use logs::*;
 pub use mihomo_profile::*;
 pub use proxy::*;
+pub use qr::*;
 pub use rules::*;
 pub use subscription::*;

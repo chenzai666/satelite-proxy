@@ -26,6 +26,8 @@ import {
 import { EditLocalNodesModal } from "../components/EditLocalNodesModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSwitch } from "../components/GlassSwitch";
+import { QrImportButton } from "../components/QrImportButton";
+import type { QrImportPayload } from "../qrImport";
 import { useImportIntent } from "../ImportIntentContext";
 import { getVersion } from "@tauri-apps/api/app";
 import { useI18n } from "../i18n";
@@ -472,6 +474,13 @@ export function ConfigPage() {
     setImportError(null);
     setModalOpen(true);
   }
+
+  const openScanned = useCallback((payload: QrImportPayload) => {
+    setEditId(null);
+    setImportError(null);
+    setEditInitial({ name: payload.kind === "url" ? payload.name ?? "" : "", ...payload });
+    setModalOpen(true);
+  }, []);
 
   async function openEdit(id: string) {
     setImportError(null);
@@ -965,6 +974,8 @@ export function ConfigPage() {
           <p className="page-desc">{t("config.desc")}</p>
         </div>
         <div className="header-actions">
+          <QrImportButton disabled={loading || busy || importing || modalOpen}
+            onRecognized={openScanned} onError={setListError} />
           <GlassSwitch
             checked={mixMode}
             ready={!loading}
