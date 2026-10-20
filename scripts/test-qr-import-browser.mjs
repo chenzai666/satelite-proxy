@@ -12,6 +12,18 @@ try {
   await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/qr.html");
   const scan = page.getByRole("button", { name: "扫描二维码", exact: true });
   await scan.waitFor();
+  await page.evaluate(() => {
+    window.qrEvents = [];
+    for (const type of ["pointerdown", "pointerup", "click", "scroll"]) {
+      window.addEventListener(type, event => {
+        if (window.qrEvents.length >= 25) return;
+        const target = event.target;
+        window.qrEvents.push({ type, target: target instanceof Element ? target.tagName : "window",
+          text: target instanceof Element ? target.textContent?.slice(0, 50) : "",
+          menu: target instanceof Element && !!target.closest("[data-ruleset-menu]") });
+      }, true);
+    }
+  });
   const uri = "vless://11111111-1111-4111-8111-111111111111@example.test:443?security=tls#test";
   await page.evaluate(text => window.qrFixture.setQr(text), uri);
   await scan.click();
@@ -84,6 +96,7 @@ try {
     console.error("扫码夹具失败诊断", { errors, consoleErrors,
       state: await page.evaluate(() => ({ capture: window.qrFixture.capture, read: window.qrFixture.read,
         dialog: window.qrFixture.dialog, writes: window.qrFixture.writes.length })),
+      events: await page.evaluate(() => window.qrEvents),
       body: await page.locator("body").innerText() });
     await page.screenshot({ path: "test-results/qr-import-failure.png" });
   }
