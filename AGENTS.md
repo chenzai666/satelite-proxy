@@ -197,6 +197,9 @@ satelite-proxy/
 │   ├── ui/simple/           # 简洁模式 UI（独立 shell + 4 页）
 │   ├── components/          # 玻璃设计系统 + 3D 首页 + 弹窗表单
 │   ├── hooks/               # useVirtualRange / useVisibleInterval / 拖拽排序 / 嵌套滚动隔离等
+│   ├── qrImport.ts          # 扫码内容分类、快捷键边界，只预填既有导入表单
+│   ├── qrDecode.ts          # jsQR 图像金字塔/分块识别，由 qrDecode.worker.ts 隔离执行
+│   ├── nodeUuid.ts          # Web Crypto UUID v4，供现有节点表单显式生成
 │   ├── i18n/                # zh/en 扁平文案表（TS 强制双语言键一致）
 │   ├── theme/               # aerospace 深色 / day 浅色 + 6 主题色
 │   └── App.css              # ★ 全部样式单文件（~7.6k 行，按 /* —— 段落 —— */ 分节）
@@ -345,6 +348,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 
 ### 5.8 commands/ 分层（前端 invoke 的直接实现）
 
+`qr.rs`：`capture_qr_screen` 在 Windows 用 GDI 内存捕获虚拟桌面并恢复窗口；`read_qr_image` 限量读取本地光栅图片。经 commands/mod.rs、lib.rs 注册，api.ts 对应封装，不写配置或日志。
+
 `config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发三生成器，mihomo 返回 YAML 文本；节点列表按 `CoreKind::supports_node` 过滤）、`core.rs`（启停/重启/capture_mode/三内核下载更新/`set_core_type` 切内核/`refresh_geodata` 带 kind 参数——xray 刷 Loyalsoldier .dat、mihomo 刷 MetaCubeX mmdb/GeoSite.dat）、`chain.rs`（节点池/代理链 CRUD、链路诊断）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts+诊断）、`latency.rs`、`logs.rs`、`proxy.rs`（状态/系统代理/TUN/UWP 回环）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 `config.rs`（订阅 CRUD/激活/mix、`generate/preview_singbox_config` 按 core_type 分发三生成器，mihomo 返回 YAML 文本；节点列表按 `CoreKind::supports_node` 过滤）、`core.rs`（启停/重启/capture_mode/三内核下载更新/`set_core_type` 切内核/`refresh_geodata` 带 kind 参数——xray 刷 Loyalsoldier .dat、mihomo 刷 MetaCubeX mmdb/GeoSite.dat）、`chain.rs`（节点池/链路 CRUD + `list_chain_usage` 规则集引用计数 + `diagnose_chain` 逐跳诊断（单跳/链前缀探测，仅 sing-box、经 Clash delay API），编辑走防抖重启同 rules）、`connections.rs`（连接/请求/失败；`list_connection_changes` 增量协议：带 `lastOrderRevision`，纯计数更新不下发 `order_ids`）、`diagnostics.rs`、`dns.rs`（DNS+hosts 设置 CRUD、`diagnose_dns` 内核级 DNS 诊断→services/dns_diag）、`latency.rs`、`logs.rs`（`list/clear_app_logs` + `get_core_log_tail(limit, kind)`——按 kind 读对应内核的 `logs/<prefix>-<hour>.log`，多核模式主核/副进程分开，`Runtime::core_log_tail_for`）、`proxy.rs`（状态/系统代理/TUN）、`rules.rs`（规则集 CRUD/排序/远程规则，1167 行）、`subscription.rs`（导入各来源）。command 名与 `src/api.ts` 导出一一对应（snake_case）。
 
@@ -397,6 +402,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - 设计系统：`GlassButton`、`GlassSeg`（区分用户点击与状态重绘才做动画）、`GlassSwitch(+Control)`、`SolidSelect`（**自绘下拉：macOS WKWebView 原生 select 无法主题化**，SolidSelect.tsx:26 注释）。
 - 首页视觉：`HeroVisual`（按 `heroStyle` 分发）→ `ParticleSphere`（three.js，lazy）/ `FaceMark`（Canvas2D 笑脸）/ 经典轨道。
 - 弹窗：`AddConfigModal`（url/file/paste/手动节点/sing-box 五种来源）、`EditLocalNodesModal`、`NodeDraftFields`（16 协议条件字段表单，与 `ManualNodeDraft` 对应）、`AccentColorPickerModal`（自定义主题色取色器；`theme/accents.ts` 支持 `#rrggbb` 自定义 accent，Rust `update_settings` 同步放行）。
+- `QrImportButton`：配置页两个扫码入口及 Ctrl+S，复用 RulesetMenu portal；识别只预填 AddConfigModal，迟到结果不覆盖已打开表单。Vite 显式预加载 jsqr，避免首次启动 Worker 时依赖优化造成开发页重载。
 - hooks：
   - `useVisibleInterval` — **通用轮询原语**：页面隐藏暂停、回调不重叠、可见即重发；
   - `useVirtualRange` — 基于 `.main` 滚动容器的列表虚拟化（支持网格 itemsPerRow）；
