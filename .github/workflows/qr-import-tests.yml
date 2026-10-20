@@ -1,0 +1,54 @@
+name: 二维码导入交互验证
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qr-import:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 类型检查与像素单测
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/test-qr-import.mjs
+      - name: 真实组件浏览器回归
+        shell: pwsh
+        run: |
+          $uiDeps = Join-Path $env:RUNNER_TEMP 'satelite-qr-tests'
+          npm install --prefix $uiDeps --no-audit --no-fund playwright@1.55.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node (Join-Path $uiDeps 'node_modules/playwright/cli.js') install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_MODULE = Join-Path $uiDeps 'node_modules/playwright/index.mjs'
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          $server = Start-Process node -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '1440', '--strictPort') -WindowStyle Hidden -PassThru
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try { Invoke-WebRequest 'http://127.0.0.1:1440/scripts/ui-smoke/qr.html' -UseBasicParsing | Out-Null; $ready = $true; break } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw '二维码测试服务未就绪' }
+            node scripts/test-qr-import-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+      - name: 保存界面截图
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qr-import-${{ github.sha }}
+          path: test-results/*.png
+          if-no-files-found: ignore
+          retention-days: 14

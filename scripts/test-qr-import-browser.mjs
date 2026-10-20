@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 const { chromium } = await import(pathToFileURL(process.env.PLAYWRIGHT_MODULE).href);
 const browser = await chromium.launch({ headless: true });
+let page;
+const errors = [];
+const consoleErrors = [];
 try {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  const errors = [];
+  page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.on("pageerror", e => errors.push(e.message));
+  page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
   await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/qr.html");
   const scan = page.getByRole("button", { name: "扫描二维码", exact: true });
   await scan.waitFor();
@@ -75,4 +78,14 @@ try {
   assert.deepEqual(errors, []);
   await page.close();
   console.log("二维码屏幕/图片/快捷键/取消/恢复/安全预填及三协议 UUID 生成浏览器回归通过");
+} catch (error) {
+  // This page contains synthetic fixtures only, never user subscriptions or screenshots.
+  if (page) {
+    console.error("扫码夹具失败诊断", { errors, consoleErrors,
+      state: await page.evaluate(() => ({ capture: window.qrFixture.capture, read: window.qrFixture.read,
+        dialog: window.qrFixture.dialog, writes: window.qrFixture.writes.length })),
+      body: await page.locator("body").innerText() });
+    await page.screenshot({ path: "test-results/qr-import-failure.png" });
+  }
+  throw error;
 } finally { await browser.close(); }
