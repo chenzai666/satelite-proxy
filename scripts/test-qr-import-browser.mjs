@@ -76,8 +76,10 @@ try {
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await page.evaluate(() => { window.qrFixture.hold = false; });
   await page.screenshot({ path: "test-results/qr-import.png" });
-  await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/qr.html?draft");
   for (const protocol of ["VLESS", "VMess", "TUIC"]) {
+    // Fresh form per protocol also avoids SolidSelect's deliberate 300ms
+    // synthetic-label-click guard affecting the next automated selection.
+    await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/qr.html?draft");
     await page.getByRole("button", { name: "协议", exact: true }).click();
     await page.getByRole("option", { name: protocol, exact: true }).click();
     const uuid = page.getByRole("textbox", { name: "UUID", exact: true });
