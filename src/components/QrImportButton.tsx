@@ -48,6 +48,8 @@ export function QrImportButton({ disabled, onRecognized, onError }: {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
+  const blocked = useRef(!!disabled);
+  blocked.current = !!disabled;
   const abortRef = useRef<AbortController | null>(null);
   const close = useCallback(() => setAnchor(null), []);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -64,8 +66,9 @@ export function QrImportButton({ disabled, onRecognized, onError }: {
         if (typeof path !== "string" || controller.signal.aborted) return;
         image = await readQrImage(path);
       } else image = await captureQrScreen();
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || blocked.current) return;
       const text = await decodeImage(image, controller.signal);
+      if (controller.signal.aborted || blocked.current) return;
       if (!text) { onError(t("config.qrNotFound")); return; }
       const payload = qrImportPayload(text);
       if (!payload) { onError(t("config.qrUnsupported")); return; }

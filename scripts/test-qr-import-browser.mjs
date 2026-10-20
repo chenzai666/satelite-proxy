@@ -47,6 +47,17 @@ try {
   await page.getByRole("dialog").waitFor();
   await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(await page.evaluate(() => window.qrFixture.writes.length), 0);
+  // A late capture must not replace a form the user has already opened.
+  await page.evaluate(() => { window.qrFixture.hold = true; });
+  await page.keyboard.press("Control+s");
+  await page.waitForFunction(() => window.qrFixture.release !== null);
+  await page.getByRole("button", { name: "添加配置", exact: true }).first().click();
+  await page.evaluate(() => window.qrFixture.release?.());
+  await page.getByRole("button", { name: "扫描二维码", exact: true }).waitFor();
+  assert.equal(await page.locator("textarea.config-paste").count(), 0);
+  assert.equal(await page.locator('input[placeholder="https://…"]').inputValue(), "");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.evaluate(() => { window.qrFixture.hold = false; });
   await page.screenshot({ path: "test-results/qr-import.png" });
   await page.goto("http://127.0.0.1:1440/scripts/ui-smoke/qr.html?draft");
   for (const protocol of ["VLESS", "VMess", "TUIC"]) {
