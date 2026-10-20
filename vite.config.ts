@@ -12,6 +12,9 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // The decoder is loaded by an on-demand worker. Prebundle it so the first
+  // scan does not trigger Vite's late dependency discovery and full-page reload.
+  optimizeDeps: { include: ["jsqr"] },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

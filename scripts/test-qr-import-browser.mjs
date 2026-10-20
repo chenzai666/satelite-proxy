@@ -27,9 +27,11 @@ try {
   const uri = "vless://11111111-1111-4111-8111-111111111111@example.test:443?security=tls#test";
   await page.evaluate(text => window.qrFixture.setQr(text), uri);
   await scan.click();
+  await page.screenshot({ path: "test-results/qr-import-menu.png" });
   await page.getByRole("menuitem", { name: /扫描屏幕上的二维码/ }).click();
   await page.getByRole("dialog").waitFor();
   assert.equal(await page.locator("textarea.config-paste").inputValue(), uri);
+  await page.screenshot({ path: "test-results/qr-import-prefill.png" });
   assert.equal(await page.evaluate(() => window.qrFixture.writes.length), 0, "recognition must not import automatically");
   await page.keyboard.press("Control+s");
   assert.equal(await page.evaluate(() => window.qrFixture.capture), 1, "dialog must block shortcut");
@@ -85,6 +87,7 @@ try {
     assert.match(await uuid.inputValue(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.equal(await page.evaluate(() => window.qrFixture.submits), 0, "Generate must not submit form");
   }
+  await page.screenshot({ path: "test-results/uuid-generate.png" });
   await page.getByRole("button", { name: "toggle-disabled" }).click();
   assert.equal(await page.getByRole("button", { name: "生成", exact: true }).isDisabled(), true);
   assert.deepEqual(errors, []);
