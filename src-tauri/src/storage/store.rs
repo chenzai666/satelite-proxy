@@ -829,13 +829,27 @@ impl AppStore {
         // profile and protocol/source. Appended clones are never candidates.
         let mut old_names = std::collections::HashMap::new();
         let mut new_names = std::collections::HashMap::new();
+        let mut old_identities = std::collections::HashMap::new();
+        let mut new_identities = std::collections::HashMap::new();
         for entry in &previous {
             *old_names.entry(entry.name.clone()).or_insert(0usize) += 1;
+            *old_identities
+                .entry(entry.identity.clone())
+                .or_insert(0usize) += 1;
         }
         let source_names: Vec<_> = nodes.iter().map(subscription_match_key).collect();
         for name in &source_names {
             *new_names.entry(name.clone()).or_insert(0usize) += 1;
         }
+        let source_instances: std::collections::HashSet<_> =
+            nodes.iter().map(ProxyNode::instance_key).collect();
+        for node in &nodes {
+            *new_identities.entry(node.identity_key()).or_insert(0usize) += 1;
+        }
+        let reserved_ids: std::collections::HashSet<String> = previous
+            .iter()
+            .map(|entry| entry.id.chars().take(16).collect())
+            .collect();
         let mut used: std::collections::HashSet<String> = self
             .nodes
             .iter()
@@ -849,6 +863,14 @@ impl AppStore {
             .collect();
         for (node, name) in nodes.iter_mut().zip(source_names) {
             use sha2::{Digest, Sha256};
+            let instance = node.instance_key();
+            let identity = node.identity_key();
+            let reserved_for_other = |entry: &PreviousSubscriptionNode| {
+                (entry.instance != instance && source_instances.contains(&entry.instance))
+                    || (entry.name != name
+                        && old_names.get(&entry.name) == Some(&1)
+                        && new_names.get(&entry.name) == Some(&1))
+            };
             let legacy = hex::encode(
                 &Sha256::digest(
                     format!(
@@ -864,27 +886,43 @@ impl AppStore {
             );
             let found = previous
                 .iter()
-                .position(|entry| entry.id == node.id || entry.id == legacy)
-                .or_else(|| {
-                    let instance = node.instance_key();
-                    previous.iter().position(|entry| entry.instance == instance)
+                .position(|entry| {
+                    (entry.id == node.id || entry.id == legacy)
+                        && (entry.instance == instance
+                            || (!reserved_for_other(entry)
+                                && old_identities.get(&entry.identity) == Some(&1)
+                                && new_identities.get(&identity) == Some(&1)))
                 })
+                .or_else(|| previous.iter().position(|entry| entry.instance == instance))
                 .or_else(|| {
                     if old_names.get(&name) != Some(&1) || new_names.get(&name) != Some(&1) {
                         return None;
                     }
-                    previous.iter().position(|entry| entry.name == name)
+                    previous.iter().position(|entry| {
+                        entry.name == name && !source_instances.contains(&entry.instance)
+                    })
                 })
                 .or_else(|| {
-                    let identity = node.identity_key();
-                    previous.iter().position(|entry| entry.identity == identity)
+                    if old_identities.get(&identity) != Some(&1)
+                        || new_identities.get(&identity) != Some(&1)
+                    {
+                        return None;
+                    }
+                    previous
+                        .iter()
+                        .position(|entry| entry.identity == identity && !reserved_for_other(entry))
                 });
+            let matched = found.is_some();
             if let Some(index) = found {
                 node.id = previous.remove(index).id;
             }
             let base = node.id.clone();
             let mut salt = 0;
-            while !used.insert(node.id.chars().take(16).collect()) {
+            // A restored row must not take an id owned by a surviving row
+            // that appears later in the subscription.
+            while (!matched && reserved_ids.contains(&node.id.chars().take(16).collect::<String>()))
+                || !used.insert(node.id.chars().take(16).collect())
+            {
                 salt += 1;
                 node.id =
                     hex::encode(&Sha256::digest(format!("{id}|{base}|{salt}").as_bytes())[..16]);
@@ -4803,6 +4841,10 @@ mod tests {
             .unwrap();
         store.settings.current_node_id = Some("a".into());
 
+        let mut edited = second.clone();
+        edited.name = "My HK-02".into();
+        edited.port = 8443;
+        store.update_node("b", edited).unwrap();
         store.delete_node("a").unwrap();
         assert!(store.find_node("a").is_none());
         assert_eq!(store.settings.current_node_id.as_deref(), Some("b"));
@@ -4818,11 +4860,111 @@ mod tests {
             .unwrap();
         assert!(store.find_node("a").is_some());
         assert!(store.find_node("b").is_some());
+        assert_eq!(store.find_node("a").unwrap().name, "HK-01");
+        assert_eq!(store.find_node("a").unwrap().port, 443);
+        assert_eq!(store.find_node("b").unwrap().name, "My HK-02");
+        assert_eq!(store.find_node("b").unwrap().port, 8443);
         assert_eq!(store.get_subscription("id-s").unwrap().node_count, 2);
         assert_eq!(store.settings.current_node_id.as_deref(), Some("b"));
 
         store.remove_subscription("id-s").unwrap();
         assert!(store.deleted_node_ids.is_empty());
+    }
+
+    #[test]
+    fn restored_same_backend_node_cannot_take_selected_siblings_canonical_id() {
+        let mut store = AppStore::default();
+        let first = sample_hy2("", "HK-01").with_computed_id();
+        let second = sample_hy2("", "HK-02").with_computed_id();
+        let mut old_nodes = vec![second.clone(), first.clone()];
+        ProxyNode::ensure_unique_ids(old_nodes.iter_mut());
+        store
+            .upsert_subscription(sample_url_sub("s"), old_nodes)
+            .unwrap();
+        let selected_id = store
+            .nodes
+            .iter()
+            .find(|entry| entry.node.name == "HK-02")
+            .unwrap()
+            .node
+            .id
+            .clone();
+        let deleted_id = store
+            .nodes
+            .iter()
+            .find(|entry| entry.node.name == "HK-01")
+            .unwrap()
+            .node
+            .id
+            .clone();
+        let mut edited = store.find_node(&selected_id).unwrap().clone();
+        edited.name = "My selected node".into();
+        edited.port = 8443;
+        store.update_node(&selected_id, edited).unwrap();
+        store.settings.current_node_id = Some(selected_id.clone());
+        store.delete_node(&deleted_id).unwrap();
+
+        let mut refreshed = vec![first, second];
+        ProxyNode::ensure_unique_ids(refreshed.iter_mut());
+        assert_eq!(refreshed[0].id, selected_id);
+        store
+            .upsert_subscription(sample_url_sub("s"), refreshed)
+            .unwrap();
+        let selected = store.find_node(&selected_id).unwrap();
+        assert_eq!(selected.name, "My selected node");
+        assert_eq!(selected.port, 8443);
+        assert_eq!(store.settings.current_node_id.as_ref(), Some(&selected_id));
+        let restored = store
+            .nodes
+            .iter()
+            .find(|entry| entry.node.name == "HK-01")
+            .unwrap();
+        assert_ne!(restored.node.id, selected_id);
+        assert_eq!(restored.node.port, 443);
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 2);
+    }
+
+    #[test]
+    fn restoring_same_backend_node_preserves_rotating_siblings_edits_and_selection() {
+        let mut store = AppStore::default();
+        let first = sample_hy2("", "HK-01").with_computed_id();
+        let second = sample_hy2("", "HK-02").with_computed_id();
+        let mut old_nodes = vec![second.clone(), first.clone()];
+        ProxyNode::ensure_unique_ids(old_nodes.iter_mut());
+        let selected_id = old_nodes[0].id.clone();
+        let deleted_id = old_nodes[1].id.clone();
+        store
+            .upsert_subscription(sample_url_sub("s"), old_nodes)
+            .unwrap();
+        let mut edited = store.find_node(&selected_id).unwrap().clone();
+        edited.name = "My rotating node".into();
+        edited.port = 8443;
+        store.update_node(&selected_id, edited).unwrap();
+        store.settings.current_node_id = Some(selected_id.clone());
+        store.delete_node(&deleted_id).unwrap();
+
+        let mut rotated = second;
+        rotated.server = "rotated.example.test".into();
+        let mut refreshed = vec![first, rotated.with_computed_id()];
+        ProxyNode::ensure_unique_ids(refreshed.iter_mut());
+        assert_eq!(refreshed[0].id, selected_id);
+        store
+            .upsert_subscription(sample_url_sub("s"), refreshed)
+            .unwrap();
+        let selected = store.find_node(&selected_id).unwrap();
+        assert_eq!(selected.name, "My rotating node");
+        assert_eq!(selected.port, 8443);
+        assert_eq!(selected.server, "rotated.example.test");
+        assert_eq!(store.settings.current_node_id.as_ref(), Some(&selected_id));
+        let restored = store
+            .nodes
+            .iter()
+            .find(|entry| entry.node.name == "HK-01")
+            .unwrap();
+        assert_ne!(restored.node.id, selected_id);
+        assert_eq!(restored.node.port, 443);
+        assert_eq!(restored.node.server, "203.10.98.188");
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 2);
     }
 
     #[test]
@@ -4982,7 +5124,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_deleted_node_is_not_reintroduced_with_new_hash() {
+    fn legacy_deleted_node_returns_on_refresh_with_new_hash() {
         use sha2::{Digest, Sha256};
         let mut store = AppStore::default();
         let sub = sample_url_sub("s");
@@ -5005,9 +5147,17 @@ mod tests {
             .unwrap();
         store.delete_node(&source.id).unwrap();
         store
+            .deleted_node_ids
+            .insert(AppStore::node_override_key(&sub.id, &source.id));
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        assert!(store.nodes.is_empty());
+        store
             .upsert_subscription(sub, vec![source.with_computed_id()])
             .unwrap();
-        assert!(store.nodes.is_empty());
+        assert_eq!(store.nodes.len(), 1);
+        assert_eq!(store.nodes[0].node.name, "HK-01");
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
+        assert!(store.deleted_node_ids.is_empty());
     }
 
     #[test]
