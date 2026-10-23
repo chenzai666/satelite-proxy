@@ -6758,8 +6758,8 @@ button.check.on {
   color: var(--warning);
 }
 
-   Global (not scoped to .instrument-traffic) so the same colors apply to the
-   dashboard traffic card, the simple-mode bar, and the conn-table rows. */
+/* Directional traffic arrows share colors across the dashboard card,
+   simple-mode bar, and connection tables. */
 .tr-dir {
   font-weight: 600;
 }

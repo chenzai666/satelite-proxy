@@ -14,6 +14,8 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-10-23 订阅完整刷新：delete_node 仅删除当前存储节点，不新增 deleted_node_ids；此字段保留旧存储兼容读取，upsert_subscription 在成功获取/解析后按当前配置 ID 前缀清除旧标记，不再用其过滤源节点或跳过 ID 匹配。其他配置的旧标记待其自身刷新再清除，不全局清空。保留手动追加、订阅顺序、三方编辑合并、选中状态和跨配置 tag 唯一；手动追加节点删除后不因刷新恢复。persist_import 返回最终 SubscriptionView.node_count，与卡片及实际存储一致。ConfigPage 普通订阅格式标签动态显示 Clash YAML/sing-box JSON/URI/Base64 URI，自写配置仍显示目标内核，支持报告仍列真实内核；默认订阅 UA 不随主核切换。Rust/Node 回归覆盖旧标记、39+1=40、salted ID、编辑与配置隔离；本机不构建客户端、不改活动数据，Actions 验证后继续覆盖 v1.0.46 Release。
+
 2026-10-23 分类流量：traffic_stats.rs 提供会话内TrafficAccounting，ProxyStatus.traffic_breakdown含source(outbound/connections/unavailable)、proxy/direct/unclassified四项速度/累计桶。XrayMetrics.traffic_snapshot一次读所有outbound，同时给原总量和分类；conn_journal→state保持会话校验并调用Runtime.apply_metrics_snapshot。生成配置node-*代理、direct直连，其余辅助未知不猜；TLS分片保留原核心总量口径，不叠加副核。Clash快照仅对实际路径和已观察增量分类，每方向以本帧核心总增量为预算，不一致帧留未知，缺失短连接/路径/超限保留未分类；跟踪上限16384，连接历史裁剪与累计无关。custom类型映射不可信，sourceunavailable不按tag猜。新start清除traffic_prev及分类账本，停止/异常退出显示速度0，禁止改路由/采样轮询频率为统计补漏。TrafficStatsCard与trafficStats.ts替代Dashboard旧合计卡，代理/直连/合计同时可见、未知非零追加行、无分类显示—；Node及CI浏览器回归覆盖窄卡与zoom，Rust只在Actions测试。版本仍1.0.46，先成功验证后覆盖Release两包，不替换本地运行客户端。
 
 二维码交互可单独调度 qr-import-tests.yml 在 Windows runner 运行类型/像素与真实组件浏览器回归，不构建客户端；正式发布仍以完整 build-windows.yml 成功为准。失败日志只输出模拟夹具状态，禁止记录真实扫码图像和订阅凭据。
@@ -83,7 +85,7 @@ Xray 非默认 DNS 池仅作分类；Mihomo 不生成跨池 fallback；旧 leak_
 2026-09-08 分支整合上游 v1.0.23 功能，当时应用版本为 1.0.21：
 - Windows 设置 → 端口提供“解除 UWP 回环限制”：经现有 UAC 提权链调用系统 `CheckNetIsolation.exe`，为当前用户已安装的 AppContainer 包追加 `LoopbackExempt`；操作幂等、只追加、不改系统代理、不清空既有豁免。
 - `AppStore.favorite_nodes` 持久化收藏；`toggle_favorite_node` 经 `commands/config.rs`、`lib.rs`、`api.ts` 注册。删除节点/订阅、刷新订阅后清理失效收藏。
-- `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记按原算法匹配。
+- `ProxyNode` 新标识按后端身份计算；`upsert_subscription` 优先保留旧节点 ID，兼容手选、规则引用、本地覆盖；多订阅重复后端分配独立 ID。旧删除标记仅兼容读取，成功刷新对应配置时按前缀清理，不再参与节点过滤。
 - 节点页收藏筛选、右键收藏/单点测速并入原有编辑/删除/分享菜单，卡片角落菜单复用 portal；去除整行单点测速开关，圆点切节点、延迟按钮测速。收藏筛选下批量测速和 Ctrl+A 仅操作可见节点。
 - `customNodes.sortNodes` 支持流式测速实时排序；保持 64px 行高及概览信息卡片在策略组上方。
 

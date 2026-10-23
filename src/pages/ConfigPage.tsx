@@ -201,8 +201,8 @@ function localizeExpireText(text: string, locale: string, neverLabel: string): s
 }
 
 /** Config-type pill label: custom profiles show their kernel; node
- *  subscriptions show the detected source format (clash_yaml → mihomo,
- *  singbox_json → sing-box, URI lists → URI). Null = no pill (manual). */
+ *  subscriptions show the detected source format (Clash YAML / sing-box JSON
+ *  / URI / Base64 URI). Null = no pill (manual). */
 function typeTagLabel(
   t: (key: import("../i18n").MessageKey) => string,
   item: SubscriptionView,
@@ -214,9 +214,9 @@ function typeTagLabel(
   }
   switch (item.format) {
     case "clash_yaml":
-      return t("config.typeMihomo");
+      return t("config.formatClashYaml");
     case "singbox_json":
-      return t("config.typeSingbox");
+      return t("config.formatSingboxJson");
     case "uri_list":
       return t("config.typeUri");
     case "base64_uri_list":

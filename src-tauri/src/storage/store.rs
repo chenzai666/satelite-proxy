@@ -61,8 +61,9 @@ pub struct AppStore {
     /// Old overrides without a base remain authoritative (never guess edits).
     #[serde(default)]
     pub node_override_bases: std::collections::BTreeMap<String, ProxyNode>,
-    /// Nodes deleted locally, keyed by `subscription-id|source-node-id`.
-    /// Tombstones keep remote subscription refreshes from restoring them.
+    /// Legacy deletion markers, keyed by `subscription-id|source-node-id`.
+    /// Cleared for a profile when it is refreshed; new deletions only remove
+    /// the current stored entry and never hide future subscription nodes.
     #[serde(default)]
     pub deleted_node_ids: std::collections::BTreeSet<String>,
     /// User-favorited node ids. Keyed by `ProxyNode.id` (a content hash of
@@ -777,6 +778,9 @@ impl AppStore {
         mut nodes: Vec<ProxyNode>,
     ) -> AppResult<()> {
         let id = sub.id.clone();
+        let legacy_deletion_prefix = format!("{id}|");
+        self.deleted_node_ids
+            .retain(|key| !key.starts_with(&legacy_deletion_prefix));
         let old_order: Vec<_> = self
             .ordered_nodes()
             .into_iter()
@@ -858,20 +862,6 @@ impl AppStore {
                     .as_bytes(),
                 )[..16],
             );
-            // 删除标记优先，不能将已删除节点按相同后端匹配成另一个存量节点。
-            if self
-                .deleted_node_ids
-                .contains(&Self::node_override_key(&id, &node.id))
-            {
-                continue;
-            }
-            if self
-                .deleted_node_ids
-                .contains(&Self::node_override_key(&id, &legacy))
-            {
-                node.id = legacy;
-                continue;
-            }
             let found = previous
                 .iter()
                 .position(|entry| entry.id == node.id || entry.id == legacy)
@@ -901,14 +891,6 @@ impl AppStore {
             }
         }
         self.nodes.retain(|n| n.subscription_id != id);
-        let nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|node| {
-                !self
-                    .deleted_node_ids
-                    .contains(&Self::node_override_key(&id, &node.id))
-            })
-            .collect();
         sub.node_count = (nodes.len() + appended.len()) as u32;
         if let Some(existing) = self.subscriptions.iter_mut().find(|s| s.id == id) {
             *existing = sub;
@@ -1489,7 +1471,7 @@ impl AppStore {
         self.appended_node_ids.remove(&key);
         self.node_overrides.remove(&key);
         self.node_override_bases.remove(&key);
-        self.deleted_node_ids.insert(key);
+        self.deleted_node_ids.remove(&key);
         self.gc_favorite_nodes();
         if let Some(subscription) = self
             .subscriptions
@@ -4812,7 +4794,7 @@ mod tests {
     }
 
     #[test]
-    fn deleted_node_stays_deleted_after_refresh() {
+    fn deleted_subscription_node_returns_only_after_refresh() {
         let mut store = AppStore::default();
         let first = sample_hy2("a", "HK-01");
         let second = sample_hy2("b", "HK-02");
@@ -4825,16 +4807,144 @@ mod tests {
         assert!(store.find_node("a").is_none());
         assert_eq!(store.settings.current_node_id.as_deref(), Some("b"));
         assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
+        assert!(store.deleted_node_ids.is_empty());
+
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        assert!(store.find_node("a").is_none());
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
 
         store
             .upsert_subscription(sample_url_sub("s"), vec![first, second])
             .unwrap();
-        assert!(store.find_node("a").is_none());
+        assert!(store.find_node("a").is_some());
         assert!(store.find_node("b").is_some());
-        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 1);
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 2);
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b"));
 
         store.remove_subscription("id-s").unwrap();
         assert!(store.deleted_node_ids.is_empty());
+    }
+
+    #[test]
+    fn refresh_restores_legacy_hidden_nodes_and_keeps_manual_nodes_and_edits() {
+        let mut store = AppStore::default();
+        let source: Vec<_> = (0..39)
+            .map(|index| {
+                let mut node = sample_hy2("", &format!("Node-{index}"));
+                node.server = format!("node-{index}.example.test");
+                node.with_computed_id()
+            })
+            .collect();
+        // The same backend in another profile forces two restored nodes to
+        // use salted ids, as in stores created by earlier versions.
+        let foreign = sample_hy2("foreign", "Foreign");
+        store
+            .upsert_subscription(
+                sample_url_sub("t"),
+                vec![source[0].clone(), source[1].clone(), foreign],
+            )
+            .unwrap();
+        store.delete_node("foreign").unwrap();
+        let foreign_marker = AppStore::node_override_key("id-t", "foreign");
+        store.deleted_node_ids.insert(foreign_marker.clone());
+        store
+            .upsert_subscription(sample_url_sub("s"), source.clone())
+            .unwrap();
+        let imported: Vec<_> = store
+            .ordered_nodes()
+            .into_iter()
+            .filter(|entry| entry.subscription_id == "id-s")
+            .map(|entry| entry.node.clone())
+            .collect();
+        assert_ne!(imported[0].id, source[0].id);
+        assert_ne!(imported[1].id, source[1].id);
+
+        let edited_id = imported[30].id.clone();
+        let mut edited = imported[30].clone();
+        edited.name = "My edited name".into();
+        store.update_node(&edited_id, edited).unwrap();
+        store.settings.current_node_id = Some(edited_id.clone());
+
+        let manual = sample_hy2("", "Manual");
+        store
+            .append_nodes_to_profile(Some("id-s"), vec![manual])
+            .unwrap();
+        let manual_entry = store
+            .nodes
+            .iter()
+            .find(|entry| {
+                entry.subscription_id == "id-s"
+                    && store
+                        .appended_node_ids
+                        .contains(&AppStore::node_override_key("id-s", &entry.node.id))
+            })
+            .unwrap()
+            .node
+            .clone();
+        for node in imported.iter().take(26) {
+            store.delete_node(&node.id).unwrap();
+            store
+                .deleted_node_ids
+                .insert(AppStore::node_override_key("id-s", &node.id));
+        }
+        // Also retain a pre-identity-hash deletion marker from older stores.
+        use sha2::{Digest, Sha256};
+        let legacy = hex::encode(
+            &Sha256::digest(
+                format!(
+                    "id-s|{}|{}|{}|{}",
+                    source[2].name,
+                    source[2].server,
+                    source[2].port,
+                    source[2].protocol.as_str()
+                )
+                .as_bytes(),
+            )[..16],
+        );
+        store
+            .deleted_node_ids
+            .insert(AppStore::node_override_key("id-s", &legacy));
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 14);
+        let mut store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 14);
+
+        store
+            .upsert_subscription(sample_url_sub("s"), source.clone())
+            .unwrap();
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 40);
+        let names: Vec<_> = store
+            .ordered_nodes()
+            .into_iter()
+            .filter(|entry| entry.subscription_id == "id-s")
+            .map(|entry| entry.node.name.clone())
+            .collect();
+        let mut expected_names: Vec<_> = source.iter().map(|node| node.name.clone()).collect();
+        expected_names[30] = "My edited name".into();
+        expected_names.push("Manual".into());
+        assert_eq!(names, expected_names);
+        assert_eq!(
+            serde_json::to_value(store.find_node(&manual_entry.id).unwrap()).unwrap(),
+            serde_json::to_value(&manual_entry).unwrap()
+        );
+        assert_eq!(store.settings.current_node_id.as_ref(), Some(&edited_id));
+        assert!(store.deleted_node_ids.contains(&foreign_marker));
+        assert_eq!(store.deleted_node_ids.len(), 1);
+        assert_eq!(store.get_subscription("id-t").unwrap().node_count, 2);
+        let tag_prefixes: std::collections::HashSet<_> = store
+            .nodes
+            .iter()
+            .map(|entry| entry.node.id.chars().take(16).collect::<String>())
+            .collect();
+        assert_eq!(tag_prefixes.len(), store.nodes.len());
+
+        // Removing a manual addition is permanent because it is not in the
+        // source subscription; refreshing must not manufacture it again.
+        store.delete_node(&manual_entry.id).unwrap();
+        store
+            .upsert_subscription(sample_url_sub("s"), source)
+            .unwrap();
+        assert_eq!(store.get_subscription("id-s").unwrap().node_count, 39);
+        assert!(store.find_node(&manual_entry.id).is_none());
     }
 
     #[test]

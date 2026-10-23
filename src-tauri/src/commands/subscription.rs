@@ -801,8 +801,6 @@ fn persist_import_replacing(
     // failure must not fail the import itself.
     let raw_body = outcome.raw_body.clone();
     let raw_id = outcome.subscription.id.clone();
-    let node_count = outcome.subscription.node_count;
-    let skipped_count = outcome.subscription.skipped_count;
     let sub_id = outcome.subscription.id.clone();
     let skipped_detail = outcome.skipped.clone();
     let (view, node_set_changed, policy_changed) = state
@@ -874,6 +872,8 @@ fn persist_import_replacing(
         );
         crate::rule_apply::request_restart(app.clone(), Vec::new());
     }
+    let node_count = view.node_count;
+    let skipped_count = view.skipped_count;
     Ok(ImportResult {
         subscription: view,
         node_count,
