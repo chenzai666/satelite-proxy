@@ -37,6 +37,7 @@ import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { HeroVisual } from "../components/HeroVisual";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
+import { TrafficStatsCard } from "../components/TrafficStatsCard";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import { applyLatencyResult, applyNodeLatencyChange } from "../nodeLatencyState";
 import type {
@@ -88,12 +89,6 @@ interface Props {
   onGoNodes?: () => void;
   onGoTraffic?: () => void;
   onGoSettings?: () => void;
-}
-
-function fmtSpeed(bps: number) {
-  if (bps < 1024) return `${bps} B/s`;
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
 }
 
 function fmtBytes(n: number) {
@@ -1531,55 +1526,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           onOpen={onGoTraffic}
         />
 
-        <article
-          className="instrument accent-blue instrument-click"
-          role="button"
-          tabIndex={0}
-          onClick={() => onGoTraffic?.()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") onGoTraffic?.();
-          }}
-        >
-          <header className="instrument-head">
-            <span className="instrument-label">
-              {t("dashboard.cardTrafficStats")}
-            </span>
-          </header>
-          <div className="instrument-traffic-cols">
-            <div className="instrument-traffic-col">
-              <div className="instrument-traffic-col-label">
-                {t("dashboard.trafficLive")}
-              </div>
-              <div className="instrument-traffic">
-                <div>
-                  <span className="tr-dir down">↓</span>{" "}
-                  {fmtSpeed(proxy?.download_speed ?? 0)}
-                </div>
-                <div>
-                  <span className="tr-dir up">↑</span>{" "}
-                  {fmtSpeed(proxy?.upload_speed ?? 0)}
-                </div>
-              </div>
-            </div>
-            <div className="instrument-traffic-col">
-              <div className="instrument-traffic-col-label">
-                {t("dashboard.trafficTotal")}
-              </div>
-              <div className="instrument-traffic">
-                <div>
-                  <span className="tr-sigma down">Σ</span>
-                  <span className="tr-dir down">↓</span>{" "}
-                  {fmtBytes(proxy?.download_total ?? 0)}
-                </div>
-                <div>
-                  <span className="tr-sigma up">Σ</span>
-                  <span className="tr-dir up">↑</span>{" "}
-                  {fmtBytes(proxy?.upload_total ?? 0)}
-                </div>
-              </div>
-            </div>
-          </div>
-        </article>
+        <TrafficStatsCard status={proxy} onOpen={onGoTraffic} />
 
         <article
           className="instrument accent-cyan instrument-click"

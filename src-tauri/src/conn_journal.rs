@@ -152,9 +152,9 @@ fn journal_loop(app: AppHandle) {
 fn poll_xray_metrics(state: &AppState, metrics: &crate::api::XrayMetrics) {
     const XRAY_POLL_MS: u64 = 1000;
     while metrics.is_active() && !state.is_core_transitioning() {
-        match metrics.traffic_totals() {
-            Some(totals) => {
-                state.try_apply_metrics_snapshot(metrics, totals);
+        match metrics.traffic_snapshot() {
+            Some((totals, classified)) => {
+                state.try_apply_metrics_snapshot(metrics, totals, classified);
             }
             None => break,
         }

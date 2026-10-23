@@ -698,6 +698,14 @@ export interface UwpLoopbackResult {
   error?: string | null;
 }
 
+/** Traffic counters in bytes; speeds in bytes per second. */
+export interface TrafficBucket {
+  upload_speed: number;
+  download_speed: number;
+  upload_total: number;
+  download_total: number;
+}
+
 export interface ProxyStatus {
   running: boolean;
   core_state: CoreState;
@@ -717,6 +725,12 @@ export interface ProxyStatus {
   download_speed: number;
   upload_total: number;
   download_total: number;
+  traffic_breakdown?: {
+    source: "outbound" | "connections" | "unavailable";
+    proxy: TrafficBucket;
+    direct: TrafficBucket;
+    unclassified: TrafficBucket;
+  };
   connections: number;
   /** @deprecated use auto_select === "smart" */
   smart_switch?: boolean;

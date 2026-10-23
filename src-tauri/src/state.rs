@@ -586,6 +586,57 @@ mod kernel_selection_poll_tests {
     }
 
     #[test]
+    fn cached_stopped_rates_and_failed_start_counters_are_consistent() {
+        let temp_root = std::env::temp_dir();
+        let test_dir = temp_root.join(format!(
+            "satelite-classified-cache-{}",
+            crate::config::generate_api_secret()
+        ));
+        let state = AppState::load(test_dir.clone(), None).expect("load isolated state");
+        {
+            let mut cached = recover_lock(&state.status_cache, "status_cache");
+            cached.running = false;
+            cached.upload_speed = 30;
+            cached.download_speed = 60;
+            cached.upload_total = 900;
+            cached.download_total = 1800;
+            cached.traffic_breakdown.source = "outbound";
+            let split = &mut cached.traffic_breakdown;
+            for bucket in [&mut split.proxy, &mut split.direct, &mut split.unclassified] {
+                bucket.upload_speed = 30;
+                bucket.download_speed = 60;
+                bucket.upload_total = 300;
+                bucket.download_total = 600;
+            }
+        }
+        // Holding runtime forces the same memory-only fallback used during
+        // lock contention; it must not preserve stale stopped rates.
+        let runtime = state.lock_runtime();
+        let stopped = state.proxy_status().unwrap();
+        assert_eq!(stopped.download_speed, 0);
+        assert_eq!(stopped.traffic_breakdown.proxy.download_speed, 0);
+        assert_eq!(stopped.traffic_breakdown.direct.download_speed, 0);
+        assert_eq!(stopped.traffic_breakdown.unclassified.download_speed, 0);
+        assert_eq!(stopped.download_total, 1800);
+        state.mark_cached_core_error("isolated start failure");
+        let failed = state.proxy_status().unwrap();
+        assert!(!failed.running);
+        assert_eq!(failed.download_total, 0);
+        assert_eq!(failed.traffic_breakdown.proxy.download_total, 0);
+        assert_eq!(failed.traffic_breakdown.direct.download_total, 0);
+        assert_eq!(failed.traffic_breakdown.unclassified.download_total, 0);
+        assert_eq!(failed.traffic_breakdown.source, "unavailable");
+        drop(runtime);
+        drop(state);
+        if test_dir.exists() {
+            let resolved = test_dir.canonicalize().unwrap();
+            let resolved_temp = temp_root.canonicalize().unwrap();
+            assert_eq!(resolved.parent(), Some(resolved_temp.as_path()));
+            std::fs::remove_dir_all(resolved).unwrap();
+        }
+    }
+
+    #[test]
     fn traffic_views_use_cache_instead_of_waiting_during_transition() {
         let test_dir = std::env::temp_dir().join(format!(
             "satelite-traffic-cache-{}-{}",
@@ -1024,6 +1075,7 @@ impl AppState {
         &self,
         metrics: &crate::api::XrayMetrics,
         totals: crate::api::TrafficTotals,
+        classified: crate::traffic_stats::ClassifiedTotals,
     ) -> bool {
         if self.is_core_transitioning() || !metrics.is_active() {
             return false;
@@ -1044,11 +1096,7 @@ impl AppState {
         {
             return false;
         }
-        runtime.apply_snapshot(crate::api::ConnectionsSnapshot {
-            upload_total: totals.upload_total,
-            download_total: totals.download_total,
-            connections: Vec::new(),
-        });
+        runtime.apply_metrics_snapshot(totals, classified);
         true
     }
 
@@ -1131,11 +1179,19 @@ impl AppState {
     }
 
     fn cache_status(&self, status: &ProxyStatus) {
-        *recover_lock(&self.status_cache, "status_cache") = status.clone();
+        let mut status = status.clone();
+        if !status.running {
+            status.clear_traffic_rates();
+        }
+        *recover_lock(&self.status_cache, "status_cache") = status;
     }
 
     fn cached_status(&self) -> ProxyStatus {
-        recover_lock(&self.status_cache, "status_cache").clone()
+        let mut status = recover_lock(&self.status_cache, "status_cache").clone();
+        if !status.running {
+            status.clear_traffic_rates();
+        }
+        status
     }
 
     fn mark_cached_core_state(&self, core_state: CoreState) {
@@ -1151,6 +1207,7 @@ impl AppState {
         let mut status = recover_lock(&self.status_cache, "status_cache");
         status.core_state = CoreState::Error;
         status.running = false;
+        status.clear_traffic_session();
         status.error = Some(error.to_string());
     }
 
@@ -2202,6 +2259,9 @@ impl AppState {
         let mut cached = recover_lock(&self.status_cache, "status_cache");
         cached.running = running;
         cached.core_state = core_state;
+        if !running {
+            cached.clear_traffic_rates();
+        }
         running
     }
 

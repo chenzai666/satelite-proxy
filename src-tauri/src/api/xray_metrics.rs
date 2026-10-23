@@ -71,18 +71,17 @@ impl XrayMetrics {
     /// Per-connection counts don't exist under Xray — `connections` stays 0
     /// and the connection pages render their "unsupported" state.
     pub fn traffic_totals(&self) -> Option<TrafficTotals> {
+        self.traffic_snapshot().map(|(totals, _)| totals)
+    }
+
+    /// Total and classified outbound counters from the same single poll.
+    /// Only generated node/direct tags have a known class. Auxiliary tags
+    /// (including fragment-out, which can overlap node traffic) stay unclassified.
+    pub fn traffic_snapshot(
+        &self,
+    ) -> Option<(TrafficTotals, crate::traffic_stats::ClassifiedTotals)> {
         let per_tag = self.outbound_totals()?;
-        let mut upload_total = 0u64;
-        let mut download_total = 0u64;
-        for counters in per_tag.values() {
-            upload_total = upload_total.saturating_add(counters.up);
-            download_total = download_total.saturating_add(counters.down);
-        }
-        Some(TrafficTotals {
-            upload_total,
-            download_total,
-            connections: 0,
-        })
+        Some(snapshot_from_outbounds(&per_tag))
     }
 
     /// Per-outbound-tag counters, one poll.
@@ -93,21 +92,7 @@ impl XrayMetrics {
             .call()
             .ok()?;
         let body: Value = resp.into_json().ok()?;
-        let outbounds = body.get("stats")?.get("outbound")?.as_object()?;
-        let mut map = HashMap::with_capacity(outbounds.len());
-        for (tag, counters) in outbounds {
-            map.insert(
-                tag.clone(),
-                TagCounters {
-                    up: counters.get("uplink").and_then(Value::as_u64).unwrap_or(0),
-                    down: counters
-                        .get("downlink")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                },
-            );
-        }
-        Some(map)
+        parse_outbound_totals(&body)
     }
 
     /// The node outbound tag that carried the most traffic since the previous
@@ -135,6 +120,48 @@ impl TagCounters {
     fn total(self) -> u64 {
         self.up.saturating_add(self.down)
     }
+}
+
+fn parse_outbound_totals(body: &Value) -> Option<HashMap<String, TagCounters>> {
+    let outbounds = body.get("stats")?.get("outbound")?.as_object()?;
+    let mut map = HashMap::with_capacity(outbounds.len());
+    for (tag, counters) in outbounds {
+        map.insert(
+            tag.clone(),
+            TagCounters {
+                up: counters.get("uplink").and_then(Value::as_u64).unwrap_or(0),
+                down: counters
+                    .get("downlink")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            },
+        );
+    }
+    Some(map)
+}
+
+fn snapshot_from_outbounds(
+    per_tag: &HashMap<String, TagCounters>,
+) -> (TrafficTotals, crate::traffic_stats::ClassifiedTotals) {
+    let mut totals = TrafficTotals::default();
+    let mut classified = crate::traffic_stats::ClassifiedTotals::default();
+    for (tag, counters) in per_tag {
+        totals.upload_total = totals.upload_total.saturating_add(counters.up);
+        totals.download_total = totals.download_total.saturating_add(counters.down);
+        let bucket = if tag
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("node-"))
+        {
+            &mut classified.proxy
+        } else if tag.eq_ignore_ascii_case("direct") {
+            &mut classified.direct
+        } else {
+            &mut classified.unclassified
+        };
+        bucket.upload = bucket.upload.saturating_add(counters.up);
+        bucket.download = bucket.download.saturating_add(counters.down);
+    }
+    (totals, classified)
 }
 
 /// Pure decision core (unit-tested): among `node-` tags, the one with the
@@ -167,6 +194,181 @@ mod tests {
 
     fn tc(up: u64, down: u64) -> TagCounters {
         TagCounters { up, down }
+    }
+
+    fn snapshot_from_body(
+        body: &str,
+    ) -> Option<(TrafficTotals, crate::traffic_stats::ClassifiedTotals)> {
+        let body: Value = serde_json::from_str(body).ok()?;
+        let per_tag = parse_outbound_totals(&body)?;
+        Some(snapshot_from_outbounds(&per_tag))
+    }
+
+    fn bytes(value: &crate::traffic_stats::TrafficBytes) -> (u64, u64) {
+        (value.upload, value.download)
+    }
+
+    #[test]
+    fn snapshot_classifies_mixed_outbounds_from_one_body() {
+        let (totals, classified) = snapshot_from_body(
+            r#"{"stats":{"outbound":{
+                "node-a":{"uplink":10,"downlink":20},
+                "node-b":{"uplink":30,"downlink":40},
+                "direct":{"uplink":50,"downlink":60},
+                "custom":{"uplink":70,"downlink":80}
+            }}}"#,
+        )
+        .unwrap();
+
+        assert_eq!((totals.upload_total, totals.download_total), (160, 200));
+        assert_eq!(totals.connections, 0);
+        assert_eq!(bytes(&classified.proxy), (40, 60));
+        assert_eq!(bytes(&classified.direct), (50, 60));
+        assert_eq!(bytes(&classified.unclassified), (70, 80));
+    }
+
+    #[test]
+    fn snapshot_known_tags_are_ascii_case_insensitive() {
+        let (totals, classified) = snapshot_from_body(
+            r#"{"stats":{"outbound":{
+                "NoDe-a":{"uplink":1,"downlink":2},
+                "DIRECT":{"uplink":3,"downlink":4},
+                "DiReCt":{"uplink":5,"downlink":6}
+            }}}"#,
+        )
+        .unwrap();
+
+        assert_eq!((totals.upload_total, totals.download_total), (9, 12));
+        assert_eq!(bytes(&classified.proxy), (1, 2));
+        assert_eq!(bytes(&classified.direct), (8, 10));
+        assert_eq!(bytes(&classified.unclassified), (0, 0));
+    }
+
+    #[test]
+    fn snapshot_auxiliary_and_lookalike_tags_remain_unclassified() {
+        let tags = [
+            "custom",
+            "proxy",
+            "dns-out",
+            "dns-module",
+            "direct-dns",
+            "DNS",
+            "api",
+            "block",
+            "fragment-out",
+            "proxy-balancer",
+            "smart-a",
+            "filter-a",
+            "node",
+            "node_a",
+            "direct-custom",
+            "",
+            "节点-a",
+        ];
+        let per_tag = tags
+            .into_iter()
+            .map(|tag| (tag.to_string(), tc(2, 3)))
+            .collect();
+        let (totals, classified) = snapshot_from_outbounds(&per_tag);
+        let expected = (tags.len() as u64 * 2, tags.len() as u64 * 3);
+
+        assert_eq!((totals.upload_total, totals.download_total), expected);
+        assert_eq!(bytes(&classified.proxy), (0, 0));
+        assert_eq!(bytes(&classified.direct), (0, 0));
+        assert_eq!(bytes(&classified.unclassified), expected);
+    }
+
+    #[test]
+    fn snapshot_empty_or_invalid_body_and_missing_stats_return_none() {
+        for body in [
+            "",
+            " ",
+            "not-json",
+            "null",
+            "[]",
+            "{}",
+            r#"{"stats":{}}"#,
+            r#"{"stats":{"outbound":null}}"#,
+            r#"{"stats":{"outbound":[]}}"#,
+        ] {
+            assert!(snapshot_from_body(body).is_none(), "body: {body}");
+        }
+    }
+
+    #[test]
+    fn snapshot_empty_outbounds_and_zero_traffic_are_valid() {
+        for body in [
+            r#"{"stats":{"outbound":{}}}"#,
+            r#"{"stats":{"outbound":{
+                "node-a":{"uplink":0,"downlink":0},
+                "direct":{"uplink":0,"downlink":0},
+                "custom":{"uplink":0,"downlink":0}
+            }}}"#,
+        ] {
+            let (totals, classified) = snapshot_from_body(body).unwrap();
+            assert_eq!((totals.upload_total, totals.download_total), (0, 0));
+            assert_eq!(totals.connections, 0);
+            assert_eq!(bytes(&classified.proxy), (0, 0));
+            assert_eq!(bytes(&classified.direct), (0, 0));
+            assert_eq!(bytes(&classified.unclassified), (0, 0));
+        }
+    }
+
+    #[test]
+    fn snapshot_missing_or_invalid_counters_keep_zero_fallback() {
+        let (totals, classified) = snapshot_from_body(
+            r#"{"stats":{"outbound":{
+                "node-a":{"uplink":8},
+                "direct":{"downlink":9},
+                "custom":{"uplink":-1,"downlink":"10"},
+                "api":null,
+                "block":{},
+                "dns-out":{"uplink":1.5,"downlink":false}
+            }}}"#,
+        )
+        .unwrap();
+
+        assert_eq!((totals.upload_total, totals.download_total), (8, 9));
+        assert_eq!(bytes(&classified.proxy), (8, 0));
+        assert_eq!(bytes(&classified.direct), (0, 9));
+        assert_eq!(bytes(&classified.unclassified), (0, 0));
+    }
+
+    #[test]
+    fn snapshot_parses_u64_max_and_saturates_across_classes() {
+        let (totals, classified) = snapshot_from_body(
+            r#"{"stats":{"outbound":{
+                "node-a":{"uplink":18446744073709551615,"downlink":1},
+                "direct":{"uplink":1,"downlink":18446744073709551615},
+                "custom":{"uplink":2,"downlink":3}
+            }}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(totals.upload_total, u64::MAX);
+        assert_eq!(totals.download_total, u64::MAX);
+        assert_eq!(bytes(&classified.proxy), (u64::MAX, 1));
+        assert_eq!(bytes(&classified.direct), (1, u64::MAX));
+        assert_eq!(bytes(&classified.unclassified), (2, 3));
+    }
+
+    #[test]
+    fn snapshot_saturates_totals_and_every_class_in_both_directions() {
+        let mut per_tag = HashMap::new();
+        for tag in ["node-a", "direct", "custom"] {
+            per_tag.insert(tag.to_string(), tc(u64::MAX - 1, u64::MAX));
+        }
+        for tag in ["node-b", "DIRECT", "fragment-out"] {
+            per_tag.insert(tag.to_string(), tc(2, 1));
+        }
+        let (totals, classified) = snapshot_from_outbounds(&per_tag);
+
+        assert_eq!(totals.upload_total, u64::MAX);
+        assert_eq!(totals.download_total, u64::MAX);
+        assert_eq!(totals.connections, 0);
+        assert_eq!(bytes(&classified.proxy), (u64::MAX, u64::MAX));
+        assert_eq!(bytes(&classified.direct), (u64::MAX, u64::MAX));
+        assert_eq!(bytes(&classified.unclassified), (u64::MAX, u64::MAX));
     }
 
     #[test]

@@ -7172,7 +7172,7 @@ button.check.on {
 
 .instrument-grid.instrument-grid-6 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-rows: 9.5rem;
+  grid-auto-rows: minmax(9.5rem, auto);
 }
 
 .instrument-grid.instrument-grid-6 > .instrument,
@@ -7217,6 +7217,100 @@ button.check.on {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* Classification adds rows: let the grid grow instead of clipping counters. */
+.traffic-stats-card {
+  min-width: 0;
+}
+
+.traffic-stats-card .instrument-head {
+  flex-wrap: wrap;
+}
+
+.traffic-stats-open {
+  text-decoration: none;
+}
+
+.traffic-stats-open:hover {
+  text-decoration: underline;
+}
+
+.traffic-stats-source {
+  max-width: 100%;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  background: var(--surface-2);
+  font-size: 0.62rem;
+  overflow-wrap: anywhere;
+  cursor: help;
+}
+
+.traffic-stats-open:focus-visible,
+.traffic-stats-source:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.traffic-stats-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.traffic-stats-category {
+  width: 24%;
+}
+
+.traffic-stats-table th,
+.traffic-stats-table td {
+  padding: 0.28rem 0.18rem;
+  text-align: left;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
+.traffic-stats-table th {
+  font-weight: 500;
+  color: var(--muted);
+  position: static;
+  background: transparent;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.traffic-stats-table thead th {
+  font-size: 0.62rem;
+}
+
+.traffic-stats-table tbody tr {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.traffic-stats-table [data-traffic-row="total"] {
+  background: var(--surface-2);
+}
+
+.traffic-stats-metric {
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  min-width: 0;
+  color: var(--text);
+}
+
+.traffic-stats-metric .tr-dir {
+  flex: none;
+}
+
+.traffic-stats-number {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .instrument-label {

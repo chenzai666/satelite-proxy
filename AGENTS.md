@@ -14,7 +14,11 @@
 
 ## 0. 阅读与维护规则（必读）
 
+2026-10-23 分类流量：traffic_stats.rs 提供会话内TrafficAccounting，ProxyStatus.traffic_breakdown含source(outbound/connections/unavailable)、proxy/direct/unclassified四项速度/累计桶。XrayMetrics.traffic_snapshot一次读所有outbound，同时给原总量和分类；conn_journal→state保持会话校验并调用Runtime.apply_metrics_snapshot。生成配置node-*代理、direct直连，其余辅助未知不猜；TLS分片保留原核心总量口径，不叠加副核。Clash快照仅对实际路径和已观察增量分类，每方向以本帧核心总增量为预算，不一致帧留未知，缺失短连接/路径/超限保留未分类；跟踪上限16384，连接历史裁剪与累计无关。custom类型映射不可信，sourceunavailable不按tag猜。新start清除traffic_prev及分类账本，停止/异常退出显示速度0，禁止改路由/采样轮询频率为统计补漏。TrafficStatsCard与trafficStats.ts替代Dashboard旧合计卡，代理/直连/合计同时可见、未知非零追加行、无分类显示—；Node及CI浏览器回归覆盖窄卡与zoom，Rust只在Actions测试。版本仍1.0.46，先成功验证后覆盖Release两包，不替换本地运行客户端。
+
 二维码交互可单独调度 qr-import-tests.yml 在 Windows runner 运行类型/像素与真实组件浏览器回归，不构建客户端；正式发布仍以完整 build-windows.yml 成功为准。失败日志只输出模拟夹具状态，禁止记录真实扫码图像和订阅凭据。
+
+分类流量UI可调度traffic-stats-tests.yml进行Node/类型/浏览器隔离验证；它和完整Windows构建均调用test-traffic-stats-browser.mjs，使用模拟计数，不读取或变更用户代理。
 
 2026-10-20 二维码导入与UUID生成：保留已有协议/订阅导入界面，不增加重复的协议菜单。ConfigPage 的 QrImportButton 提供屏幕扫描Ctrl+S及图片扫描；qrImport.ts只识别节点链接/HTTP订阅/一键订阅并预填AddConfigModal，显式确认后才导入，不打开或自动请求二维码地址。commands/qr.rs注册capture_qr_screen/read_qr_image；Windows GDI截取虚拟桌面，临时隐藏窗口后RAII恢复，PNG仅内存传递，不落盘/日志/剪贴板；非Windows明确提示用图片。图片16MB、32MP上限，jsQR在可终止Worker做反色/缩放/重叠分块扫描，30s超时，无远程识别服务；禁止输入框/弹窗/重复快捷键误触。NodeDraftFields对VLESS/VMess/TUIC提供显式生成UUID v4，nodeUuid.ts仅Web Crypto，按键不提交表单且禁用态同步。Node单测、隔离浏览器和CI-only真实桌面捕获回归纳入Windows Actions；本机不构建、不扫描用户屏幕、不替换运行客户端。版本继续1.0.46。
 
@@ -212,6 +216,7 @@ satelite-proxy/
 │   ├── src/config/          # 配置生成：builder.rs（sing-box）+ xray.rs（Xray）+ mihomo.rs（mihomo/Clash YAML）+ dns_build/write/…
 │   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 三内核描述）、manager/download/assets/paths/提权/Job Object
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
+│   ├── src/traffic_stats.rs # 会话流量分类/对账，真实出站或保守连接采样，未分类独立保留
 │   ├── src/uwp_loopback.rs  # Windows UWP/AppContainer 回环豁免（CheckNetIsolation + UAC helper）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
 │   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
@@ -315,6 +320,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `paths.rs` — 内核二进制/版本文件路径解析（resource 目录 → data 目录 staging；bundled 布局三内核共用 sing-box 式平台目录名，release 资产名才按 kind 区分）。sing-box 保持 `bin/sing-box`+`version.txt` 存量布局；Xray 用 `bin/xray`+`xray-version.txt`；mihomo 用 `bin/mihomo`+`mihomo-version.txt`，home 目录 `mihomo_home_dir` = `<data>/mihomo`。
 
 ### 5.6 运行时编排与外部 API
+
+- `traffic_stats.rs` 与 `Runtime::traffic_accounting`：分类累计独立于连接历史保留，每帧主内核总量给预算，短连接漏采不推测分类；状态序列化始终包含traffic_breakdown，旧前端根总量字段保留。`XrayMetrics::traffic_snapshot`和`Runtime::apply_metrics_snapshot`传递同一响应的分类计数。前端`TrafficStatsCard`复用主状态轮询，不另起高频请求。
 
 - `runtime.rs` — `Runtime`/`ProxyStatus`（含 `core_type`）：按 `settings.core_type` 分支 config 生成 → 写盘 → core 启停 → 系统代理联动；连接视图缓存与 delta（`LiveConnectionBatch` revision 机制）。sing-box 启动前会注入链路诊断 loopback；Xray 分支 `start_xray_proxy`：ensure geodata/wintun → `build_xray_config` → 就绪=进程存活+mixed port，`xray_metrics` 替代 clash_api。mihomo 分支 `start_mihomo_proxy`：ensure mihomo geodata → `build_mihomo_config` → 写 active.yaml → 与 sing-box 同款 ClashApi health 等待（`self.api` 即 clash_api，conn_journal/热切/智能切换全复用）。`build_options()` 为三生成器共享的 BuildOptions 构造器。
 - `runtime.rs` — `Runtime`/`ProxyStatus`（含 `core_type`/`sidecar_running`）：按 `settings.core_type` 分支 config 生成 → 写盘 → core 启停 → 系统代理联动；连接视图缓存与 delta（`LiveConnectionBatch` revision 机制）。Xray 分支 `start_xray_proxy`：ensure geodata/wintun → `build_xray_config` → 就绪=进程存活+mixed port，`xray_metrics` 替代 clash_api。mihomo 分支 `start_mihomo_proxy`：ensure mihomo geodata → `build_mihomo_config` → 写 active.yaml → 与 sing-box 同款 ClashApi health 等待（`self.api` 即 clash_api，conn_journal/热切/智能切换全复用）。`build_options()` 为三生成器共享的 BuildOptions 构造器。sing-box 分支支持 **Xray 副进程**（§9.20）：`compute_sidecar_plan`（settings+chains+nodes → 委托计划，commands 预览同款复用）→ 主核 health OK 后 `start_xray_sidecar` 写 `xray-sidecar.json` 并经 `Runtime.sidecar`（第二个 `CoreManager` 实例，结构体无静态状态可直接并存）拉起；停/重启/退出先停副进程，主核启动失败或副进程启动失败均整体回滚。

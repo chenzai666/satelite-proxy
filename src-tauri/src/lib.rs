@@ -22,6 +22,7 @@ mod state;
 mod storage;
 mod subscription;
 mod subscription_auto;
+mod traffic_stats;
 mod tray;
 #[cfg(target_os = "windows")]
 pub(crate) mod uwp_loopback;

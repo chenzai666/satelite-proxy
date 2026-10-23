@@ -19,6 +19,7 @@ use crate::domain::{
 use crate::error::{AppError, AppResult};
 use crate::proxy::{create_system_proxy, SystemProxy, SystemProxySnapshot};
 use crate::storage::AppStore;
+use crate::traffic_stats::{ClassifiedTotals, TrafficAccounting, TrafficBreakdown};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,8 @@ pub struct ProxyStatus {
     pub download_speed: u64,
     pub upload_total: u64,
     pub download_total: u64,
+    /// Per-session proxy/direct split; unknown or missed connection bytes stay separate.
+    pub traffic_breakdown: TrafficBreakdown,
     pub connections: u32,
     /// Smart auto node switch enabled (derived from auto_select == smart).
     #[serde(default)]
@@ -91,6 +94,29 @@ pub struct ProxyStatus {
     /// for per-core log-tab dots and status pills.
     #[serde(default)]
     pub sidecar_kinds: Vec<String>,
+}
+
+impl ProxyStatus {
+    pub(crate) fn clear_traffic_rates(&mut self) {
+        self.upload_speed = 0;
+        self.download_speed = 0;
+        for bucket in [
+            &mut self.traffic_breakdown.proxy,
+            &mut self.traffic_breakdown.direct,
+            &mut self.traffic_breakdown.unclassified,
+        ] {
+            bucket.upload_speed = 0;
+            bucket.download_speed = 0;
+        }
+    }
+
+    pub(crate) fn clear_traffic_session(&mut self) {
+        self.clear_traffic_rates();
+        self.upload_total = 0;
+        self.download_total = 0;
+        self.connections = 0;
+        self.traffic_breakdown = TrafficBreakdown::default();
+    }
 }
 
 /// Cap history to limit RAM (UI only needs recent activity).
@@ -192,6 +218,9 @@ pub struct Runtime {
     system_proxy: Box<dyn SystemProxy>,
     traffic_prev: Option<(Instant, TrafficTotals)>,
     traffic_speed: (u64, u64),
+    traffic_accounting: TrafficAccounting,
+    /// Only app-generated configurations have a trusted outbound tag contract.
+    traffic_generated: bool,
     /// Live connections (last poll)
     live_connections: Vec<ConnectionInfo>,
     /// History keys for `live_connections`, in the same order. Keeping them
@@ -255,6 +284,8 @@ impl Runtime {
             system_proxy: create_system_proxy(),
             traffic_prev: None,
             traffic_speed: (0, 0),
+            traffic_accounting: TrafficAccounting::default(),
+            traffic_generated: false,
             live_connections: Vec::new(),
             live_connection_keys: Vec::new(),
             live_revision: 0,
@@ -384,8 +415,16 @@ impl Runtime {
                 .last_config_path
                 .as_ref()
                 .map(|p| p.display().to_string()),
-            upload_speed: self.traffic_speed.0,
-            download_speed: self.traffic_speed.1,
+            upload_speed: if self.core.is_running() {
+                self.traffic_speed.0
+            } else {
+                0
+            },
+            download_speed: if self.core.is_running() {
+                self.traffic_speed.1
+            } else {
+                0
+            },
             upload_total: self
                 .traffic_prev
                 .as_ref()
@@ -396,6 +435,7 @@ impl Runtime {
                 .as_ref()
                 .map(|(_, t)| t.download_total)
                 .unwrap_or(0),
+            traffic_breakdown: self.traffic_accounting.snapshot(self.core.is_running()),
             connections: self
                 .traffic_prev
                 .as_ref()
@@ -671,17 +711,57 @@ impl Runtime {
             download_total: snap.download_total,
             connections: snap.connections.len() as u32,
         };
+        self.traffic_accounting.apply_connections(
+            &totals,
+            &snap.connections,
+            self.traffic_generated,
+            now,
+        );
+        self.record_traffic_totals(totals, now);
+        self.ingest_connections(snap.connections);
+        self.last_sample_at = Some(now);
+    }
+
+    pub fn apply_metrics_snapshot(&mut self, totals: TrafficTotals, classified: ClassifiedTotals) {
+        let now = Instant::now();
+        if self.traffic_generated {
+            self.traffic_accounting
+                .apply_outbound(&totals, &classified, now);
+        } else {
+            self.traffic_accounting.apply_unavailable(&totals, now);
+        }
+        self.record_traffic_totals(totals, now);
+        self.last_sample_at = Some(now);
+    }
+
+    fn record_traffic_totals(&mut self, totals: TrafficTotals, now: Instant) {
         if let Some((prev_t, prev)) = &self.traffic_prev {
+            if totals.upload_total < prev.upload_total
+                || totals.download_total < prev.download_total
+            {
+                self.traffic_speed = (0, 0);
+                self.traffic_prev = Some((now, totals));
+                return;
+            }
             let dt = now.duration_since(*prev_t).as_secs_f64();
             if dt > 0.05 {
                 let up = totals.upload_total.saturating_sub(prev.upload_total);
                 let down = totals.download_total.saturating_sub(prev.download_total);
                 self.traffic_speed = ((up as f64 / dt) as u64, (down as f64 / dt) as u64);
+            } else {
+                self.traffic_speed = (0, 0);
             }
+        } else {
+            self.traffic_speed = (0, 0);
         }
         self.traffic_prev = Some((now, totals));
-        self.ingest_connections(snap.connections);
-        self.last_sample_at = Some(now);
+    }
+
+    fn reset_traffic_session(&mut self, generated: bool) {
+        self.traffic_prev = None;
+        self.traffic_speed = (0, 0);
+        self.traffic_accounting.reset();
+        self.traffic_generated = generated;
     }
 
     /// Diff-based journal: upsert live, mark disappeared as closed.
@@ -978,6 +1058,13 @@ impl Runtime {
         if self.core.is_running() {
             return Ok(self.status(store));
         }
+
+        // A new core session owns fresh cumulative counters. Never carry the
+        // previous core/configuration's classified bytes across this boundary.
+        self.reset_traffic_session(matches!(
+            store.settings.runtime_source(),
+            RuntimeSource::Generated
+        ));
 
         match store.settings.runtime_source() {
             RuntimeSource::Singbox { id } => {
@@ -2318,6 +2405,7 @@ impl Runtime {
         self.clear_live_connections();
         self.traffic_prev = None;
         self.traffic_speed = (0, 0);
+        self.traffic_accounting.reset();
         proxy_cleared
     }
 }
@@ -2833,6 +2921,122 @@ fn format_rule(rule: &str, payload: &str) -> String {
         return payload.to_string();
     }
     format!("{rule}({payload})")
+}
+
+#[cfg(test)]
+mod traffic_status_tests {
+    use super::*;
+    use crate::traffic_stats::TrafficBytes;
+
+    fn totals(up: u64, down: u64) -> TrafficTotals {
+        TrafficTotals {
+            upload_total: up,
+            download_total: down,
+            connections: 0,
+        }
+    }
+
+    #[test]
+    fn classified_metrics_reach_status_without_changing_proxy_settings() {
+        let store = AppStore::default();
+        let mut runtime = Runtime::new();
+        runtime.reset_traffic_session(true);
+        runtime.apply_metrics_snapshot(
+            totals(60, 600),
+            ClassifiedTotals {
+                proxy: TrafficBytes {
+                    upload: 30,
+                    download: 300,
+                },
+                direct: TrafficBytes {
+                    upload: 20,
+                    download: 200,
+                },
+                unclassified: TrafficBytes {
+                    upload: 10,
+                    download: 100,
+                },
+            },
+        );
+        let status = runtime.status(&store);
+        assert_eq!(status.traffic_breakdown.source, "outbound");
+        assert_eq!(status.traffic_breakdown.proxy.download_total, 300);
+        assert_eq!(status.traffic_breakdown.direct.download_total, 200);
+        assert_eq!(status.traffic_breakdown.unclassified.download_total, 100);
+        assert_eq!(status.download_total, 600);
+        assert!(!status.running);
+        assert!(!runtime.system_proxy_on);
+        assert!(runtime.proxy_snapshot.is_none());
+        assert_eq!(status.download_speed, 0);
+        assert_eq!(status.traffic_breakdown.proxy.download_speed, 0);
+    }
+
+    #[test]
+    fn session_reset_clears_all_counters_and_custom_source_stays_unknown() {
+        let store = AppStore::default();
+        let mut runtime = Runtime::new();
+        runtime.reset_traffic_session(true);
+        runtime.apply_metrics_snapshot(
+            totals(10, 100),
+            ClassifiedTotals {
+                proxy: TrafficBytes {
+                    upload: 10,
+                    download: 100,
+                },
+                ..Default::default()
+            },
+        );
+        runtime.reset_traffic_session(false);
+        let status = runtime.status(&store);
+        assert_eq!(status.download_total, 0);
+        assert_eq!(status.traffic_breakdown.proxy.download_total, 0);
+        assert_eq!(status.traffic_breakdown.source, "unavailable");
+        runtime.apply_metrics_snapshot(
+            totals(20, 200),
+            ClassifiedTotals {
+                proxy: TrafficBytes {
+                    upload: 20,
+                    download: 200,
+                },
+                ..Default::default()
+            },
+        );
+        let status = runtime.status(&store);
+        assert_eq!(status.traffic_breakdown.unclassified.download_total, 200);
+        assert_eq!(status.traffic_breakdown.proxy.download_total, 0);
+    }
+
+    #[test]
+    fn closed_connections_and_trimmed_history_keep_classified_cumulative_bytes() {
+        let store = AppStore::default();
+        let mut runtime = Runtime::new();
+        runtime.reset_traffic_session(true);
+        let snap = crate::api::parse_connections_json(r#"{"uploadTotal":10,"downloadTotal":100,"connections":[{"id":"sample","upload":10,"download":100,"chains":["node-fixture","proxy"],"metadata":{"network":"tcp","host":"example.test","destinationPort":"443"}}]}"#).unwrap();
+        runtime.apply_snapshot(snap);
+        runtime.apply_snapshot(crate::api::ConnectionsSnapshot {
+            upload_total: 12,
+            download_total: 120,
+            connections: Vec::new(),
+        });
+        runtime.request_by_id.clear();
+        runtime.request_order.clear();
+        let status = runtime.status(&store);
+        assert_eq!(status.traffic_breakdown.source, "connections");
+        assert_eq!(status.traffic_breakdown.proxy.download_total, 100);
+        assert_eq!(status.traffic_breakdown.unclassified.download_total, 20);
+        assert_eq!(status.download_total, 120);
+    }
+
+    #[test]
+    fn backwards_global_counters_reset_both_aggregate_rates() {
+        let mut runtime = Runtime::new();
+        let at = Instant::now();
+        runtime.record_traffic_totals(totals(100, 100), at);
+        runtime.record_traffic_totals(totals(110, 120), at + Duration::from_secs(1));
+        assert_eq!(runtime.traffic_speed, (10, 20));
+        runtime.record_traffic_totals(totals(5, 130), at + Duration::from_secs(2));
+        assert_eq!(runtime.traffic_speed, (0, 0));
+    }
 }
 
 #[cfg(test)]
