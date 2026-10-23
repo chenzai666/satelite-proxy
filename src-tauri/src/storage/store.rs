@@ -888,10 +888,7 @@ impl AppStore {
                 .iter()
                 .position(|entry| {
                     (entry.id == node.id || entry.id == legacy)
-                        && (entry.instance == instance
-                            || (!reserved_for_other(entry)
-                                && old_identities.get(&entry.identity) == Some(&1)
-                                && new_identities.get(&identity) == Some(&1)))
+                        && (entry.instance == instance || !reserved_for_other(entry))
                 })
                 .or_else(|| previous.iter().position(|entry| entry.instance == instance))
                 .or_else(|| {
@@ -3522,6 +3519,7 @@ mod tests {
             .unwrap();
         store.activate_subscription("id-a").unwrap();
         assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+        assert_eq!(store.find_node("a2").unwrap().name, "订阅更名");
     }
 
     #[test]
