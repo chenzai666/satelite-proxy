@@ -2,7 +2,6 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
-import { SettingsPage } from "../../src/pages/SettingsPage";
 import { NodeDraftFields, emptyNodeDraft } from "../../src/components/NodeDraftFields";
 import { EditLocalNodesModal } from "../../src/components/EditLocalNodesModal";
 import { NodesPage } from "../../src/pages/NodesPage";
@@ -71,6 +70,8 @@ mockIPC((command, payload) => {
   state.unexpected.push(command);
   throw new Error(`fixture: ${command}`);
 }, { shouldMockEvents: true });
+// SettingsPage 的下载进度模块在加载时注册事件，必须先安装模拟回调接口。
+const { SettingsPage } = await import("../../src/pages/SettingsPage");
 function Draft() {
   const [draft, setDraft] = useState(emptyNodeDraft());
   return <NodeDraftFields value={draft} onChange={setDraft} />;
