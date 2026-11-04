@@ -77,19 +77,41 @@ jobs:
           test -f "$notes"
           test -f "release/Satelite_${RELEASE_TAG#v}_x64-setup.exe"
           test -f "release/Satelite_${RELEASE_TAG#v}_x64_portable.zip"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
-          # 按 Release ID 查询旧资产；按标签查询可能返回空列表，导致 --clobber 报 422。
           release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)
+          asset_metadata() {
+            # 唯一查询参数避开旧资产列表缓存；严格按同名资产操作。
+            gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100&verify=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$(date +%s%N)" |
+              jq -c --arg name "$1" '[.[] | select(.name == $name)]'
+          }
           for file in release/*.exe release/*.zip; do
             name=$(basename "$file")
-            asset_ids=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" \
-              --jq ".[] | select(.name == \"$name\") | .id")
-            for asset_id in $asset_ids; do
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            expected=$(sha256sum "$file" | cut -d ' ' -f 1)
+            echo "$expected  $file"
+            metadata=$(asset_metadata "$name")
+            if ! jq -e --arg digest "sha256:$expected" 'length == 1 and .[0].digest == $digest and .[0].state == "uploaded"' <<< "$metadata" >/dev/null; then
+              while IFS= read -r asset_id; do
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+              done < <(jq -r '.[].id' <<< "$metadata")
+              # 上传已成功但响应中断时，CLI 重试可能返回同名 422。
+              # 后面核对服务端摘要，只有与本次验证产物相同才接受。
+              if ! gh release upload "$RELEASE_TAG" "$file" --repo "$GITHUB_REPOSITORY"; then
+                echo "上传返回错误，核对服务端同名资产摘要：$name"
+              fi
+            fi
+            verified=false
+            for attempt in 1 2 3 4 5; do
+              metadata=$(asset_metadata "$name")
+              if jq -e --arg digest "sha256:$expected" 'length == 1 and .[0].digest == $digest and .[0].state == "uploaded"' <<< "$metadata" >/dev/null; then
+                verified=true
+                break
+              fi
+              sleep 2
             done
+            [[ "$verified" == true ]] || { echo "资产摘要不匹配：$name" >&2; exit 1; }
           done
-          gh release upload "$RELEASE_TAG" release/*.exe release/*.zip --repo "$GITHUB_REPOSITORY"
-          body="$(< "$notes")"
-          body="$body"$'\n\n'"构建提交：$BUILD_SHA"$'\n'"验证任务：https://github.com/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID"
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes "$body"
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" == "$BUILD_SHA" ]]
+          notes_file=$(mktemp "$RUNNER_TEMP/satelite-release-notes.XXXXXX")
+          trap 'rm -f -- "$notes_file"' EXIT
+          { cat "$notes"; printf '\n\n构建提交：%s\n验证任务：https://github.com/%s/actions/runs/%s\n' "$BUILD_SHA" "$GITHUB_REPOSITORY" "$BUILD_RUN_ID"; } > "$notes_file"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$notes_file"
           sha256sum release/*.exe release/*.zip

@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-04 发布幂等：publish-windows.yml对已验证构建的每个资产先算SHA-256，再用带唯一参数的Release-ID资产查询校验digest/state；相同摘要跳过上传，不同才按确切同名ID替换。CLI上传报422但服务端摘要已匹配时接受成功，摘要缺失/不符必须失败；两个资产核对通过后才更新发布说明及构建SHA。说明走临时notes文件并trap清理。仅发布流程修改可[skip ci]，客户端标签仍指向真实验证过的构建提交，不为发布脚本改动重编客户端。
+
 2026-11-04 协议/节点选核：AppSettings.protocol_core_defaults为协议默认，node_core_overrides按稳定节点ID保存单点覆盖，preferred_core_type记用户显式首选而非自动临时切换；原protocol_cores继续仅代表sing-box副核委托，禁止混用两种语义。ManualNodeDraft.preferredCore仅本地元数据，get_node_draft回auto或内核名；旧调用缺字段保留设置，auto显式清除，新增/编辑共用。只改偏好不得重建ProxyNode/raw或改变分享链接。手动选点与启动统一按节点覆盖→协议默认→兼容自动选择，Xray首选下HY2/TUIC/AnyTLS默认sing-box，回适配VLESS恢复首选；参数不兼容的显式覆盖须报错，不忽略TLS/混淆。Mihomo策略组、自写配置、有效副核委托与后台智能范围保持。所有新持久字段必须从宽容store_from_json读回；刷新保稳定ID偏好，删除清失效引用。Rust/真实内核/浏览器测试仅Actions，本机只Node/tsc/rustfmt；完整构建成功后覆盖v1.0.46两包，不替换当前本地客户端。
 
 重置/权限恢复补充：reset退役文件也使用唯一recovery路径，不复用安装的previous，避免resolve撤销恢复内置版本。macOS元数据提交失败后若新dest为setuid，由restore_previous_setuid_core授权恢复旧版并重设root:admin/setuid；该异常恢复可能另需一次授权，正常升级仍复用单次授权。
