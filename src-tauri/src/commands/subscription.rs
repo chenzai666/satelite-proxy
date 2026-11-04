@@ -2,8 +2,8 @@ use crate::domain::{
     ManualNodeDraft, ProxyNode, SubscriptionDetail, SubscriptionSource, SubscriptionView,
 };
 use crate::services::import::{
-    canonical_subscription_url, import_from_file, import_from_file_with_id, import_from_node,
-    import_from_custom, import_from_text, import_from_url_with_id, SubscriptionProxy,
+    canonical_subscription_url, import_from_custom, import_from_file, import_from_file_with_id,
+    import_from_node, import_from_text, import_from_url_with_id, SubscriptionProxy,
 };
 use crate::state::AppState;
 use crate::subscription::node_to_draft;
@@ -273,19 +273,33 @@ pub fn append_clipboard_nodes(
     }
     let parsed = crate::subscription::parse_subscription(&content)
         .map_err(|_| "无法解析节点分享链接，请检查格式".to_string())?;
-    if !matches!(parsed.format, crate::domain::SubscriptionFormat::UriList | crate::domain::SubscriptionFormat::Base64UriList) {
+    if !matches!(
+        parsed.format,
+        crate::domain::SubscriptionFormat::UriList
+            | crate::domain::SubscriptionFormat::Base64UriList
+    ) {
         return Err("请粘贴节点分享链接，而不是完整配置".into());
     }
     let node_count = parsed.nodes.len() as u32;
     let skipped_count = parsed.skipped.len() as u32;
-    let view = state.with_store_mut(|store| {
-        let id = store.append_nodes_to_profile(subscription_id.as_deref(), parsed.nodes)?;
-        Ok(store.get_subscription(&id).expect("validated profile").to_view())
-    }).map_err(|e| e.to_string())?;
+    let view = state
+        .with_store_mut(|store| {
+            let id = store.append_nodes_to_profile(subscription_id.as_deref(), parsed.nodes)?;
+            Ok(store
+                .get_subscription(&id)
+                .expect("validated profile")
+                .to_view())
+        })
+        .map_err(|e| e.to_string())?;
     if view.enabled && state.is_core_running() {
         crate::rule_apply::request_restart(app, Vec::new());
     }
-    Ok(ImportResult { subscription: view, node_count, skipped_count, skipped: Vec::new() })
+    Ok(ImportResult {
+        subscription: view,
+        node_count,
+        skipped_count,
+        skipped: Vec::new(),
+    })
 }
 
 #[tauri::command]
@@ -296,8 +310,25 @@ pub async fn add_subscription_node(
     uri: Option<String>,
     node: Option<ManualNodeDraft>,
 ) -> Result<ImportResult, String> {
+    let preference = node.as_ref().and_then(|draft| draft.preferred_core.clone());
+    if let Some(raw) = preference.as_deref() {
+        crate::domain::validate_preferred_core_value(raw).map_err(|e| e.to_string())?;
+    }
     let outcome = import_node_blocking(name, uri, node, None).await?;
-    persist_import(&app, &state, outcome)
+    let preference = match preference {
+        Some(raw) => {
+            let node = outcome
+                .nodes
+                .first()
+                .ok_or_else(|| "手动节点为空".to_string())?;
+            Some(
+                crate::core_selection::validate_node_override(node, &raw)
+                    .map_err(|e| e.to_string())?,
+            )
+        }
+        None => None,
+    };
+    persist_import_replacing(&app, &state, outcome, None, preference)
 }
 
 /// Add a complete custom config ("自定义配置"). The kernel type (sing-box /
@@ -364,6 +395,14 @@ pub async fn update_subscription(
     let subscription_proxy = active_subscription_proxy(&state)?;
 
     let kind = kind.to_ascii_lowercase();
+    let preference = if kind == "node" {
+        node.as_ref().and_then(|draft| draft.preferred_core.clone())
+    } else {
+        None
+    };
+    if let Some(raw) = preference.as_deref() {
+        crate::domain::validate_preferred_core_value(raw).map_err(|e| e.to_string())?;
+    }
     let (outcome, replaced_id, replaced_enabled) = match kind.as_str() {
         "url" => {
             let url = url
@@ -426,8 +465,35 @@ pub async fn update_subscription(
             (o, None, false)
         }
         "node" => {
+            let metadata_node = if uri.as_deref().map_or(true, |value| value.trim().is_empty()) {
+                if let Some(draft) = node.as_ref() {
+                    state
+                        .with_store(|store| {
+                            Ok(store
+                                .nodes
+                                .iter()
+                                .find(|entry| entry.subscription_id == id)
+                                .and_then(|entry| {
+                                    let mut incoming = draft.clone();
+                                    incoming.preferred_core = None;
+                                    (incoming == node_to_draft(&entry.node)
+                                        && existing.name == display_name)
+                                        .then(|| entry.node.clone())
+                                }))
+                        })
+                        .map_err(|e| e.to_string())?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let mut o =
                 import_node_blocking(Some(display_name), uri, node, Some(id.clone())).await?;
+            if let Some(original) = metadata_node {
+                o.nodes = vec![original];
+                o.subscription.source = existing.source.clone();
+            }
             o.subscription.via_proxy = false;
             (o, None, false)
         }
@@ -452,7 +518,20 @@ pub async fn update_subscription(
         outcome.subscription.auto_update = false;
     }
 
-    persist_import_replacing(&app, &state, outcome, replaced_id.as_deref())
+    let preference = match preference {
+        Some(raw) => {
+            let node = outcome
+                .nodes
+                .first()
+                .ok_or_else(|| "手动节点为空".to_string())?;
+            Some(
+                crate::core_selection::validate_node_override(node, &raw)
+                    .map_err(|e| e.to_string())?,
+            )
+        }
+        None => None,
+    };
+    persist_import_replacing(&app, &state, outcome, replaced_id.as_deref(), preference)
 }
 
 #[tauri::command]
@@ -776,7 +855,7 @@ fn persist_import(
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
 ) -> Result<ImportResult, String> {
-    persist_import_replacing(app, state, outcome, None)
+    persist_import_replacing(app, state, outcome, None, None)
 }
 
 fn persist_import_replacing(
@@ -784,6 +863,7 @@ fn persist_import_replacing(
     state: &AppState,
     outcome: crate::services::import::ImportOutcome,
     remove_id: Option<&str>,
+    node_preference: Option<Option<String>>,
 ) -> Result<ImportResult, String> {
     if let crate::domain::SubscriptionSource::Custom { content, kind } =
         &outcome.subscription.source
@@ -806,7 +886,19 @@ fn persist_import_replacing(
     let (view, node_set_changed, policy_changed) = state
         .with_store_mut(|store| {
             let mut outcome = outcome;
+            if let Some(Some(core)) = node_preference.as_ref() {
+                let mut effective = outcome.nodes.clone();
+                crate::config::apply_udp_node_compatibility(
+                    &mut effective,
+                    store.settings.udp_tls_compat,
+                );
+                let node = effective
+                    .first()
+                    .ok_or_else(|| crate::error::AppError::Config("手动节点为空".into()))?;
+                crate::core_selection::validate_node_override(node, core)?;
+            }
             let node_ids_before = store.enabled_node_ids_sorted();
+            let preferences_before = store.settings.node_core_overrides.clone();
             let config_snapshot = |nodes: Vec<crate::domain::ProxyNode>| {
                 let mut nodes = nodes;
                 for node in &mut nodes {
@@ -819,6 +911,13 @@ fn persist_import_replacing(
             let nodes_before = config_snapshot(store.enabled_nodes());
             let policy_before = store.enabled_clash_configs();
             if let Some(remove_id) = remove_id.filter(|remove_id| *remove_id != sub_id) {
+                for entry in store
+                    .nodes
+                    .iter()
+                    .filter(|entry| entry.subscription_id == remove_id)
+                {
+                    store.settings.node_core_overrides.remove(&entry.node.id);
+                }
                 store
                     .subscriptions
                     .retain(|subscription| subscription.id != remove_id);
@@ -833,6 +932,26 @@ fn persist_import_replacing(
                 store.prepare_new_subscription_enabled(&mut outcome.subscription);
             }
             store.upsert_subscription(outcome.subscription, outcome.nodes)?;
+            if let Some(preference) = node_preference {
+                if let Some(entry) = store
+                    .nodes
+                    .iter()
+                    .find(|entry| entry.subscription_id == sub_id)
+                {
+                    let node_id = entry.node.id.clone();
+                    if let Some(core) = preference {
+                        let mut effective = vec![entry.node.clone()];
+                        crate::config::apply_udp_node_compatibility(
+                            &mut effective,
+                            store.settings.udp_tls_compat,
+                        );
+                        crate::core_selection::validate_node_override(&effective[0], &core)?;
+                        store.settings.node_core_overrides.insert(node_id, core);
+                    } else {
+                        store.settings.node_core_overrides.remove(&node_id);
+                    }
+                }
+            }
             store.ensure_subscription_enable_policy();
             store.ensure_current_node_valid();
             let node_ids_after = store.enabled_node_ids_sorted();
@@ -841,17 +960,24 @@ fn persist_import_replacing(
                 .get_subscription(&sub_id)
                 .map(|s| s.to_view())
                 .ok_or_else(|| crate::error::AppError::NotFound(sub_id.clone()))?;
-            Ok((
+            let result = (
                 view,
                 node_ids_before != node_ids_after
-                    || nodes_before != config_snapshot(store.enabled_nodes()),
+                    || nodes_before != config_snapshot(store.enabled_nodes())
+                    || preferences_before != store.settings.node_core_overrides,
                 policy_before != policy_after,
-            ))
+            );
+            Ok(result)
         })
         .map_err(|e| e.to_string())?;
     if let Some(body) = raw_body {
-        if let Err(error) = crate::config::write_raw_subscription(&state.app_data_dir, &raw_id, &body) {
-            crate::app_log::warn("subscription", format!("{raw_id}: 保存原始配置失败：{error}"));
+        if let Err(error) =
+            crate::config::write_raw_subscription(&state.app_data_dir, &raw_id, &body)
+        {
+            crate::app_log::warn(
+                "subscription",
+                format!("{raw_id}: 保存原始配置失败：{error}"),
+            );
         }
     }
     if node_set_changed || policy_changed {

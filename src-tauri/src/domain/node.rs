@@ -684,9 +684,11 @@ pub enum SubscriptionFormat {
 }
 
 /// Flattened form payload for a manually entered node.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManualNodeDraft {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_core: Option<String>,
     #[serde(default)]
     pub protocol: String,
     #[serde(default)]
@@ -787,9 +789,42 @@ pub struct ManualNodeDraft {
     pub ipv6: Option<String>,
 }
 
+pub(crate) fn validate_preferred_core_value(raw: &str) -> crate::error::AppResult<()> {
+    if matches!(raw, "auto" | "singbox" | "xray" | "mihomo") {
+        Ok(())
+    } else {
+        Err(crate::error::AppError::Config("无效的节点内核选择".into()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_core_preference_uses_camel_case_and_accepts_legacy_payload() {
+        let legacy: ManualNodeDraft =
+            serde_json::from_str(r#"{"protocol":"vless","server":"example.test","port":443}"#)
+                .unwrap();
+        assert_eq!(legacy.preferred_core, None);
+        let draft = ManualNodeDraft {
+            preferred_core: Some("xray".into()),
+            ..legacy
+        };
+        let value = serde_json::to_value(draft).unwrap();
+        assert_eq!(value["preferredCore"], "xray");
+        assert!(value.get("preferred_core").is_none());
+    }
+
+    #[test]
+    fn preferred_core_requires_one_of_four_exact_values() {
+        for value in ["auto", "singbox", "xray", "mihomo"] {
+            assert!(validate_preferred_core_value(value).is_ok());
+        }
+        for value in ["", " auto", "XRAY", "unknown"] {
+            assert!(validate_preferred_core_value(value).is_err());
+        }
+    }
 
     #[test]
     fn vless_packet_encoding_normalization() {

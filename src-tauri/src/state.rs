@@ -162,6 +162,116 @@ impl KernelSelectionPoll {
 }
 
 #[cfg(test)]
+mod core_preference_persistence_tests {
+    use super::*;
+
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for relative in ["save-blocker", "data/store.json", "data/store.backup.json"] {
+                let path = self.0.join(relative);
+                if path.is_file() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            for path in [self.0.join("data"), self.0.clone()] {
+                if let Err(error) = std::fs::remove_dir(&path) {
+                    eprintln!("preference fixture cleanup {}: {error}", path.display());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_or_unsaved_preferences_do_not_replace_committed_memory() {
+        let root = std::env::temp_dir().join(format!(
+            "satelite-core-preference-save-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _cleanup = Cleanup(root.clone());
+        let mut state = AppState::load(root.clone(), None).unwrap();
+        let committed = state
+            .with_store(|store| Ok(store.settings.clone()))
+            .unwrap();
+        let original_path = state.store_path.clone();
+        let original_disk = std::fs::read(&original_path).ok();
+        let rejected: AppResult<()> = state.with_store_mut(|store| {
+            store.settings.preferred_core_type = Some("xray".into());
+            Err(crate::error::AppError::Config(
+                "injected validation rejection".into(),
+            ))
+        });
+        assert!(rejected.is_err());
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.preferred_core_type.clone()))
+                .unwrap(),
+            committed.preferred_core_type
+        );
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("save-blocker");
+        std::fs::write(&blocker, b"this is a file, not a directory").unwrap();
+        state.store_path = blocker.join("store.json");
+        let failed = state.with_store_mut(|store| {
+            store
+                .settings
+                .node_core_overrides
+                .insert("fixture".into(), "xray".into());
+            Ok(())
+        });
+        assert!(failed.is_err());
+        let failed_try = state
+            .try_with_store_mut(|store| {
+                store
+                    .settings
+                    .node_core_overrides
+                    .insert("fixture".into(), "mihomo".into());
+                Ok(())
+            })
+            .expect("uncontended try writer");
+        assert!(failed_try.is_err());
+        let rejected_try: AppResult<()> = state
+            .try_with_store_mut(|store| {
+                store.settings.preferred_core_type = Some("mihomo".into());
+                Err(crate::error::AppError::Config(
+                    "injected try rejection".into(),
+                ))
+            })
+            .expect("uncontended try writer");
+        assert!(rejected_try.is_err());
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.node_core_overrides.clone()))
+                .unwrap(),
+            committed.node_core_overrides
+        );
+        assert!(
+            std::fs::read(&original_path).ok() == original_disk,
+            "committed file changed after a failed save"
+        );
+        state.store_path = original_path;
+        state
+            .with_store_mut(|store| {
+                store.settings.preferred_core_type = Some("xray".into());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.preferred_core_type.clone()))
+                .unwrap()
+                .as_deref(),
+            Some("xray")
+        );
+        drop(state);
+    }
+}
+
+#[cfg(test)]
 mod kernel_selection_poll_tests {
     use super::*;
     use std::io::{Read, Write};
@@ -977,11 +1087,16 @@ impl AppState {
             Err(TryLockError::WouldBlock) => return None,
         };
         let mut guard = self.try_lock_store()?;
-        let result = f(&mut guard);
-        let snapshot = guard.clone();
-        drop(guard);
-        Some(match snapshot.save(&self.store_path) {
-            Ok(()) => result,
+        let mut candidate = guard.clone();
+        let result = match f(&mut candidate) {
+            Ok(result) => result,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(match candidate.save(&self.store_path) {
+            Ok(()) => {
+                *guard = candidate;
+                Ok(result)
+            }
             Err(e) => Err(e),
         })
     }
@@ -1221,12 +1336,12 @@ impl AppState {
         F: FnOnce(&mut AppStore) -> AppResult<T>,
     {
         let _persistence = self.lock_store_persistence();
-        let (result, snapshot) = {
-            let mut guard = self.lock_store();
-            let result = f(&mut guard)?;
-            (result, guard.clone())
-        };
-        snapshot.save(&self.store_path)?;
+        // All writers share store_persistence. Readers continue to see the
+        // committed state while validation and disk I/O prepare a candidate.
+        let mut candidate = self.lock_store().clone();
+        let result = f(&mut candidate)?;
+        candidate.save(&self.store_path)?;
+        *self.lock_store() = candidate;
         Ok(result)
     }
 
@@ -1387,10 +1502,11 @@ impl AppState {
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
         app_log::info("core", "proxy restart requested");
         let _transition = self.begin_core_transition()?;
-        self.mark_cached_core_state(CoreState::Starting);
         let mut runtime = self.lock_runtime();
         let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
+        crate::core_selection::prepare_selected_core(&self.app_data_dir, resource_dir, &mut store)?;
+        self.mark_cached_core_state(CoreState::Starting);
         let want_system = store.settings.capture_mode == crate::domain::CaptureMode::System;
         let mut status = match runtime.restart_core(&self.app_data_dir, resource_dir, &mut store) {
             Ok(status) => status,
@@ -1935,6 +2051,21 @@ impl AppState {
         manual: bool,
         close_if_enabled: bool,
     ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
+        self.select_current_node_with_resources(
+            node_id,
+            manual,
+            close_if_enabled,
+            self.resource_dir.as_deref(),
+        )
+    }
+
+    pub fn select_current_node_with_resources(
+        &self,
+        node_id: &str,
+        manual: bool,
+        close_if_enabled: bool,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<(crate::domain::AppSettings, bool, bool)> {
         // is_core_running deliberately reports false during a transition.
         // Capture it before taking the guard so a manual Xray selection of a
         // running core reliably schedules the restart it needs.
@@ -1947,8 +2078,8 @@ impl AppState {
             );
             kind
         };
-        let (tag, selector_group, kernel_auto, close_after_switch, fallback_core) = self
-            .with_store(|store| {
+        let (tag, previous_tag, selector_group, kernel_auto, close_after_switch, fallback_core) =
+            self.with_store(|store| {
                 if store.settings.runtime_source().is_custom() {
                     return Err(crate::error::AppError::Core(
                         "自写配置模式下无法切换节点".into(),
@@ -1966,24 +2097,12 @@ impl AppState {
                 // selection may therefore switch cores; background smart
                 // selection remains constrained to the currently chosen core.
                 let fallback_core = if manual {
-                    let fallback = core_kind.manual_node_fallback(node);
-                    if fallback.is_some()
-                        && core_kind == crate::core::CoreKind::SingBox
-                        && crate::runtime::delegated_node_ids(
-                            &store.settings,
-                            &store.chains,
-                            &store.enabled_nodes(),
-                        )
-                        .contains(&node.id)
-                    {
-                        None
-                    } else {
-                        fallback
-                    }
+                    let chosen = crate::core_selection::main_core_for_node(store, node)?;
+                    (chosen != core_kind).then_some(chosen)
                 } else {
                     None
                 };
-                if !core_kind.supports_node(node)
+                if core_kind.native_node_unsupported_reason(node).is_some()
                     && fallback_core.is_none()
                     && !crate::runtime::delegated_node_ids(
                         &store.settings,
@@ -2006,6 +2125,12 @@ impl AppState {
                 };
                 Ok((
                     crate::config::outbound_tag(node),
+                    store
+                        .settings
+                        .current_node_id
+                        .as_deref()
+                        .and_then(|id| store.find_node(id))
+                        .map(crate::config::outbound_tag),
                     selector_group,
                     fallback_core.is_none()
                         && manual
@@ -2021,6 +2146,22 @@ impl AppState {
                     fallback_core,
                 ))
             })?;
+        if let Some(kind) = fallback_core {
+            crate::core_selection::ensure_core_present(
+                &self.app_data_dir,
+                resource_dir.or(self.resource_dir.as_deref()),
+                kind,
+            )?;
+        }
+        if manual && fallback_core.is_none() && core_kind == crate::core::CoreKind::SingBox {
+            self.with_store(|store| {
+                crate::core_selection::ensure_sidecars_present(
+                    &self.app_data_dir,
+                    resource_dir.or(self.resource_dir.as_deref()),
+                    store,
+                )
+            })?;
+        }
         let api = {
             let mut runtime = self.lock_runtime();
             runtime.core.poll();
@@ -2033,9 +2174,9 @@ impl AppState {
         let selected_live =
             if fallback_core.is_some() || core_kind == crate::core::CoreKind::Xray || kernel_auto {
                 false
-            } else if let Some(api) = api {
+            } else if let Some(api) = api.as_ref() {
                 sync_main_selector(
-                    &api,
+                    api,
                     selector_group,
                     &tag,
                     close_after_switch,
@@ -2047,7 +2188,10 @@ impl AppState {
             };
 
         let node_id = node_id.to_string();
-        let (settings, was_kernel) = self.with_store_mut(|store| {
+        let persisted = self.with_store_mut(|store| {
+            if manual && store.settings.preferred_core_type.is_none() {
+                store.settings.preferred_core_type = Some(store.settings.core_type.clone());
+            }
             if let Some(fallback) = fallback_core {
                 store.settings.core_type = fallback.as_str().to_string();
                 store.settings.enforce_multi_core_scope();
@@ -2055,7 +2199,28 @@ impl AppState {
             let was_kernel = apply_selected_node(&mut store.settings, node_id, manual);
             store.remember_current_node();
             Ok((store.settings.clone(), was_kernel))
-        })?;
+        });
+        let (settings, was_kernel) = match persisted {
+            Ok(result) => result,
+            Err(error) => {
+                if selected_live {
+                    if let (Some(api), Some(previous)) = (api.as_ref(), previous_tag.as_deref()) {
+                        if let Err(rollback) = sync_main_selector(
+                            api,
+                            selector_group,
+                            previous,
+                            false,
+                            "restore selection after failed save",
+                        ) {
+                            return Err(crate::error::AppError::Core(format!(
+                                "{error}; restore previous selection failed: {rollback}"
+                            )));
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
         if let Some(fallback) = fallback_core {
             app_log::info(
                 "core",

@@ -424,6 +424,7 @@ export interface SettingsUpdatePayload {
   multiCoreEnabled?: boolean | null;
   /** Per-protocol core routing rows (delegations only). */
   protocolCores?: import("./types").ProtocolCoreItem[] | null;
+  protocolCoreDefaults?: import("./types").ProtocolCoreItem[] | null;
   /** Base loopback port for the sidecar's per-node inbounds. */
   sidecarPort?: number | null;
   tlsFragmentSingbox?: boolean | null;
@@ -481,6 +482,7 @@ function scheduleSettingsWrite() {
       findProcess: payload.findProcess ?? null,
       multiCoreEnabled: payload.multiCoreEnabled ?? null,
       protocolCores: payload.protocolCores ?? null,
+      protocolCoreDefaults: payload.protocolCoreDefaults ?? null,
       sidecarPort: payload.sidecarPort ?? null,
       tlsFragmentSingbox: payload.tlsFragmentSingbox ?? null,
       tlsFragmentXray: payload.tlsFragmentXray ?? null,

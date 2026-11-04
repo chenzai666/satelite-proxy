@@ -7,6 +7,7 @@ import {
   getNodeShareUri,
   getProxyStatus,
   getSettings,
+  peekProxyStatus,
   peekSettings,
   listAllNodes,
   listCustomConfigNodes,
@@ -88,24 +89,26 @@ export function NodesPage() {
   const { t } = useI18n();
   const [core, setCore] = useState<string | null>(() => peekSettings()?.core_type ?? null);
   const [tab, setTab] = useState("groups");
+  const selectingNode = useRef(false);
   useEffect(() => {
     let disposed = false;
-    void getSettings().then(s => { if (!disposed) setCore(s.core_type ?? "singbox"); }).catch(() => { if (!disposed) setCore("singbox"); });
-    const unsubscribe = onProxySnapshot(s => { if (!disposed && s.core_type) setCore(s.core_type); });
+    let observed = false;
+    const unsubscribe = onProxySnapshot(s => { observed = true; if (!disposed && !selectingNode.current && s.core_type) setCore(s.core_type); });
+    void getProxyStatus().catch(() => getSettings()).then(s => { if (!disposed && !observed && !selectingNode.current) setCore(s.core_type ?? "singbox"); }).catch(() => { if (!disposed && !observed) setCore("singbox"); });
     return () => { disposed = true; unsubscribe(); };
   }, []);
   if (core === null) return <div className="page empty muted">{t("common.loading")}</div>;
-  if (core !== "mihomo") return <NodeManagementPage />;
+  if (core !== "mihomo") return <NodeManagementPage onCoreRefresh={setCore} onSelectionBusy={(busy) => { selectingNode.current = busy; }} />;
   return <div className="page mihomo-nodes-page">
     <GlassSeg value={tab} options={[
       { value: "groups", label: t("mihomoGroups.title") },
       { value: "manage", label: t("mihomoGroups.manageNodes") },
     ]} onChange={setTab} />
-    {tab === "groups" ? <MihomoGroupsPage embedded /> : <NodeManagementPage policyManaged />}
+    {tab === "groups" ? <MihomoGroupsPage embedded /> : <NodeManagementPage policyManaged onCoreRefresh={setCore} onSelectionBusy={(busy) => { selectingNode.current = busy; }} />}
   </div>;
 }
 
-function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean }) {
+function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionBusy }: { policyManaged?: boolean; onCoreRefresh: (core: string) => void; onSelectionBusy: (busy: boolean) => void }) {
   const { t, locale } = useI18n();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -236,7 +239,7 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
       const settings = await getSettings();
       const custom = (settings.runtime_source ?? "generated").startsWith("singbox:");
       setCustomRuntime(custom);
-      setXrayCore((settings.core_type ?? "singbox") === "xray");
+      setXrayCore((peekProxyStatus()?.core_type ?? settings.core_type ?? "singbox") === "xray");
       setCurrentId(settings.current_node_id ?? null);
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       setDelegatedCores(
@@ -486,11 +489,13 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
   async function onSelect(id: string) {
     if (policyManaged) return;
     if (busyId || switching || batchBusy) return;
+    onSelectionBusy(true);
     setBusyId(id);
     setError(null);
     try {
       const leavingKernel = autoSelect === "kernel";
       const before = await getSettings();
+      const status = await getProxyStatus();
       const selected = await setCurrentNode(id);
       const coreSwitched = selected.core_type !== before.core_type;
       setCurrentId(id);
@@ -499,18 +504,27 @@ function NodeManagementPage({ policyManaged = false }: { policyManaged?: boolean
       // selecting an Xray-incompatible node rebuilds/restarts the core; the
       // latter is automatically handed to bundled sing-box by the backend.
       // Stopped: write the config for the selected (possibly new) core.
-      const status = await getProxyStatus().catch(() => null);
-      if (!status?.running) {
+      if (!status.running) {
         await generateSingboxConfig();
-      } else if (leavingKernel || coreSwitched) {
+      } else if (leavingKernel || coreSwitched || before.core_type === "xray") {
         // Main group rebuilds urltest → selector: hold the busy feedback
         // or wait for the automatic Xray → sing-box handoff to finish.
         setSwitching(true);
-        await waitForCoreRestart();
+        const result = await waitForCoreRestart();
+        if (result !== "ready") throw new Error(t("settings.coreSwitchWaitFailed"));
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      const refreshed = await getSettings().catch(() => null);
+      const status = await getProxyStatus().catch(() => null);
+      if (refreshed) {
+        setCurrentId(refreshed.current_node_id ?? null);
+        setAutoSelect((refreshed.auto_select as AutoSelectMode) ?? "off");
+      }
+      const core = status?.core_type ?? refreshed?.core_type;
+      if (core) onCoreRefresh(core);
+      onSelectionBusy(false);
       setSwitching(false);
       setBusyId(null);
     }

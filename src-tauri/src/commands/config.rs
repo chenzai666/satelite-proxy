@@ -81,6 +81,31 @@ pub async fn regenerate_api_secret(app: AppHandle) -> Result<AppSettings, String
     .map_err(|e| format!("regenerate secret task: {e}"))?
 }
 
+fn sanitize_protocol_core_defaults(
+    list: Vec<crate::domain::ProtocolCoreItem>,
+) -> Vec<crate::domain::ProtocolCoreItem> {
+    let mut seen = std::collections::HashSet::new();
+    list.into_iter()
+        .filter_map(|entry| {
+            let raw = entry.protocol.trim().to_ascii_lowercase();
+            let protocol = if raw == "unknown" {
+                "unknown".to_string()
+            } else {
+                crate::domain::Protocol::from_clash_type(&raw)?
+                    .as_str()
+                    .to_string()
+            };
+            let core = entry.core.trim().to_ascii_lowercase();
+            if !matches!(core.as_str(), "singbox" | "xray" | "mihomo")
+                || !seen.insert(protocol.clone())
+            {
+                return None;
+            }
+            Some(crate::domain::ProtocolCoreItem { protocol, core })
+        })
+        .collect()
+}
+
 #[tauri::command(async)]
 pub fn update_settings(
     app: AppHandle,
@@ -118,6 +143,7 @@ pub fn update_settings(
     // Per-protocol core routing rows. Only delegations are stored (v1:
     // core == "xray"); unknown protocols/cores are dropped silently.
     protocol_cores: Option<Vec<crate::domain::ProtocolCoreItem>>,
+    protocol_core_defaults: Option<Vec<crate::domain::ProtocolCoreItem>>,
     sidecar_port: Option<u16>,
     tls_fragment_singbox: Option<bool>,
     tls_fragment_xray: Option<bool>,
@@ -407,6 +433,13 @@ pub fn update_settings(
                     store.settings.protocol_cores = cleaned;
                 }
             }
+            if let Some(list) = protocol_core_defaults {
+                let cleaned = sanitize_protocol_core_defaults(list);
+                if cleaned != store.settings.protocol_core_defaults {
+                    store.settings.protocol_core_defaults = cleaned;
+                    core_config_changed = true;
+                }
+            }
             if let Some(p) = sidecar_port {
                 if p == 0 {
                     return Err(AppError::Config("副进程端口无效".into()));
@@ -428,7 +461,8 @@ pub fn update_settings(
                     store.settings.tls_fragment_xray = value;
                 }
             }
-            Ok(store.settings.clone())
+            let result = store.settings.clone();
+            Ok(result)
         })
         .map_err(|e| e.to_string())?;
 
@@ -468,8 +502,9 @@ pub async fn set_current_node(app: AppHandle, node_id: String) -> Result<AppSett
         let state = worker_app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
+        let resource_dir = worker_app.path().resource_dir().ok();
         let (settings, restart_needed, _) = state
-            .select_current_node_serialized(&node_id, true, true)
+            .select_current_node_with_resources(&node_id, true, true, resource_dir.as_deref())
             .map_err(|e| e.to_string())?;
         if restart_needed {
             crate::rule_apply::request_restart(worker_app.clone(), Vec::new());
@@ -503,7 +538,17 @@ pub fn get_node_draft(state: State<'_, AppState>, id: String) -> Result<ManualNo
                     "原文透传节点暂不支持表单编辑，请编辑原始配置".into(),
                 ));
             }
-            Ok(node_to_draft(node))
+            let mut draft = node_to_draft(node);
+            draft.preferred_core = Some(
+                store
+                    .settings
+                    .node_core_overrides
+                    .get(&id)
+                    .filter(|core| matches!(core.as_str(), "singbox" | "xray" | "mihomo"))
+                    .cloned()
+                    .unwrap_or_else(|| "auto".to_string()),
+            );
+            Ok(draft)
         })
         .map_err(|e| e.to_string())
 }
@@ -533,21 +578,8 @@ pub fn update_node(
     id: String,
     draft: ManualNodeDraft,
 ) -> Result<ProxyNode, String> {
-    let edited = draft_to_node(&draft, None).map_err(|reason| {
-        AppError::InvalidProxy {
-            name: draft.name.clone().unwrap_or_else(|| id.clone()),
-            reason,
-        }
-        .to_string()
-    })?;
-    let (node, enabled) = state
+    let (node, enabled, changed) = state
         .with_store_mut(|store| {
-            if store
-                .find_node(&id)
-                .is_some_and(|n| n.protocol == crate::domain::Protocol::Unknown)
-            {
-                return Err(AppError::Config("原文透传节点暂不支持表单编辑".into()));
-            }
             let enabled = store.nodes.iter().any(|entry| {
                 entry.node.id == id
                     && store
@@ -555,10 +587,11 @@ pub fn update_node(
                         .iter()
                         .any(|sub| sub.id == entry.subscription_id && sub.enabled)
             });
-            Ok((store.update_node(&id, edited)?, enabled))
+            let (node, changed) = update_node_with_preference(store, &id, &draft)?;
+            Ok((node, enabled, changed))
         })
         .map_err(|e| e.to_string())?;
-    if enabled && state.is_core_running() {
+    if changed && enabled && state.is_core_running() {
         crate::app_log::info(
             "subscription",
             format!("{}: node edited; queued core rebuild", node.name),
@@ -566,6 +599,64 @@ pub fn update_node(
         crate::rule_apply::request_restart(app, Vec::new());
     }
     Ok(node)
+}
+
+fn update_node_with_preference(
+    store: &mut crate::storage::AppStore,
+    id: &str,
+    draft: &ManualNodeDraft,
+) -> crate::error::AppResult<(ProxyNode, bool)> {
+    let original = store
+        .find_node(id)
+        .cloned()
+        .ok_or_else(|| AppError::NotFound(id.into()))?;
+    if original.protocol == crate::domain::Protocol::Unknown {
+        return Err(AppError::Config("原文透传节点暂不支持表单编辑".into()));
+    }
+    let mut fields = draft.clone();
+    fields.preferred_core = None;
+    let mut previous = node_to_draft(&original);
+    previous.preferred_core = None;
+    let fields_changed = fields != previous;
+    let edited = if fields_changed {
+        draft_to_node(&fields, None).map_err(|reason| AppError::InvalidProxy {
+            name: draft.name.clone().unwrap_or_else(|| id.to_string()),
+            reason,
+        })?
+    } else {
+        original.clone()
+    };
+    let mut effective = vec![edited.clone()];
+    apply_udp_node_compatibility(&mut effective, store.settings.udp_tls_compat);
+    let old_pref = store.settings.node_core_overrides.get(id).cloned();
+    let preference = match draft.preferred_core.as_deref() {
+        Some(raw) => {
+            crate::domain::validate_preferred_core_value(raw)?;
+            crate::core_selection::validate_node_override(&effective[0], raw)?
+        }
+        None => {
+            if fields_changed {
+                if let Some(raw) = old_pref.as_deref() {
+                    crate::core_selection::validate_node_override(&effective[0], raw)?;
+                }
+            }
+            old_pref.clone()
+        }
+    };
+    let node = if fields_changed {
+        store.update_node(id, edited)?
+    } else {
+        original
+    };
+    if let Some(core) = &preference {
+        store
+            .settings
+            .node_core_overrides
+            .insert(id.to_string(), core.clone());
+    } else {
+        store.settings.node_core_overrides.remove(id);
+    }
+    Ok((node, fields_changed || preference != old_pref))
 }
 
 #[tauri::command]
@@ -980,7 +1071,16 @@ pub async fn generate_singbox_config(
 ) -> Result<GenerateConfigResult, String> {
     let app_data_dir = state.app_data_dir.clone();
 
-    let (mut nodes, settings, rules, remote_rule_sets, mihomo_configs, dns, chains) = state
+    let (
+        mut nodes,
+        settings,
+        rules,
+        remote_rule_sets,
+        mihomo_configs,
+        dns,
+        chains,
+        auto_candidates,
+    ) = state
         .with_store(|store| {
             Ok((
                 store.enabled_nodes(),
@@ -990,6 +1090,11 @@ pub async fn generate_singbox_config(
                 store.enabled_clash_configs(),
                 store.dns.clone(),
                 store.chains.clone(),
+                if crate::core_selection::needs_kernel_restriction(&store.settings) {
+                    crate::core_selection::smart_nodes(store)
+                } else {
+                    Vec::new()
+                },
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -1051,7 +1156,7 @@ pub async fn generate_singbox_config(
                 }
             }
             kind => {
-                let built = if kind == crate::core::CoreKind::Xray {
+                let mut built = if kind == crate::core::CoreKind::Xray {
                     build_xray_config(&nodes, &opts)
                 } else {
                     build_singbox_config_with_connection_policy(
@@ -1060,6 +1165,13 @@ pub async fn generate_singbox_config(
                         settings.close_connections_on_switch,
                     )
                 }
+                .map_err(|e| e.to_string())?;
+                crate::core_selection::restrict_kernel_candidates(
+                    &settings,
+                    &auto_candidates,
+                    &mut built.value,
+                    &built.outbound_tags,
+                )
                 .map_err(|e| e.to_string())?;
                 let path = write_active_config(&app_data_dir, &built).map_err(|e| e.to_string())?;
                 let preview = serde_json::to_string_pretty(&built.value).unwrap_or_default();
@@ -1215,6 +1327,79 @@ pub async fn preview_singbox_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_are_normalized_deduplicated_and_validated() {
+        let item = |protocol: &str, core: &str| crate::domain::ProtocolCoreItem {
+            protocol: protocol.into(),
+            core: core.into(),
+        };
+        assert_eq!(
+            sanitize_protocol_core_defaults(vec![
+                item(" HY2 ", " SingBox "),
+                item("hysteria2", "xray"),
+                item("vless", "bogus"),
+                item("bogus", "xray"),
+                item("vless", "Xray"),
+            ]),
+            vec![item("hysteria2", "singbox"), item("vless", "xray")]
+        );
+    }
+
+    #[test]
+    fn preference_only_edit_preserves_raw_and_rejects_invalid_atomically() {
+        let mut draft = ManualNodeDraft {
+            protocol: "hysteria2".into(),
+            server: "example.test".into(),
+            port: 443,
+            password: Some("fixture".into()),
+            tls: Some(true),
+            insecure: Some(true),
+            ..Default::default()
+        };
+        let mut node = draft_to_node(&draft, None).unwrap();
+        node.id = "fixture".into();
+        node.raw = Some("type: hysteria2\nextra-field: retained\n".into());
+        let mut value = serde_json::to_value(&node).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .insert("subscription_id".into(), "sub".into());
+        let mut store = crate::storage::AppStore::default();
+        store.nodes.push(serde_json::from_value(value).unwrap());
+        draft = node_to_draft(&node);
+        draft.preferred_core = Some("singbox".into());
+        let (after, changed) = update_node_with_preference(&mut store, "fixture", &draft).unwrap();
+        assert!(changed);
+        assert_eq!(
+            serde_json::to_value(&after).unwrap(),
+            serde_json::to_value(&node).unwrap()
+        );
+        assert_eq!(store.settings.node_core_overrides["fixture"], "singbox");
+        draft.preferred_core = Some("".into());
+        assert!(update_node_with_preference(&mut store, "fixture", &draft).is_err());
+        assert_eq!(store.settings.node_core_overrides["fixture"], "singbox");
+        draft.preferred_core = Some("xray".into());
+        draft.server = "new.example.test".into();
+        assert!(update_node_with_preference(&mut store, "fixture", &draft).is_err());
+        assert_eq!(
+            serde_json::to_value(store.find_node("fixture").unwrap()).unwrap(),
+            serde_json::to_value(&node).unwrap()
+        );
+        assert_eq!(store.settings.node_core_overrides["fixture"], "singbox");
+        draft = node_to_draft(&node);
+        update_node_with_preference(&mut store, "fixture", &draft).unwrap();
+        assert_eq!(store.settings.node_core_overrides["fixture"], "singbox");
+        draft.preferred_core = Some("auto".into());
+        update_node_with_preference(&mut store, "fixture", &draft).unwrap();
+        assert!(!store.settings.node_core_overrides.contains_key("fixture"));
+        store.nodes[0].node.tls.as_mut().unwrap().insecure = None;
+        store.settings.udp_tls_compat = true;
+        let mut draft = node_to_draft(&store.nodes[0].node);
+        draft.preferred_core = Some("xray".into());
+        assert!(update_node_with_preference(&mut store, "fixture", &draft).is_err());
+        assert!(store.settings.node_core_overrides.is_empty());
+    }
 
     const SAMPLE: &str = r#"{
         "inbounds": [{"type": "mixed", "listen_port": 7890}],

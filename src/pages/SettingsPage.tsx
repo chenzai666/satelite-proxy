@@ -22,6 +22,8 @@ import {
 import { GlassButton } from "../components/GlassButton";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
 import { SolidSelect } from "../components/SolidSelect";
+import { NODE_PROTOCOLS } from "../components/NodeDraftFields";
+import { protocolDefaultValue, updateProtocolDefault } from "../coreSelection";
 import { GlassSeg } from "../components/GlassSeg";
 import { GlassSwitchControl } from "../components/GlassSwitchControl";
 import { ErrorModal } from "../components/ErrorModal";
@@ -116,6 +118,8 @@ export function SettingsPage() {
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savingProtocolDefaults, setSavingProtocolDefaults] = useState(false);
+  const savingProtocolDefaultsRef = useRef(false);
   /** Custom accent color picker (the extra swatch after the presets). */
   const [accentPickerOpen, setAccentPickerOpen] = useState(false);
   const [glowPickerOpen, setGlowPickerOpen] = useState(false);
@@ -1088,7 +1092,6 @@ export function SettingsPage() {
       {error &&
         visibleTab !== "rules" &&
         visibleTab !== "chain" &&
-        visibleTab !== "multiCore" &&
         visibleTab !== "dns" &&
         visibleTab !== "hosts" && (
         <ErrorModal message={error} onClose={() => setError(null)} />
@@ -1118,6 +1121,42 @@ export function SettingsPage() {
 
         {visibleTab === "multiCore" && settings && (
           <section className="settings-panel" aria-label="Core options">
+            <div className="card sidecar-card">
+              <div className="sys-proxy-title">{t("settings.protocolDefaults")}</div>
+              <div className="sys-proxy-desc">{t("settings.protocolDefaultsDesc")}</div>
+              <div className="sidecar-body">
+                <div className="multicore-grid">
+                  {[...NODE_PROTOCOLS, { value: "unknown", label: "OpenVPN / SSR / Mieru" }].map((p) => (
+                    <div className="multicore-row" key={p.value}>
+                      <code>{p.label}</code>
+                      <SolidSelect
+                        aria-label={`${t("settings.protocolDefaults")} ${p.label}`}
+                        value={protocolDefaultValue(settings.protocol_core_defaults, p.value)}
+                        disabled={customRuntime || savingProtocolDefaults}
+                        options={[
+                          { value: "auto", label: t("settings.coreAuto") },
+                          { value: "xray", label: "Xray" },
+                          { value: "singbox", label: "sing-box" },
+                          { value: "mihomo", label: "Mihomo" },
+                        ]}
+                        onChange={(core) => {
+                          if (savingProtocolDefaultsRef.current) return;
+                          savingProtocolDefaultsRef.current = true;
+                          setSavingProtocolDefaults(true);
+                          const protocolCoreDefaults = updateProtocolDefault(settings.protocol_core_defaults, p.value, core);
+                          setSettings({ ...settings, protocol_core_defaults: protocolCoreDefaults });
+                          void patchApp({ protocolCoreDefaults }).finally(() => {
+                            savingProtocolDefaultsRef.current = false;
+                            setSavingProtocolDefaults(false);
+                          });
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="field-hint muted">{t("settings.protocolDefaultsHint")}</div>
+              </div>
+            </div>
             <div className="card sidecar-card">
               <div className="via-proxy-row">
                 <div>

@@ -369,6 +369,16 @@ pub struct AppSettings {
     #[serde(default = "default_core_type")]
     pub core_type: String,
 
+    /// The core explicitly selected by the user, independent of automatic handoffs.
+    #[serde(default)]
+    pub preferred_core_type: Option<String>,
+    /// Default core per protocol, independent of sidecar delegation pins.
+    #[serde(default)]
+    pub protocol_core_defaults: Vec<ProtocolCoreItem>,
+    /// Local per-node core choices keyed by stable node ID.
+    #[serde(default)]
+    pub node_core_overrides: std::collections::BTreeMap<String, String>,
+
     /// Multi-core mode master switch (sing-box main mode only): protocols
     /// pinned to a non-main core in `protocol_cores` are forwarded through a
     /// companion core process via loopback socks outbounds. Off (default) =
@@ -540,6 +550,9 @@ impl Default for AppSettings {
             smart_switch: false,
             runtime_source: default_runtime_source(),
             core_type: default_core_type(),
+            preferred_core_type: None,
+            protocol_core_defaults: Vec::new(),
+            node_core_overrides: std::collections::BTreeMap::new(),
             multi_core_enabled: false,
             protocol_cores: Vec::new(),
             sidecar_port: default_sidecar_port(),

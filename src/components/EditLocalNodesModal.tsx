@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   deleteNode,
   getNodeDraft,
+  getSettings,
   listSubscriptionNodes,
   updateNode,
 } from "../api";
@@ -118,6 +119,9 @@ export function EditLocalNodesModal({
     setError(null);
     try {
       const updated = await updateNode(selectedId, nextDraft);
+      // ConfigPage does not pass onNodesChanged, so refresh the shared snapshot here.
+      // A failed read must not present an already-saved update as a failed write.
+      await getSettings().catch(() => undefined);
       setNodes((current) =>
         current.map((node) => (node.id === selectedId ? updated : node)),
       );

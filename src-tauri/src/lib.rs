@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod conn_journal;
 mod core;
+mod core_selection;
 mod domain;
 mod error;
 mod log_listener;

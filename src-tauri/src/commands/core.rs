@@ -377,19 +377,34 @@ pub async fn set_core_type(
     app: AppHandle,
     kind: String,
 ) -> Result<crate::domain::AppSettings, String> {
+    if !matches!(
+        kind.trim().to_ascii_lowercase().as_str(),
+        "singbox" | "xray" | "mihomo"
+    ) {
+        return Err("未知内核类型".into());
+    }
     let parsed = CoreKind::parse(&kind);
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = worker_app
             .try_state::<AppState>()
             .ok_or_else(|| "app state unavailable".to_string())?;
+        let resource_dir = worker_app.path().resource_dir().ok();
+        let running = state.is_core_running();
+        if running {
+            crate::core_selection::ensure_core_present(
+                &state.app_data_dir,
+                resource_dir.as_deref(),
+                parsed,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         if parsed == CoreKind::Mihomo
             && !crate::core::mihomo_geodata_state(&state.app_data_dir)
                 .iter()
                 .all(|(_, file)| file.present)
         {
             let proxy_url = current_download_proxy(&state)?;
-            let resource_dir = worker_app.path().resource_dir().ok();
             crate::app_log::info("geodata", "preparing mihomo geodata before core switch");
             crate::core::ensure_mihomo_geodata(
                 &state.app_data_dir,
@@ -398,10 +413,10 @@ pub async fn set_core_type(
             )
             .map_err(|error| error.to_string())?;
         }
-        let running = state.is_core_running();
         let settings = state
             .with_store_mut(|store| {
                 store.settings.core_type = parsed.as_str().to_string();
+                store.settings.preferred_core_type = Some(parsed.as_str().to_string());
                 // Multi-core mode hangs off the sing-box config: switching to
                 // another core auto-disables it (the running sidecar stops
                 // with the restart below). Protocol pins are kept, so

@@ -525,7 +525,7 @@ pub async fn select_best_now(state: &AppState) -> Result<SmartSwitchNowResult, S
         let store = state.lock_store();
         (
             store.settings.current_node_id.clone(),
-            store.enabled_nodes(),
+            crate::core_selection::smart_nodes(&store),
             store.settings.probe_url.clone(),
             crate::runtime::delegated_node_ids(
                 &store.settings,
@@ -717,7 +717,7 @@ async fn tick(state: &AppState) -> Result<(), String> {
             store.settings.auto_select.is_smart(),
             store.settings.runtime_source().is_custom(),
             store.settings.current_node_id.clone(),
-            store.enabled_nodes(),
+            crate::core_selection::smart_nodes(&store),
             store.settings.probe_url.clone(),
             crate::runtime::delegated_node_ids(
                 &store.settings,

@@ -4,7 +4,7 @@ use crate::config::{
     apply_udp_node_compatibility, build_singbox_probe_config, build_xray_sidecar_config,
 };
 use crate::core::CoreKind;
-use crate::domain::ProxyNode;
+use crate::domain::{AppSettings, ProxyNode};
 use crate::services::latency::LatencyResult;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -50,23 +50,23 @@ pub struct ProbeBinaries {
     pub singbox: Option<PathBuf>,
 }
 
+#[cfg(test)]
 fn probe_kind(node: &ProxyNode) -> CoreKind {
-    // Xray cannot preserve skip-cert-verify. Respect the imported/explicit
-    // compatibility setting instead of emitting a different TLS policy.
-    let needs_insecure = node.tls.as_ref().is_some_and(|tls| {
-        tls.enabled && tls.insecure == Some(true) && tls.reality_public_key.is_none()
-    });
-    if CoreKind::Xray.supports_node(node) && !needs_insecure {
-        CoreKind::Xray
-    } else {
-        CoreKind::SingBox
-    }
+    crate::core_selection::choose_core(
+        &AppSettings {
+            core_type: "xray".into(),
+            ..AppSettings::default()
+        },
+        node,
+    )
+    .unwrap_or(CoreKind::SingBox)
 }
 
 fn method_for(kind: CoreKind) -> &'static str {
     match kind {
         CoreKind::SingBox => "singbox_http",
-        _ => "xray_http",
+        CoreKind::Xray => "xray_http",
+        CoreKind::Mihomo => "mihomo_http",
     }
 }
 
@@ -131,7 +131,9 @@ fn config_for(
             build_singbox_probe_config(node, port, token, fragment)
                 .map_err(|_| "config: 无法生成 sing-box 测速配置，请检查节点参数".into())
         }
-        _ => Err("unsupported: 当前独立测速内核不可用".into()),
+        _ => Err(
+            "unsupported: 当前独立测速仅支持 Xray/sing-box；Mihomo 节点请切到 Mihomo 后测速".into(),
+        ),
     }
 }
 
@@ -446,7 +448,7 @@ pub async fn probe_xray_nodes(
 }
 
 pub async fn probe_xray_nodes_with_fallback(
-    mut nodes: Vec<ProxyNode>,
+    nodes: Vec<ProxyNode>,
     binaries: ProbeBinaries,
     url: String,
     timeout_ms: Option<u64>,
@@ -455,7 +457,36 @@ pub async fn probe_xray_nodes_with_fallback(
     udp_tls_compat: bool,
     on_result: impl Fn(&LatencyResult) + Send,
 ) -> Result<Vec<LatencyResult>, String> {
-    apply_udp_node_compatibility(&mut nodes, udp_tls_compat);
+    let policy = AppSettings {
+        core_type: "xray".into(),
+        udp_tls_compat,
+        ..AppSettings::default()
+    };
+    probe_xray_nodes_with_preferences(
+        nodes,
+        binaries,
+        url,
+        timeout_ms,
+        fragment_xray,
+        fragment_singbox,
+        policy,
+        on_result,
+    )
+    .await
+}
+
+pub async fn probe_xray_nodes_with_preferences(
+    mut nodes: Vec<ProxyNode>,
+    binaries: ProbeBinaries,
+    url: String,
+    timeout_ms: Option<u64>,
+    fragment_xray: bool,
+    fragment_singbox: bool,
+    policy: AppSettings,
+    on_result: impl Fn(&LatencyResult) + Send,
+) -> Result<Vec<LatencyResult>, String> {
+    apply_udp_node_compatibility(&mut nodes, policy.udp_tls_compat);
+    let policy = Arc::new(policy);
     let url = validated_url(&url)?;
     let timeout_ms = timeout_ms.unwrap_or(5000).clamp(500, 15000);
     let batch = Arc::new(
@@ -470,12 +501,22 @@ pub async fn probe_xray_nodes_with_fallback(
         let binaries = binaries.clone();
         let url = url.clone();
         let batch = batch.clone();
+        let policy = policy.clone();
         tasks.spawn_blocking(move || {
             let _batch = batch;
-            let kind = probe_kind(&node);
+            let kind = match crate::core_selection::choose_core(&policy, &node) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    return (
+                        index,
+                        result(&node, "unsupported", Err(format!("unsupported: {error}"))),
+                    )
+                }
+            };
             let bin = match kind {
                 CoreKind::Xray => binaries.xray,
-                _ => binaries.singbox,
+                CoreKind::SingBox => binaries.singbox,
+                CoreKind::Mihomo => None,
             };
             let fragment = if kind == CoreKind::Xray {
                 fragment_xray
@@ -546,12 +587,7 @@ mod tests {
             apply_udp_node_compatibility(&mut nodes, false);
             let node = &nodes[0];
             assert_ne!(node.tls.as_ref().unwrap().insecure, Some(true));
-            let expected = if protocol == "hysteria2" {
-                CoreKind::Xray
-            } else {
-                CoreKind::SingBox
-            };
-            assert_eq!(probe_kind(node), expected);
+            assert_eq!(probe_kind(node), CoreKind::SingBox);
             let doc = config_for(CoreKind::SingBox, node, 30002, "test-token", false).unwrap();
             assert_eq!(doc["inbounds"][0]["listen"], "127.0.0.1");
             assert_eq!(doc["inbounds"][0]["users"][0]["password"], "test-token");
@@ -583,6 +619,11 @@ mod tests {
             );
         }
         let mut hy2 = protocol_node("hysteria2");
+        hy2.tls.as_mut().unwrap().insecure = Some(true);
+        assert_eq!(probe_kind(&hy2), CoreKind::SingBox);
+        let doc = config_for(probe_kind(&hy2), &hy2, 30002, "token", false).unwrap();
+        assert_eq!(doc["outbounds"][0]["tls"]["insecure"], true);
+        hy2.tls.as_mut().unwrap().insecure = None;
         if let crate::domain::ProtocolConfig::Hysteria2 {
             obfs,
             obfs_password,

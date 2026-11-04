@@ -1443,6 +1443,9 @@ impl AppStore {
         let valid: std::collections::HashSet<&str> =
             self.nodes.iter().map(|n| n.node.id.as_str()).collect();
         self.node_order.retain(|id| valid.contains(id.as_str()));
+        self.settings
+            .node_core_overrides
+            .retain(|id, _| valid.contains(id.as_str()));
         self.favorite_nodes
             .retain(|id| self.nodes.iter().any(|n| &n.node.id == id));
     }
@@ -2632,6 +2635,25 @@ fn store_from_json(value: Value) -> AppStore {
                 "storage",
                 format!("ignored unreadable settings object ({error}); keeping defaults"),
             ),
+        }
+        // Recover each new preference independently even if a malformed or
+        // incomplete legacy settings object cannot be decoded as a whole.
+        if let Some(settings) = settings.as_object() {
+            if let Some(value) = settings.get("preferred_core_type") {
+                if let Ok(parsed) = serde_json::from_value(value.clone()) {
+                    store.settings.preferred_core_type = parsed;
+                }
+            }
+            if let Some(value) = settings.get("protocol_core_defaults") {
+                if let Ok(parsed) = serde_json::from_value(value.clone()) {
+                    store.settings.protocol_core_defaults = parsed;
+                }
+            }
+            if let Some(value) = settings.get("node_core_overrides") {
+                if let Ok(parsed) = serde_json::from_value(value.clone()) {
+                    store.settings.node_core_overrides = parsed;
+                }
+            }
         }
     }
     if let Some(dns) = obj.get("dns") {
@@ -4440,6 +4462,92 @@ mod tests {
             latency_ms: None,
             latency_at: None,
         }
+    }
+
+    #[test]
+    fn core_preferences_survive_reload_refresh_and_follow_node_lifetime() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("core-preferences");
+        let a = sample_hy2("a", "A");
+        let b = sample_hy2("b", "B");
+        store
+            .upsert_subscription(sub.clone(), vec![a.clone(), b.clone()])
+            .unwrap();
+        let ids: Vec<_> = store
+            .nodes
+            .iter()
+            .map(|entry| entry.node.id.clone())
+            .collect();
+        store
+            .settings
+            .node_core_overrides
+            .insert(ids[0].clone(), "singbox".into());
+        store
+            .settings
+            .node_core_overrides
+            .insert(ids[1].clone(), "mihomo".into());
+        store.settings.preferred_core_type = Some("xray".into());
+        store.settings.protocol_core_defaults = vec![crate::domain::ProtocolCoreItem {
+            protocol: "hysteria2".into(),
+            core: "singbox".into(),
+        }];
+        let mut restored = store_from_json(serde_json::to_value(&store).unwrap());
+        assert_eq!(
+            restored.settings.node_core_overrides,
+            store.settings.node_core_overrides
+        );
+        assert_eq!(
+            restored.settings.preferred_core_type.as_deref(),
+            Some("xray")
+        );
+        assert_eq!(
+            restored.settings.protocol_core_defaults,
+            store.settings.protocol_core_defaults
+        );
+        restored
+            .upsert_subscription(sub.clone(), vec![a.clone(), b])
+            .unwrap();
+        assert_eq!(
+            restored.settings.node_core_overrides,
+            store.settings.node_core_overrides
+        );
+        let mut refreshed = restored.clone();
+        refreshed.upsert_subscription(sub.clone(), vec![a]).unwrap();
+        assert!(refreshed.settings.node_core_overrides.contains_key(&ids[0]));
+        assert!(!refreshed.settings.node_core_overrides.contains_key(&ids[1]));
+        restored.delete_node(&ids[0]).unwrap();
+        assert!(!restored.settings.node_core_overrides.contains_key(&ids[0]));
+        assert!(restored.settings.node_core_overrides.contains_key(&ids[1]));
+        restored.remove_subscription(&sub.id).unwrap();
+        assert!(restored.settings.node_core_overrides.is_empty());
+        let legacy = store_from_json(serde_json::json!({}));
+        assert!(legacy.settings.protocol_core_defaults.is_empty());
+        assert!(legacy.settings.node_core_overrides.is_empty());
+        assert!(legacy.settings.preferred_core_type.is_none());
+    }
+
+    #[test]
+    fn preferences_recover_from_incomplete_or_partly_invalid_settings() {
+        let restored = store_from_json(serde_json::json!({"settings": {
+            "preferred_core_type": "xray",
+            "protocol_core_defaults": [{"protocol": "vless", "core": "xray"}],
+            "node_core_overrides": {"stable-id": "mihomo"},
+            "mixed_port": "invalid"
+        }}));
+        assert_eq!(
+            restored.settings.preferred_core_type.as_deref(),
+            Some("xray")
+        );
+        assert_eq!(restored.settings.protocol_core_defaults.len(), 1);
+        assert_eq!(restored.settings.node_core_overrides["stable-id"], "mihomo");
+        let restored = store_from_json(serde_json::json!({"settings": {
+            "preferred_core_type": "xray", "node_core_overrides": false
+        }}));
+        assert_eq!(
+            restored.settings.preferred_core_type.as_deref(),
+            Some("xray")
+        );
+        assert!(restored.settings.node_core_overrides.is_empty());
     }
 
     #[test]

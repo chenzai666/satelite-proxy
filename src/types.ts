@@ -448,6 +448,7 @@ export interface SudokuSettings {
 
 /** Flattened single-node form. Field names match the Rust `ManualNodeDraft`. */
 export interface ManualNodeDraft {
+  preferredCore?: string | null;
   sudokuOptionsJson?: string | null;
   protocol: string;
   server: string;
@@ -596,6 +597,9 @@ export interface AppSettings {
   /** Per-protocol core routing rows (delegations only; missing protocols
    * follow the main core). */
   protocol_cores?: ProtocolCoreItem[];
+  protocol_core_defaults?: ProtocolCoreItem[];
+  preferred_core_type?: CoreKind | null;
+  node_core_overrides?: Record<string, string>;
   /** Base loopback port for the sidecar's per-node inbounds. */
   sidecar_port?: number;
   tls_fragment_singbox?: boolean;
@@ -606,7 +610,7 @@ export interface AppSettings {
 export interface ProtocolCoreItem {
   /** `Protocol::as_str` value, e.g. "vless". */
   protocol: string;
-  /** Sidecar `CoreKind` the protocol is pinned to: "xray" | "mihomo". */
+  /** Core kind selected for the protocol. */
   core: string;
 }
 

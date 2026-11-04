@@ -78,14 +78,14 @@ pub async fn test_nodes_latency(
         });
     }
 
-    let (core, probe_url, fragment, fragment_singbox, udp_tls_compat, custom) = state
+    let (core, probe_url, fragment, fragment_singbox, policy, custom) = state
         .with_store(|store| {
             Ok((
                 store.settings.core_type.clone(),
                 store.settings.probe_url.clone(),
                 store.settings.tls_fragment_xray,
                 store.settings.tls_fragment_singbox,
-                store.settings.udp_tls_compat,
+                store.settings.clone(),
                 crate::domain::RuntimeSource::parse(&store.settings.runtime_source).is_custom(),
             ))
         })
@@ -94,7 +94,17 @@ pub async fn test_nodes_latency(
     // Manual run: never serve cached numbers — every node is really probed.
     // The fresh results are still written to the shared probe cache for
     // background consumers (smart_switch ranking/health).
-    let results = if core == "xray" && !custom {
+    let independent = !custom
+        && (core == "xray"
+            || (core == "singbox"
+                && !policy.multi_core_enabled
+                && (!policy.node_core_overrides.is_empty()
+                    || !policy.protocol_core_defaults.is_empty()
+                    || policy
+                        .preferred_core_type
+                        .as_deref()
+                        .is_some_and(|preferred| preferred != core))));
+    let results = if independent {
         let (bin, _) = crate::core::inspect_core_bin(
             &state.app_data_dir,
             state.resource_dir.as_deref(),
@@ -105,14 +115,14 @@ pub async fn test_nodes_latency(
             state.resource_dir.as_deref(),
             crate::core::CoreKind::SingBox,
         );
-        crate::services::xray_latency::probe_xray_nodes_with_fallback(
+        crate::services::xray_latency::probe_xray_nodes_with_preferences(
             nodes,
             crate::services::xray_latency::ProbeBinaries { xray: bin, singbox },
             probe_url,
             timeout_ms,
             fragment,
             fragment_singbox,
-            udp_tls_compat,
+            policy,
             |r| stream_result(&on_result, r),
         )
         .await?

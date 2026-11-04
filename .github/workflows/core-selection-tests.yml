@@ -1,0 +1,59 @@
+name: 协议与节点选核前端验证
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core-selection:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 类型检查与选核单测
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/test-core-selection.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 选核设置与节点表单浏览器回归
+        shell: pwsh
+        run: |
+          $uiDeps = Join-Path $env:RUNNER_TEMP 'satelite-core-selection-ui-tests'
+          npm install --prefix $uiDeps --no-audit --no-fund playwright@1.55.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node (Join-Path $uiDeps 'node_modules/playwright/cli.js') install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_MODULE = Join-Path $uiDeps 'node_modules/playwright/index.mjs'
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          $server = Start-Process node -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '1440', '--strictPort') -WindowStyle Hidden -PassThru
+          Write-Host "选核临时测试服务 PID=$($server.Id) 启动=$($server.StartTime.ToString('o'))"
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try { Invoke-WebRequest 'http://127.0.0.1:1440/scripts/ui-smoke/core-selection.html' -UseBasicParsing | Out-Null; $ready = $true; break } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw '选核测试服务未就绪' }
+            node scripts/test-core-selection-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+            if (-not $server.WaitForExit(5000)) { throw '选核临时测试服务未退出' }
+          }
+      - name: 保存选核测试截图
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: core-selection-${{ github.sha }}
+          path: test-results/core-selection*.png
+          if-no-files-found: ignore
+          retention-days: 14

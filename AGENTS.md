@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-04 协议/节点选核：AppSettings.protocol_core_defaults为协议默认，node_core_overrides按稳定节点ID保存单点覆盖，preferred_core_type记用户显式首选而非自动临时切换；原protocol_cores继续仅代表sing-box副核委托，禁止混用两种语义。ManualNodeDraft.preferredCore仅本地元数据，get_node_draft回auto或内核名；旧调用缺字段保留设置，auto显式清除，新增/编辑共用。只改偏好不得重建ProxyNode/raw或改变分享链接。手动选点与启动统一按节点覆盖→协议默认→兼容自动选择，Xray首选下HY2/TUIC/AnyTLS默认sing-box，回适配VLESS恢复首选；参数不兼容的显式覆盖须报错，不忽略TLS/混淆。Mihomo策略组、自写配置、有效副核委托与后台智能范围保持。所有新持久字段必须从宽容store_from_json读回；刷新保稳定ID偏好，删除清失效引用。Rust/真实内核/浏览器测试仅Actions，本机只Node/tsc/rustfmt；完整构建成功后覆盖v1.0.46两包，不替换当前本地客户端。
+
 重置/权限恢复补充：reset退役文件也使用唯一recovery路径，不复用安装的previous，避免resolve撤销恢复内置版本。macOS元数据提交失败后若新dest为setuid，由restore_previous_setuid_core授权恢复旧版并重设root:admin/setuid；该异常恢复可能另需一次授权，正常升级仍复用单次授权。
 
 更新恢复补充（2026-11-04）：已存在的previous不能因dest存在就删除，须轮换到唯一recovery文件并记录路径；resolve发现目标缺失且previous存在先恢复旧版，恢复失败不得stage bundled掩盖现场。macOS特权替换在同一次授权shell内执行失败回滚并恢复root:admin/setuid，错误须列目标及备份路径。回归包括下一次更新仍保留上次未提交旧备份。
@@ -227,6 +229,7 @@ satelite-proxy/
 │   │   └── update_tests.rs  # 三内核文件锁、元数据与失败回滚回归（Actions）
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
 │   ├── src/traffic_stats.rs # 会话流量分类/对账，真实出站或保守连接采样，未分类独立保留
+│   ├── src/core_selection.rs # 协议默认/节点覆盖、参数兼容、首选记忆及停核前预检
 │   ├── src/uwp_loopback.rs  # Windows UWP/AppContainer 回环豁免（CheckNetIsolation + UAC helper）
 │   ├── src/api/clash_api.rs # Clash API 客户端（ureq + tungstenite）
 │   ├── src/api/xray_metrics.rs # Xray metrics 客户端（/debug/vars 轮询）
@@ -331,6 +334,8 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `paths.rs` — 内核二进制/版本文件路径解析（resource 目录 → data 目录 staging；bundled 布局三内核共用 sing-box 式平台目录名，release 资产名才按 kind 区分）。sing-box 保持 `bin/sing-box`+`version.txt` 存量布局；Xray 用 `bin/xray`+`xray-version.txt`；mihomo 用 `bin/mihomo`+`mihomo-version.txt`，home 目录 `mihomo_home_dir` = `<data>/mihomo`。
 
 ### 5.6 运行时编排与外部 API
+
+- `core_selection.rs`：统一节点覆盖→协议默认→兼容自动的手动选核，`preferred_core_type`独立于实际临时主核。runtime冷启动/重启与state手动选点复用；停止旧核心前检查目标及实际副核存在。`smart_nodes`按同核/真实委托约束显式偏好，计划每批只生成一次。Xray独立测速携带设置快照复用选择器；Mihomo原生策略组和自写配置保留生命周期。`with_store_mut`先校验和保存候选，再发布内存；保存失败保留旧设置，已热切的选择器尝试恢复前节点。新增`core-selection-tests.yml`仅在Actions用模拟数据验证真实表单与切核时序；完整发布仍以Windows构建全部成功为准。
 
 - `traffic_stats.rs` 与 `Runtime::traffic_accounting`：分类累计独立于连接历史保留，每帧主内核总量给预算，短连接漏采不推测分类；状态序列化始终包含traffic_breakdown，旧前端根总量字段保留。`XrayMetrics::traffic_snapshot`和`Runtime::apply_metrics_snapshot`传递同一响应的分类计数。前端`TrafficStatsCard`复用主状态轮询，不另起高频请求。
 

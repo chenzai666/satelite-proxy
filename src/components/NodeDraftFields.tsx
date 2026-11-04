@@ -189,6 +189,23 @@ export function NodeDraftFields({ value, disabled, onChange }: Props) {
         />
       </label>
 
+      <label className="field">
+        <span>{t("nodeDraft.preferredCore")}</span>
+        <SolidSelect
+          aria-label={t("nodeDraft.preferredCore")}
+          value={value.preferredCore || "auto"}
+          disabled={disabled}
+          options={[
+            { value: "auto", label: t("nodeDraft.followProtocol") },
+            { value: "xray", label: "Xray" },
+            { value: "singbox", label: "sing-box" },
+            { value: "mihomo", label: "Mihomo" },
+          ]}
+          onChange={(preferredCore) => set({ preferredCore })}
+        />
+        <span className="field-hint muted">{t("nodeDraft.preferredCoreHint")}</span>
+      </label>
+
       {needsServer(p) && (
         <div className="field-grid">
           <label className="field">

@@ -10,6 +10,7 @@ import {
   getNodeShareUri,
   getProxyStatus,
   getSettings,
+  peekProxyStatus,
   peekSettings,
   listCustomConfigNodes,
   listNodeIds,
@@ -39,6 +40,7 @@ import { useImportIntent } from "../../ImportIntentContext";
 import { useI18n } from "../../i18n";
 import { ErrorModal } from "../../components/ErrorModal";
 import { waitForCoreRestart } from "../../coreBusy";
+import { asCoreKind } from "../../coreSelection";
 import { useVirtualRange } from "../../hooks/useVirtualRange";
 import { useMihomoNodeSelection } from "../../hooks/useMihomoNodeSelection";
 import { copyNodeShareText } from "../../nodeShare";
@@ -66,22 +68,24 @@ export function SimpleServersPage() {
   const { t } = useI18n();
   const { prefill } = useImportIntent();
   const [core, setCore] = useState(() => peekSettings()?.core_type ?? "singbox");
+  const selectingNode = useRef(false);
   const [tab, setTab] = useState("groups");
   useEffect(() => {
     let disposed = false;
-    void getSettings().then(s => { if (!disposed) setCore(s.core_type ?? "singbox"); }).catch(() => undefined);
-    const unsubscribe = onProxySnapshot(s => { if (!disposed && s.core_type) setCore(s.core_type as "singbox" | "mihomo" | "xray"); });
+    let observed = false;
+    const unsubscribe = onProxySnapshot(s => { observed = true; const core = asCoreKind(s.core_type); if (!disposed && !selectingNode.current && core) setCore(core); });
+    void getProxyStatus().catch(() => getSettings()).then(s => { if (!disposed && !observed && !selectingNode.current) setCore(asCoreKind(s.core_type) ?? "singbox"); }).catch(() => undefined);
     return () => { disposed = true; unsubscribe(); };
   }, []);
   useEffect(() => { if (prefill) setTab("manage"); }, [prefill]);
-  if (core !== "mihomo") return <SimpleNodeManagementPage />;
+  if (core !== "mihomo") return <SimpleNodeManagementPage onCoreRefresh={setCore} onSelectionBusy={(busy) => { selectingNode.current = busy; }} />;
   return <div className="simple-page">
     <GlassSeg value={tab} options={[{ value: "groups", label: t("mihomoGroups.title") }, { value: "manage", label: t("mihomoGroups.manageNodes") }]} onChange={setTab} />
-    {tab === "groups" ? <MihomoGroupsPage embedded /> : <SimpleNodeManagementPage policyManaged />}
+    {tab === "groups" ? <MihomoGroupsPage embedded /> : <SimpleNodeManagementPage policyManaged onCoreRefresh={setCore} onSelectionBusy={(busy) => { selectingNode.current = busy; }} />}
   </div>;
 }
 
-function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: boolean }) {
+function SimpleNodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionBusy }: { policyManaged?: boolean; onCoreRefresh: (core: "singbox" | "xray" | "mihomo") => void; onSelectionBusy: (busy: boolean) => void }) {
   const { t } = useI18n();
   const { prefill, token, consume, dismiss } = useImportIntent();
   const [nodes, setNodes] = useState<ProxyNode[]>([]);
@@ -151,7 +155,7 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
       const settings = await getSettings();
       setCurrentId(settings.current_node_id ?? null);
       setRuntimeSource(settings.runtime_source || "generated");
-      setXrayCore((settings.core_type ?? "singbox") === "xray");
+      setXrayCore((peekProxyStatus()?.core_type ?? settings.core_type ?? "singbox") === "xray");
       setAutoSelect((settings.auto_select as AutoSelectMode) ?? "off");
       const offset = append ? nodes.length : 0;
       if ((settings.runtime_source || "generated").startsWith("singbox:")) {
@@ -217,25 +221,36 @@ function SimpleNodeManagementPage({ policyManaged = false }: { policyManaged?: b
   async function onSelectNode(id: string) {
     if (policyManaged) return;
     if (busy || switching || batchBusy || id === currentId) return;
+    onSelectionBusy(true);
     setBusy(true);
     setError(null);
     try {
       const leavingKernel = autoSelect === "kernel";
-      await setCurrentNode(id);
-      setCurrentId(id);
-      setAutoSelect("off");
-      if (leavingKernel) {
-        // urltest → selector rebuild: when running, hold the busy state until
-        // the core restart finishes (stopped cores just persist the pick).
-        const status = await getProxyStatus().catch(() => null);
-        if (status?.running) {
-          setSwitching(true);
-          await waitForCoreRestart();
-        }
+      const before = await getSettings();
+      const status = await getProxyStatus();
+      const selected = await setCurrentNode(id);
+      const coreSwitched = (selected.core_type ?? "singbox") !== (before.core_type ?? "singbox");
+      // Xray also rebuilds when selecting another node on the same core.
+      if (status.running && (leavingKernel || coreSwitched || before.core_type === "xray")) {
+        setSwitching(true);
+        const result = await waitForCoreRestart();
+        if (result !== "ready") throw new Error(t("settings.coreSwitchWaitFailed"));
       }
     } catch (e) {
       setError(typeof e === "string" ? e : String(e));
     } finally {
+      const refreshed = await getSettings().catch(() => null);
+      const status = await getProxyStatus().catch(() => null);
+      if (refreshed) {
+        setCurrentId(refreshed.current_node_id ?? null);
+        setAutoSelect((refreshed.auto_select as AutoSelectMode) ?? "off");
+      }
+      const core = asCoreKind(status?.core_type) ?? asCoreKind(refreshed?.core_type);
+      if (core) {
+        setXrayCore(core === "xray");
+        onCoreRefresh(core);
+      }
+      onSelectionBusy(false);
       setSwitching(false);
       setBusy(false);
     }

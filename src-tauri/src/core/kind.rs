@@ -277,6 +277,23 @@ impl CoreKind {
         self.node_unsupported_reason(node).is_none()
     }
 
+    /// Runtime compatibility is stricter than list visibility for sing-box:
+    /// some nodes are kept visible so the user can delegate them to a sidecar.
+    pub fn native_node_unsupported_reason(
+        self,
+        node: &crate::domain::ProxyNode,
+    ) -> Option<&'static str> {
+        if self == Self::SingBox {
+            if matches!(node.transport, Some(crate::domain::Transport::Xhttp { .. })) {
+                return Some("sing-box 不支持 xhttp 传输");
+            }
+            if matches!(node.protocol, Protocol::Masque | Protocol::Sudoku) {
+                return Some("该协议需要 Mihomo 内核");
+            }
+        }
+        self.node_unsupported_reason(node)
+    }
+
     /// Why this core cannot serve the node (`None` = supported). Mirrors
     /// every rule of the old `supports_node` and feeds the core-support
     /// panel's report; static strings keep listing hot paths allocation-free.
@@ -305,6 +322,11 @@ impl CoreKind {
             });
         }
         if self == Self::Xray {
+            if node.tls.as_ref().is_some_and(|tls| {
+                tls.enabled && tls.insecure == Some(true) && tls.reality_public_key.is_none()
+            }) {
+                return Some("Xray 无法保留该节点的 TLS 跳过证书校验设置");
+            }
             let reality = node
                 .tls
                 .as_ref()
@@ -383,13 +405,10 @@ impl CoreKind {
     /// This deliberately does not apply to background smart selection: an
     /// automatic policy must not silently change the user's active core.
     pub fn manual_node_fallback(self, node: &crate::domain::ProxyNode) -> Option<Self> {
-        if node.protocol == crate::domain::Protocol::Sudoku && self != Self::Mihomo {
-            return Some(Self::Mihomo);
-        }
-        if self == Self::Xray && !self.supports_node(node) {
-            [Self::SingBox, Self::Mihomo]
+        if self.native_node_unsupported_reason(node).is_some() {
+            [Self::SingBox, Self::Xray, Self::Mihomo]
                 .into_iter()
-                .find(|kind| kind.supports_node(node))
+                .find(|kind| kind.native_node_unsupported_reason(node).is_none())
         } else {
             None
         }
@@ -445,6 +464,9 @@ type: ss
         assert!(CoreKind::Mihomo.supports_node(&unknown));
         assert!(!CoreKind::SingBox.supports_node(&unknown));
         assert!(!CoreKind::Xray.supports_node(&unknown));
+        assert!(CoreKind::Mihomo
+            .native_node_unsupported_reason(&unknown)
+            .is_none());
 
         // mihomo has no outbound for these types — raw must not resurrect them.
         for protocol in [Protocol::Naive, Protocol::Tor, Protocol::ShadowTls] {
@@ -656,6 +678,30 @@ type: ss
             ..Default::default()
         });
 
+        let xhttp = node(
+            Protocol::Vless,
+            plain_tls.clone(),
+            Some(Transport::Xhttp {
+                path: None,
+                host: None,
+                mode: None,
+                extra: None,
+            }),
+        );
+        assert!(CoreKind::SingBox.supports_node(&xhttp));
+        assert!(CoreKind::SingBox
+            .native_node_unsupported_reason(&xhttp)
+            .is_some());
+        assert_eq!(
+            CoreKind::SingBox.manual_node_fallback(&xhttp),
+            Some(CoreKind::Xray)
+        );
+        let sudoku = raw_node(Protocol::Sudoku);
+        assert_eq!(
+            CoreKind::SingBox.manual_node_fallback(&sudoku),
+            Some(CoreKind::Mihomo)
+        );
+
         // mihomo (canonical Clash Meta, uTLS): REALITY and Vision both fine.
         assert!(CoreKind::Mihomo.supports_node(&node(Protocol::Vless, reality.clone(), None)));
         let mut vision = node(Protocol::Vless, plain_tls.clone(), None);
@@ -742,6 +788,12 @@ type: ss
             *obfs = None;
         }
         assert!(CoreKind::Xray.supports_node(&hy2_obfs));
+        hy2_obfs.tls.as_mut().unwrap().insecure = Some(true);
+        assert!(!CoreKind::Xray.supports_node(&hy2_obfs));
+        assert_eq!(
+            CoreKind::Xray.manual_node_fallback(&hy2_obfs),
+            Some(CoreKind::SingBox)
+        );
         // Xray v26 removed non-AEAD Shadowsocks stream ciphers at config
         // load. Legacy nodes fall back to the bundled sing-box core when a
         // user selects one; they must never reach an Xray config.

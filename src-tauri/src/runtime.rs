@@ -1059,6 +1059,8 @@ impl Runtime {
             return Ok(self.status(store));
         }
 
+        crate::core_selection::prepare_selected_core(app_data_dir, resource_dir, store)?;
+
         // A new core session owns fresh cumulative counters. Never carry the
         // previous core/configuration's classified bytes across this boundary.
         self.reset_traffic_session(matches!(
@@ -1184,13 +1186,21 @@ impl Runtime {
         apply_udp_node_compatibility(&mut nodes, store.settings.udp_tls_compat);
         let mut opts = build_options(store, secret.clone());
         opts.sidecar = sidecar_plan.clone();
-        let built = build_singbox_config_with_chain_context(
+        let mut built = build_singbox_config_with_chain_context(
             &nodes,
             &opts,
             store.settings.close_connections_on_switch,
             &store.pools,
             &store.chains,
         )?;
+        if crate::core_selection::needs_kernel_restriction(&store.settings) {
+            crate::core_selection::restrict_kernel_candidates(
+                &store.settings,
+                &crate::core_selection::smart_nodes(store),
+                &mut built.value,
+                &built.outbound_tags,
+            )?;
+        }
         let has_chain_diag = built
             .value
             .get("inbounds")
@@ -1563,7 +1573,15 @@ impl Runtime {
             }
             xray_opts
         };
-        let built = build_xray_config(&nodes, &xray_opts)?;
+        let mut built = build_xray_config(&nodes, &xray_opts)?;
+        if crate::core_selection::needs_kernel_restriction(&store.settings) {
+            crate::core_selection::restrict_kernel_candidates(
+                &store.settings,
+                &crate::core_selection::smart_nodes(store),
+                &mut built.value,
+                &built.outbound_tags,
+            )?;
+        }
         let config_path = write_active_config(app_data_dir, &built)?;
         // The generator falls back to the first supported node when the
         // persisted pick is incompatible (or absent) — mirror that here so
@@ -2364,6 +2382,8 @@ impl Runtime {
         resource_dir: Option<&Path>,
         store: &mut AppStore,
     ) -> AppResult<ProxyStatus> {
+        // Validate the selected core before touching the old working process.
+        crate::core_selection::prepare_selected_core(app_data_dir, resource_dir, store)?;
         let sys = self.system_proxy_on;
         self.stop_core(store)?;
         self.start_proxy(app_data_dir, resource_dir, store, sys)
@@ -2555,7 +2575,7 @@ fn compute_sidecar_plan_impl(
         }
         wanted.entry(e.protocol.as_str()).or_insert(kind);
     }
-    if wanted.is_empty() {
+    if wanted.is_empty() && settings.node_core_overrides.is_empty() {
         return None;
     }
     // Chain hop pins keep native semantics (v1): a detour chain that routed
@@ -2592,16 +2612,35 @@ fn compute_sidecar_plan_impl(
         // natively (xhttp / masque under sing-box) are filtered at config
         // generation with a logged reason unless their protocol is pinned
         // to a sidecar here.
-        let Some(&target) = wanted.get(node.protocol.as_str()) else {
+        let target = settings
+            .node_core_overrides
+            .get(&node.id)
+            .and_then(|raw| crate::core_selection::strict_core(raw))
+            .or_else(|| wanted.get(node.protocol.as_str()).copied());
+        let Some(target) = target else {
             continue;
         };
+        if target == CoreKind::SingBox {
+            continue;
+        }
         if node.protocol == Protocol::WireGuard {
             continue;
         }
         if chain_node_ids.contains(node.id.as_str()) {
             continue;
         }
-        if !target.supports_node(node) {
+        let mut effective = if matches!(node.protocol, Protocol::Hysteria2 | Protocol::Tuic) {
+            vec![node.clone()]
+        } else {
+            Vec::new()
+        };
+        if !effective.is_empty() {
+            apply_udp_node_compatibility(&mut effective, settings.udp_tls_compat);
+        }
+        if target
+            .native_node_unsupported_reason(effective.first().unwrap_or(node))
+            .is_some()
+        {
             if log_skips {
                 crate::app_log::warn(
                     "sidecar",
