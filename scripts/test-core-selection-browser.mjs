@@ -20,7 +20,7 @@ try {
   });
   page = await context.newPage();
   const errors = [];
-  page.on("pageerror", e => errors.push(e.message));
+  page.on("pageerror", e => errors.push(e.stack ?? e.message));
   const base = "http://127.0.0.1:1440/scripts/ui-smoke/core-selection.html";
   await page.goto(base);
   await page.getByRole("button", { name: "内核设置", exact: true }).click();
@@ -120,7 +120,14 @@ try {
   assert.deepEqual(errors, []);
   console.log("协议默认和节点偏好真实组件回归通过");
 } catch (error) {
-  if (page) await page.screenshot({ path: "test-results/core-selection-failure.png" }).catch(() => {});
+  if (page) {
+    // 此页面仅使用本文件配套模拟数据，不读取真实用户配置或凭据。
+    console.error("选核夹具失败状态", await page.evaluate(() => ({
+      unexpected: window.coreFixture?.unexpected,
+      modal: document.querySelector(".error-modal-backdrop")?.textContent?.slice(0, 1200),
+    })).catch(() => null));
+    await page.screenshot({ path: "test-results/core-selection-failure.png" }).catch(() => {});
+  }
   throw error;
 } finally {
   await browser.close();

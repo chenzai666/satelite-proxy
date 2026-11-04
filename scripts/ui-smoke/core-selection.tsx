@@ -7,14 +7,15 @@ import { EditLocalNodesModal } from "../../src/components/EditLocalNodesModal";
 import { NodesPage } from "../../src/pages/NodesPage";
 import { SimpleServersPage } from "../../src/ui/simple/SimpleServersPage";
 import { getProxyStatus } from "../../src/api";
-import type { ManualNodeDraft } from "../../src/types";
+import type { AppSettings, ManualNodeDraft } from "../../src/types";
 import { LocaleProvider } from "../../src/i18n";
 import { ThemeProvider } from "../../src/theme";
 import "../../src/App.css";
 
 const node = { id: "fixture", name: "Fixture", protocol: "vless", server: "example.test", port: 443, subscription_id: "fixture", subscription_name: "Fixture" };
+const networkDefaults = { mixed_port: 2080, api_port: 19090, probe_url: "https://example.test/204" } satisfies AppSettings;
 const state = {
-  settings: { locale: "zh", core_type: "singbox", runtime_source: "generated", auto_select: "off", current_node_id: null as string | null, multi_core_enabled: false, protocol_core_defaults: [] as { protocol: string; core: string }[], node_core_overrides: {} as Record<string, string>, ...JSON.parse(sessionStorage.getItem("core-selection-settings") ?? "{}") },
+  settings: { ...networkDefaults, locale: "zh", core_type: "singbox", runtime_source: "generated", auto_select: "off", current_node_id: null as string | null, multi_core_enabled: false, protocol_core_defaults: [] as { protocol: string; core: string }[], node_core_overrides: {} as Record<string, string>, ...JSON.parse(sessionStorage.getItem("core-selection-settings") ?? "{}") },
   draft: JSON.parse(sessionStorage.getItem("core-selection-draft") ?? "null") as ManualNodeDraft | null,
   writes: [] as unknown[], commands: [] as string[], unexpected: [] as string[], settingsReads: 0, hold: false, release: null as null | (() => void),
   status: { running: true, core_type: "singbox", runtime_source: "generated", outbound_mode: "rule" },
