@@ -1,5 +1,6 @@
 //! Download cores from GitHub releases (SagerNet/sing-box, XTLS/Xray-core).
 
+use super::update;
 use crate::core::kind::CoreKind;
 use crate::core::paths::{
     core_bin_path, core_dir, detect_platform, normalize_version, read_version_of_binary,
@@ -559,21 +560,25 @@ fn install_downloaded_archive(
     info: &LatestReleaseInfo,
     bytes: Vec<u8>,
 ) -> AppResult<CoreDownloadResult> {
+    let _install_guard = update::lock_install(kind)?;
     let bin_dir = core_dir(app_data_dir);
     fs::create_dir_all(&bin_dir)?;
     let archive_path = bin_dir.join(&info.asset_name);
-    {
-        let mut f = File::create(&archive_path)
-            .map_err(|e| AppError::Core(format!("write archive: {e}")))?;
-        f.write_all(&bytes)
-            .map_err(|e| AppError::Core(format!("write archive: {e}")))?;
-    }
 
     let dest = core_bin_path(app_data_dir, kind);
     let staged = staged_core_path(kind, &dest);
     let previous = previous_core_path(kind, &dest);
-    let _ = fs::remove_file(&staged);
     let install_result = (|| {
+        require_recovered_previous(&dest, &previous)?;
+        update::remove_file(&staged).map_err(|error| {
+            AppError::Core(format!("prepare staged core {}: {error}", staged.display()))
+        })?;
+        {
+            let mut f = File::create(&archive_path)
+                .map_err(|e| AppError::Core(format!("write archive: {e}")))?;
+            f.write_all(&bytes)
+                .map_err(|e| AppError::Core(format!("write archive: {e}")))?;
+        }
         if info.asset_name.ends_with(".tar.gz") || info.asset_name.ends_with(".tgz") {
             extract_binary_from_tar_gz(kind, &archive_path, &staged)?;
         } else if info.asset_name.ends_with(".gz") {
@@ -612,14 +617,15 @@ fn install_downloaded_archive(
 
         let had_previous = replace_installed_core(kind, &staged, &dest, &previous)?;
         if let Err(error) = write_version_file(app_data_dir, kind, &actual_version) {
-            let _ = fs::remove_file(&dest);
-            if had_previous {
-                let _ = fs::rename(&previous, &dest);
-            }
-            return Err(error);
+            return Err(rollback_installed_core(
+                &dest,
+                &previous,
+                had_previous,
+                error,
+            ));
         }
         if had_previous {
-            let _ = fs::remove_file(&previous);
+            update::cleanup_file(&previous);
         }
 
         Ok(CoreDownloadResult {
@@ -632,9 +638,9 @@ fn install_downloaded_archive(
         })
     })();
 
-    let _ = fs::remove_file(&archive_path);
+    update::cleanup_file(&archive_path);
     if install_result.is_err() {
-        let _ = fs::remove_file(&staged);
+        update::cleanup_file(&staged);
     }
     install_result
 }
@@ -665,7 +671,8 @@ fn replace_installed_core(
     dest: &Path,
     previous: &Path,
 ) -> AppResult<bool> {
-    let _ = fs::remove_file(previous);
+    require_recovered_previous(dest, previous)?;
+    update::preserve_previous(previous)?;
 
     // A currently-setuid core (TUN elevation) can only be replaced with
     // authorization; reuse that single authorization to also carry the
@@ -688,16 +695,65 @@ fn replace_installed_core(
     let _ = kind;
     let had_previous = dest.exists();
     if had_previous {
-        fs::rename(dest, previous)
+        update::rename_file(dest, previous)
             .map_err(|error| AppError::Core(format!("stage previous core: {error}")))?;
     }
-    if let Err(error) = fs::rename(staged, dest) {
+    if let Err(error) = update::rename_file(staged, dest) {
         if had_previous {
-            let _ = fs::rename(previous, dest);
+            if let Err(rollback) = update::rename_file(previous, dest) {
+                return Err(AppError::Core(format!(
+                    "activate downloaded core: {error}; rollback failed: {rollback}; recover {} -> {}",
+                    previous.display(), dest.display()
+                )));
+            }
         }
-        return Err(AppError::Core(format!("activate downloaded core: {error}")));
+        return Err(AppError::Core(format!(
+            "activate downloaded core: {error}; 目标文件持续被占用时请稍后重试"
+        )));
     }
     Ok(had_previous)
+}
+
+fn require_recovered_previous(dest: &Path, previous: &Path) -> AppResult<()> {
+    // Do not overwrite dependencies or discard the only old core after a
+    // failed rollback. Require recovery before beginning another transaction.
+    if !dest.exists() && previous.exists() {
+        return Err(AppError::Core(format!(
+            "previous core requires recovery: {} -> {}",
+            previous.display(),
+            dest.display()
+        )));
+    }
+    Ok(())
+}
+
+fn rollback_installed_core(
+    dest: &Path,
+    previous: &Path,
+    had_previous: bool,
+    error: AppError,
+) -> AppError {
+    #[cfg(target_os = "macos")]
+    if had_previous && crate::core::macos_auth::core_has_setuid(dest) {
+        return match crate::core::macos_auth::restore_previous_setuid_core(dest, previous) {
+            Ok(()) => error,
+            Err(rollback) => AppError::Core(format!("{error}; rollback failed: {rollback}")),
+        };
+    }
+    let rollback = update::remove_file(dest).and_then(|()| {
+        if had_previous {
+            update::rename_file(previous, dest)
+        } else {
+            Ok(())
+        }
+    });
+    match rollback {
+        Ok(()) => error,
+        Err(rollback) => AppError::Core(format!(
+            "{error}; rollback failed: {rollback}; installed {}; previous core preserved at {} (present: {had_previous})",
+            dest.display(), previous.display()
+        )),
+    }
 }
 
 /// Binary file names accepted inside a sing-box tar.gz (historical layouts).
@@ -820,15 +876,17 @@ fn extract_from_zip(kind: CoreKind, archive: &Path, dest: &Path, bin_dir: &Path)
             .map(|m| m.len() != entry.size())
             .unwrap_or(true);
         if needs_copy {
-            let mut out = File::create(&target)
-                .map_err(|e| AppError::Core(format!("create {file_name}: {e}")))?;
-            io::copy(&mut entry, &mut out)
+            update::write_atomically(&target, |out| io::copy(&mut entry, out).map(|_| ()))
                 .map_err(|e| AppError::Core(format!("extract {file_name}: {e}")))?;
         }
     }
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "update_tests.rs"]
+mod update_tests;
 
 #[cfg(test)]
 mod tests {

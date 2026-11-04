@@ -356,9 +356,17 @@ pub fn replace_setuid_core(staged: &Path, dest: &Path, previous: &Path) -> AppRe
     let previous_q = shell_single_quote(&previous.to_string_lossy());
     let user_q = shell_single_quote(&current_user);
     let shell = format!(
-        "mv -f {dest} {previous} && chown {user} {previous} && \
-         mv -f {staged} {dest} && chown root:admin {dest} && chmod +sx {dest} && \
-         {{ xattr -dr com.apple.quarantine {dest} 2>/dev/null || true; }}",
+        "mv -f {dest} {previous} || exit 1; \
+         if chown {user} {previous} && mv -f {staged} {dest} && \
+         chown root:admin {dest} && chmod +sx {dest}; then \
+           xattr -dr com.apple.quarantine {dest} 2>/dev/null || true; \
+         else \
+           if mv -f {previous} {dest} && chown root:admin {dest} && chmod +sx {dest}; then \
+             echo 'activation failed; previous setuid core restored' >&2; \
+           else \
+             echo 'activation and rollback failed; inspect destination and previous core paths' >&2; \
+           fi; exit 1; \
+         fi",
         dest = dest_q,
         previous = previous_q,
         staged = staged_q,
@@ -367,8 +375,44 @@ pub fn replace_setuid_core(staged: &Path, dest: &Path, previous: &Path) -> AppRe
     let (code, output) = run_privileged(Path::new("/bin/sh"), &["-c", &shell])?;
     if code != 0 {
         return Err(AppError::Core(format!(
-            "升级 setuid sing-box 失败: {}",
-            output.trim()
+            "升级 setuid 内核失败: {}; destination {}; previous {}",
+            output.trim(),
+            dest.display(),
+            previous.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Metadata commit can fail after the privileged swap completed. Restoring
+/// the former binary must also restore ownership/setuid for the TUN path.
+pub fn restore_previous_setuid_core(dest: &Path, previous: &Path) -> AppResult<()> {
+    if !previous.is_file() {
+        return Err(AppError::Core(format!(
+            "missing previous core {}; destination {}",
+            previous.display(),
+            dest.display()
+        )));
+    }
+    let shell = format!(
+        "mv -f {previous} {dest} && chown root:admin {dest} && chmod +sx {dest}",
+        previous = shell_single_quote(&previous.to_string_lossy()),
+        dest = shell_single_quote(&dest.to_string_lossy()),
+    );
+    let (code, output) =
+        run_privileged(Path::new("/bin/sh"), &["-c", &shell]).map_err(|error| {
+            AppError::Core(format!(
+                "{error}; destination {}; previous {}",
+                dest.display(),
+                previous.display()
+            ))
+        })?;
+    if code != 0 {
+        return Err(AppError::Core(format!(
+            "恢复 setuid 内核失败: {}; destination {}; previous {}",
+            output.trim(),
+            dest.display(),
+            previous.display()
         )));
     }
     Ok(())

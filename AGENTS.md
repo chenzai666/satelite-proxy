@@ -1,5 +1,11 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+重置/权限恢复补充：reset退役文件也使用唯一recovery路径，不复用安装的previous，避免resolve撤销恢复内置版本。macOS元数据提交失败后若新dest为setuid，由restore_previous_setuid_core授权恢复旧版并重设root:admin/setuid；该异常恢复可能另需一次授权，正常升级仍复用单次授权。
+
+更新恢复补充（2026-11-04）：已存在的previous不能因dest存在就删除，须轮换到唯一recovery文件并记录路径；resolve发现目标缺失且previous存在先恢复旧版，恢复失败不得stage bundled掩盖现场。macOS特权替换在同一次授权shell内执行失败回滚并恢复root:admin/setuid，错误须列目标及备份路径。回归包括下一次更新仍保留上次未提交旧备份。
+
+2026-11-04 三内核更新保护：core/update.rs 统一提供按kind的安装/重置互斥、启动解析协调、Windows os32/33 每100ms有限重试（每个文件操作5s）及同目录临时文件替换。文件事务不得获取runtime/store锁；resolve_core_bin可持runtime锁等待文件事务，禁止反向取锁。download.rs 激活和版本提交失败必须处理回滚，失败同时报原始错误/回滚错误/恢复路径；dest缺失且previous存在时保护唯一恢复副本。版本文本及ZIP附带DLL/dat采用临时文件完整写入再替换，不做全依赖事务回滚。cleanup失败记warn，macOS setuid授权路径及Unix执行权限保留。core/update_tests.rs 只操作隔离临时文件，Rust/Windows共享冲突回归与客户端构建仍只在Actions运行；版本保持1.0.46，验证成功覆盖Release两包，不改当前用户代理。
+
 2026-10-08：整合上游正式版 **1.0.46**，详见 docs/upstream-integration-1.0.46.md 与 docs/release-1.0.46.md。OpenVPN 加入 MIHOMO_UNMODELED_TYPES，与 SSR/Mieru 同为 Unknown+raw；不生成不完整的 sing-box/Xray 出站。多核表 unknown 行可钉选 Mihomo。选点与智能池通过 delegated_node_ids 使用实际 compute_sidecar_plan 的成员（含端口保留、链路排除及上限），不得仅凭协议钉选放行。Mihomo 副核原文 dialer-proxy 同步重写原始名称引用，悬空/重名/循环拒绝生成。节点分组测速复用 onTestNodes，仅更新本轮节点的不支持标记；节点列表新增独立订阅列，保留列宽最小值、横向滚动及原有交互。首页仪表字段单行、订阅名至多两行。本轮仅上游 macOS icns 变更，Windows 图标不变；本机不构建、不替换运行中客户端。
 
 2026-09-25（1.0.45 同版本修复）：AppStore.selected_nodes_by_subscription 按配置 ID 保存最后有效节点 ID，宽容读取器 store_from_json 必须恢复该字段。activate_subscription 切走前记忆，ensure_current_node_valid 优先保留有效当前节点，再恢复已启用配置的记忆，最后首节点兜底；无节点清空。手动/智能选点与内核自动选择同步记忆，不修改自动选择模式。删除、刷新清理失效引用；内核选择异步回包不得写入已禁用配置的节点。回归覆盖往返、序列化、改名、混合模式、刷新、删除及旧数据。
@@ -217,6 +223,8 @@ satelite-proxy/
 │   ├── src/storage/store.rs # AppStore 持久化（JSON，含备份/迁移，2666 行）
 │   ├── src/config/          # 配置生成：builder.rs（sing-box）+ xray.rs（Xray）+ mihomo.rs（mihomo/Clash YAML）+ dns_build/write/…
 │   ├── src/core/            # 内核进程管理：kind.rs（CoreKind 三内核描述）、manager/download/assets/paths/提权/Job Object
+│   │   ├── update.rs        # 安装/重置/解析协调、有限共享冲突重试与原子文件替换
+│   │   └── update_tests.rs  # 三内核文件锁、元数据与失败回滚回归（Actions）
 │   ├── src/runtime.rs       # 编排：config→core→system proxy（~1600 行，含 Xray/mihomo 分支）
 │   ├── src/traffic_stats.rs # 会话流量分类/对账，真实出站或保守连接采样，未分类独立保留
 │   ├── src/uwp_loopback.rs  # Windows UWP/AppContainer 回环豁免（CheckNetIsolation + UAC helper）
@@ -315,6 +323,7 @@ React UI ──invoke()──▶ commands/* ──▶ AppState ──▶ storage
 - `kind.rs` — ★ `CoreKind` 描述符：binary 名、GitHub repo、release 资产命名（**三内核命名规则不同**：sing-box `sing-box-1.13.15-darwin-arm64.tar.gz` vs Xray `Xray-macos-arm64-v8a.zip` vs mihomo `mihomo-darwin-arm64-v1.19.30.gz` 裸 gz 二进制（darwin/linux）/）、版本参数与输出解析（mihomo `-v` → `Mihomo Meta vx.y.z …`）、`check_command_args`/`run_command_args` 完整参数构造（sing-box/Xray `run -c`；mihomo `-f <file> -d <home>`，home 从 config 路径推导）、spawn env（Xray 设 `XRAY_LOCATION_ASSET`；mihomo 无需 env，wintun.dll 放 exe 同目录）、日志前缀、协议支持集（`Protocol::xray_supported`/`mihomo_supported`）。
 - `manager.rs` — 进程生命周期（`CoreKind` 参数化）：sing-box `check -c` / Xray `run -test -c` / mihomo `-t -f` 校验 → 启动；**Xray + TUN 跳过预校验**（Xray 的 `-test` 会真建 tun 网卡需管理员，未提权必失败 exit 23；mihomo 的 `-t` 不建网卡可正常预校验）；Windows `CREATE_NO_WINDOW`；CoreState 状态机；优雅停止；TUN 提权链路内核无关（helper 按二进制名推断 kind）。
 - `download.rs` — GitHub Releases 下载/更新（按 kind 选 repo/资产/提取目标；Xray zip 额外提取 geodata；mihomo zip 仅含版本化 exe）。
+- `update.rs` — 三内核共享文件事务工具。安装/重置拒绝同kind并发，解析等待交换结束；只对Windows共享/锁冲突有限重试，版本/DLL/dat先写临时文件再替换。`update_tests.rs` 经download测试子模块覆盖三种CoreKind的真实文件锁与回滚；不得在用户机器启动测试内核。
 - `assets.rs` — Xray 资产：`ensure_geodata`（staged→bundled→Loyalsoldier v2ray-rules-dat 下载）、`ensure_wintun`；mihomo 资产：`ensure_mihomo_geodata`（`<data>/mihomo/` 的 Country.mmdb + **GeoSite.dat**（精确大小写）；staged→bundled→MetaCubeX/meta-rules-dat 下载——缺失时 mihomo 会经未启动的代理自下载而超时，故必须预置）。`prefetch_runtime_assets(kind,…)` 在**内核下载/更新完成后**即时预取该内核的运行时依赖（Xray→geodata、mihomo→geodata、两者 Windows→wintun；走下载代理，失败仅 warn），启动时的 `ensure_*` 降级为兜底（§9.22）。
 - `job.rs` — Windows Job Object 绑定子进程，父进程异常退出时内核随之死亡（防端口占用残留）。
 - `elevate.rs` / `macos_auth.rs` / `macos_net.rs` — TUN 提权（Windows UAC / macOS 授权）。

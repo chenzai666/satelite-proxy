@@ -256,7 +256,26 @@ pub fn resolve_core_bin(
     resource_dir: Option<&Path>,
     kind: CoreKind,
 ) -> (Option<PathBuf>, CoreSource) {
+    // The installer never takes runtime/store locks, so this cannot invert
+    // their lock order. Do not stage a bundled core into a swap's brief gap.
+    let Ok(_install_guard) = super::update::lock_resolution(kind) else {
+        return (None, CoreSource::Missing);
+    };
     let downloaded = core_bin_path(app_data_dir, kind);
+    let previous = super::download::previous_core_path(kind, &downloaded);
+    if !downloaded.exists() && previous.is_file() {
+        if let Err(error) = super::update::rename_file(&previous, &downloaded) {
+            crate::app_log::warn(
+                "core",
+                format!(
+                    "recover {} -> {}: {error}",
+                    previous.display(),
+                    downloaded.display()
+                ),
+            );
+            return (None, CoreSource::Missing);
+        }
+    }
     if downloaded.is_file() {
         return (Some(downloaded), CoreSource::Downloaded);
     }
@@ -294,13 +313,14 @@ pub fn inspect_core_bin(
 
 /// Remove the user-downloaded copy so the next resolution stages the bundled
 /// factory core. The bundled copy is checked first, so this never removes the
-/// only usable core. If Windows keeps the executable open, retire it with the
-/// same `.previous` convention used by the download swap.
+/// only usable core. Retired files use unique recovery paths, distinct from
+/// installation rollback's `.previous`, so resolution never undoes a reset.
 pub fn reset_core_to_bundled(
     app_data_dir: &Path,
     resource_dir: Option<&Path>,
     kind: CoreKind,
 ) -> AppResult<()> {
+    let _install_guard = super::update::lock_install(kind)?;
     if find_bundled_core(resource_dir, kind).is_none() {
         return Err(AppError::Core(format!(
             "no bundled {} in this installation",
@@ -308,17 +328,12 @@ pub fn reset_core_to_bundled(
         )));
     }
     let dest = core_bin_path(app_data_dir, kind);
-    if dest.is_file() && std::fs::remove_file(&dest).is_err() {
-        let previous = super::download::previous_core_path(kind, &dest);
-        let _ = std::fs::remove_file(&previous);
-        std::fs::rename(&dest, &previous).map_err(|error| {
-            AppError::Core(format!(
-                "retire downloaded {} binary: {error}",
-                kind.display_name()
-            ))
-        })?;
+    let previous = super::download::previous_core_path(kind, &dest);
+    super::update::preserve_previous(&previous)?;
+    if dest.is_file() && super::update::remove_file(&dest).is_err() {
+        super::update::preserve_previous(&dest)?;
     }
-    let _ = std::fs::remove_file(version_file_path(app_data_dir, kind));
+    super::update::remove_file(&version_file_path(app_data_dir, kind))?;
     Ok(())
 }
 
@@ -416,9 +431,9 @@ pub fn normalize_version(v: &str) -> String {
 pub fn write_version_file(app_data_dir: &Path, kind: CoreKind, version: &str) -> AppResult<()> {
     let dir = core_dir(app_data_dir);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        version_file_path(app_data_dir, kind),
-        normalize_version(version),
+    super::update::write_version_atomically(
+        &version_file_path(app_data_dir, kind),
+        &normalize_version(version),
     )?;
     Ok(())
 }
@@ -501,6 +516,11 @@ mod tests {
         std::fs::write(core_bin_path(&app_data, CoreKind::SingBox), b"downloaded")
             .expect("write downloaded core");
         write_version_file(&app_data, CoreKind::SingBox, "1.14.0").expect("write version");
+        let previous = super::super::download::previous_core_path(
+            CoreKind::SingBox,
+            &core_bin_path(&app_data, CoreKind::SingBox),
+        );
+        std::fs::write(&previous, b"previous interrupted update").expect("write previous core");
 
         reset_core_to_bundled(&app_data, Some(&resources), CoreKind::SingBox)
             .expect("reset bundled core");
@@ -509,6 +529,9 @@ mod tests {
         assert_eq!(source, CoreSource::Bundled);
         assert!(!core_bin_path(&app_data, CoreKind::SingBox).exists());
         assert!(!version_file_path(&app_data, CoreKind::SingBox).exists());
+        assert!(!previous.exists());
+        let (resolved, _) = resolve_core_bin(&app_data, Some(&resources), CoreKind::SingBox);
+        assert_eq!(std::fs::read(resolved.unwrap()).unwrap(), b"bundled");
         let _ = std::fs::remove_dir_all(root);
     }
 }
