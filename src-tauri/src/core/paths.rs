@@ -256,6 +256,14 @@ pub fn resolve_core_bin(
     resource_dir: Option<&Path>,
     kind: CoreKind,
 ) -> (Option<PathBuf>, CoreSource) {
+    resolve_core_bin_with_bundled(app_data_dir, kind, || find_bundled_core(resource_dir, kind))
+}
+
+fn resolve_core_bin_with_bundled(
+    app_data_dir: &Path,
+    kind: CoreKind,
+    find_bundled: impl FnOnce() -> Option<PathBuf>,
+) -> (Option<PathBuf>, CoreSource) {
     // The installer never takes runtime/store locks, so this cannot invert
     // their lock order. Do not stage a bundled core into a swap's brief gap.
     let Ok(_install_guard) = super::update::lock_resolution(kind) else {
@@ -279,7 +287,7 @@ pub fn resolve_core_bin(
     if downloaded.is_file() {
         return (Some(downloaded), CoreSource::Downloaded);
     }
-    if let Some(bundled) = find_bundled_core(resource_dir, kind) {
+    if let Some(bundled) = find_bundled() {
         match stage_bundled_core(app_data_dir, &bundled, kind) {
             Ok(staged) => return (Some(staged), CoreSource::Bundled),
             Err(_) => {
@@ -530,8 +538,15 @@ mod tests {
         assert!(!core_bin_path(&app_data, CoreKind::SingBox).exists());
         assert!(!version_file_path(&app_data, CoreKind::SingBox).exists());
         assert!(!previous.exists());
-        let (resolved, _) = resolve_core_bin(&app_data, Some(&resources), CoreKind::SingBox);
-        assert_eq!(std::fs::read(resolved.unwrap()).unwrap(), b"bundled");
+        // Supply the fixture explicitly: normal dev discovery intentionally
+        // prefers the repository's real bundled executable over resources.
+        let (resolved, _) = resolve_core_bin_with_bundled(&app_data, CoreKind::SingBox, || {
+            Some(bundled_dir.join(CoreKind::SingBox.binary_name()))
+        });
+        assert!(
+            std::fs::read(resolved.unwrap()).unwrap() == b"bundled",
+            "reset resolution must stage the fixture, not restore the retired core"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }
