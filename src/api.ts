@@ -180,7 +180,7 @@ export function removeSubscription(id: string) {
   return invoke<void>("remove_subscription", { id });
 }
 
-/** Exclusive select / Mix toggle. Returns updated subscription list. */
+/** Select a config's runtime source; generated profiles retain exclusive/Mix policy. */
 export function activateSubscription(id: string) {
   return invoke<SubscriptionView[]>("activate_subscription", { id });
 }

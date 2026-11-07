@@ -161,6 +161,39 @@ impl KernelSelectionPoll {
     }
 }
 
+fn prepare_profile_activation(
+    app_data: &Path,
+    resources: Option<&Path>,
+    store: &mut AppStore,
+    id: &str,
+    was_running: bool,
+) -> AppResult<bool> {
+    let source_before = store.settings.runtime_source.clone();
+    store.activate_subscription(id)?;
+    let changed = source_before != store.settings.runtime_source;
+    if changed && was_running {
+        if store.settings.runtime_source().is_custom() {
+            let kind = store
+                .subscriptions
+                .iter()
+                .find_map(|sub| match &sub.source {
+                    crate::domain::SubscriptionSource::Custom { kind, .. } if sub.id == id => {
+                        Some(CoreKind::parse(kind.as_str()))
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| AppError::NotFound(id.to_string()))?;
+            crate::core_selection::ensure_core_present(app_data, resources, kind)?;
+        } else {
+            if store.enabled_nodes().is_empty() {
+                return Err(AppError::Config("该配置没有节点，请先导入节点".into()));
+            }
+            crate::core_selection::prepare_selected_core(app_data, resources, store)?;
+        }
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod core_preference_persistence_tests {
     use super::*;
@@ -180,6 +213,119 @@ mod core_preference_persistence_tests {
                 }
             }
         }
+    }
+
+    fn activation_fixture() -> (AppState, Cleanup) {
+        use crate::domain::{CustomConfigKind, Subscription, SubscriptionSource};
+        let root = std::env::temp_dir().join(format!(
+            "satelite-profile-activation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cleanup = Cleanup(root.clone());
+        let state = AppState::load(root, None).unwrap();
+        state
+            .with_store_mut(|store| {
+                store.subscriptions.clear();
+                store.nodes.clear();
+                for (id, source) in [
+                    (
+                        "empty",
+                        SubscriptionSource::Text {
+                            content: String::new(),
+                        },
+                    ),
+                    (
+                        "custom",
+                        SubscriptionSource::Custom {
+                            content: "{}".into(),
+                            kind: CustomConfigKind::Xray,
+                        },
+                    ),
+                ] {
+                    store.subscriptions.push(Subscription {
+                        id: id.into(),
+                        name: id.into(),
+                        source,
+                        last_update: 0,
+                        node_count: 0,
+                        enabled: id == "empty",
+                        format: None,
+                        skipped_count: 0,
+                        via_proxy: false,
+                        auto_update: false,
+                        auto_update_interval_min: 1440,
+                        traffic: None,
+                        clash_config: None,
+                        user_agent: None,
+                    });
+                }
+                store.settings.runtime_source = "singbox:custom".into();
+                Ok(())
+            })
+            .unwrap();
+        (state, cleanup)
+    }
+
+    #[test]
+    fn activation_during_a_transition_is_rejected_before_persistence() {
+        let (state, _cleanup) = activation_fixture();
+        let before = std::fs::read(&state.store_path).unwrap();
+        let _transition = state.begin_core_transition().unwrap();
+        let err = state.activate_subscription("empty", None).unwrap_err();
+        assert!(err.to_string().contains("内核正在切换"));
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.runtime_source.clone()))
+                .unwrap(),
+            "singbox:custom"
+        );
+        assert_eq!(std::fs::read(&state.store_path).unwrap(), before);
+    }
+
+    #[test]
+    fn running_activation_preflight_rejects_empty_pool_without_committing() {
+        let (state, _cleanup) = activation_fixture();
+        let before = std::fs::read(&state.store_path).unwrap();
+        let err = state
+            .with_store_mut(|store| {
+                prepare_profile_activation(&state.app_data_dir, None, store, "empty", true)
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("没有节点"));
+        assert_eq!(std::fs::read(&state.store_path).unwrap(), before);
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.runtime_source.clone()))
+                .unwrap(),
+            "singbox:custom"
+        );
+    }
+
+    #[test]
+    fn stopped_activation_only_saves_the_source_and_does_not_start_a_core() {
+        let (state, _cleanup) = activation_fixture();
+        let (_, changed) = state.activate_subscription("empty", None).unwrap();
+        assert!(changed);
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.runtime_source.clone()))
+                .unwrap(),
+            "generated"
+        );
+        let (_, changed) = state.activate_subscription("custom", None).unwrap();
+        assert!(changed);
+        assert!(!state.lock_runtime().core.is_running());
+        assert!(!state.is_core_transitioning());
+        assert_eq!(
+            state
+                .with_store(|s| Ok(s.settings.runtime_source.clone()))
+                .unwrap(),
+            "singbox:custom"
+        );
     }
 
     #[test]
@@ -1502,6 +1648,11 @@ impl AppState {
     pub fn restart_proxy(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
         app_log::info("core", "proxy restart requested");
         let _transition = self.begin_core_transition()?;
+        self.restart_proxy_inner(resource_dir)
+    }
+
+    /// Caller owns the lifecycle transition for the entire operation.
+    fn restart_proxy_inner(&self, resource_dir: Option<&Path>) -> AppResult<ProxyStatus> {
         let mut runtime = self.lock_runtime();
         let _persistence = self.lock_store_persistence();
         let mut store = self.lock_store();
@@ -1550,6 +1701,36 @@ impl AppState {
         }
         log_proxy_status("proxy restarted", &status);
         Ok(status)
+    }
+
+    /// Select and apply a profile under one lifecycle guard. Unlike the
+    /// scheduler's is_core_running(), the guarded probe cannot mistake an
+    /// in-flight transition for a stopped process.
+    pub fn activate_subscription(
+        &self,
+        id: &str,
+        resource_dir: Option<&Path>,
+    ) -> AppResult<(Vec<crate::domain::SubscriptionView>, bool)> {
+        let _transition = self.begin_core_transition()?;
+        let was_running = {
+            let mut runtime = self.lock_runtime();
+            runtime.core.poll();
+            runtime.core.is_running()
+        };
+        let source_changed = self.with_store_mut(|store| {
+            prepare_profile_activation(&self.app_data_dir, resource_dir, store, id, was_running)
+        })?;
+        if source_changed && was_running {
+            self.restart_proxy_inner(resource_dir)?;
+        }
+        let views = self.with_store(|store| {
+            Ok(store
+                .subscriptions
+                .iter()
+                .map(|sub| sub.to_view())
+                .collect())
+        })?;
+        Ok((views, source_changed))
     }
 
     /// If core is running, regenerate config and restart so settings take effect.

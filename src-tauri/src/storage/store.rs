@@ -1281,8 +1281,8 @@ impl AppStore {
         Ok(())
     }
 
-    /// Click card: exclusive → enable only this; Mix → toggle this.
-    /// Does not change which file the kernel launches.
+    /// A config card selects its launch source. Generated cards retain their
+    /// exclusive/Mix policy; custom files never participate in the mixed pool.
     pub fn activate_subscription(&mut self, id: &str) -> AppResult<()> {
         let contributes = self
             .subscriptions
@@ -1290,10 +1290,14 @@ impl AppStore {
             .find(|s| s.id == id)
             .map(|s| s.source.contributes_nodes())
             .ok_or_else(|| AppError::NotFound(id.to_string()))?;
-        if !contributes {
-            return Ok(());
-        }
         self.remember_current_node();
+        if !contributes {
+            return self
+                .set_runtime_source(crate::domain::RuntimeSource::Singbox { id: id.to_string() });
+        }
+        let leaving_custom = self.settings.runtime_source().is_custom();
+        self.settings
+            .set_runtime_source(crate::domain::RuntimeSource::Generated);
         if self.settings.mix_mode {
             let currently = self
                 .subscriptions
@@ -1302,6 +1306,12 @@ impl AppStore {
                 .map(|s| s.enabled)
                 .unwrap_or(false);
             // Don't allow disabling the last enabled subscription.
+            if currently && leaving_custom {
+                // Clicking an enabled pool member returns to that pool rather
+                // than unexpectedly toggling the member off.
+                self.ensure_current_node_valid();
+                return Ok(());
+            }
             if currently {
                 let enabled_count = self
                     .subscriptions
@@ -5384,6 +5394,113 @@ mod tests {
         assert_eq!(store.settings.runtime_source, "singbox:sb1");
         store.remove_subscription("sb1").unwrap();
         assert_eq!(store.settings.runtime_source, "generated");
+    }
+
+    fn add_custom_selection_profile(store: &mut AppStore, kind: crate::domain::CustomConfigKind) {
+        let mut sub = sample_url_sub("custom");
+        sub.enabled = false;
+        sub.source = crate::domain::SubscriptionSource::Custom {
+            content: "{}".into(),
+            kind,
+        };
+        store.upsert_subscription(sub, Vec::new()).unwrap();
+    }
+
+    #[test]
+    fn custom_card_selects_each_kind_without_changing_the_generated_pool() {
+        use crate::domain::CustomConfigKind;
+        for kind in [
+            CustomConfigKind::Singbox,
+            CustomConfigKind::Xray,
+            CustomConfigKind::Mihomo,
+        ] {
+            let mut store = selection_memory_store();
+            store.settings.preferred_core_type = Some("xray".into());
+            add_custom_selection_profile(&mut store, kind);
+            let flags: Vec<_> = store.subscriptions.iter().map(|s| s.enabled).collect();
+            let nodes = serde_json::to_value(&store.nodes).unwrap();
+            store.activate_subscription("id-custom").unwrap();
+            assert_eq!(store.settings.runtime_source, "singbox:id-custom");
+            assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+            assert_eq!(store.settings.preferred_core_type.as_deref(), Some("xray"));
+            assert_eq!(
+                flags,
+                store
+                    .subscriptions
+                    .iter()
+                    .map(|s| s.enabled)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(nodes, serde_json::to_value(&store.nodes).unwrap());
+            let restored = parse_store(&serialize_store(&store).unwrap()).unwrap();
+            assert_eq!(restored.settings.runtime_source, "singbox:id-custom");
+            assert!(matches!(&restored.subscriptions.last().unwrap().source,
+                crate::domain::SubscriptionSource::Custom { kind: actual, .. } if *actual == kind));
+        }
+    }
+
+    #[test]
+    fn generated_card_leaves_custom_and_restores_profile_selection() {
+        let mut store = selection_memory_store();
+        add_custom_selection_profile(&mut store, crate::domain::CustomConfigKind::Singbox);
+        store.activate_subscription("id-custom").unwrap();
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.runtime_source, "generated");
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b1"));
+        store.settings.current_node_id = Some("b2".into());
+        store.activate_subscription("id-custom").unwrap();
+        store.activate_subscription("id-a").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+        store.activate_subscription("id-custom").unwrap();
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("b2"));
+    }
+
+    #[test]
+    fn leaving_custom_in_mix_mode_does_not_toggle_off_an_enabled_member() {
+        let mut store = selection_memory_store();
+        store.set_mix_mode(true).unwrap();
+        store.activate_subscription("id-b").unwrap();
+        add_custom_selection_profile(&mut store, crate::domain::CustomConfigKind::Mihomo);
+        store.activate_subscription("id-custom").unwrap();
+        store.activate_subscription("id-b").unwrap();
+        assert_eq!(store.settings.runtime_source, "generated");
+        assert!(store
+            .subscriptions
+            .iter()
+            .filter(|s| s.source.contributes_nodes())
+            .all(|s| s.enabled));
+        assert_eq!(store.settings.current_node_id.as_deref(), Some("a2"));
+        store.activate_subscription("id-b").unwrap();
+        assert!(
+            !store
+                .subscriptions
+                .iter()
+                .find(|s| s.id == "id-b")
+                .unwrap()
+                .enabled
+        );
+        store.activate_subscription("id-custom").unwrap();
+        store.activate_subscription("id-b").unwrap();
+        assert!(
+            store
+                .subscriptions
+                .iter()
+                .find(|s| s.id == "id-b")
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(store.settings.runtime_source, "generated");
+    }
+
+    #[test]
+    fn unknown_activation_does_not_change_the_selected_custom_source() {
+        let mut store = selection_memory_store();
+        add_custom_selection_profile(&mut store, crate::domain::CustomConfigKind::Xray);
+        store.activate_subscription("id-custom").unwrap();
+        let before = serialize_store(&store).unwrap();
+        assert!(store.activate_subscription("missing").is_err());
+        assert_eq!(serialize_store(&store).unwrap(), before);
     }
 
     // ---- Proxy Chain: pool/chain CRUD -------------------------------------

@@ -1,4 +1,4 @@
-name: 协议与节点选核前端验证
+name: 选核与配置切换前端验证
 on:
   workflow_dispatch:
 permissions:
@@ -45,6 +45,8 @@ jobs:
             if (-not $ready) { throw '选核测试服务未就绪' }
             node scripts/test-core-selection-browser.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-config-activation-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally {
             if (-not $server.HasExited) { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
             if (-not $server.WaitForExit(5000)) { throw '选核临时测试服务未退出' }
@@ -54,6 +56,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: core-selection-${{ github.sha }}
-          path: test-results/core-selection*.png
+          path: |
+            test-results/core-selection*.png
+            test-results/config-activation*.png
           if-no-files-found: ignore
           retention-days: 14

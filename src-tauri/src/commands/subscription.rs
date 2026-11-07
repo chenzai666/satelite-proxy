@@ -1084,21 +1084,34 @@ fn enabled_flags(state: &AppState) -> Vec<bool> {
         .unwrap_or_default()
 }
 
-/// Click a config card: exclusive enable (default) or Mix toggle.
-#[tauri::command(async)]
-pub fn activate_subscription(
+/// Click a config card: select a complete file, or select the generated pool.
+/// A launch-source switch must restart even when enabled flags are unchanged;
+/// the ordinary rule rebuild deliberately skips complete custom configs.
+#[tauri::command]
+pub async fn activate_subscription(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<Vec<SubscriptionView>, String> {
+    use tauri::Manager;
+
     let before = enabled_flags(&state);
-    let views = state
-        .with_store_mut(|store| {
-            store.activate_subscription(&id)?;
-            Ok(store.subscriptions.iter().map(|s| s.to_view()).collect())
-        })
-        .map_err(|e| e.to_string())?;
-    queue_rebuild_if_enabled_set_changed(&app, &state, &before, &id);
+    let resource_dir = app.path().resource_dir().ok();
+    let worker = app.clone();
+    let selected_id = id.clone();
+    let (views, source_changed) = tauri::async_runtime::spawn_blocking(move || {
+        let state = worker
+            .try_state::<AppState>()
+            .ok_or_else(|| "app state unavailable".to_string())?;
+        state
+            .activate_subscription(&selected_id, resource_dir.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("activate config task: {e}"))??;
+    if !source_changed {
+        queue_rebuild_if_enabled_set_changed(&app, &state, &before, &id);
+    }
     Ok(views)
 }
 

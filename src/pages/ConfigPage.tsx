@@ -1,5 +1,5 @@
 import { confirmAction } from "../confirmAction";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   activateSubscription,
   addSubscriptionCustom,
@@ -342,7 +342,10 @@ export function ConfigPage() {
   const [mixMode, setMixModeState] = useState(
     () => peekSettings()?.mix_mode ?? false,
   );
-  const [runtimeSource, setRuntimeSource] = useState("generated");
+  const [runtimeSource, setRuntimeSource] = useState(
+    () => peekSettings()?.runtime_source || "generated",
+  );
+  const activationPending = useRef(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -443,18 +446,33 @@ export function ConfigPage() {
   }, [menuId]);
 
   async function onActivate(id: string) {
-    if (busy) return;
+    if (loading || busy || importing || modalOpen || activationPending.current) return;
+    // Lock before the first await: rapid clicks can share the same render.
+    activationPending.current = true;
+    setActionId(id);
     setListError(null);
     try {
       const list = await activateSubscription(id);
+      // Activation also selects the runtime source. Apply both saved snapshots
+      // together so custom mode never highlights the generated enabled flags.
+      const settings = await getSettings();
       setItems(list);
+      setRuntimeSource(settings.runtime_source || "generated");
+      setMixModeState(!!settings.mix_mode);
     } catch (e) {
+      // A failed restart may follow a successful save of the new source.
+      // Reconcile the saved state, then restore the activation error even if
+      // the refresh itself fails and reports a different error.
+      await reload();
       setListError(typeof e === "string" ? e : String(e));
+    } finally {
+      activationPending.current = false;
+      setActionId(null);
     }
   }
 
   async function onToggleMix() {
-    if (busy) return;
+    if (busy || activationPending.current) return;
     setListError(null);
     try {
       const next = !mixMode;
@@ -791,32 +809,34 @@ export function ConfigPage() {
 
   function renderCard(item: SubscriptionView) {
     const generated = item.source_kind !== "custom";
-    // Custom mode: switching the active profile is a runtime-source change
-    // (homepage picker) — subscription / local cards become read-only.
-    const clickable = generated && runtimeSource === "generated";
     const customActive =
       !generated && runtimeSource === `singbox:${item.id}`;
-    const generatedActive = clickable && item.enabled;
+    const generatedActive = generated && runtimeSource === "generated" && item.enabled;
+    const active = generatedActive || customActive;
+    const blocked = loading || busy || importing || modalOpen;
     const typeTag = typeTagLabel(t, item);
     return (
       <article
         key={item.id}
-        className={`sub-card${generatedActive || customActive ? " enabled" : ""}${
-          clickable ? "" : " readonly"
-        }`}
-        role={clickable ? "button" : "article"}
-        tabIndex={clickable ? 0 : undefined}
-        onClick={clickable ? () => void onActivate(item.id) : undefined}
-        onKeyDown={
-          clickable
-            ? (e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  void onActivate(item.id);
-                }
-              }
-            : undefined
-        }
+        className={`sub-card${active ? " enabled" : ""}`}
+        role="button"
+        aria-label={item.name}
+        aria-pressed={active}
+        aria-disabled={blocked}
+        aria-busy={actionId === item.id}
+        tabIndex={blocked ? -1 : 0}
+        onClick={(e) => {
+          if (e.target instanceof Element &&
+              e.target.closest("button, a, input, textarea, select, [role=menuitem]")) return;
+          void onActivate(item.id);
+        }}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget || e.repeat) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            void onActivate(item.id);
+          }
+        }}
       >
         <div className="sub-card-main">
           <div className="sub-card-top">

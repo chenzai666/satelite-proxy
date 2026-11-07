@@ -103,6 +103,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-core-selection-browser.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-config-activation-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
 
       - name: 保存规则侧栏测试截图
