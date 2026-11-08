@@ -298,11 +298,7 @@ fn parse_source(ip: IpAddr, source: Source, value: &Value) -> Result<IpMetadata,
         }
         return Ok(data);
     }
-    let address = if matches!(source, Source::Ident) {
-        &value["address"]
-    } else {
-        &value["ip"]
-    };
+    let address = &value["ip"];
     if address.as_str().and_then(|v| v.parse::<IpAddr>().ok()) != Some(ip) {
         return Err("IP 信息与查询地址不一致".into());
     }
@@ -430,7 +426,7 @@ mod tests {
         for (source, value, kind) in [
             (
                 Source::Ident,
-                json!({"address":"8.8.8.8","type":"business","aso":"Full Organization","asn":15169}),
+                json!({"ip":"8.8.8.8","type":"business","aso":"Full Organization","asn":15169}),
                 "business",
             ),
             (
@@ -457,7 +453,7 @@ mod tests {
         let isp = parse_source(
             ip,
             Source::Ident,
-            &json!({"address":"8.8.8.8","type":"isp"}),
+            &json!({"ip":"8.8.8.8","type":"isp"}),
         )
         .unwrap();
         assert_eq!(isp.network_type, "isp");
