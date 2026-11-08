@@ -93,8 +93,8 @@ mockIPC((command, payload) => {
     case "check_exit_ip": return { ip: ipv6, countryCode: "HK", viaProxy: true, source: "fixture" };
     case "check_ip_metadata": return {
       ip: ipv6, organization: "China Mobile Communications Group Co., Ltd. / Complete Organization Name Without Truncation",
-      isp: "China Mobile Communications", asn: "AS9808", networkType: "residential", residentialInferred: true,
-      quality: "low", riskScore: 5, isVpn: false, isProxy: false, isTor: false, source: "IPQuery", checkedAt: 1700000000,
+      isp: "China Mobile Communications", asn: "AS9808", networkType: params.get("network") ?? "business", residentialInferred: false,
+      quality: "low", riskScore: 5, isVpn: false, isProxy: false, isTor: false, source: "IPQuery / proxycheck.io", checkedAt: 1700000000,
     };
     case "check_service_status": return {
       results: (args.ids as string[]).map(id => ({ id, status: id === "chatgpt" ? "restricted" : "reachable",

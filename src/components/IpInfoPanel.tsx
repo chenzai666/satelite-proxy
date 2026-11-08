@@ -5,8 +5,8 @@ import type { IpMetadata } from "../types";
 import "./IpInfoPanel.css";
 
 const labels = {
-  zh: { title: "IP 信息", org: "组织", isp: "运营商", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽 / ISP（推测）", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", path: "查询说明", notice: "将当前出口 IP 发送给 IPQuery 查询，不发送节点配置。家宽表示根据非机房、非移动标记推测；风险分级按供应商 0–100 分（0–20 低、21–50 中、51–100 高），不是测速或服务解锁结论。缺字段保持未知。", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
-  en: { title: "IP information", org: "Organization", isp: "ISP", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential / ISP (inferred)", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", path: "About this lookup", notice: "Queries IPQuery with the current public exit IP, without node configuration. Residential is inferred from non-hosting and non-mobile flags. Local risk bands use the provider's 0–100 score (0–20 low, 21–50 moderate, 51–100 high), not speed or service access. Missing fields remain unknown.", failed: "IP information unavailable", details: "Open IP information details" },
+  zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", path: "查询说明", notice: "将当前公网出口 IP 发给 IPQuery 和 proxycheck.io 查询，不发送节点配置。家宽、商业等以同一 IP 的明确类型为准，信息不足显示未知；不会根据运营商名称或排除机房来猜家宽。风险按 IPQuery 的 0–100 分分级（0–20 低、21–50 中、51–100 高），Tor 标记为高；它不是测速或服务解锁结论。", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
+  en: { title: "IP information", org: "Organization", isp: "ISP", ispNetwork: "ISP network", business: "Commercial", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", path: "About this lookup", notice: "Queries IPQuery and proxycheck.io with the current public exit IP, without node configuration. Residential and commercial types require an explicit result for that IP; missing information stays unknown. ISP names or missing hosting flags never imply residential. Local IPQuery risk bands are 0–20 low, 21–50 moderate and 51–100 high; Tor is high. This does not measure speed or service access.", failed: "IP information unavailable", details: "Open IP information details" },
 };
 
 export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey: string }) {
@@ -35,7 +35,7 @@ export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey
     if (open && dialog.current && !dialog.current.open) dialog.current.showModal();
     if (!open && dialog.current?.open) dialog.current.close();
   }, [open]);
-  const type = data ? l[data.networkType] : l.unknown;
+  const type = data ? data.networkType === "isp" ? l.ispNetwork : l[data.networkType] : l.unknown;
   const quality = data ? l[data.quality] : l.unknown;
   return (
     <div className="ip-info-panel">

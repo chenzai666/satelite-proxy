@@ -1048,6 +1048,7 @@ function coreDisplayName(kind: string | null | undefined): string {
 
       <div className="dashboard-top-grid">
       <section className={`dash-hero is-${orbitState}`}>
+        <div className="dashboard-card-ambient" aria-hidden="true" />
         <div className="dash-hero-copy">
           <div className="dash-kicker mono">
             <span className={`status-dot ${dotClass}`} />

@@ -78,7 +78,6 @@ pub fn parse_metadata(ip: IpAddr, value: &Value) -> Result<IpMetadata, String> {
     let network_type = match (hosting, mobile) {
         (Some(true), _) => "datacenter",
         (_, Some(true)) => "mobile",
-        (Some(false), Some(false)) => "residential",
         _ => "unknown",
     };
     let score = value["risk"]["risk_score"]
@@ -102,7 +101,7 @@ pub fn parse_metadata(ip: IpAddr, value: &Value) -> Result<IpMetadata, String> {
         isp: text(&value["isp"]["isp"]),
         asn: text(&value["isp"]["asn"]),
         network_type,
-        residential_inferred: network_type == "residential",
+        residential_inferred: false,
         risk_score: score,
         quality,
         is_vpn: value["risk"]["is_vpn"].as_bool(),
@@ -116,10 +115,9 @@ pub fn parse_metadata(ip: IpAddr, value: &Value) -> Result<IpMetadata, String> {
     })
 }
 
-pub async fn query(ip: IpAddr, route: ProbeRoute) -> Result<IpMetadata, String> {
-    let client = build_client(route, Duration::from_secs(7))?;
+async fn get_json(client: &reqwest::Client, url: String) -> Result<Value, String> {
     let response = client
-        .get(format!("https://api.ipquery.io/{ip}?format=json"))
+        .get(url)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
@@ -139,8 +137,76 @@ pub async fn query(ip: IpAddr, route: ProbeRoute) -> Result<IpMetadata, String> 
     }
     let bytes =
         super::http_body::read_limited(response, 64 * 1024, "IP 信息响应过大".into()).await?;
-    let value = serde_json::from_slice(&bytes).map_err(|_| "IP 信息格式无效".to_string())?;
-    parse_metadata(ip, &value)
+    serde_json::from_slice(&bytes).map_err(|_| "IP 信息格式无效".to_string())
+}
+
+fn apply_declared_type(data: &mut IpMetadata, value: &Value) -> bool {
+    if value["status"].as_str() != Some("ok") {
+        return false;
+    }
+    let Some(entry) = value.as_object().and_then(|entries| {
+        entries.iter().find_map(|(key, value)| {
+            (key.parse::<IpAddr>()
+                .ok()
+                .map(|ip| ip.to_string())
+                .as_deref()
+                == Some(data.ip.as_str()))
+            .then_some(value)
+        })
+    }) else {
+        return false;
+    };
+    let kind = match entry["network"]["type"]
+        .as_str()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("residential") => "residential",
+        Some("hosting" | "datacenter") => "datacenter",
+        Some("wireless" | "mobile") => "mobile",
+        Some("business" | "commercial" | "education" | "government" | "banking") => "business",
+        Some("isp") => "isp",
+        _ => "unknown",
+    };
+    // A declared type for the exact queried IP is the only source of a
+    // residential/commercial verdict; absence of hosting is not evidence.
+    if kind != "unknown" {
+        data.network_type = kind;
+    }
+    if data.organization.is_none() {
+        data.organization = text(&entry["network"]["organisation"]);
+    }
+    data.residential_inferred = false;
+    data.source = if data.source == "IPQuery" {
+        "IPQuery / proxycheck.io"
+    } else {
+        "proxycheck.io"
+    };
+    true
+}
+
+pub async fn query(ip: IpAddr, route: ProbeRoute) -> Result<IpMetadata, String> {
+    let client = build_client(route, Duration::from_secs(7))?;
+    let (primary, declared) = tokio::join!(
+        get_json(&client, format!("https://api.ipquery.io/{ip}?format=json")),
+        get_json(&client, format!("https://proxycheck.io/v3/{ip}")),
+    );
+    let primary = primary.and_then(|value| parse_metadata(ip, &value));
+    let mut data = match &primary {
+        Ok(data) => data.clone(),
+        Err(_) => {
+            let mut data = parse_metadata(ip, &serde_json::json!({"ip":ip.to_string()}))?;
+            data.source = "";
+            data
+        }
+    };
+    let has_declared = declared
+        .as_ref()
+        .is_ok_and(|value| apply_declared_type(&mut data, value));
+    if primary.is_err() && !has_declared {
+        return Err("IP 信息服务暂不可用".into());
+    }
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -176,7 +242,7 @@ mod tests {
         assert!(parse_metadata(ip, &json!({"ip":"1.1.1.1"})).is_err());
     }
     #[test]
-    fn preserves_full_organization_and_marks_residential_inference() {
+    fn preserves_full_organization_without_guessing_residential() {
         let name = "China Mobile Communications Group Co., Ltd. - Complete Organization Name";
         let result = parse_metadata(
             validate_ip("8.8.8.8").unwrap(),
@@ -187,9 +253,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result.organization.as_deref(), Some(name));
-        assert_eq!(result.network_type, "residential");
-        assert!(result.residential_inferred);
+        assert_eq!(result.network_type, "unknown");
+        assert!(!result.residential_inferred);
         assert_eq!(result.quality, "low");
+    }
+
+    #[test]
+    fn declared_type_changes_with_exact_ip_and_distinguishes_commercial() {
+        let mut result =
+            parse_metadata(validate_ip("8.8.8.8").unwrap(), &json!({"ip":"8.8.8.8"})).unwrap();
+        for (declared, expected) in [
+            ("Residential", "residential"),
+            ("Business", "business"),
+            ("Hosting", "datacenter"),
+            ("Wireless", "mobile"),
+            ("ISP", "isp"),
+        ] {
+            assert!(apply_declared_type(
+                &mut result,
+                &json!({"status":"ok","8.8.8.8":{"network":{"type":declared}}})
+            ));
+            assert_eq!(result.network_type, expected);
+            assert!(!result.residential_inferred);
+        }
+        assert!(!apply_declared_type(
+            &mut result,
+            &json!({"status":"ok","1.1.1.1":{"network":{"type":"Residential"}}})
+        ));
+        assert_eq!(result.network_type, "isp");
     }
     #[test]
     fn hosting_is_not_itself_high_risk_and_bad_scores_are_unknown() {

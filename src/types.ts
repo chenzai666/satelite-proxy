@@ -431,7 +431,7 @@ export interface IpMetadata {
   organization?: string | null;
   isp?: string | null;
   asn?: string | null;
-  networkType: "datacenter" | "mobile" | "residential" | "unknown";
+  networkType: "datacenter" | "mobile" | "residential" | "business" | "isp" | "unknown";
   residentialInferred: boolean;
   riskScore?: number | null;
   quality: "low" | "moderate" | "high" | "unknown";

@@ -21,7 +21,16 @@ async function clean() {
   assert.deepEqual(blocked, [], "夹具不得发起外部网络请求");
   assert.deepEqual(errors, [], `${currentCase} 页面异常`);
 }
-async function open(width, height, locale, theme, state = "running", hero = "classic") {
+async function cardMotion(running) {
+  const selector = ".dashboard-bento .dash-hero .dashboard-card-ambient";
+  const name = await page.locator(selector).evaluate(el => getComputedStyle(el, "::before").animationName);
+  assert.equal(name, running ? "dashboard-card-flow" : "none", "状态卡动效跟随运行状态");
+  if (running) {
+    const before = await page.locator(selector).evaluate(el => getComputedStyle(el, "::before").transform);
+    await page.waitForFunction(({ selector, before }) => getComputedStyle(document.querySelector(selector), "::before").transform !== before, { selector, before });
+  }
+}
+async function open(width, height, locale, theme, state = "running", hero = "classic", network = "business") {
   if (page) await clean();
   if (context) await context.close();
   errors = []; blocked = [];
@@ -39,7 +48,7 @@ async function open(width, height, locale, theme, state = "running", hero = "cla
   });
   page = await context.newPage();
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero })}`);
+  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero, network })}`);
   await page.locator(".dashboard-details-grid > :nth-child(4)").waitFor();
   await page.waitForFunction(({ theme, label }) =>
     document.documentElement.dataset.theme === theme &&
@@ -117,6 +126,7 @@ async function structure(locale) {
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
   await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent.includes('Without Truncation'));
   assert.equal(await page.locator('.ip-organization-row .ip-organization').evaluate(el => getComputedStyle(el).textOverflow), "clip");
+  assert.ok((await page.locator('.ip-info-badges').innerText()).includes(locale === "zh" ? "商业" : "Commercial"));
   assert.equal(await page.locator('.service-status-card').count(), 1);
   assert.equal(await page.locator(".dashboard-bottom-grid .traffic-stats-card").count(), 1);
   assert.equal(await page.locator(".dashboard-bottom-grid .simple-spark").count(), 1);
@@ -144,6 +154,14 @@ try {
   }
 
   await open(1280, 900, "zh", "aerospace");
+  await cardMotion(true);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await cardMotion(false);
+  assert.equal(await page.locator('.dashboard-power-visual .orbit').evaluate(el =>
+    [el, ...el.querySelectorAll('*')].every(node => ['::before', '::after', null].every(pseudo =>
+      getComputedStyle(node, pseudo).animationName === 'none'))), true, "减少动态效果时关闭经典轨道CSS动画");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await cardMotion(true);
   // 等待真实组件的第二轮状态/连接轮询，所有请求仍由内存 mock 响应。
   const reads = await page.evaluate(() => ({ status: window.dashboardFixture.statusReads, connections: window.dashboardFixture.connectionReads }));
   await page.waitForFunction(before => window.dashboardFixture.statusReads > before.status && window.dashboardFixture.connectionReads > before.connections, reads);
@@ -157,6 +175,7 @@ try {
   await page.getByRole("button", { name: words.zh.stop, exact: true }).click();
   const start = page.getByRole("button", { name: words.zh.start, exact: true });
   await start.waitFor();
+  await cardMotion(false);
   await page.waitForFunction(() => document.querySelector(".dashboard-power")?.disabled === false);
   await page.evaluate(() => { window.dashboardFixture.holdStart = true; });
   await start.click();
@@ -206,6 +225,11 @@ try {
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await open(1280, 900, "zh", "aerospace", "running", "particle");
   assert.equal(await page.locator('.dashboard-power-visual .particle-orbit').count(), 1);
+  for (const [network, text] of [["residential", "家宽"], ["datacenter", "机房"], ["isp", "ISP 网络"], ["unknown", "未知"]]) {
+    await open(1280, 900, "zh", "aerospace", "running", "classic", network);
+    await page.waitForFunction(text => document.querySelector('.ip-info-badges')?.textContent.includes(text), text);
+    assert.doesNotMatch(await page.locator('.ip-info-badges').innerText(), /推测/);
+  }
   await clean();
   console.log("概览回归通过：真实侧栏、紧凑布局、IP组织完整、服务详情、三种首页动效、模式/启停与全屏。");
 } catch (error) {
