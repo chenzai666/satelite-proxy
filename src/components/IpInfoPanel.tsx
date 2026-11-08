@@ -46,7 +46,7 @@ export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey
   const showQuality = showType || data?.ipQuality === "risky";
   const lookupNotice = locale === "en"
     ? "Queries ident.me, IPQuery, IPLocate, ipapi.is and proxycheck.io over HTTPS in fallback waves. Only the public IP is used, without node credentials. Types require explicit data for the same IP. Quality follows FlClash: residential/mobile/commercial Good, datacenter Normal, Tor or abuse Risky; missing data Unknown. Risk scores remain separate and use IPQuery bands: 0–20 low, 21–50 moderate, 51–100 high."
-    : "按批次通过 HTTPS 查询 ident.me、IPQuery、IPLocate、ipapi.is、proxycheck.io，只使用公网 IP，不发送节点凭据。类型以同一 IP 的明确数据为准。质量沿用 FlClash 分级：家宽/移动/商业为优，机房为一般，Tor 或滥用标记为风险，信息不足为未知。风险分数单独展示，沿用 IPQuery 阈值：0–20低、21–50中、51–100高。";
+    : "按批次通过 HTTPS 查询 ident.me、IPQuery、IPLocate、ipapi.is、proxycheck.io，只使用公网 IP，不发送节点凭据。类型以同一 IP 的明确数据为准。质量沿用 FlClash 分级：家宽/移动/商业为优，机房为普通，Tor 或滥用标记为风险，信息不足为未知。风险分数单独展示，沿用 IPQuery 阈值：0–20低、21–50中、51–100高。";
   return (
     <div className="ip-info-panel">
       <div className="ip-info-badges">
