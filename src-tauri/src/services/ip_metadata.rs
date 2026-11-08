@@ -450,12 +450,7 @@ mod tests {
             assert_eq!(data.asn.as_deref(), Some("AS15169"));
             assert!(parse_source(validate_ip("1.1.1.1").unwrap(), source, &value).is_err());
         }
-        let isp = parse_source(
-            ip,
-            Source::Ident,
-            &json!({"ip":"8.8.8.8","type":"isp"}),
-        )
-        .unwrap();
+        let isp = parse_source(ip, Source::Ident, &json!({"ip":"8.8.8.8","type":"isp"})).unwrap();
         assert_eq!(isp.network_type, "isp");
         assert_eq!(isp.ip_quality, "unknown");
     }
