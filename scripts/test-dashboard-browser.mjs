@@ -58,7 +58,7 @@ async function layout() {
     const issues = [];
     const root = document.documentElement;
     const dashboard = document.querySelector(".dashboard-page");
-    const cards = [...dashboard.querySelectorAll(".dash-hero, .dashboard-rate-card, .dash-side-rail, .dashboard-details-grid > *, .dashboard-bottom-grid > .instrument, .dashboard-bottom-grid > .simple-spark")];
+    const cards = [...dashboard.querySelectorAll(".dash-hero, .dashboard-rate-card, .dashboard-top-grid > .service-status-card, .dash-side-rail, .dashboard-details-grid > *, .dashboard-bottom-grid > .instrument, .dashboard-bottom-grid > .simple-spark")];
     const describe = el => `${el.tagName}.${el.className}`;
     const outside = (r, box) => r.left < box.left - 1.5 || r.right > box.right + 1.5 || r.top < box.top - 1.5 || r.bottom > box.bottom + 1.5;
     for (const el of [root, document.body, document.querySelector("main"), dashboard, ...cards]) {
@@ -113,7 +113,7 @@ async function structure(locale) {
   assert.equal(await page.locator(".dashboard-top-grid .dashboard-rate-card").count(), 2);
   assert.equal(await page.locator(".dash-hero .dash-side-rail").count(), 0, "控制栏独立于状态卡");
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
-  assert.equal(await page.locator(".dashboard-details-grid > *").count(), 5);
+  assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
   await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent.includes('Without Truncation'));
   assert.equal(await page.locator('.ip-organization-row .ip-organization').evaluate(el => getComputedStyle(el).textOverflow), "clip");

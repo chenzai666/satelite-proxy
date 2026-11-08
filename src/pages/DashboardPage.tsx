@@ -1306,6 +1306,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         samples={spark.map(s => s.up)} running={running} onOpen={onGoTraffic} />
       <DashboardRateCard direction="down" speed={proxy?.download_speed ?? 0} total={proxy?.download_total ?? 0}
         samples={spark.map(s => s.down)} running={running} onOpen={onGoTraffic} />
+      {statusReady ? <ServiceStatusCard sessionKey={autoProbeKey} /> : <div className="instrument service-status-card" aria-busy="true" />}
       </div>
 
         <aside className="dash-side-rail" aria-label="Quick controls">
@@ -1453,7 +1454,6 @@ function coreDisplayName(kind: string | null | undefined): string {
 
 
       <section className="dashboard-details-grid" aria-label="Telemetry">
-        {statusReady ? <ServiceStatusCard sessionKey={autoProbeKey} /> : <div className="instrument" aria-busy="true" />}
         <article className="instrument accent-green dashboard-core-card">
           <header className="instrument-head">
             <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>

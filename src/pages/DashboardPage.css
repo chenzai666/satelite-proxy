@@ -26,6 +26,9 @@
   gap: 12px;
   align-items: stretch;
 }
+.dashboard-top-grid > .dash-hero { grid-row: span 2; }
+.dashboard-top-grid > .service-status-card { grid-column: 2 / -1; min-height: 96px; padding: 12px 16px; gap: 7px; }
+.dashboard-top-grid > .service-status-card .service-status-card-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; row-gap: 7px; }
 .dashboard-bento .dash-hero,
 .dashboard-bento .instrument,
 .dashboard-bento .simple-spark,
@@ -110,7 +113,7 @@
 .dashboard-bento .dash-side-rail .glass-seg { width: 100%; box-sizing: border-box; }
 .dashboard-bento .dash-side-rail .seg { min-width: 0; font-size: .72rem; padding: .5rem .4rem; }
 
-.dashboard-details-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.dashboard-details-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .dashboard-bento .dashboard-details-grid > .instrument { min-width: 0; min-height: 142px; padding: 14px; gap: 8px; }
 .dashboard-bento .instrument-head { min-height: 20px; }
 .dashboard-card-icon { width: 18px; height: 18px; flex: 0 0 18px; stroke: var(--muted); stroke-width: 1.6; fill: none; stroke-linecap: round; stroke-linejoin: round; }
@@ -145,12 +148,14 @@
 .dashboard-bento .dashboard-setup { margin: 0; border-radius: 18px; }
 
 @media (max-width: 1100px) {
-  .dashboard-details-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .dashboard-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-bento .dashboard-details-grid > .instrument { min-height: 136px; }
 }
 @media (max-width: 800px) {
   .dashboard-top-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-bento .dash-hero { grid-column: 1 / -1; min-height: 210px; }
+  .dashboard-top-grid > .dash-hero { grid-row: auto; }
+  .dashboard-top-grid > .service-status-card { grid-column: 1 / -1; }
   .dashboard-bento .dashboard-bottom-grid { grid-template-columns: minmax(0, 1fr); }
   .dashboard-bento .dash-side-rail { padding: 14px; gap: 12px; }
   .dashboard-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
