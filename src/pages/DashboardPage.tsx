@@ -35,11 +35,12 @@ import { useI18n } from "../i18n";
 import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
-import { HeroVisual } from "../components/HeroVisual";
+import { DashboardRateCard } from "../components/DashboardRateCard";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { TrafficStatsCard } from "../components/TrafficStatsCard";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import { applyLatencyResult, applyNodeLatencyChange } from "../nodeLatencyState";
+import "./DashboardPage.css";
 import type {
   AutoSelectMode,
   CoreKind,
@@ -272,14 +273,21 @@ export function DashboardPage({
   const [spark, setSpark] = useState<
     { up: number; down: number; conns: number }[]
   >([]);
+  const sparkSession = useRef<string | null>(null);
   const pushSpark = useCallback((s: ProxyStatus | null) => {
+    if (!s) return;
+    const session = s.running
+      ? `${s.core_started_at ?? ""}:${s.core_type}:${s.runtime_profile_id ?? ""}`
+      : sparkSession.current;
+    const reset = s.running && session !== sparkSession.current;
+    if (s.running) sparkSession.current = session;
     setSpark((prev) => {
       const next = [
-        ...prev,
+        ...(reset ? [] : prev),
         {
-          up: s?.upload_speed ?? 0,
-          down: s?.download_speed ?? 0,
-          conns: s?.connections ?? 0,
+          up: s.running ? s.upload_speed : 0,
+          down: s.running ? s.download_speed : 0,
+          conns: s.running ? s.connections : 0,
         },
       ];
       return next.length > 60 ? next.slice(next.length - 60) : next;
@@ -818,16 +826,6 @@ function coreDisplayName(kind: string | null | undefined): string {
     stateLabel === "starting" || stateLabel === "stopping" || busy;
   const isError = stateLabel === "error" || (!!proxy?.error && !running);
 
-  const stateUpper = running
-    ? "RUNNING"
-    : switching
-      ? stateLabel === "stopping"
-        ? "STOPPING"
-        : "STARTING"
-      : isError
-        ? "ERROR"
-        : "STOPPED";
-
   const dotClass = running
     ? "on"
     : switching
@@ -1019,7 +1017,7 @@ function coreDisplayName(kind: string | null | undefined): string {
   const coreErrorText = proxy?.error && !running ? proxy.error : null;
 
   return (
-    <div className="page dashboard-page">
+    <div className="page dashboard-page dashboard-bento">
       {toast && <div className="toast">{toast}</div>}
       {error && (
         <ErrorModal
@@ -1040,29 +1038,30 @@ function coreDisplayName(kind: string | null | undefined): string {
         />
       )}
 
-      {/* —— Hero: orbit + status + embedded controls (no floating QC card) —— */}
-      <section className={`dash-hero is-${orbitState}`}>
-        <HeroVisual
-          state={orbitState}
-          spinning={running || switching}
-          switching={switching}
-        />
+      <header className="dashboard-heading">
+        <h1>{t("dashboard.title")}</h1>
+        <span className="dashboard-app-version">SATELITE · {appVersion ?? "—"}</span>
+      </header>
 
+      <div className="dashboard-top-grid">
+      <section className={`dash-hero is-${orbitState}`}>
         <div className="dash-hero-copy">
           <div className="dash-kicker mono">
             <span className={`status-dot ${dotClass}`} />
-            {stateUpper}
+            {running ? t("dashboard.coreRunning") : switching
+              ? stateLabel === "stopping" ? t("dashboard.coreStopping") : t("dashboard.coreStarting")
+              : isError ? t("dashboard.coreError") : t("dashboard.coreStopped")}
             <span className="dash-kicker-sep">·</span>
-            SATELITE {appVersion ?? "—"}
+            {coreDisplayName(proxy?.core_type)}
           </div>
 
-          <h1 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
+          <h2 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (
               heroTitle
             )}
-          </h1>
+          </h2>
           <p className="dash-hero-desc">
             {heroSub == null ? (
               <span className="skel skel-inline skel-w-30" aria-hidden />
@@ -1075,10 +1074,12 @@ function coreDisplayName(kind: string | null | undefined): string {
             {!running ? (
               <button
                 type="button"
-                className="btn-pill"
+                className="btn-pill dashboard-power"
+                aria-busy={busy || switching}
                 disabled={busy || !canStart || switching || !statusReady}
                 onClick={() => void onStart()}
               >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m-5-7a8 8 0 1 0 10 0" /></svg>
                 {busy || stateLabel === "starting"
                   ? t("dashboard.starting")
                   : isError
@@ -1088,10 +1089,12 @@ function coreDisplayName(kind: string | null | undefined): string {
             ) : (
               <button
                 type="button"
-                className="btn-pill danger"
+                className="btn-pill danger dashboard-power"
+                aria-busy={busy || switching}
                 disabled={busy || switching}
                 onClick={() => void onStop()}
               >
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m-5-7a8 8 0 1 0 10 0" /></svg>
                 {t("dashboard.stop")}
               </button>
             )}
@@ -1289,9 +1292,18 @@ function coreDisplayName(kind: string | null | undefined): string {
               )}
             </div>
           </div>
+          <div className="dashboard-status-footer">
+            <span><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></span>
+            <span><span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span><strong title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong></span>
+          </div>
         </div>
+      </section>
+      <DashboardRateCard direction="up" speed={proxy?.upload_speed ?? 0} total={proxy?.upload_total ?? 0}
+        samples={spark.map(s => s.up)} running={running} onOpen={onGoTraffic} />
+      <DashboardRateCard direction="down" speed={proxy?.download_speed ?? 0} total={proxy?.download_total ?? 0}
+        samples={spark.map(s => s.down)} running={running} onOpen={onGoTraffic} />
+      </div>
 
-        {/* Right rail: light controls, no card chrome */}
         <aside className="dash-side-rail" aria-label="Quick controls">
           <div className="dash-rail-title mono">{t("dashboard.quickControls")}</div>
           <div className="dash-inline-row dash-rail-block">
@@ -1418,7 +1430,6 @@ function coreDisplayName(kind: string | null | undefined): string {
             />
           </div>
         </aside>
-      </section>
 
       {subCount === 0 && (
         <div className="dashboard-setup card glass">
@@ -1437,10 +1448,10 @@ function coreDisplayName(kind: string | null | undefined): string {
 
 
 
-      {/* —— 6 cards: core / spark / traffic+conns · quality / sub / system —— */}
-      <section className="instrument-grid instrument-grid-6" aria-label="Telemetry">
-        <article className="instrument accent-green">
+      <section className="dashboard-details-grid" aria-label="Telemetry">
+        <article className="instrument accent-green dashboard-core-card">
           <header className="instrument-head">
+            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>
             {/* Label carries the active core's name (core_type falls back to
                 the setting while stopped, so this is correct either way). */}
             <span className="instrument-label">
@@ -1513,23 +1524,8 @@ function coreDisplayName(kind: string | null | undefined): string {
           </div>
         </article>
 
-        <SimpleTrafficSpark
-          samples={spark}
-          up={proxy?.upload_speed ?? 0}
-          down={proxy?.download_speed ?? 0}
-          conns={proxy?.connections ?? 0}
-          running={running}
-          label={t("simple.spark")}
-          idleLabel={t("simple.sparkIdle")}
-          idleConnsLabel={t("simple.sparkIdleConns")}
-          connsLabel={t("simple.sparkConns", { n: proxy?.connections ?? 0 })}
-          onOpen={onGoTraffic}
-        />
-
-        <TrafficStatsCard status={proxy} onOpen={onGoTraffic} />
-
         <article
-          className="instrument accent-cyan instrument-click"
+          className="instrument accent-cyan instrument-click dashboard-probe-card"
           role="button"
           tabIndex={0}
           title={t("dashboard.probeNetworkHint")}
@@ -1542,6 +1538,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           }}
         >
           <header className="instrument-head">
+            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg>
             <span className="instrument-label">
               {t("dashboard.cardProbe")}
             </span>
@@ -1599,7 +1596,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         </article>
 
         <article
-          className="instrument accent-green instrument-click"
+          className="instrument accent-green instrument-click dashboard-profile-card"
           role="button"
           tabIndex={0}
           onClick={() => onGoProfiles?.()}
@@ -1608,6 +1605,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           }}
         >
           <header className="instrument-head">
+            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6M8 13h8m-8 4h5"/></svg>
             <span className="instrument-label">
               {customRuntime
                 ? t("dashboard.cardCustom")
@@ -1680,7 +1678,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         </article>
 
         <article
-          className="instrument accent-cyan instrument-click"
+          className="instrument accent-cyan instrument-click dashboard-system-card"
           role="button"
           tabIndex={0}
           title={t("dashboard.copyEnvHint")}
@@ -1693,6 +1691,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           }}
         >
           <header className="instrument-head">
+            <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="6" rx="1"/><rect x="2" y="16" width="7" height="5" rx="1"/><rect x="15" y="16" width="7" height="5" rx="1"/><path d="M12 9v4M5.5 16v-3h13v3"/></svg>
             <span className="instrument-label">
               {t("dashboard.cardSystem")}
             </span>
@@ -1719,6 +1718,22 @@ function coreDisplayName(kind: string | null | undefined): string {
             </div>
           </div>
         </article>
+      </section>
+
+      <section className="instrument-grid dashboard-bottom-grid">
+        <TrafficStatsCard status={proxy} onOpen={onGoTraffic} />
+        <SimpleTrafficSpark
+          samples={spark}
+          up={running ? proxy?.upload_speed ?? 0 : 0}
+          down={running ? proxy?.download_speed ?? 0 : 0}
+          conns={running ? proxy?.connections ?? 0 : 0}
+          running={running}
+          label={t("simple.spark")}
+          idleLabel={t("simple.sparkIdle")}
+          idleConnsLabel={t("simple.sparkIdleConns")}
+          connsLabel={t("simple.sparkConns", { n: proxy?.connections ?? 0 })}
+          onOpen={onGoTraffic}
+        />
       </section>
 
       {proxy?.core_type === "mihomo" ? (

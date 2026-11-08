@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-08 概览卡片布局：DashboardPage.css只作用dashboard-bento，不改共享简洁模式；顶部状态/圆形启停与DashboardRateCard双方向速率，独立三组GlassSeg保原动作和capture单选，中部四信息卡，下部TrafficStatsCard与SimpleTrafficSpark。bottom保留instrument-grid类以复用趋势expanded样式，禁止对根加container-type/transform而困住fixed全屏与modal。移除本页HeroVisual展示，不改全局视觉设置或其他页面。速率卡仅消费现有snapshot/spark，最多60点的近期峰值不标会话峰值，不增加请求；停止0速率，新core_started_at/core_type/profile会话重置趋势。分类统计口径不改，Mihomo仍原节点页管理策略组。新增dashboard-tests.yml和全构建browser回归，测试仅合成IPC数据；本机只tsc/Node检查，客户端/Rust/浏览器仅Actions，版本1.0.46不变。
+
 2026-11-07 配置卡激活：storage.activate_subscription统一选择运行来源，custom选singbox:<id>且不改普通订阅池/节点；generated切回generated，混合模式离开custom时点击已启用成员只切回、不取消勾选。commands/subscription异步等待AppState::activate_subscription，后者持同一个core_transition守卫完成运行判断、候选预检、保存和restart_proxy_inner；忙碌在提交前拒绝，运行中空generated池和缺失目标内核在停核前拒绝。普通rule_apply的restart_if_running会跳过custom，不能替代显式来源切换；停止时仅保存。来源不变的普通订阅仍按原enabled标记排队重建。ConfigPage所有卡可选择，保存/切换期间防连点，成功和失败均同步真实设置，卡内部操作不冒泡；完整原文仍独立管理。新增config-activation浏览器夹具，在完整Windows构建与独立前端工作流运行；Rust/浏览器/客户端仍仅Actions。版本保持1.0.46。
 
 2026-11-04 发布幂等：publish-windows.yml对已验证构建的每个资产先算SHA-256，再用带唯一参数的Release-ID资产查询校验digest/state；相同摘要跳过上传，不同才按确切同名ID替换。CLI上传报422但服务端摘要已匹配时接受成功，摘要缺失/不符必须失败；两个资产核对通过后才更新发布说明及构建SHA。说明走临时notes文件并trap清理。仅发布流程修改可[skip ci]，客户端标签仍指向真实验证过的构建提交，不为发布脚本改动重编客户端。

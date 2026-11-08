@@ -1,0 +1,160 @@
+.dashboard-rate-card {
+  --rate-color: var(--download);
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+  padding: 20px 20px 12px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 1.75);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+}
+
+.dashboard-rate-card[data-direction="up"] {
+  --rate-color: var(--upload);
+}
+
+.dashboard-rate-card__head {
+  min-width: 0;
+}
+
+.dashboard-rate-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: start;
+}
+
+.dashboard-rate-card__arrow {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--rate-color) 12%, transparent);
+  color: var(--rate-color);
+  font-size: 1.1rem;
+}
+
+.dashboard-rate-card__open {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.dashboard-rate-card__open:hover {
+  color: var(--text);
+  background: var(--hover-wash);
+}
+
+.dashboard-rate-card__open:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+.dashboard-rate-card__link {
+  margin-inline-start: auto;
+  color: var(--muted);
+}
+
+.dashboard-rate-card__rate {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-rate-card__number {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 2.4rem;
+  font-size: clamp(1.5rem, 15cqi, 2.75rem);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+}
+
+.dashboard-rate-card__unit {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.dashboard-rate-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.73rem;
+}
+
+.dashboard-rate-card__stats > div {
+  flex: 1 1 88px;
+  min-width: 0;
+}
+
+.dashboard-rate-card__stats dt {
+  color: var(--muted);
+}
+
+.dashboard-rate-card__stats dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.dashboard-rate-card__chart {
+  display: block;
+  flex: 0 0 48px;
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  margin-top: auto;
+  color: var(--rate-color);
+}
+
+.dashboard-rate-card__baseline {
+  fill: none;
+  stroke: var(--border);
+}
+
+.dashboard-rate-card__area {
+  fill: currentColor;
+  opacity: 0.09;
+}
+
+.dashboard-rate-card__line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@container (max-width: 170px) {
+  .dashboard-rate-card__stats {
+    gap: 6px;
+  }
+
+  .dashboard-rate-card__unit {
+    font-size: 0.7rem;
+  }
+}

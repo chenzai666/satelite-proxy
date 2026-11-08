@@ -1,0 +1,59 @@
+name: 概览仪表盘布局与交互验证
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          version: 11
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: 类型与速率卡测试
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm exec tsc --noEmit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test scripts/test-dashboard-rate.mjs scripts/test-traffic-stats.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 真实概览组件浏览器回归
+        shell: pwsh
+        run: |
+          $uiDeps = Join-Path $env:RUNNER_TEMP 'satelite-dashboard-ui-tests'
+          npm install --prefix $uiDeps --no-audit --no-fund playwright@1.55.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node (Join-Path $uiDeps 'node_modules/playwright/cli.js') install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PLAYWRIGHT_MODULE = Join-Path $uiDeps 'node_modules/playwright/index.mjs'
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          $server = Start-Process node -ArgumentList @('node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '1440', '--strictPort') -WindowStyle Hidden -PassThru
+          Write-Host "仪表盘临时服务 PID=$($server.Id) 启动=$($server.StartTime.ToString('o'))"
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              try { Invoke-WebRequest 'http://127.0.0.1:1440/scripts/ui-smoke/dashboard.html' -UseBasicParsing | Out-Null; $ready = $true; break } catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ready) { throw '仪表盘测试服务未就绪' }
+            node scripts/test-dashboard-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            if (-not $server.HasExited) { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
+            if (-not $server.WaitForExit(5000)) { throw '仪表盘临时服务未退出' }
+          }
+      - name: 保存仪表盘截图
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dashboard-${{ github.sha }}
+          path: test-results/dashboard*.png
+          if-no-files-found: ignore
+          retention-days: 14
