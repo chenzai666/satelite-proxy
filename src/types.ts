@@ -426,6 +426,22 @@ export interface ExitIpInfo {
   source: string;
 }
 
+export interface IpMetadata {
+  ip: string;
+  organization?: string | null;
+  isp?: string | null;
+  asn?: string | null;
+  networkType: "datacenter" | "mobile" | "residential" | "unknown";
+  residentialInferred: boolean;
+  riskScore?: number | null;
+  quality: "low" | "moderate" | "high" | "unknown";
+  isVpn?: boolean | null;
+  isProxy?: boolean | null;
+  isTor?: boolean | null;
+  source: string;
+  checkedAt: number;
+}
+
 export type AddSourceKind = "url" | "file" | "text" | "node" | "custom";
 
 export type ProfileKind = "subscription" | "local" | "custom";

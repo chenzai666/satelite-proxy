@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { refreshProxyStatus } from "./api";
-import { TopNav } from "./components/TopNav";
+import { SideNav } from "./components/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ErrorModal } from "./components/ErrorModal";
 import { beginCoreBusy } from "./coreBusy";
@@ -66,8 +66,8 @@ function ProShell() {
   useGlobalShortcuts(PRO_SHORTCUT_MAP, setNav, "settings");
 
   return (
-    <div className="app-shell">
-      <TopNav active={nav} onChange={setNav} />
+    <div className="app-shell pro-shell">
+      <SideNav active={nav} onChange={setNav} />
       <main className="main">
         {/* key={nav} forces a remount on page switch → triggers the CSS
             page-enter fade/slide animation below. */}

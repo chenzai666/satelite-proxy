@@ -381,6 +381,10 @@ export function checkExitIp() {
   return invoke<ExitIpInfo>("check_exit_ip");
 }
 
+export function checkIpMetadata(ip: string) {
+  return invoke<import("./types").IpMetadata>("check_ip_metadata", { ip });
+}
+
 export interface SettingsUpdatePayload {
   mixedPort?: number | null;
   /** Main mixed inbound listens on 0.0.0.0 (LAN) instead of 127.0.0.1. */

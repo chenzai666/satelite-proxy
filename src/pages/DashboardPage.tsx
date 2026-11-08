@@ -36,6 +36,9 @@ import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
 import { GlassSeg } from "../components/GlassSeg";
 import { DashboardRateCard } from "../components/DashboardRateCard";
+import { HeroVisual } from "../components/HeroVisual";
+import { IpInfoPanel } from "../components/IpInfoPanel";
+import { ServiceStatusCard } from "../components/ServiceStatusCard";
 import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice";
 import { TrafficStatsCard } from "../components/TrafficStatsCard";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
@@ -775,7 +778,7 @@ function coreDisplayName(kind: string | null | undefined): string {
   // Re-probe when the core starts/stops, routing mode changes, or the
   // selected node changes. The version stamp above prevents a slower earlier
   // request from replacing a newer answer.
-  const autoProbeKey = `${proxy?.running ?? false}:${proxy?.outbound_mode ?? "rule"}:${proxy?.mixed_port ?? settingsPorts.mixed}:${currentNodeId ?? ""}`;
+  const autoProbeKey = `${proxy?.running ?? false}:${proxy?.core_started_at ?? ""}:${proxy?.core_type ?? ""}:${proxy?.runtime_profile_id ?? ""}:${proxy?.outbound_mode ?? "rule"}:${proxy?.mixed_port ?? settingsPorts.mixed}:${currentNodeId ?? ""}`;
   useEffect(() => {
     if (!statusReady || autoProbeKeyRef.current === autoProbeKey) return;
     autoProbeKeyRef.current = autoProbeKey;
@@ -1079,7 +1082,7 @@ function coreDisplayName(kind: string | null | undefined): string {
                 disabled={busy || !canStart || switching || !statusReady}
                 onClick={() => void onStart()}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m-5-7a8 8 0 1 0 10 0" /></svg>
+                <span className="dashboard-power-visual" aria-hidden="true"><span className="dashboard-visual-scale"><HeroVisual state={orbitState} spinning={running || switching} switching={switching} /></span></span>
                 {busy || stateLabel === "starting"
                   ? t("dashboard.starting")
                   : isError
@@ -1094,7 +1097,7 @@ function coreDisplayName(kind: string | null | undefined): string {
                 disabled={busy || switching}
                 onClick={() => void onStop()}
               >
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9m-5-7a8 8 0 1 0 10 0" /></svg>
+                <span className="dashboard-power-visual" aria-hidden="true"><span className="dashboard-visual-scale"><HeroVisual state={orbitState} spinning={running || switching} switching={switching} /></span></span>
                 {t("dashboard.stop")}
               </button>
             )}
@@ -1296,6 +1299,7 @@ function coreDisplayName(kind: string | null | undefined): string {
             <span><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></span>
             <span><span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span><strong title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong></span>
           </div>
+          <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
         </div>
       </section>
       <DashboardRateCard direction="up" speed={proxy?.upload_speed ?? 0} total={proxy?.upload_total ?? 0}
@@ -1449,6 +1453,7 @@ function coreDisplayName(kind: string | null | undefined): string {
 
 
       <section className="dashboard-details-grid" aria-label="Telemetry">
+        {statusReady ? <ServiceStatusCard sessionKey={autoProbeKey} /> : <div className="instrument" aria-busy="true" />}
         <article className="instrument accent-green dashboard-core-card">
           <header className="instrument-head">
             <svg className="dashboard-card-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m-4 6h4m12-6h4m-4 6h4"/></svg>

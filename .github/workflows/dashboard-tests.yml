@@ -23,7 +23,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pnpm exec tsc --noEmit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --test scripts/test-dashboard-rate.mjs scripts/test-traffic-stats.mjs
+          node --test scripts/test-dashboard-rate.mjs scripts/test-traffic-stats.mjs scripts/test-service-status.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: 真实概览组件浏览器回归
         shell: pwsh

@@ -1,0 +1,20 @@
+.ip-info-panel { margin-top: 10px; min-width: 0; }
+.ip-info-badges { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.ip-info-tag { color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px; font-size: .65rem; padding: 2px 6px; }
+.ip-risk-low { color: var(--success); border-color: var(--success-border); background: var(--success-muted); }
+.ip-risk-moderate { color: var(--warning); }
+.ip-risk-high { color: var(--danger); border-color: var(--danger-border); }
+.ip-info-hint { font-size: .65rem; color: var(--muted); }
+.ip-organization-row { display: flex; align-items: flex-start; gap: 7px; margin-top: 6px; font-size: .7rem; color: var(--muted); min-width: 0; }
+.ip-organization-row > span { flex-shrink: 0; }
+.ip-organization-row strong { color: var(--text); font-weight: 550; min-width: 0; flex: 1; }
+.ip-organization { white-space: normal !important; overflow-wrap: anywhere; text-overflow: clip !important; }
+.ip-organization-row .icon-btn { flex-shrink: 0; width: 22px; height: 22px; padding: 0; }
+.ip-details-dialog { color: var(--text); background: var(--panel-solid); border: 1px solid var(--border); border-radius: 20px; padding: 22px; width: min(540px, calc(100vw - 36px)); max-height: calc(100vh - 36px); overflow: auto; box-shadow: var(--shadow-modal); }
+.ip-details-dialog::backdrop { background: var(--overlay); }
+.ip-details-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.ip-details-dialog h2 { font-size: 1.1rem; margin: 0; }
+.ip-details-dialog dl { display: grid; grid-template-columns: minmax(70px, .4fr) minmax(0, 1fr); gap: 10px; font-size: .8rem; margin: 0; }
+.ip-details-dialog dt { color: var(--muted); }
+.ip-details-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.ip-info-notice { font-size: .72rem; line-height: 1.6; color: var(--muted); }

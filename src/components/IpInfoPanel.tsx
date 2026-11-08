@@ -1,0 +1,74 @@
+import { useEffect, useRef, useState } from "react";
+import { checkIpMetadata } from "../api";
+import { useI18n } from "../i18n";
+import type { IpMetadata } from "../types";
+import "./IpInfoPanel.css";
+
+const labels = {
+  zh: { title: "IP 信息", org: "组织", isp: "运营商", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽 / ISP（推测）", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", path: "查询说明", notice: "将当前出口 IP 发送给 IPQuery 查询，不发送节点配置。家宽表示根据非机房、非移动标记推测；风险分级按供应商 0–100 分（0–20 低、21–50 中、51–100 高），不是测速或服务解锁结论。缺字段保持未知。", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
+  en: { title: "IP information", org: "Organization", isp: "ISP", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential / ISP (inferred)", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", path: "About this lookup", notice: "Queries IPQuery with the current public exit IP, without node configuration. Residential is inferred from non-hosting and non-mobile flags. Local risk bands use the provider's 0–100 score (0–20 low, 21–50 moderate, 51–100 high), not speed or service access. Missing fields remain unknown.", failed: "IP information unavailable", details: "Open IP information details" },
+};
+
+export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey: string }) {
+  const { locale } = useI18n();
+  const l = labels[locale === "en" ? "en" : "zh"];
+  const [data, setData] = useState<IpMetadata | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const epoch = useRef(0);
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const token = ++epoch.current;
+    setData(null); setError(null); setCopied(false);
+    if (!ip) { setBusy(false); return; }
+    setBusy(true);
+    void checkIpMetadata(ip).then(value => {
+      if (epoch.current === token && value.ip === ip) setData(value);
+    }).catch(e => { if (epoch.current === token) setError(String(e)); })
+      .finally(() => { if (epoch.current === token) setBusy(false); });
+    return () => { epoch.current++; };
+  }, [ip, sessionKey, revision]);
+  useEffect(() => {
+    if (open && dialog.current && !dialog.current.open) dialog.current.showModal();
+    if (!open && dialog.current?.open) dialog.current.close();
+  }, [open]);
+  const type = data ? l[data.networkType] : l.unknown;
+  const quality = data ? l[data.quality] : l.unknown;
+  return (
+    <div className="ip-info-panel">
+      <div className="ip-info-badges">
+        <button type="button" className="ip-info-open glass-btn small" onClick={() => setOpen(true)} title={l.details}>{l.title} ↗</button>
+        <span className="ip-info-tag">{type}</span>
+        <span className={`ip-info-tag ip-risk-${data?.quality ?? "unknown"}`}>{quality}</span>
+        {busy && <span className="ip-info-hint">{l.checking}</span>}
+      </div>
+      <div className="ip-organization-row">
+        <span>{l.org}</span>
+        <strong className="ip-organization" title={data?.organization ?? undefined}>{data?.organization ?? "—"}</strong>
+        {data?.organization && <button type="button" className="icon-btn" title={copied ? l.copied : l.copy} aria-label={l.copy} onClick={() => {
+          void navigator.clipboard.writeText(data.organization!).then(() => setCopied(true)).catch(() => setError(l.copy));
+        }}>{copied ? "✓" : "⧉"}</button>}
+      </div>
+      <dialog ref={dialog} className="ip-details-dialog" aria-labelledby="ip-details-title" onCancel={() => setOpen(false)} onClose={() => setOpen(false)}>
+        <header><h2 id="ip-details-title">{l.title}</h2><button type="button" className="glass-btn small" onClick={() => setOpen(false)} autoFocus>{l.close}</button></header>
+        <dl>
+          <dt>IP</dt><dd>{ip ?? "—"}</dd>
+          <dt>{l.org}</dt><dd className="ip-organization">{data?.organization ?? "—"}</dd>
+          <dt>{l.isp}</dt><dd>{data?.isp ?? "—"}</dd>
+          <dt>ASN</dt><dd>{data?.asn ?? "—"}</dd>
+          <dt>{l.type}</dt><dd>{type}</dd>
+          <dt>{l.quality}</dt><dd>{quality}</dd>
+          <dt>{l.score}</dt><dd>{data?.riskScore == null ? "—" : `${data.riskScore} / 100`}</dd>
+          <dt>VPN / Proxy / Tor</dt><dd>{[data?.isVpn, data?.isProxy, data?.isTor].map(v => v == null ? "—" : v ? "✓" : "−").join(" / ")}</dd>
+          <dt>{l.source}</dt><dd>{data?.source ?? "IPQuery"}</dd>
+        </dl>
+        <p className="ip-info-notice">{l.notice}</p>
+        {error && <p role="alert">{l.failed}: {error}</p>}
+        <button type="button" className="glass-btn" disabled={!ip || busy} onClick={() => setRevision(v => v + 1)}>{busy ? l.checking : l.refresh}</button>
+      </dialog>
+    </div>
+  );
+}

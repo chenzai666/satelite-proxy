@@ -1,7 +1,7 @@
 //! 仪表盘出口 IP 探测。
 //!
-//! 核心运行且不是直连模式时，请求通过 Satelite 的 mixed 入站；核心停止
-//! 或路由模式为直连时，请求直接发出。多个公开接口并行竞争，首个可解析
+//! 核心运行时通过当前 HTTP/mixed 入站及实际规则；核心停止时直接发出。
+//! 多个 HTTPS 公开接口并行竞争，首个可解析
 //! 的结果返回，用于识别当前实际出口，而不是只显示节点延迟。
 
 use serde::Serialize;
@@ -36,11 +36,6 @@ const SOURCES: &[Source] = &[
         country_field: "country_code",
     },
     Source {
-        url: "http://ip-api.com/json",
-        ip_field: "query",
-        country_field: "countryCode",
-    },
-    Source {
         url: "https://api.myip.com",
         ip_field: "ip",
         country_field: "cc",
@@ -51,35 +46,35 @@ const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const RACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
 
-fn probe_source(
+async fn probe_source(
     source: &Source,
-    proxy_port: Option<u16>,
+    client: reqwest::Client,
 ) -> std::result::Result<(String, Option<String>), String> {
-    let mut builder = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(9));
-    if let Some(port) = proxy_port {
-        let proxy = ureq::Proxy::new(format!("http://127.0.0.1:{port}"))
-            .map_err(|e| format!("proxy: {e}"))?;
-        builder = builder.proxy(proxy);
-    }
-    let response = builder
-        .build()
+    let response = client
         .get(source.url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json")
-        .call()
-        .map_err(|e| format!("{}: {e}", source.url))?;
-    let body = response.into_string().map_err(|e| format!("body: {e}"))?;
-    parse_source(source, &body).ok_or_else(|| format!("{}: unparsable answer", source.url))
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .map_err(|_| "出口 IP 接口连接失败".to_string())?;
+    if !response.status().is_success() {
+        return Err("出口 IP 接口响应异常".into());
+    }
+    let body =
+        super::http_body::read_limited(response, 32 * 1024, "出口 IP 响应过大".into()).await?;
+    let body = std::str::from_utf8(&body).map_err(|_| "出口 IP 响应编码无效")?;
+    parse_source(source, body).ok_or_else(|| "出口 IP 响应格式无效".into())
 }
 
 fn parse_source(source: &Source, body: &str) -> Option<(String, Option<String>)> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let ip = value.get(source.ip_field)?.as_str()?.trim().to_string();
-    if ip.is_empty() {
-        return None;
-    }
+    let ip = value
+        .get(source.ip_field)?
+        .as_str()?
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .ok()?
+        .to_string();
     let country = value
         .get(source.country_field)
         .and_then(serde_json::Value::as_str)
@@ -90,32 +85,36 @@ fn parse_source(source: &Source, body: &str) -> Option<(String, Option<String>)>
 }
 
 /// 并行探测多个公开 IP 接口。只返回首个成功结果，超时总上限为 12 秒。
-pub async fn probe(mixed_port: u16, via_proxy: bool) -> std::result::Result<ExitIpInfo, String> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+pub async fn probe(
+    route: super::network_probe::ProbeRoute,
+) -> std::result::Result<ExitIpInfo, String> {
+    let client = super::network_probe::build_client(route, std::time::Duration::from_secs(9))?;
+    let mut tasks = tokio::task::JoinSet::new();
     for source in SOURCES {
-        let tx = tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = probe_source(source, via_proxy.then_some(mixed_port));
-            let _ = tx.send((source.url, result));
-        });
+        let client = client.clone();
+        tasks.spawn(async move { (source.url, probe_source(source, client).await) });
     }
-    drop(tx);
 
     let started = std::time::Instant::now();
     let mut last_error = "all exit-ip sources failed".to_string();
     loop {
         let remaining = RACE_TIMEOUT.saturating_sub(started.elapsed());
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Some((url, Ok((ip, country_code))))) => {
+        match tokio::time::timeout(remaining, tasks.join_next()).await {
+            Ok(Some(Ok((url, Ok((ip, country_code)))))) => {
+                tasks.shutdown().await;
                 return Ok(ExitIpInfo {
                     ip,
                     country_code,
-                    via_proxy,
+                    via_proxy: route.via_proxy(),
                     source: url.to_string(),
                 });
             }
-            Ok(Some((_, Err(error)))) => last_error = error,
-            Ok(None) | Err(_) => return Err(last_error),
+            Ok(Some(Ok((_, Err(error))))) => last_error = error,
+            Ok(Some(Err(_))) => last_error = "出口检测任务结束".into(),
+            Ok(None) | Err(_) => {
+                tasks.shutdown().await;
+                return Err(last_error);
+            }
         }
     }
 }
@@ -139,8 +138,8 @@ mod tests {
         );
         assert_eq!(
             parse_source(
-                &source("http://ip-api.com/json"),
-                r#"{"query":"5.6.7.8","countryCode":"DE"}"#,
+                &source("https://ipwho.is/"),
+                r#"{"ip":"5.6.7.8","country_code":"DE"}"#,
             ),
             Some(("5.6.7.8".into(), Some("DE".into())))
         );

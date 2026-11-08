@@ -38,11 +38,19 @@ pub fn diagnose_network() -> NetworkDiagnosticsResult {
     NetworkDiagnosticsResult { issues }
 }
 
-/// 探测当前实际出口 IP。核心运行且非直连模式时走 Satelite mixed 入站，
+/// 探测当前实际出口 IP。核心运行时走 Satelite HTTP/mixed 入站及实际规则，
 /// 这样可以验证浏览器/CLIProxy 等应用看到的是否为代理出口。
 #[tauri::command]
 pub async fn check_exit_ip(state: State<'_, AppState>) -> Result<ExitIpInfo, String> {
-    let status = state.proxy_status().map_err(|error| error.to_string())?;
-    let via_proxy = status.running && status.outbound_mode != "direct";
-    probe(status.mixed_port, via_proxy).await
+    use crate::services::network_probe::{route_for_status, same_session};
+    if state.is_core_transitioning() {
+        return Err("内核正在切换，请稍后检测".into());
+    }
+    let (version, status) = state.probe_snapshot().map_err(|error| error.to_string())?;
+    let result = probe(route_for_status(&status)?).await?;
+    let (after_version, after) = state.probe_snapshot().map_err(|_| "无法确认出口检测路径")?;
+    if version != after_version || state.is_core_transitioning() || !same_session(&status, &after) {
+        return Err("检测期间代理路径已变化，请重新检测".into());
+    }
+    Ok(result)
 }

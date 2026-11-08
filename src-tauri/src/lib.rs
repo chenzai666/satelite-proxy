@@ -448,6 +448,8 @@ pub fn run() {
             commands::update_settings,
             commands::diagnose_network,
             commands::check_exit_ip,
+            commands::check_ip_metadata,
+            commands::check_service_status,
             commands::enable_uwp_loopback,
             commands::regenerate_api_secret,
             commands::set_current_node,

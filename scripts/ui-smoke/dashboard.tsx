@@ -1,5 +1,7 @@
 import { createRoot } from "react-dom/client";
-import { mockIPC } from "@tauri-apps/api/mocks";
+import { useState } from "react";
+import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import type { NavKey } from "../../src/types";
 import type { AppSettings, ConnectionView, ProxyNode, ProxyStatus, SubscriptionView } from "../../src/types";
 import "../../src/App.css";
 
@@ -18,7 +20,7 @@ localStorage.setItem("satelite.heroStyle", "classic");
 
 const settings: AppSettings = {
   mixed_port: 2080, api_port: 19090, current_node_id: "fixture-node",
-  probe_url: "https://example.test/204", locale, theme, hero_style: "classic",
+  probe_url: "https://example.test/204", locale, theme, hero_style: params.get("hero") ?? "classic",
   accent: "green", glow_color: "accent", glass_frost: false, core_type: "singbox",
   outbound_mode: "rule", auto_select: "off", capture_mode: "off",
   runtime_source: custom ? "singbox:fixture-sub" : "generated",
@@ -71,6 +73,13 @@ mockIPC((command, payload) => {
   state.commands.push({ command, payload: copy(payload) });
   const args = (payload ?? {}) as Record<string, unknown>;
   switch (command) {
+    // 真实侧栏的 UiModeProvider 仅操作模拟窗口，不改变浏览器视口。
+    case "set_ui_mode_pref":
+    case "plugin:window|set_min_size":
+    case "plugin:window|set_max_size":
+    case "plugin:window|set_resizable":
+    case "plugin:window|set_size": return;
+    case "plugin:window|current_monitor": return null;
     case "get_settings": return copy(settings);
     case "get_proxy_status": state.statusReads++; return copy(status);
     case "list_all_nodes": return copy(nodes);
@@ -82,6 +91,17 @@ mockIPC((command, payload) => {
     };
     case "get_lan_ip": return ipv6;
     case "check_exit_ip": return { ip: ipv6, countryCode: "HK", viaProxy: true, source: "fixture" };
+    case "check_ip_metadata": return {
+      ip: ipv6, organization: "China Mobile Communications Group Co., Ltd. / Complete Organization Name Without Truncation",
+      isp: "China Mobile Communications", asn: "AS9808", networkType: "residential", residentialInferred: true,
+      quality: "low", riskScore: 5, isVpn: false, isProxy: false, isTor: false, source: "IPQuery", checkedAt: 1700000000,
+    };
+    case "check_service_status": return {
+      results: (args.ids as string[]).map(id => ({ id, status: id === "chatgpt" ? "restricted" : "reachable",
+        latencyMs: id === "github" ? 576 : 160, httpStatus: id === "chatgpt" ? 403 : 200,
+        checkedAt: 1700000000000, viaProxy: status.running })),
+      checkedAt: 1700000000000, viaProxy: status.running,
+    };
     case "list_connection_changes":
       state.connectionReads++;
       return { rows: copy(connections), removed_ids: [], order_ids: connections.map(row => row.id),
@@ -127,17 +147,29 @@ mockIPC((command, payload) => {
       throw new Error(`概览夹具禁止未声明 IPC：${command}`);
   }
 }, { shouldMockEvents: true });
+mockWindows("main");
 
 const { DashboardPage } = await import("../../src/pages/DashboardPage");
 const { LocaleProvider } = await import("../../src/i18n");
 const { ThemeProvider } = await import("../../src/theme");
-createRoot(document.getElementById("root")!).render(
-  <ThemeProvider><LocaleProvider>
-    <div className="app-shell" style={{ flexDirection: "row", height: "100vh" }}>
-      <aside aria-hidden="true" style={{ width: 220, flexShrink: 0, borderRight: "1px solid var(--border)", padding: "28px 20px", boxSizing: "border-box" }}>
-        <strong>SATELITE</strong>
-      </aside>
-      <main className="main"><DashboardPage onGoTraffic={() => { state.trafficOpens++; }} /></main>
+const { UiModeProvider } = await import("../../src/ui/UiModeContext");
+const { SideNav } = await import("../../src/components/SideNav");
+localStorage.setItem("satelite.uiMode", "pro");
+function DashboardFixture() {
+  const [nav, setNav] = useState<NavKey>("dashboard");
+  return (
+    <div className="app-shell pro-shell">
+      <SideNav active={nav} onChange={setNav} />
+      <main className="main">
+        <div className={`page-enter${nav === "settings" ? " settings-enter" : ""}`} key={nav}>
+          <DashboardPage onGoTraffic={() => { state.trafficOpens++; }} />
+        </div>
+      </main>
     </div>
-  </LocaleProvider></ThemeProvider>,
+  );
+}
+createRoot(document.getElementById("root")!).render(
+  <ThemeProvider><LocaleProvider><UiModeProvider>
+    <DashboardFixture />
+  </UiModeProvider></LocaleProvider></ThemeProvider>,
 );

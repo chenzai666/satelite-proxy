@@ -3,12 +3,12 @@
   container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
   width: 100%;
-  padding: 20px 20px 12px;
+  padding: 14px 16px 10px;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) * 1.75);
+  border-radius: 20px;
   background: var(--surface);
   box-shadow: var(--shadow-card);
   color: var(--text);
@@ -83,7 +83,7 @@
 .dashboard-rate-card__number {
   min-width: 0;
   font-size: 2.4rem;
-  font-size: clamp(1.5rem, 15cqi, 2.75rem);
+  font-size: clamp(1.4rem, 12cqi, 2.25rem);
   font-weight: 650;
   line-height: 1.4;
   letter-spacing: normal;
@@ -121,10 +121,10 @@
 
 .dashboard-rate-card__chart {
   display: block;
-  flex: 0 0 48px;
+  flex: 0 0 32px;
   width: 100%;
   min-width: 0;
-  height: 48px;
+  height: 32px;
   margin-top: auto;
   color: var(--rate-color);
 }

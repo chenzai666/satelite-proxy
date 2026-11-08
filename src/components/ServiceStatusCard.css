@@ -1,0 +1,98 @@
+/* 仅服务卡与其 portal 弹窗；尺寸和材质继续接受仪表网格覆盖。 */
+button.instrument.service-status-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 140px;
+  border-radius: var(--radius);
+  padding: .9rem 1rem;
+  color: var(--text);
+  background: var(--surface);
+  font: inherit;
+  text-align: start;
+  white-space: normal;
+  cursor: pointer;
+}
+
+button.instrument.service-status-card:hover {
+  border-color: var(--primary-border);
+}
+
+button.instrument.service-status-card:focus-visible,
+.service-status-modal button:focus-visible,
+.service-status-toggle input:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.service-status-card .instrument-head { width: 100%; min-width: 0; }
+.service-status-card .instrument-label { margin-inline-end: auto; }
+.service-status-card-arrow { color: var(--muted); font-size: .85rem; }
+.service-status-glyph {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.service-status-card > .instrument-head > .service-status-glyph { color: var(--muted); }
+.service-status-card-rows { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.service-status-card-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; min-width: 0; }
+.service-status-name { display: flex; align-items: center; gap: 7px; min-width: 0; overflow-wrap: anywhere; }
+.service-status-card-row .service-status-name { flex: 1 1 90px; font-size: .76rem; font-weight: 600; }
+.service-status-card-row .service-status-glyph { width: 15px; height: 15px; flex-basis: 15px; }
+.service-status-state { font-size: .72rem; color: var(--muted); overflow-wrap: anywhere; }
+.service-status-state[data-status="reachable"] { color: var(--success, #368667); }
+.service-status-state[data-status="redirect"] { color: var(--primary); }
+.service-status-state[data-status="restricted"],
+.service-status-state[data-status="http_error"] { color: var(--warning, #ae7430); }
+.service-status-state[data-status="timeout"],
+.service-status-state[data-status="network_error"] { color: var(--danger); }
+.service-status-error-mark { color: var(--danger); margin-inline-end: 4px; font-weight: 700; }
+.service-status-card-hint { color: var(--muted); font-size: .65rem; margin-top: auto; }
+.service-status-error { color: var(--danger); font-size: .72rem; margin: 0; }
+
+.modal.service-status-modal {
+  width: min(800px, 100%);
+  max-height: calc(100dvh - 2rem);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: 18px;
+  overflow: hidden;
+}
+.service-status-modal > .modal-header { flex: 0 0 auto; gap: 12px; }
+.modal-body.service-status-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.service-status-scope { margin: 0; color: var(--muted); font-size: .8rem; line-height: 1.6; }
+.service-status-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.service-status-toolbar p { margin: 0; color: var(--muted); font-size: .75rem; }
+.service-status-feedback { margin: 0; color: var(--muted); font-size: .73rem; line-height: 1.5; }
+.service-status-list { display: flex; flex-direction: column; list-style: none; padding: 0; margin: 0; }
+.service-status-row { padding: 12px 0; min-width: 0; }
+.service-status-row + .service-status-row { border-top: 1px solid var(--border); }
+.service-status-row-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 74px auto; align-items: center; gap: 8px 14px; }
+.service-status-row-main .service-status-name { font-size: .85rem; font-weight: 600; }
+.service-status-latency { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; text-align: end; }
+.service-status-row-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 9px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
+.service-status-row-meta > span { overflow-wrap: anywhere; }
+.service-status-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin-inline-start: auto; }
+.service-status-toggle input { margin: 0; accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
+.service-status-toggle input:disabled { cursor: not-allowed; }
+.service-status-row .service-status-error { margin-top: 6px; }
+
+@media (max-width: 560px) {
+  .service-status-backdrop { padding: .5rem; }
+  .modal.service-status-modal { max-height: calc(100dvh - 1rem); }
+  .service-status-row-main { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .service-status-row-main .service-status-state { grid-column: 1; grid-row: 2; }
+  .service-status-row-main .service-status-latency { grid-column: 2; grid-row: 2; }
+  .service-status-row-main .glass-btn { grid-column: 2; grid-row: 1; }
+  .service-status-toggle { margin-inline-start: 0; }
+}

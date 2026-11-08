@@ -5,7 +5,7 @@ use crate::error::{AppError, AppResult};
 use crate::runtime::{ConnectionView, LiveConnectionBatch, ProxyStatus, RequestBatch, Runtime};
 use crate::storage::{default_store_path, AppStore};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -326,6 +326,36 @@ mod core_preference_persistence_tests {
                 .unwrap(),
             "singbox:custom"
         );
+    }
+
+    #[test]
+    fn probe_epoch_detects_completed_round_trip_transactions() {
+        let (state, _cleanup) = activation_fixture();
+        let (before, original) = state.probe_snapshot().unwrap();
+        for _ in 0..2 {
+            let transaction = state.begin_core_transition().unwrap();
+            assert!(state.probe_snapshot().is_err());
+            drop(transaction);
+        }
+        let (after, current) = state.probe_snapshot().unwrap();
+        assert!(after > before);
+        assert!(crate::services::network_probe::same_session(
+            &original, &current
+        ));
+    }
+
+    #[test]
+    fn probe_snapshot_rejects_busy_runtime_instead_of_using_cache() {
+        let (state, _cleanup) = activation_fixture();
+        let _runtime = state.lock_runtime();
+        assert!(state.probe_snapshot().is_err());
+    }
+
+    #[test]
+    fn probe_snapshot_rejects_busy_store_instead_of_using_cache() {
+        let (state, _cleanup) = activation_fixture();
+        let _store = state.lock_store();
+        assert!(state.probe_snapshot().is_err());
     }
 
     #[test]
@@ -1095,6 +1125,9 @@ pub struct AppState {
     /// True while the managed core is being started, stopped, or replaced.
     /// Background samplers must not contend for Runtime during this window.
     core_transitioning: AtomicBool,
+    /// Monotonic transaction version, including route/selector changes. A→B→A
+    /// must invalidate network diagnostics even if final fields match.
+    probe_route_epoch: AtomicU64,
     /// One-click subscribe deep links waiting for the add-subscription UI.
     /// Cleared when the user closes the modal (not sticky across intentional dismiss).
     pending_import_urls: Mutex<Option<Vec<String>>>,
@@ -1105,10 +1138,12 @@ pub struct AppState {
 
 struct CoreTransitionGuard<'a> {
     flag: &'a AtomicBool,
+    epoch: &'a AtomicU64,
 }
 
 impl Drop for CoreTransitionGuard<'_> {
     fn drop(&mut self) {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
         self.flag.store(false, Ordering::Release);
         app_log::debug("core", "core transition end");
     }
@@ -1162,6 +1197,7 @@ impl AppState {
             last_snapshot_connections: AtomicUsize::new(0),
             exit_allowed: AtomicBool::new(false),
             core_transitioning: AtomicBool::new(false),
+            probe_route_epoch: AtomicU64::new(0),
             pending_import_urls: Mutex::new(None),
             rule_apply_queue: Mutex::new(crate::rule_apply::RuleApplyQueue::default()),
             kernel_selection_poll: Mutex::new(KernelSelectionPoll::default()),
@@ -1434,9 +1470,33 @@ impl AppState {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| crate::error::AppError::Core("内核正在切换，请稍候".into()))?;
         app_log::debug("core", "core transition begin");
+        self.probe_route_epoch.fetch_add(1, Ordering::AcqRel);
         Ok(CoreTransitionGuard {
             flag: &self.core_transitioning,
+            epoch: &self.probe_route_epoch,
         })
+    }
+
+    /// Diagnostics must read a real snapshot, never the UI's cached fallback.
+    /// These short try-locks are released before any network operation.
+    pub fn probe_snapshot(&self) -> AppResult<(u64, ProxyStatus)> {
+        let epoch = self.probe_route_epoch.load(Ordering::Acquire);
+        if self.is_core_transitioning() {
+            return Err(AppError::Core("内核正在切换，请稍后检测".into()));
+        }
+        let mut runtime = self
+            .runtime
+            .try_lock()
+            .map_err(|_| AppError::Core("内核正忙，请稍后检测".into()))?;
+        let store = self
+            .store
+            .try_lock()
+            .map_err(|_| AppError::Core("配置正忙，请稍后检测".into()))?;
+        let status = runtime.status(&store);
+        if self.is_core_transitioning() || epoch != self.probe_route_epoch.load(Ordering::Acquire) {
+            return Err(AppError::Core("检测路径正在变化，请稍后重试".into()));
+        }
+        Ok((epoch, status))
     }
 
     fn cache_status(&self, status: &ProxyStatus) {

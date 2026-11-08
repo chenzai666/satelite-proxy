@@ -1,0 +1,191 @@
+/* 专业模式独占布局；不改变简洁模式和 TopNav。 */
+.app-shell.pro-shell {
+  flex-direction: row;
+  min-height: 0;
+}
+
+.pro-shell > .main {
+  min-height: 0;
+  padding: 1rem 1.25rem 1.5rem;
+}
+
+.pro-shell > .side-nav {
+  box-sizing: border-box;
+  position: relative;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 208px;
+  width: 208px;
+  min-width: 0;
+  min-height: 0;
+  padding: 1rem 0.75rem;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-solid) 72%, transparent);
+}
+
+.pro-shell .side-nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.pro-shell .side-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  color: var(--text);
+}
+
+.pro-shell .side-nav-mark {
+  color: var(--primary);
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.pro-shell .side-nav-brand-text {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.pro-shell .side-nav-toggle {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.pro-shell .side-nav-items {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 0.4rem;
+  overflow-y: auto;
+  padding: 3px;
+}
+
+.pro-shell .side-nav-item {
+  appearance: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 0.85rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-align: left;
+  box-shadow: none;
+}
+
+.pro-shell .side-nav-item svg,
+.pro-shell .side-nav-toggle svg {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+
+.pro-shell .side-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pro-shell .side-nav-item:hover,
+.pro-shell .side-nav-toggle:hover {
+  color: var(--text);
+  background: var(--hover-wash);
+}
+
+.pro-shell .side-nav-item[aria-current="page"] {
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: var(--primary-muted);
+}
+
+.pro-shell .side-nav :is(button, [role="menuitem"], [role="menuitemradio"]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.pro-shell .side-nav-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-top: 1rem;
+  padding: 0.8rem 0.25rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.pro-shell .side-nav-tools .ui-mode-menu {
+  margin-left: 0;
+}
+
+/* 底部快捷菜单向上、向内容区展开，侧栏不裁切弹层。 */
+.pro-shell .side-nav-tools :is(.ui-mode-menu-pop, .ui-mode-menu-toast) {
+  top: auto;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: auto;
+}
+
+.pro-shell > .side-nav[data-collapsed="true"] {
+  flex-basis: 76px;
+  width: 76px;
+  padding-inline: 0.6rem;
+}
+
+.pro-shell .side-nav[data-collapsed="true"] .side-nav-head {
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.pro-shell .side-nav[data-collapsed="true"] :is(.side-nav-brand-text, .side-nav-label) {
+  display: none;
+}
+
+.pro-shell .side-nav[data-collapsed="true"] .side-nav-item {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.pro-shell .side-nav[data-collapsed="true"] .side-nav-tools {
+  flex-direction: column;
+  padding-inline: 0;
+}
+
+.pro-shell .side-nav[data-collapsed="true"] .topnav-theme-switch {
+  grid-template-columns: 1.85rem;
+}
+
+.pro-shell .side-nav-tools .topnav-theme-btn {
+  width: 1.85rem;
+  height: 1.85rem;
+}
+
+@media (max-width: 1100px) {
+  .pro-shell > .main {
+    padding: 0.75rem 1rem 1.25rem;
+  }
+}
