@@ -82,13 +82,11 @@
 
 .dashboard-rate-card__number {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 2.4rem;
   font-size: clamp(1.5rem, 15cqi, 2.75rem);
   font-weight: 650;
-  line-height: 1.15;
-  letter-spacing: -0.04em;
+  line-height: 1.4;
+  letter-spacing: normal;
 }
 
 .dashboard-rate-card__unit {
