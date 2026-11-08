@@ -351,7 +351,9 @@ export function SimpleTrafficSpark({
               event.stopPropagation();
               setExpanded((value) => !value);
             }}
-            onKeyDown={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+            }}
           >
             <svg
               viewBox="0 0 16 16"

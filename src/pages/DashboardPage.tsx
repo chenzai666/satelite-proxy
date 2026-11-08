@@ -173,7 +173,7 @@ function useSingleLineFit<T extends HTMLElement>(text: string) {
       // Drop any previous override so the CSS clamp() sets the start size.
       el.style.fontSize = "";
       let size = parseFloat(getComputedStyle(el).fontSize);
-      while (size > 12 && el.scrollWidth > el.clientWidth) {
+      while (size > 18 && el.scrollWidth > el.clientWidth) {
         size -= 1;
         el.style.fontSize = `${size}px`;
       }
