@@ -126,6 +126,11 @@ async function structure(locale) {
     const node = document.querySelector('.dashboard-node-context').getBoundingClientRect();
     return ip.bottom <= node.top + 1;
   }), true, "出口信息位于节点信息上方");
+  assert.equal(await page.evaluate(() => {
+    const node = document.querySelector('.dashboard-node-context').getBoundingClientRect();
+    const actions = document.querySelector('.dash-hero-actions').getBoundingClientRect();
+    return Math.abs(node.top - actions.top) < 2 && actions.left >= node.right - 1;
+  }), true, "节点信息与操作共享底部一行，无启停按钮预留空白");
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
   assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
