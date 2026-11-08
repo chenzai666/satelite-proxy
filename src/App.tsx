@@ -16,6 +16,7 @@ import { SimpleShell } from "./ui/simple";
 import { useViewportScale } from "./hooks/useViewportScale";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts";
 import "./App.css";
+import "./ProAppearance.css";
 
 // Cmd/Ctrl+数字切换到与顶部导航一致的页面。
 const PRO_SHORTCUT_MAP: Partial<Record<string, NavKey>> = {

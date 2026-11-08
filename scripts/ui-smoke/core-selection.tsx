@@ -11,6 +11,7 @@ import type { AppSettings, ManualNodeDraft } from "../../src/types";
 import { LocaleProvider } from "../../src/i18n";
 import { ThemeProvider } from "../../src/theme";
 import "../../src/App.css";
+import "../../src/ProAppearance.css";
 
 const node = { id: "fixture", name: "Fixture", protocol: "vless", server: "example.test", port: 443, subscription_id: "fixture", subscription_name: "Fixture" };
 const networkDefaults = { mixed_port: 2080, api_port: 19090, probe_url: "https://example.test/204" } satisfies AppSettings;
@@ -78,6 +79,6 @@ function Draft() {
   return <NodeDraftFields value={draft} onChange={setDraft} />;
 }
 const mode = new URLSearchParams(location.search).get("mode");
-createRoot(document.getElementById("root")!).render(<LocaleProvider><ThemeProvider><main className="main">
+createRoot(document.getElementById("root")!).render(<LocaleProvider><ThemeProvider><div className={`app-shell ${mode === "simple" ? "simple-shell" : "pro-shell"}`}><main className="main">
   {mode === "edit" ? <EditLocalNodesModal open profileId="fixture" profileName="Fixture" onClose={() => {}} /> : mode === "draft" ? <Draft /> : mode === "pro" ? <NodesPage /> : mode === "simple" ? <SimpleServersPage /> : <SettingsPage />}
-</main></ThemeProvider></LocaleProvider>);
+</main></div></ThemeProvider></LocaleProvider>);

@@ -1,5 +1,9 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-08 专业视觉统一：ProAppearance.css 仅以pro-shell限定，App.tsx及概览/流量/配置/选核夹具加载。中性分层材质、侧栏左条选中态、页面间距、表格表头、配置卡和弹窗圆角统一；全部色彩复用现有token，不覆盖主题/字体色/磨砂设置、不新增持久设置，简洁模式保持原样。DashboardPage.css/DashboardRateCard.css精修主次和启停动效，无新增网络或图表库，测试/客户端构建仍走Actions。
+
+2026-11-08 流量表头修复：conn-table 最小宽960px，table-wrap内部横向滚动；目标列明确conn-th-dest并分配剩余宽度，表头不换行。连接中/已关闭/失败复用样式，虚拟行仍35px，不改变轮询/筛选/连接操作。traffic-table真实组件夹具在Actions检查中英、窗口与缩放下表头文字边界和表体对齐，客户端构建仅Actions，版本1.0.46。
+
 分类与动效修正：IPQuery的非机房/非移动标记不推导家宽；同时查询固定HTTPS proxycheck.io/v3/<ip>，仅匹配同一IP的明确network.type（Residential/Business/Hosting/Wireless/ISP）映射家宽/商业/机房/移动/ISP，否则unknown。residential_inferred保兼容但恒false，不把ISP名称当家宽。两请求并行且各7s/64KiB，明确数据源。状态卡背景仅运行时CSS慢速流动，减少动态效果时停用；HeroVisual仍跟随用户选择。
 
 2026-11-08 侧栏/网络信息：ProShell用SideNav（6项、折叠、ThemeSwitch/UiModeMenu），简洁模式保持；fixture必须同一真实侧栏，禁止空aside。Dashboard恢复HeroVisual在启停按钮内部展示，保hero_style三分支；compact样式底部用.dashboard-bento .dashboard-bottom-grid明确优先级。IpInfoPanel组织完整换行复制，原生dialog详情；services/ip_metadata查询固定IPQuery和proxycheck.io HTTPS已验证公网IP，64KiB/7s/单并发/300s最多64缓存，类型以明确字段为准，缺字段unknown，风险阈值说明。ServiceStatusCard/serviceStatus.ts固定13项，自动仅常用项，详情手动/全量检查，epoch防陈旧，localStorage只存展示ID。后端network_probe显式no_proxy、运行走实际HTTP入口(含direct规则模式)、停核直连；custom无HTTP入口报不支持，无失败fallback/无redirect。service_status仅取header，4并发/6s单项/25s整批，固定catalog不可传URL。AppState::probe_snapshot用真实runtime/store try锁不走UIcache，core transition事务起止递增probe_route_epoch，命令(含IP缓存返回)复核版本；所有核心事务(包括串行读取)保守使旧检测失效。网络/路径/分类测试仅Actions；本机Node/tsc/rustfmt，版本1.0.46。

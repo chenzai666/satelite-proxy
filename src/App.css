@@ -3554,17 +3554,25 @@ button.node-card:disabled,
 
 .conn-table {
   font-size: 0.85rem;
-  /* Fixed layout + per-column widths sized to fit the page (no horizontal
-     scroll). Both live and closed tabs share the same 6 columns, so widths
-     stay consistent across them. */
+  /* Reserve destination space before fixed columns consume the viewport.
+     Narrow windows scroll the table rather than collapse a header to zero. */
   table-layout: fixed;
   width: 100%;
+  min-width: 960px;
 }
 
-/* Never scroll the connections table horizontally — cells truncate instead. */
-.conn-table,
+/* Only the table viewport scrolls; the surrounding page stays in place. */
 .table-wrap:has(.conn-table) {
-  overflow-x: hidden;
+  overflow-x: auto;
+}
+
+.conn-table th {
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.conn-table .conn-th-dest {
+  width: auto;
 }
 
 /* One line per row: every cell truncates with an ellipsis and the full text
@@ -3580,9 +3588,7 @@ button.node-card:disabled,
   height: 35px;
 }
 
-/* Fixed column widths (≈ page width, no overflow). destination absorbs the
-   leftover since it has no explicit width. Node / rule / traffic are widened
-   and share the space taken from the (narrower) destination column. */
+/* Destination absorbs remaining space, with >=220px reserved by min-width. */
 .conn-table .conn-th-time,
 .conn-table .conn-time { width: 150px; white-space: nowrap; }
 .conn-table .conn-th-node,

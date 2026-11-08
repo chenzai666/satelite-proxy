@@ -43,6 +43,8 @@ jobs:
             if (-not $ready) { throw '分类流量测试服务未就绪' }
             node scripts/test-traffic-stats-browser.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-traffic-table-browser.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
       - name: 保存分类卡片截图
         if: always()

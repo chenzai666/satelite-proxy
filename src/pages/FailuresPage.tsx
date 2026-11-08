@@ -327,7 +327,7 @@ export function FailuresPage({ embedded = false }: Props) {
             <thead>
               <tr>
                 <th className="conn-th-time">{t("req.time")}</th>
-                <th>{t("conn.dest")}</th>
+                <th className="conn-th-dest">{t("conn.dest")}</th>
                 <th className="conn-th-node">{t("conn.node")}</th>
                 <th className="conn-th-rule">{t("conn.rule")}</th>
                 <th className="conn-th-process">{t("conn.process")}</th>

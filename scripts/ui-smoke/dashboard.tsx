@@ -4,6 +4,7 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { NavKey } from "../../src/types";
 import type { AppSettings, ConnectionView, ProxyNode, ProxyStatus, SubscriptionView } from "../../src/types";
 import "../../src/App.css";
+import "../../src/ProAppearance.css";
 
 // 所有数据仅存内存；先安装 IPC mock，再加载真实页面及其 API/Provider。
 const params = new URLSearchParams(location.search);

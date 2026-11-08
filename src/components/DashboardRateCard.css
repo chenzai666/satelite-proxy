@@ -1,28 +1,29 @@
-.dashboard-rate-card {
+.dashboard-page.dashboard-bento .dashboard-rate-card {
   --rate-color: var(--download);
   container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
   width: 100%;
-  padding: 14px 16px 10px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
+  box-sizing: border-box;
+  padding: 16px 18px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 26px;
+  background: var(--dashboard-panel, var(--surface));
+  box-shadow: none;
   color: var(--text);
 }
 
-.dashboard-rate-card[data-direction="up"] {
+.dashboard-page.dashboard-bento .dashboard-rate-card[data-direction="up"] {
   --rate-color: var(--upload);
 }
 
-.dashboard-rate-card__head {
+.dashboard-page.dashboard-bento .dashboard-rate-card__head {
   min-width: 0;
 }
 
-.dashboard-rate-card__title {
+.dashboard-page.dashboard-bento .dashboard-rate-card__title {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -31,24 +32,24 @@
   margin: 0;
   color: var(--muted);
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 600;
   text-align: start;
 }
 
-.dashboard-rate-card__arrow {
+.dashboard-page.dashboard-bento .dashboard-rate-card__arrow {
   display: inline-grid;
   place-items: center;
-  flex: 0 0 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--rate-color) 12%, transparent);
-  color: var(--rate-color);
-  font-size: 1.1rem;
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 1rem;
 }
 
-.dashboard-rate-card__open {
-  min-height: 32px;
+.dashboard-page.dashboard-bento .dashboard-rate-card__open {
+  min-height: 28px;
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -56,103 +57,105 @@
   cursor: pointer;
 }
 
-.dashboard-rate-card__open:hover {
+.dashboard-page.dashboard-bento .dashboard-rate-card__open:hover {
   color: var(--text);
   background: var(--hover-wash);
 }
 
-.dashboard-rate-card__open:focus-visible {
+.dashboard-page.dashboard-bento .dashboard-rate-card__open:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 4px;
 }
 
-.dashboard-rate-card__link {
+.dashboard-page.dashboard-bento .dashboard-rate-card__link {
   margin-inline-start: auto;
   color: var(--muted);
 }
 
-.dashboard-rate-card__rate {
+.dashboard-page.dashboard-bento .dashboard-rate-card__rate {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 5px;
   min-width: 0;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.dashboard-rate-card__number {
+.dashboard-page.dashboard-bento .dashboard-rate-card__number {
   min-width: 0;
-  font-size: 2.4rem;
-  font-size: clamp(1.4rem, 12cqi, 2.25rem);
+  font-size: 3rem;
+  font-size: clamp(1.75rem, 17cqi, 3.125rem);
   font-weight: 650;
-  line-height: 1.4;
-  letter-spacing: normal;
+  line-height: 1.1;
+  letter-spacing: -.04em;
 }
 
-.dashboard-rate-card__unit {
+.dashboard-page.dashboard-bento .dashboard-rate-card__unit {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
-.dashboard-rate-card__stats {
+.dashboard-page.dashboard-bento .dashboard-rate-card__stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 20px;
+  gap: 6px 12px;
   min-width: 0;
   margin: 0;
-  font-size: 0.73rem;
+  font-size: 0.72rem;
 }
 
-.dashboard-rate-card__stats > div {
-  flex: 1 1 88px;
+.dashboard-page.dashboard-bento .dashboard-rate-card__stats > div {
+  flex: 1 1 64px;
   min-width: 0;
 }
 
-.dashboard-rate-card__stats dt {
+.dashboard-page.dashboard-bento .dashboard-rate-card__stats dt {
   color: var(--muted);
 }
 
-.dashboard-rate-card__stats dd {
+.dashboard-page.dashboard-bento .dashboard-rate-card__stats dd {
   margin: 2px 0 0;
+  font-size: .78rem;
+  font-weight: 550;
   overflow-wrap: anywhere;
   font-variant-numeric: tabular-nums;
 }
 
-.dashboard-rate-card__chart {
+.dashboard-page.dashboard-bento .dashboard-rate-card__chart {
   display: block;
-  flex: 0 0 32px;
+  flex: 0 0 28px;
   width: 100%;
   min-width: 0;
-  height: 32px;
+  height: 28px;
   margin-top: auto;
-  color: var(--rate-color);
+  color: color-mix(in srgb, var(--rate-color) 72%, var(--muted));
 }
 
-.dashboard-rate-card__baseline {
+.dashboard-page.dashboard-bento .dashboard-rate-card__baseline {
   fill: none;
-  stroke: var(--border);
+  stroke: var(--border-subtle);
 }
 
-.dashboard-rate-card__area {
+.dashboard-page.dashboard-bento .dashboard-rate-card__area {
   fill: currentColor;
-  opacity: 0.09;
+  opacity: 0.06;
 }
 
-.dashboard-rate-card__line {
+.dashboard-page.dashboard-bento .dashboard-rate-card__line {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.8;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 @container (max-width: 170px) {
-  .dashboard-rate-card__stats {
+  .dashboard-page.dashboard-bento .dashboard-rate-card__stats {
     gap: 6px;
   }
 
-  .dashboard-rate-card__unit {
+  .dashboard-page.dashboard-bento .dashboard-rate-card__unit {
     font-size: 0.7rem;
   }
 }

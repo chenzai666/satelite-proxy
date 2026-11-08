@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { AppSettings, SubscriptionView } from "../../src/types";
 import "../../src/App.css";
+import "../../src/ProAppearance.css";
 
 // 只使用合成数据；不连接后端、不读取用户配置、不启动真实内核。
 const storageKey = "config-activation-fixture";
@@ -156,6 +157,6 @@ const { LocaleProvider } = await import("../../src/i18n");
 const { ImportIntentProvider } = await import("../../src/ImportIntentContext");
 createRoot(document.getElementById("root")!).render(
   <LocaleProvider><ImportIntentProvider>
-    <main className="main"><ConfigPage /></main>
+    <div className="app-shell pro-shell"><main className="main"><ConfigPage /></main></div>
   </ImportIntentProvider></LocaleProvider>,
 );

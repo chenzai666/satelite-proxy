@@ -1,0 +1,107 @@
+/* 专业模式统一视觉。复用主题变量，不写入用户设置，不影响简洁模式。 */
+.app-shell.pro-shell {
+  --pro-panel: color-mix(in srgb, var(--panel-elevated) 92%, var(--bg));
+  --pro-inset: color-mix(in srgb, var(--panel-solid) 76%, var(--panel-elevated));
+  background:
+    radial-gradient(ellipse 75% 55% at 90% 0%, rgba(var(--glow-deep-rgb), .08), transparent 70%),
+    var(--bg);
+}
+.pro-shell > .main { padding: 22px 24px 28px; }
+.pro-shell > .side-nav {
+  flex-basis: 200px;
+  width: 200px;
+  padding: 20px 10px 14px;
+  background: color-mix(in srgb, var(--panel-solid) 52%, var(--bg));
+  border-color: var(--border-subtle);
+}
+.pro-shell .side-nav-head { padding: 0 9px; margin-bottom: 22px; }
+.pro-shell .side-nav-brand-text { font-size: .72rem; letter-spacing: .1em; }
+.pro-shell .side-nav-item {
+  min-height: 46px;
+  border-radius: 14px;
+  gap: 12px;
+  font-size: .9rem;
+  color: var(--muted);
+}
+.pro-shell .side-nav-item[aria-current="page"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--primary) 13%, var(--pro-panel));
+  color: var(--text);
+  font-weight: 650;
+}
+.pro-shell .side-nav-item[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+.pro-shell .side-nav-item[aria-current="page"] svg { color: var(--primary); }
+.pro-shell .side-nav-tools { border-color: var(--border-subtle); }
+.pro-shell .page-header { margin-bottom: 20px; gap: 16px; }
+.pro-shell :is(.page-header h1, .dashboard-heading h1) {
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: -.02em;
+}
+.pro-shell .page-desc { font-size: .79rem; line-height: 1.6; margin-top: 5px; }
+.pro-shell .card {
+  background: var(--pro-panel);
+  border-color: var(--border-subtle);
+  border-radius: 20px;
+  box-shadow: 0 2px 7px rgb(0 0 0 / .025);
+}
+.pro-shell .table-wrap { border-radius: 18px; }
+.pro-shell .table-wrap th {
+  color: var(--muted);
+  background: var(--pro-inset);
+  font-family: inherit;
+  font-size: .72rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.pro-shell .conn-table th { padding-block: 12px; }
+.pro-shell .table-wrap td { border-bottom-color: var(--border-subtle); }
+.pro-shell .table-wrap tbody tr:last-child td { border-bottom-color: transparent; }
+.pro-shell .traffic-toolbar { margin-bottom: 14px; }
+.pro-shell .search {
+  background: var(--pro-inset);
+  box-shadow: none;
+  border-color: var(--border-subtle);
+  border-radius: 12px;
+}
+.pro-shell .sub-card { border-radius: 22px; box-shadow: none; }
+.pro-shell .sub-card.active {
+  border-color: var(--primary-border);
+  background: color-mix(in srgb, var(--primary-muted) 30%, var(--pro-panel));
+}
+.pro-shell .logs-panel { background: var(--pro-panel); border-radius: 18px; }
+.pro-shell .settings-section { border-radius: 20px; }
+.pro-shell .modal {
+  border-radius: 24px;
+  background: var(--panel-solid);
+  border-color: var(--border-subtle);
+  box-shadow: 0 18px 64px rgb(0 0 0 / .22);
+}
+/* 模糊由用户的 glass_frost 控制；普通外观不强制启用滤镜。 */
+.pro-shell .glass-seg {
+  border-color: var(--border-subtle);
+  box-shadow: none;
+}
+.pro-shell .glass-btn { box-shadow: none; }
+.pro-shell :is(.ip-details-dialog, .service-status-dialog) {
+  border-radius: 24px;
+  border-color: var(--border-subtle);
+}
+@media (max-width: 1100px) {
+  .pro-shell > .main { padding: 18px; }
+}
+@media (max-width: 720px) {
+  .pro-shell > .main { padding: 14px 12px 20px; }
+  .pro-shell .page-header { flex-wrap: wrap; gap: 12px; }
+}
