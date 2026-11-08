@@ -1059,6 +1059,12 @@ function coreDisplayName(kind: string | null | undefined): string {
             {coreDisplayName(proxy?.core_type)}
           </div>
 
+          <div className="dashboard-status-footer">
+            <span><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></span>
+            <span><span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span><strong title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong></span>
+          </div>
+          <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
+          <div className="dashboard-node-context">
           <h2 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
@@ -1073,6 +1079,7 @@ function coreDisplayName(kind: string | null | undefined): string {
               heroSub
             )}
           </p>
+          </div>
 
           <div className="dash-hero-actions">
             {!running ? (
@@ -1296,11 +1303,6 @@ function coreDisplayName(kind: string | null | undefined): string {
               )}
             </div>
           </div>
-          <div className="dashboard-status-footer">
-            <span><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></span>
-            <span><span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span><strong title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong></span>
-          </div>
-          <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
         </div>
       </section>
       <DashboardRateCard direction="up" speed={proxy?.upload_speed ?? 0} total={proxy?.upload_total ?? 0}

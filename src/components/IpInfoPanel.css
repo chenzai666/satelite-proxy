@@ -4,6 +4,9 @@
 .ip-risk-low { color: var(--success); border-color: var(--success-border); background: var(--success-muted); }
 .ip-risk-moderate { color: var(--warning); }
 .ip-risk-high { color: var(--danger); border-color: var(--danger-border); }
+.ip-quality-good { color: var(--success); border-color: var(--success-border); background: var(--success-muted); }
+.ip-quality-normal { color: var(--muted); }
+.ip-quality-risky { color: var(--danger); border-color: var(--danger-border); }
 .ip-info-hint { font-size: .65rem; color: var(--muted); }
 .ip-organization-row { display: flex; align-items: flex-start; gap: 7px; margin-top: 6px; font-size: .7rem; color: var(--muted); min-width: 0; }
 .ip-organization-row > span { flex-shrink: 0; }

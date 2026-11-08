@@ -435,6 +435,9 @@ export interface IpMetadata {
   residentialInferred: boolean;
   riskScore?: number | null;
   quality: "low" | "moderate" | "high" | "unknown";
+  ipQuality?: "good" | "normal" | "risky" | "unknown";
+  riskSource?: string | null;
+  isAbuser?: boolean | null;
   isVpn?: boolean | null;
   isProxy?: boolean | null;
   isTor?: boolean | null;

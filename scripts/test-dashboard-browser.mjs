@@ -121,6 +121,11 @@ async function structure(locale) {
   assert.equal(await page.locator(".dashboard-top-grid .dash-hero").count(), 1);
   assert.equal(await page.locator(".dashboard-top-grid .dashboard-rate-card").count(), 2);
   assert.equal(await page.locator(".dash-hero .dash-side-rail").count(), 0, "控制栏独立于状态卡");
+  assert.equal(await page.evaluate(() => {
+    const ip = document.querySelector('.dash-hero .ip-info-panel').getBoundingClientRect();
+    const node = document.querySelector('.dashboard-node-context').getBoundingClientRect();
+    return ip.bottom <= node.top + 1;
+  }), true, "出口信息位于节点信息上方");
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
   assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
@@ -225,9 +230,16 @@ try {
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await open(1280, 900, "zh", "aerospace", "running", "particle");
   assert.equal(await page.locator('.dashboard-power-visual .particle-orbit').count(), 1);
-  for (const [network, text] of [["residential", "家宽"], ["datacenter", "机房"], ["isp", "ISP 网络"], ["unknown", "未知"]]) {
+  for (const [network, text, quality] of [["residential", "家宽", "优"], ["business", "商业", "优"], ["mobile", "移动网络", "优"], ["datacenter", "机房", "普通"], ["isp", "ISP 网络", "未知"], ["unknown", "未知", "未知"], ["tor", "商业", "风险"], ["abuse", "商业", "风险"]]) {
     await open(1280, 900, "zh", "aerospace", "running", "classic", network);
-    await page.waitForFunction(text => document.querySelector('.ip-info-badges')?.textContent.includes(text), text);
+    await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent.includes('Without Truncation'));
+    if (["isp", "unknown"].includes(network)) {
+      assert.equal(await page.locator('.ip-network-tag').count(), 0, "首页只展示四种明确类型");
+      assert.equal(await page.locator('[class*="ip-quality-"]').count(), 0, "未知类型不显示质量标签");
+    } else {
+      await page.waitForFunction(text => document.querySelector('.ip-info-badges')?.textContent.includes(text), text);
+      assert.ok((await page.locator('.ip-info-badges').innerText()).includes(`质量 ${quality}`), "质量与网络类型/风险标记一致");
+    }
     assert.doesNotMatch(await page.locator('.ip-info-badges').innerText(), /推测/);
   }
   await clean();

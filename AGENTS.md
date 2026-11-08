@@ -1,5 +1,9 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+首页IP标签约束（用户最终修正）：展示residential/mobile/business/datacenter，normal中文为普通；isp/unknown隐藏主卡类型和unknown质量badge，详情仍显示真实数据。risky始终可见。状态卡出口信息在上、节点信息在下，启停入口保留。ipQuality缺字段兼容unknown，测试等待metadata真实mock完成后断言隐藏/显示。
+
+2026-11-08 IP多源查询（取代下方旧双来源说明）：按FlClash查询组织/类型字段，HTTPS五源ident.me/IPQuery/IPLocate/ipapi.is/proxycheck.io分批回退；不使用ip-api.com免费HTTP，不复制GPL实现。严格同IP匹配、未知不推测家宽、ISP独立。ipQuality独立于旧quality风险字段：Tor/abuse优先risky，家宽/移动/商业good，机房normal，其他unknown；前端主卡显示质量，风险分留详情，缺字段兼容unknown。仅Actions执行Rust/网络仿真及浏览器测试。
+
 2026-11-08 专业视觉统一：ProAppearance.css 仅以pro-shell限定，App.tsx及概览/流量/配置/选核夹具加载。中性分层材质、侧栏左条选中态、页面间距、表格表头、配置卡和弹窗圆角统一；全部色彩复用现有token，不覆盖主题/字体色/磨砂设置、不新增持久设置，简洁模式保持原样。DashboardPage.css/DashboardRateCard.css精修主次和启停动效，无新增网络或图表库，测试/客户端构建仍走Actions。
 
 2026-11-08 流量表头修复：conn-table 最小宽960px，table-wrap内部横向滚动；目标列明确conn-th-dest并分配剩余宽度，表头不换行。连接中/已关闭/失败复用样式，虚拟行仍35px，不改变轮询/筛选/连接操作。traffic-table真实组件夹具在Actions检查中英、窗口与缩放下表头文字边界和表体对齐，客户端构建仅Actions，版本1.0.46。

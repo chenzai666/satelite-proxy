@@ -5,8 +5,8 @@ import type { IpMetadata } from "../types";
 import "./IpInfoPanel.css";
 
 const labels = {
-  zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", path: "查询说明", notice: "将当前公网出口 IP 发给 IPQuery 和 proxycheck.io 查询，不发送节点配置。家宽、商业等以同一 IP 的明确类型为准，信息不足显示未知；不会根据运营商名称或排除机房来猜家宽。风险按 IPQuery 的 0–100 分分级（0–20 低、21–50 中、51–100 高），Tor 标记为高；它不是测速或服务解锁结论。", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
-  en: { title: "IP information", org: "Organization", isp: "ISP", ispNetwork: "ISP network", business: "Commercial", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", path: "About this lookup", notice: "Queries IPQuery and proxycheck.io with the current public exit IP, without node configuration. Residential and commercial types require an explicit result for that IP; missing information stays unknown. ISP names or missing hosting flags never imply residential. Local IPQuery risk bands are 0–20 low, 21–50 moderate and 51–100 high; Tor is high. This does not measure speed or service access.", failed: "IP information unavailable", details: "Open IP information details" },
+  zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
+  en: { title: "IP information", org: "Organization", isp: "ISP", ispNetwork: "ISP network", business: "Commercial", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", failed: "IP information unavailable", details: "Open IP information details" },
 };
 
 export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey: string }) {
@@ -36,13 +36,23 @@ export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey
     if (!open && dialog.current?.open) dialog.current.close();
   }, [open]);
   const type = data ? data.networkType === "isp" ? l.ispNetwork : l[data.networkType] : l.unknown;
-  const quality = data ? l[data.quality] : l.unknown;
+  const qualityText = locale === "en"
+    ? { good: "Good", normal: "Normal", risky: "Risky", unknown: "Unknown" }
+    : { good: "优", normal: "普通", risky: "风险", unknown: "未知" };
+  const quality = qualityText[data?.ipQuality ?? "unknown"];
+  const risk = data ? l[data.quality] : l.unknown;
+  const qualityLabel = locale === "en" ? "Quality" : "质量";
+  const showType = !!data && ["residential", "mobile", "business", "datacenter"].includes(data.networkType);
+  const showQuality = showType || data?.ipQuality === "risky";
+  const lookupNotice = locale === "en"
+    ? "Queries ident.me, IPQuery, IPLocate, ipapi.is and proxycheck.io over HTTPS in fallback waves. Only the public IP is used, without node credentials. Types require explicit data for the same IP. Quality follows FlClash: residential/mobile/commercial Good, datacenter Normal, Tor or abuse Risky; missing data Unknown. Risk scores remain separate and use IPQuery bands: 0–20 low, 21–50 moderate, 51–100 high."
+    : "按批次通过 HTTPS 查询 ident.me、IPQuery、IPLocate、ipapi.is、proxycheck.io，只使用公网 IP，不发送节点凭据。类型以同一 IP 的明确数据为准。质量沿用 FlClash 分级：家宽/移动/商业为优，机房为一般，Tor 或滥用标记为风险，信息不足为未知。风险分数单独展示，沿用 IPQuery 阈值：0–20低、21–50中、51–100高。";
   return (
     <div className="ip-info-panel">
       <div className="ip-info-badges">
         <button type="button" className="ip-info-open glass-btn small" onClick={() => setOpen(true)} title={l.details}>{l.title} ↗</button>
-        <span className="ip-info-tag">{type}</span>
-        <span className={`ip-info-tag ip-risk-${data?.quality ?? "unknown"}`}>{quality}</span>
+        {showType && <span className="ip-info-tag ip-network-tag">{type}</span>}
+        {showQuality && <span className={`ip-info-tag ip-quality-${data?.ipQuality ?? "unknown"}`}>{qualityLabel} {quality}</span>}
         {busy && <span className="ip-info-hint">{l.checking}</span>}
       </div>
       <div className="ip-organization-row">
@@ -60,12 +70,14 @@ export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey
           <dt>{l.isp}</dt><dd>{data?.isp ?? "—"}</dd>
           <dt>ASN</dt><dd>{data?.asn ?? "—"}</dd>
           <dt>{l.type}</dt><dd>{type}</dd>
-          <dt>{l.quality}</dt><dd>{quality}</dd>
+          <dt>{qualityLabel}</dt><dd>{quality}</dd>
+          <dt>{l.quality}</dt><dd>{risk}</dd>
           <dt>{l.score}</dt><dd>{data?.riskScore == null ? "—" : `${data.riskScore} / 100`}</dd>
-          <dt>VPN / Proxy / Tor</dt><dd>{[data?.isVpn, data?.isProxy, data?.isTor].map(v => v == null ? "—" : v ? "✓" : "−").join(" / ")}</dd>
-          <dt>{l.source}</dt><dd>{data?.source ?? "IPQuery"}</dd>
+          <dt>{locale === "en" ? "Risk source" : "风险来源"}</dt><dd>{data?.riskSource || "—"}</dd>
+          <dt>VPN / Proxy / Tor / Abuse</dt><dd>{[data?.isVpn, data?.isProxy, data?.isTor, data?.isAbuser].map(v => v == null ? "—" : v ? "✓" : "−").join(" / ")}</dd>
+          <dt>{l.source}</dt><dd>{data?.source || "—"}</dd>
         </dl>
-        <p className="ip-info-notice">{l.notice}</p>
+        <p className="ip-info-notice">{lookupNotice}</p>
         {error && <p role="alert">{l.failed}: {error}</p>}
         <button type="button" className="glass-btn" disabled={!ip || busy} onClick={() => setRevision(v => v + 1)}>{busy ? l.checking : l.refresh}</button>
       </dialog>
