@@ -18,6 +18,7 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(4);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const RETRY_DELAY: Duration = Duration::from_millis(250);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(25);
+const EVIDENCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Service {
@@ -232,7 +233,7 @@ async fn probe_one(
     service: Service,
     via_proxy: bool,
     context: Arc<RouteContext>,
-) -> ServiceStatusResult {
+) -> (ServiceStatusResult, Arc<RequestContext>) {
     let started = Instant::now();
     let request = RequestContext::new(context, service.url);
     let outcome = service_route::scope(
@@ -249,9 +250,7 @@ async fn probe_one(
     )
     .await;
     let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    // 出口慢或不可用只影响证据字段，保留已完成的服务判断及其耗时。
-    let _ = timeout(Duration::from_secs(5), request.finish()).await;
-    ServiceStatusResult {
+    let result = ServiceStatusResult {
         id: service.id.into(),
         status: outcome.status,
         latency_ms: Some(latency_ms),
@@ -263,24 +262,31 @@ async fn probe_one(
         reason: outcome.reason,
         region_reason: outcome.region_reason,
         routes: request.records(),
-    }
+    };
+    (result, request)
 }
 
-/// 只启动最多四个任务；整批截止时取消并回收在途任务，为未完成项返回 timeout。
-/// 注入单项 future 便于用纯内存测试验证调度，不需要访问真实服务。
-async fn probe_selected<F, Fut>(
+/// 业务请求最多四路并发，先保存结果，再用剩余预算补充出口证据。
+/// 两阶段均拥有并回收自己的任务；证据只更新 routes，不覆盖 HTTP/地区判断。
+/// 注入两阶段 future，供 CI 使用纯内存回归，不需要访问真实服务。
+async fn probe_selected<F, Fut, E, G, Evidence>(
     services: Vec<Service>,
     via_proxy: bool,
     deadline: Deadline,
     probe: F,
+    enrich: G,
 ) -> Result<ServiceStatusBatch, String>
 where
     F: Fn(Service) -> Fut,
-    Fut: Future<Output = ServiceStatusResult> + Send + 'static,
+    Fut: Future<Output = (ServiceStatusResult, E)> + Send + 'static,
+    E: Send + 'static,
+    G: Fn(E) -> Evidence,
+    Evidence: Future<Output = Vec<RequestRoute>> + Send + 'static,
 {
     let mut tasks = JoinSet::new();
     let mut next = 0;
     let mut results: Vec<Option<ServiceStatusResult>> = vec![None; services.len()];
+    let mut evidence = Vec::with_capacity(services.len());
     loop {
         while next < services.len() && tasks.len() < MAX_CONCURRENCY && Deadline::now() < deadline {
             let index = next;
@@ -292,18 +298,40 @@ where
             break;
         }
         match timeout_at(deadline, tasks.join_next()).await {
-            Ok(Some(Ok((index, result)))) => results[index] = Some(result),
+            Ok(Some(Ok((index, (result, context))))) => {
+                results[index] = Some(result);
+                evidence.push((index, context));
+            }
             Ok(Some(Err(_))) => {
                 tasks.shutdown().await;
                 return Err("服务状态检测任务异常结束".into());
             }
             Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    // 截止与任务完成可能同时发生；回收时仍接纳已经返回的业务结果。
+    tasks.abort_all();
+    while let Some(completed) = tasks.join_next().await {
+        match completed {
+            Ok((index, (result, context))) => {
+                results[index] = Some(result);
+                evidence.push((index, context));
+            }
+            Err(error) if error.is_cancelled() => {}
             Err(_) => {
                 tasks.shutdown().await;
-                break;
+                return Err("服务状态检测任务异常结束".into());
             }
         }
     }
+    enrich_selected(
+        &mut results,
+        evidence,
+        deadline.min(Deadline::now() + EVIDENCE_TIMEOUT),
+        enrich,
+    )
+    .await;
     let checked_at = checked_at();
     let results = services
         .iter()
@@ -331,6 +359,50 @@ where
     })
 }
 
+async fn enrich_selected<E, G, Evidence>(
+    results: &mut [Option<ServiceStatusResult>],
+    evidence: Vec<(usize, E)>,
+    deadline: Deadline,
+    enrich: G,
+) where
+    E: Send + 'static,
+    G: Fn(E) -> Evidence,
+    Evidence: Future<Output = Vec<RequestRoute>> + Send + 'static,
+{
+    let mut pending = evidence.into_iter();
+    let mut tasks = JoinSet::new();
+    loop {
+        while tasks.len() < MAX_CONCURRENCY && Deadline::now() < deadline {
+            let Some((index, context)) = pending.next() else {
+                break;
+            };
+            let request = enrich(context);
+            tasks.spawn(async move { (index, request.await) });
+        }
+        if tasks.is_empty() {
+            break;
+        }
+        match timeout_at(deadline, tasks.join_next()).await {
+            Ok(Some(Ok((index, routes)))) => {
+                if let Some(result) = &mut results[index] {
+                    result.routes = routes;
+                }
+            }
+            // 补证失败不影响已保存的业务结果，也不取消其他补证。
+            Ok(Some(Err(_))) => {}
+            Ok(None) | Err(_) => break,
+        }
+    }
+    tasks.abort_all();
+    while let Some(completed) = tasks.join_next().await {
+        if let Ok((index, routes)) = completed {
+            if let Some(result) = &mut results[index] {
+                result.routes = routes;
+            }
+        }
+    }
+}
+
 /// 地址只来自固定目录；客户端显式使用选定路线，失败后不尝试其他路线。
 pub async fn probe_services(
     ids: &[String],
@@ -349,9 +421,13 @@ pub async fn probe_services_with_context(
     let client = build_client(route, ATTEMPT_TIMEOUT)
         .map_err(|_| "无法创建服务状态检测客户端".to_string())?;
     let via_proxy = route.via_proxy();
-    probe_selected(services, via_proxy, deadline, move |service| {
-        probe_one(client.clone(), service, via_proxy, context.clone())
-    })
+    probe_selected(
+        services,
+        via_proxy,
+        deadline,
+        move |service| probe_one(client.clone(), service, via_proxy, context.clone()),
+        |request| async move { request.finish().await },
+    )
     .await
 }
 
@@ -628,25 +704,31 @@ mod tests {
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
         let first_wave = Arc::new(tokio::sync::Barrier::new(MAX_CONCURRENCY));
-        let batch = probe_selected(CATALOG.to_vec(), true, Deadline::now() + BATCH_TIMEOUT, {
-            let active = active.clone();
-            let peak = peak.clone();
-            move |service| {
+        let batch = probe_selected(
+            CATALOG.to_vec(),
+            true,
+            Deadline::now() + BATCH_TIMEOUT,
+            {
                 let active = active.clone();
                 let peak = peak.clone();
-                let first_wave = first_wave.clone();
-                async move {
-                    let _guard = Active(active.clone());
-                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    peak.fetch_max(count, Ordering::SeqCst);
-                    if CATALOG[..MAX_CONCURRENCY].contains(&service) {
-                        first_wave.wait().await;
+                move |service| {
+                    let active = active.clone();
+                    let peak = peak.clone();
+                    let first_wave = first_wave.clone();
+                    async move {
+                        let _guard = Active(active.clone());
+                        let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(count, Ordering::SeqCst);
+                        if CATALOG[..MAX_CONCURRENCY].contains(&service) {
+                            first_wave.wait().await;
+                        }
+                        tokio::task::yield_now().await;
+                        (synthetic_result(service), ())
                     }
-                    tokio::task::yield_now().await;
-                    synthetic_result(service)
                 }
-            }
-        })
+            },
+            |()| std::future::ready(Vec::new()),
+        )
         .await
         .unwrap();
         assert_eq!(peak.load(Ordering::SeqCst), MAX_CONCURRENCY);
@@ -675,10 +757,11 @@ mod tests {
                     async move {
                         active.fetch_add(1, Ordering::SeqCst);
                         let _guard = Active(active);
-                        std::future::pending::<ServiceStatusResult>().await
+                        std::future::pending::<(ServiceStatusResult, ())>().await
                     }
                 }
             },
+            |()| std::future::ready(Vec::new()),
         )
         .await
         .unwrap();
@@ -691,5 +774,186 @@ mod tests {
                 && result.http_status.is_none()
                 && result.latency_ms.is_none()
                 && !result.via_proxy));
+    }
+
+    fn business_result_with_region(service: Service) -> ServiceStatusResult {
+        let mut result = synthetic_result(service);
+        result.status = ServiceStatus::Available;
+        result.http_status = Some(200);
+        result.region = Some("JP".into());
+        result.check_kind = "availability";
+        result.latency_ms = Some(17);
+        result.checked_at = 123;
+        result.routes = vec![RequestRoute {
+            role: "primary",
+            host: "service.test".into(),
+            match_status: "matched",
+            chains: vec![service.id.into()],
+            rule: Some("Domain".into()),
+            rule_payload: Some("service.test".into()),
+            outbound_tag: Some(service.id.into()),
+            exit_ip: Some("8.8.4.4".into()),
+            exit_source: Some("service_response"),
+            exit_cached: Some(false),
+        }];
+        result
+    }
+
+    #[tokio::test]
+    async fn slow_evidence_never_queues_business_or_overwrites_completed_results() {
+        let business_calls = Arc::new(AtomicUsize::new(0));
+        let evidence_calls = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let expected: Vec<_> = CATALOG
+            .iter()
+            .copied()
+            .map(business_result_with_region)
+            .collect();
+        let batch = probe_selected(
+            CATALOG.to_vec(),
+            true,
+            Deadline::now() + Duration::from_millis(200),
+            {
+                let calls = business_calls.clone();
+                move |service| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready((business_result_with_region(service), service))
+                }
+            },
+            {
+                let business_calls = business_calls.clone();
+                let calls = evidence_calls.clone();
+                let active = active.clone();
+                let peak = peak.clone();
+                move |_service| {
+                    let business_calls = business_calls.clone();
+                    let calls = calls.clone();
+                    let active = active.clone();
+                    let peak = peak.clone();
+                    async move {
+                        assert_eq!(business_calls.load(Ordering::SeqCst), MAX_IDS);
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        let _guard = Active(active);
+                        peak.fetch_max(count, Ordering::SeqCst);
+                        std::future::pending::<Vec<RequestRoute>>().await
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(business_calls.load(Ordering::SeqCst), MAX_IDS);
+        assert_eq!(evidence_calls.load(Ordering::SeqCst), MAX_CONCURRENCY);
+        assert_eq!(peak.load(Ordering::SeqCst), MAX_CONCURRENCY);
+        // 返回前已回收所有补证任务，未启动的队列也已丢弃。
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            serde_json::to_value(&batch.results).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_evidence_updates_only_its_routes_while_slow_evidence_is_reclaimed() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut expected = vec![
+            business_result_with_region(CATALOG[0]),
+            business_result_with_region(CATALOG[1]),
+        ];
+        expected[0].status = ServiceStatus::Restricted;
+        expected[0].http_status = Some(403);
+        expected[0].reason = Some("invalid_response");
+        expected[0].region_reason = Some("lookup_timeout");
+        let mut completed_routes = expected[1].routes.clone();
+        completed_routes[0].exit_ip = Some("8.8.8.8".into());
+        completed_routes[0].exit_source = Some("pinned_outbound_probe");
+        let batch = probe_selected(
+            CATALOG[..2].to_vec(),
+            true,
+            Deadline::now() + Duration::from_millis(200),
+            {
+                let expected = expected.clone();
+                move |service| {
+                    let index = usize::from(service == CATALOG[1]);
+                    std::future::ready((expected[index].clone(), service))
+                }
+            },
+            {
+                let active = active.clone();
+                let calls = calls.clone();
+                let routes = completed_routes.clone();
+                move |service| {
+                    let active = active.clone();
+                    let calls = calls.clone();
+                    let routes = routes.clone();
+                    async move {
+                        active.fetch_add(1, Ordering::SeqCst);
+                        let _guard = Active(active);
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        if service == CATALOG[1] {
+                            return routes;
+                        }
+                        std::future::pending::<Vec<RequestRoute>>().await
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap();
+        expected[1].routes = completed_routes;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            serde_json::to_value(&batch.results).unwrap(),
+            serde_json::to_value(&expected).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn business_deadline_keeps_completed_results_and_skips_evidence_without_budget() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let evidence_calls = Arc::new(AtomicUsize::new(0));
+        let batch = probe_selected(
+            CATALOG[..3].to_vec(),
+            true,
+            Deadline::now() + Duration::from_millis(200),
+            {
+                let active = active.clone();
+                move |service| {
+                    let active = active.clone();
+                    async move {
+                        active.fetch_add(1, Ordering::SeqCst);
+                        let _guard = Active(active);
+                        if service == CATALOG[0] {
+                            return (business_result_with_region(service), ());
+                        }
+                        std::future::pending::<(ServiceStatusResult, ())>().await
+                    }
+                }
+            },
+            {
+                let calls = evidence_calls.clone();
+                move |()| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Vec::new())
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert_eq!(evidence_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            serde_json::to_value(&batch.results[0]).unwrap(),
+            serde_json::to_value(business_result_with_region(CATALOG[0])).unwrap()
+        );
+        assert!(batch.results[1..].iter().all(|result| {
+            result.status == ServiceStatus::Timeout
+                && result.http_status.is_none()
+                && result.region.is_none()
+        }));
     }
 }

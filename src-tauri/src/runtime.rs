@@ -1228,21 +1228,9 @@ impl Runtime {
             }
             ensure_listen_port_available(diag_port, "Chain diagnostics")?;
         }
-        let service_diag_port = built
-            .value
-            .get("inbounds")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|items| {
-                items.iter().find(|item| {
-                    item.get("tag").and_then(serde_json::Value::as_str)
-                        == Some(crate::config::SERVICE_DIAG_INBOUND_TAG)
-                })
-            })
-            .and_then(|item| item.get("listen_port").and_then(serde_json::Value::as_u64))
-            .and_then(|port| u16::try_from(port).ok());
-        if let Some(port) = service_diag_port {
-            ensure_listen_port_available(port, "Service diagnostics")?;
-        }
+        let service_diag_port = prepare_service_diagnostics(&mut built.value, false, |port| {
+            !CoreManager::has_port_listener(port)
+        });
         let config_path = write_active_config(app_data_dir, &built)?;
         let config_ready_ms = total_started.elapsed().as_millis();
         if store.settings.current_node_id.is_none() {
@@ -1811,24 +1799,16 @@ impl Runtime {
             .clone()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
-        let built = build_mihomo_config(&nodes, &build_options(store, secret.clone()))?;
-        let service_diag_port = serde_yaml::from_str::<serde_yaml::Value>(&built.yaml)
-            .ok()
-            .and_then(|doc| {
-                doc.get("listeners")
-                    .and_then(serde_yaml::Value::as_sequence)
-                    .cloned()
-            })
-            .and_then(|items| {
-                items.into_iter().find(|item| {
-                    item.get("name").and_then(serde_yaml::Value::as_str)
-                        == Some(crate::config::SERVICE_DIAG_INBOUND_TAG)
-                })
-            })
-            .and_then(|item| item.get("port").and_then(serde_yaml::Value::as_u64))
-            .and_then(|port| u16::try_from(port).ok());
-        if let Some(port) = service_diag_port {
-            ensure_listen_port_available(port, "Service diagnostics")?;
+        let mut built = build_mihomo_config(&nodes, &build_options(store, secret.clone()))?;
+        let mut diagnostic_config: serde_json::Value = serde_yaml::from_str(&built.yaml)
+            .map_err(|error| AppError::Config(format!("解析生成的 Mihomo 配置失败: {error}")))?;
+        let service_diag_port = prepare_service_diagnostics(&mut diagnostic_config, true, |port| {
+            !CoreManager::has_port_listener(port)
+        });
+        if service_diag_port.is_none() {
+            built.yaml = serde_yaml::to_string(&diagnostic_config).map_err(|error| {
+                AppError::Config(format!("写入生成的 Mihomo 配置失败: {error}"))
+            })?;
         }
         let mut service_auxiliary_ports: Vec<u16> = store
             .settings
@@ -2471,6 +2451,109 @@ impl Runtime {
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 仅处理应用生成的配置。诊断是可选能力，端口冲突时去掉完整诊断通道，
+/// 保留业务入站、分流规则和用户选择；不让辅助检查阻止代理启动。
+fn prepare_service_diagnostics(
+    config: &mut serde_json::Value,
+    mihomo: bool,
+    available: impl FnOnce(u16) -> bool,
+) -> Option<u16> {
+    use crate::config::{SERVICE_DIAG_INBOUND_TAG, SERVICE_DIAG_SELECTOR_TAG};
+    use serde_json::Value;
+    let (inbounds, tag_key, port_key, outbounds) = if mihomo {
+        ("listeners", "name", "port", "proxy-groups")
+    } else {
+        ("inbounds", "tag", "listen_port", "outbounds")
+    };
+    let port = config
+        .get(inbounds)?
+        .as_array()?
+        .iter()
+        .find(|item| item.get(tag_key).and_then(Value::as_str) == Some(SERVICE_DIAG_INBOUND_TAG))?
+        .get(port_key)?
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok())?;
+    if available(port) {
+        return Some(port);
+    }
+    if let Some(items) = config.get_mut(inbounds).and_then(Value::as_array_mut) {
+        items.retain(|item| {
+            item.get(tag_key).and_then(Value::as_str) != Some(SERVICE_DIAG_INBOUND_TAG)
+        });
+    }
+    if let Some(items) = config.get_mut(outbounds).and_then(Value::as_array_mut) {
+        items.retain(|item| {
+            item.get(tag_key).and_then(Value::as_str) != Some(SERVICE_DIAG_SELECTOR_TAG)
+        });
+    }
+    if !mihomo {
+        if let Some(rules) = config
+            .pointer_mut("/route/rules")
+            .and_then(Value::as_array_mut)
+        {
+            rules.retain(|rule| {
+                rule.get("outbound").and_then(Value::as_str) != Some(SERVICE_DIAG_SELECTOR_TAG)
+            });
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod service_diagnostic_port_tests {
+    use super::prepare_service_diagnostics;
+    use serde_json::json;
+
+    #[test]
+    fn optional_singbox_port_conflict_preserves_business_config() {
+        let mut config = json!({"inbounds":[{"tag":"mixed-in","listen_port":2080},
+            {"tag":"service-diag-in","listen_port":26487}],
+            "outbounds":[{"tag":"proxy"},{"tag":"service-diag"},{"tag":"direct"}],
+            "route":{"rules":[{"outbound":"service-diag"},{"outbound":"proxy"}],"final":"proxy"}});
+        let original = config.clone();
+        assert_eq!(
+            prepare_service_diagnostics(&mut config, false, |_| true),
+            Some(26487)
+        );
+        assert_eq!(config, original);
+        assert_eq!(
+            prepare_service_diagnostics(&mut config, false, |_| false),
+            None
+        );
+        assert_eq!(
+            config["inbounds"],
+            json!([{"tag":"mixed-in","listen_port":2080}])
+        );
+        assert_eq!(
+            config["outbounds"],
+            json!([{"tag":"proxy"},{"tag":"direct"}])
+        );
+        assert_eq!(
+            config["route"],
+            json!({"rules":[{"outbound":"proxy"}],"final":"proxy"})
+        );
+    }
+
+    #[test]
+    fn optional_mihomo_port_conflict_preserves_business_groups_and_rules() {
+        let mut config = json!({"mixed-port":2080,"listeners":[{"name":"user","port":2081},
+            {"name":"service-diag-in","port":26487}],
+            "proxy-groups":[{"name":"proxy","proxies":["node-a"]},{"name":"service-diag"}],
+            "rules":["MATCH,proxy"]});
+        assert_eq!(
+            prepare_service_diagnostics(&mut config, true, |_| false),
+            None
+        );
+        assert_eq!(config["listeners"], json!([{"name":"user","port":2081}]));
+        assert_eq!(
+            config["proxy-groups"],
+            json!([{"name":"proxy","proxies":["node-a"]}])
+        );
+        assert_eq!(config["rules"], json!(["MATCH,proxy"]));
+        assert_eq!(config["mixed-port"], 2080);
     }
 }
 
