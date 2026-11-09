@@ -513,6 +513,12 @@ mod tests {
         completed: bool,
     }
 
+    impl RequestGuard {
+        fn finish(&mut self) {
+            self.completed = true;
+        }
+    }
+
     impl Drop for RequestGuard {
         fn drop(&mut self) {
             if !self.completed {
@@ -532,7 +538,8 @@ mod tests {
             };
             async move {
                 let result = rx.await.expect("script response");
-                guard.completed = true;
+                // 方法调用捕获整个带Drop的守卫，避免精确字段捕获提前析构守卫。
+                guard.finish();
                 result
             }
         }
