@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-09 服务状态刷新修复：serviceStatus monitor 自动检测全部1–4展示项，新选择项入去重队列；路由/代理状态换会话清旧回包，页面可见且在线时60s周期，IPC/timeout/network_error按2/8/30/60s退避，403等不快速重试。隐藏/离线暂停、恢复补测、focus限频5s，stop清timer/队列；Clock注入供Node虚拟时钟测试。服务卡使用内嵌圆角行、状态点/耗时/检测进度，详情保留HTTP语义。后端批次最多8s等旧批次，仅1排队者，取得许可后重采snapshot并核epoch；单服务暂态同路线重试1次，各4s、总8s，间隔250ms，整批25s。不会跨路线直连回退，不按国家预设GitHub状态。本机仅Node/tsc/rustfmt，Rust与真实组件回归及构建走Actions，版本1.0.46，成功后覆盖同版本两包。
+
 首页IP标签约束（用户最终修正）：展示residential/mobile/business/datacenter，normal中文为普通；isp/unknown隐藏主卡类型和unknown质量badge，详情仍显示真实数据。risky始终可见。状态卡出口信息在上、节点信息在下，启停入口保留。ipQuality缺字段兼容unknown，测试等待metadata真实mock完成后断言隐藏/显示。
 
 2026-11-08 IP多源查询（取代下方旧双来源说明）：按FlClash查询组织/类型字段，HTTPS五源ident.me/IPQuery/IPLocate/ipapi.is/proxycheck.io分批回退；不使用ip-api.com免费HTTP，不复制GPL实现。严格同IP匹配、未知不推测家宽、ISP独立。ipQuality独立于旧quality风险字段：Tor/abuse优先risky，家宽/移动/商业good，机房normal，其他unknown；前端主卡显示质量，风险分留详情，缺字段兼容unknown。仅Actions执行Rust/网络仿真及浏览器测试。

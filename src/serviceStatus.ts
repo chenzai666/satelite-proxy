@@ -70,12 +70,57 @@ function validResult(value: ServiceStatusResult): boolean {
 }
 
 /** 每个组件会话一个实例；所有检测只通过注入的 IPC 调用。 */
-export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<ServiceStatusBatch>) {
+export interface ServiceMonitorClock {
+  now(): number;
+  setTimeout(callback: () => void, ms: number): ReturnType<typeof setTimeout>;
+  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
+}
+
+export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<ServiceStatusBatch>, clock: ServiceMonitorClock = {
+  now: () => Date.now(), setTimeout: (callback, ms) => setTimeout(callback, ms), clearTimeout: timer => clearTimeout(timer),
+}) {
   let snapshot: ServiceStatusSnapshot = { results: {}, errors: {}, pending: [] };
   const listeners = new Set<() => void>();
   let epoch = 0;
   let active = false;
-  let autoStarted = false;
+  let enabled = true;
+  let visible: ServiceId[] = [];
+  const queued = new Set<ServiceId>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let retryStep = 0;
+  let lastStarted = -Infinity;
+
+  function clearTimer() {
+    if (timer !== undefined) clock.clearTimeout(timer);
+    timer = undefined;
+  }
+
+  function drain() {
+    if (!active || !enabled || snapshot.pending.length || !queued.size) return;
+    const ids = [...queued];
+    queued.clear();
+    void request(ids);
+  }
+
+  function enqueue(ids: readonly ServiceId[]) {
+    normalizeServiceIds(ids).forEach(id => queued.add(id));
+    clearTimer();
+    drain();
+  }
+
+  function schedule() {
+    if (!active || !enabled) return;
+    if (queued.size) { drain(); return; }
+    const transient = visible.some(id => snapshot.errors[id] || ["timeout", "network_error"].includes(snapshot.results[id]?.status ?? ""));
+    const delay = transient ? [2000, 8000, 30000, 60000][Math.min(retryStep++, 3)] : 60000;
+    if (!transient) retryStep = 0;
+    clearTimer();
+    const token = epoch;
+    timer = clock.setTimeout(() => {
+      timer = undefined;
+      if (active && token === epoch) enqueue(visible);
+    }, delay);
+  }
 
   function publish(next: ServiceStatusSnapshot) {
     snapshot = next;
@@ -84,10 +129,12 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
 
   async function request(input: readonly ServiceId[]) {
     // 同一实例一次只发一个批次，单项与全量按钮共用同步互斥。
-    if (!active || snapshot.pending.length) return;
+    if (!active || !enabled || snapshot.pending.length) return;
     const ids = normalizeServiceIds(input);
     if (!ids.length) return;
     const token = epoch;
+    clearTimer();
+    lastStarted = clock.now();
     const errors = { ...snapshot.errors };
     ids.forEach(id => delete errors[id]);
     publish({ ...snapshot, errors, pending: ids });
@@ -119,6 +166,7 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
       ids.forEach(id => { nextErrors[id] = true; });
       publish({ ...snapshot, errors: nextErrors, pending: [] });
     }
+    if (active && token === epoch) schedule();
   }
 
   return {
@@ -129,17 +177,36 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
     },
     start(visibleIds: readonly ServiceId[]) {
       active = true;
+      visible = normalizeServiceIds(visibleIds).slice(0, MAX_VISIBLE_SERVICES);
+      retryStep = 0;
       const token = ++epoch;
       // 延至微任务，StrictMode 的首次 setup/cleanup 不会发重复 IPC。
       queueMicrotask(() => {
-        if (!active || token !== epoch || autoStarted) return;
-        autoStarted = true;
-        void request(visibleIds.slice(0, 2));
+        if (!active || token !== epoch) return;
+        enqueue(visible);
       });
+    },
+    setVisible(ids: readonly ServiceId[]) {
+      const next = normalizeServiceIds(ids).slice(0, MAX_VISIBLE_SERVICES);
+      const added = next.filter(id => !visible.includes(id));
+      visible = next;
+      for (const id of queued) if (!next.includes(id)) queued.delete(id);
+      if (active && added.length) enqueue(added);
+    },
+    setEnabled(value: boolean) {
+      if (enabled === value) return;
+      enabled = value;
+      if (!enabled) { clearTimer(); return; }
+      if (active) enqueue(visible);
+    },
+    refreshVisible() {
+      if (active && enabled && clock.now() - lastStarted >= 5000) enqueue(visible);
     },
     stop() {
       active = false;
       ++epoch;
+      clearTimer();
+      queued.clear();
       if (snapshot.pending.length) publish({ ...snapshot, pending: [] });
     },
     request,

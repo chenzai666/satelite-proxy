@@ -1309,7 +1309,7 @@ function coreDisplayName(kind: string | null | undefined): string {
         samples={spark.map(s => s.up)} running={running} onOpen={onGoTraffic} />
       <DashboardRateCard direction="down" speed={proxy?.download_speed ?? 0} total={proxy?.download_total ?? 0}
         samples={spark.map(s => s.down)} running={running} onOpen={onGoTraffic} />
-      {statusReady ? <ServiceStatusCard sessionKey={autoProbeKey} /> : <div className="instrument service-status-card" aria-busy="true" />}
+      {statusReady ? <ServiceStatusCard sessionKey={`${autoProbeKey}:${proxy?.capture_mode ?? ""}:${proxy?.custom_inbound_port ?? ""}`} /> : <div className="instrument service-status-card" aria-busy="true" />}
       </div>
 
         <aside className="dash-side-rail" aria-label="Quick controls">

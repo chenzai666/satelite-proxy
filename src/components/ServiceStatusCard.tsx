@@ -68,9 +68,24 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
   const close = useCallback(() => setOpen(false), []);
 
   useEffect(() => {
+    monitor.setEnabled(document.visibilityState !== "hidden" && navigator.onLine !== false);
     monitor.start(initialIds.current);
-    return () => monitor.stop();
+    const sync = () => monitor.setEnabled(document.visibilityState !== "hidden" && navigator.onLine !== false);
+    const wake = () => { sync(); monitor.refreshVisible(); };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("offline", sync);
+    window.addEventListener("focus", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("offline", sync);
+      window.removeEventListener("focus", wake);
+      monitor.stop();
+    };
   }, [monitor]);
+
+  useEffect(() => monitor.setVisible(visibleIds), [monitor, visibleIds]);
 
   useEffect(() => {
     if (!open) return;
@@ -126,6 +141,13 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
     return result?.latencyMs === undefined ? "—" : `${Math.round(result.latencyMs)} ms`;
   }
 
+  function cardStatus(id: ServiceId) {
+    if (pending.includes(id)) return <span className="service-status-checking"><span className="service-status-progress" aria-hidden="true" />{t("serviceStatus.checking")}</span>;
+    const result = results[id];
+    if (result && ["reachable", "redirect"].includes(result.status) && result.latencyMs !== undefined) return latency(result);
+    return statusText(id);
+  }
+
   function checkedTime(result?: ServiceStatusResult) {
     if (!result) return "—";
     const date = new Date(result.checkedAt);
@@ -146,8 +168,8 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
       <span className="service-status-card-rows">
         {visibleIds.map(id => <span className="service-status-card-row" key={id} data-service-id={id}>
           <span className="service-status-name"><ServiceGlyph id={id} />{SERVICE_STATUS_CATALOG.find(service => service.id === id)?.title}</span>
-          <span className="service-status-state" data-status={results[id]?.status} title={statusText(id)}>
-            {errors[id] && <span className="service-status-error-mark" aria-label={t("serviceStatus.failed")}>!</span>}{statusText(id)}
+          <span className="service-status-state" data-status={pending.includes(id) ? undefined : results[id]?.status} title={statusText(id)}>
+            {errors[id] && <span className="service-status-error-mark" aria-label={t("serviceStatus.failed")}>!</span>}{cardStatus(id)}
           </span>
         </span>)}
       </span>

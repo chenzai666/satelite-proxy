@@ -67,6 +67,7 @@ const state = {
   settings, status, nodes, subscriptions, ipv6, commands: [] as { command: string; payload: unknown }[],
   unexpected: [] as string[], statusReads: 0, connectionReads: 0, trafficOpens: 0,
   holdStart: false, releaseStart: null as null | (() => void),
+  serviceFailures: 0,
 };
 (window as unknown as { dashboardFixture: typeof state }).dashboardFixture = state;
 const copy = <T,>(value: T): T => structuredClone(value);
@@ -99,12 +100,15 @@ mockIPC((command, payload) => {
       ipQuality: ["tor", "abuse"].includes(params.get("network") ?? "") ? "risky" : params.get("network") === "datacenter" ? "normal" : ["isp", "unknown"].includes(params.get("network") ?? "") ? "unknown" : "good",
       riskScore: 5, riskSource: "IPQuery", isVpn: false, isProxy: false, isTor: params.get("network") === "tor", isAbuser: params.get("network") === "abuse", source: "IPQuery / proxycheck.io", checkedAt: 1700000000,
     };
-    case "check_service_status": return {
-      results: (args.ids as string[]).map(id => ({ id, status: id === "chatgpt" ? "restricted" : "reachable",
-        latencyMs: id === "github" ? 576 : 160, httpStatus: id === "chatgpt" ? 403 : 200,
+    case "check_service_status": {
+      const failing = state.serviceFailures > 0;
+      if (failing) state.serviceFailures--;
+      return {
+      results: (args.ids as string[]).map(id => ({ id, status: failing ? "network_error" : id === "chatgpt" ? "restricted" : "reachable",
+        latencyMs: id === "github" ? 576 : 160, httpStatus: failing ? undefined : id === "chatgpt" ? 403 : 200,
         checkedAt: 1700000000000, viaProxy: status.running })),
       checkedAt: 1700000000000, viaProxy: status.running,
-    };
+    }; }
     case "list_connection_changes":
       state.connectionReads++;
       return { rows: copy(connections), removed_ids: [], order_ids: connections.map(row => row.id),

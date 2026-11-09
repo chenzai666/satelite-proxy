@@ -5,11 +5,13 @@ use serde::Serialize;
 use std::future::Future;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
-use tokio::time::{timeout, timeout_at, Instant as Deadline};
+use tokio::time::{sleep, timeout, timeout_at, Instant as Deadline};
 
 const MAX_IDS: usize = 13;
 const MAX_CONCURRENCY: usize = 4;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(4);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const RETRY_DELAY: Duration = Duration::from_millis(250);
 const BATCH_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,24 +145,62 @@ fn http_status(status: u16) -> ServiceStatus {
     }
 }
 
+// 单次超时及两次请求、间隔共享总预算。注入 future 供 CI 做纯内存回归。
+async fn probe_with_retry<F, Fut>(
+    mut attempt: F,
+    attempt_timeout: Duration,
+    total_timeout: Duration,
+    retry_delay: Duration,
+) -> (ServiceStatus, Option<u16>)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = (ServiceStatus, Option<u16>)>,
+{
+    timeout(total_timeout, async {
+        for index in 0..2 {
+            let result = timeout(attempt_timeout, attempt())
+                .await
+                .unwrap_or((ServiceStatus::Timeout, None));
+            if index == 1
+                || !matches!(
+                    result.0,
+                    ServiceStatus::Timeout | ServiceStatus::NetworkError
+                )
+            {
+                return result;
+            }
+            sleep(retry_delay).await;
+        }
+        unreachable!()
+    })
+    .await
+    .unwrap_or((ServiceStatus::Timeout, None))
+}
+
 async fn probe_one(
     client: reqwest::Client,
     service: Service,
     via_proxy: bool,
 ) -> ServiceStatusResult {
     let started = Instant::now();
-    // send() 在收到响应头后返回；不读取正文，也不对 HTTP 错误调用 error_for_status。
-    let (status, http_status) = match timeout(REQUEST_TIMEOUT, client.get(service.url).send()).await
-    {
-        Ok(Ok(response)) => {
-            let code = response.status().as_u16();
-            drop(response);
-            (http_status(code), Some(code))
-        }
-        Ok(Err(error)) if error.is_timeout() => (ServiceStatus::Timeout, None),
-        Ok(Err(_)) => (ServiceStatus::NetworkError, None),
-        Err(_) => (ServiceStatus::Timeout, None),
-    };
+    let (status, http_status) = probe_with_retry(
+        || async {
+            // 同一客户端、同一 URL、同一条路线；收到响应头即返回，不读取正文。
+            match client.get(service.url).send().await {
+                Ok(response) => {
+                    let code = response.status().as_u16();
+                    drop(response);
+                    (http_status(code), Some(code))
+                }
+                Err(error) if error.is_timeout() => (ServiceStatus::Timeout, None),
+                Err(_) => (ServiceStatus::NetworkError, None),
+            }
+        },
+        ATTEMPT_TIMEOUT,
+        REQUEST_TIMEOUT,
+        RETRY_DELAY,
+    )
+    .await;
     ServiceStatusResult {
         id: service.id.into(),
         status,
@@ -238,7 +278,7 @@ pub async fn probe_services(
 ) -> Result<ServiceStatusBatch, String> {
     let services = select_services(ids)?;
     let deadline = Deadline::now() + BATCH_TIMEOUT;
-    let client = build_client(route, REQUEST_TIMEOUT)
+    let client = build_client(route, ATTEMPT_TIMEOUT)
         .map_err(|_| "无法创建服务状态检测客户端".to_string())?;
     let via_proxy = route.via_proxy();
     probe_selected(services, via_proxy, deadline, move |service| {
@@ -351,13 +391,108 @@ mod tests {
     }
 
     #[test]
-    fn four_request_waves_fit_the_batch_budget() {
+    fn attempts_share_eight_seconds_and_batch_remains_bounded() {
         assert_eq!(MAX_CONCURRENCY, 4);
-        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(6));
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(8));
+        assert_eq!(ATTEMPT_TIMEOUT, Duration::from_secs(4));
+        assert_eq!(RETRY_DELAY, Duration::from_millis(250));
+        assert_eq!(CATALOG[1].url, "https://github.com/");
         assert_eq!(BATCH_TIMEOUT, Duration::from_secs(25));
         let waves = MAX_IDS.div_ceil(MAX_CONCURRENCY) as u32;
         assert_eq!(waves, 4);
-        assert!(REQUEST_TIMEOUT * waves < BATCH_TIMEOUT);
+        // 最坏四波重试由整批截止时间取消。
+        assert!(REQUEST_TIMEOUT * waves > BATCH_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn retries_only_transient_failures_once_and_preserves_final_classification() {
+        for transient in [ServiceStatus::Timeout, ServiceStatus::NetworkError] {
+            for final_result in [
+                (ServiceStatus::Reachable, Some(200)),
+                (ServiceStatus::Restricted, Some(403)),
+                (ServiceStatus::Timeout, None),
+                (ServiceStatus::NetworkError, None),
+            ] {
+                let calls = AtomicUsize::new(0);
+                let started = Deadline::now();
+                let result = probe_with_retry(
+                    || {
+                        let call = calls.fetch_add(1, Ordering::SeqCst);
+                        if call == 1 {
+                            assert!(started.elapsed() >= RETRY_DELAY);
+                        }
+                        std::future::ready(if call == 0 {
+                            (transient, None)
+                        } else {
+                            final_result
+                        })
+                    },
+                    ATTEMPT_TIMEOUT,
+                    REQUEST_TIMEOUT,
+                    RETRY_DELAY,
+                )
+                .await;
+                assert_eq!(result, final_result);
+                assert_eq!(calls.load(Ordering::SeqCst), 2);
+            }
+        }
+        // 所有 HTTP 状态都直接保留，包括 403、重定向和 5xx。
+        for code in 100..=599 {
+            let calls = AtomicUsize::new(0);
+            let result = probe_with_retry(
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready((http_status(code), Some(code)))
+                },
+                ATTEMPT_TIMEOUT,
+                REQUEST_TIMEOUT,
+                RETRY_DELAY,
+            )
+            .await;
+            assert_eq!(result, (http_status(code), Some(code)));
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "HTTP {code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn total_budget_cancels_second_attempt_and_includes_retry_delay() {
+        let calls = AtomicUsize::new(0);
+        let active = Arc::new(AtomicUsize::new(0));
+        let started = Deadline::now();
+        let result = probe_with_retry(
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let active = active.clone();
+                async move {
+                    active.fetch_add(1, Ordering::SeqCst);
+                    let _guard = Active(active);
+                    std::future::pending::<(ServiceStatus, Option<u16>)>().await
+                }
+            },
+            Duration::from_millis(100),
+            Duration::from_millis(180),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert_eq!(result, (ServiceStatus::Timeout, None));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(started.elapsed() >= Duration::from_millis(180));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let calls = AtomicUsize::new(0);
+        let result = probe_with_retry(
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                std::future::ready((ServiceStatus::NetworkError, None))
+            },
+            Duration::from_millis(100),
+            Duration::from_millis(20),
+            RETRY_DELAY,
+        )
+        .await;
+        assert_eq!(result, (ServiceStatus::Timeout, None));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     struct Active(Arc<AtomicUsize>);
@@ -481,7 +616,7 @@ mod tests {
                 ProbeRoute {
                     proxy_port: Some(port),
                 },
-                REQUEST_TIMEOUT,
+                ATTEMPT_TIMEOUT,
             )
             .unwrap();
             let result = probe_one(

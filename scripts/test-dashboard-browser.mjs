@@ -231,8 +231,32 @@ try {
   await page.locator('.service-status-card').click();
   await page.getByRole('dialog').waitFor();
   assert.equal(await page.locator('.service-status-list .service-status-row').count(), 13);
+  await page.getByRole('switch', { name: '在卡片展示 YouTube', exact: true }).check();
+  await page.getByRole('switch', { name: '在卡片展示 ChatGPT', exact: true }).check();
+  await page.waitForFunction(() => {
+    const rows = [...document.querySelectorAll('.service-status-card-row')];
+    return rows.length === 4 && rows.every(row => row.querySelector('[data-status]'));
+  });
+  assert.ok(await page.locator('.service-status-card-row[data-service-id="chatgpt"]').innerText().then(text => text.includes('HTTP 访问受限')));
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
+  await page.getByRole('button', { name: words.zh.stop, exact: true }).click();
+  await page.getByRole('button', { name: words.zh.start, exact: true }).waitFor();
+  await page.locator('.service-status-card').click();
+  await page.waitForFunction(() => document.querySelector('.service-status-row[data-service-id="github"] .service-status-row-meta')?.textContent.includes('直连'));
+  assert.equal(await page.locator('.service-status-card-row[data-service-id="github"] .service-status-state').getAttribute('data-status'), 'reachable', 'GitHub直连可达按真实结果展示');
+  await page.keyboard.press('Escape');
+  const beforeStart = await page.evaluate(() => {
+    window.dashboardFixture.serviceFailures = 1;
+    return window.dashboardFixture.commands.filter(c => c.command === 'check_service_status').length;
+  });
+  await page.getByRole('button', { name: words.zh.start, exact: true }).click();
+  await page.waitForFunction(count => {
+    const calls = window.dashboardFixture.commands.filter(c => c.command === 'check_service_status');
+    return calls.length >= count + 2 && document.querySelector('.service-status-card-row[data-service-id="github"] .service-status-state')?.getAttribute('data-status') === 'reachable';
+  }, beforeStart);
+  const latestServices = await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'check_service_status').at(-1).payload.ids);
+  assert.deepEqual([...latestServices].sort(), ['google', 'github', 'youtube', 'chatgpt'].sort(), '开启代理后全部展示项自动检测并从暂态失败恢复');
   await open(1280, 900, "zh", "aerospace", "running", "particle");
   assert.equal(await page.locator('.dashboard-power-visual .particle-orbit').count(), 1);
   for (const [network, text, quality] of [["residential", "家宽", "优"], ["business", "商业", "优"], ["mobile", "移动网络", "优"], ["datacenter", "机房", "普通"], ["isp", "ISP 网络", "未知"], ["unknown", "未知", "未知"], ["tor", "商业", "风险"], ["abuse", "商业", "风险"]]) {

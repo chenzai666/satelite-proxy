@@ -16,10 +16,27 @@ const batch = (ids, overrides = {}) => ({ results: ids.map(id => result(id)), ch
 // 仅模拟 IPC promise，不发网络请求、不启动浏览器或内核。
 function mockIpc() {
   const calls = [];
+  const timers = new Map();
+  let time = 0, nextTimer = 0;
+  const clock = {
+    now: () => time,
+    setTimeout(callback, ms) { const id = ++nextTimer; timers.set(id, { callback, at: time + ms }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  };
   const monitor = createServiceStatusMonitor(ids => new Promise((resolve, reject) => {
     calls.push({ ids: [...ids], resolve, reject });
-  }));
-  return { monitor, calls };
+  }), clock);
+  async function advance(ms) {
+    const target = time + ms;
+    while (true) {
+      const entry = [...timers].filter(([, timer]) => timer.at <= target).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!entry) break;
+      const [id, timer] = entry;
+      time = timer.at; timers.delete(id); timer.callback(); await tick();
+    }
+    time = target; await tick();
+  }
+  return { monitor, calls, advance, timers };
 }
 
 test("固定目录恰好包含约定的 13 个唯一服务", () => {
@@ -38,7 +55,7 @@ test("展示选择仅接收固定 ID、去重、最多四个；损坏或空存�
   assert.deepEqual(readVisibleServiceIds('["github"]'), ["github"]);
 });
 
-test("StrictMode setup/cleanup/setup 只自动检测前两个展示项一次", async () => {
+test("StrictMode setup/cleanup/setup 只发一批，包含全部四个展示项", async () => {
   const { monitor, calls } = mockIpc();
   const selected = ["claude", "google", "netflix", "discord"];
   monitor.start(selected);
@@ -46,15 +63,76 @@ test("StrictMode setup/cleanup/setup 只自动检测前两个展示项一次", a
   monitor.start(selected);
   await tick();
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0].ids, selected.slice(0, 2));
+  assert.deepEqual(calls[0].ids, selected);
   calls[0].resolve(batch(calls[0].ids));
   await tick();
-  assert.deepEqual(Object.keys(monitor.getSnapshot().results), selected.slice(0, 2));
+  assert.deepEqual(Object.keys(monitor.getSnapshot().results), selected);
   monitor.stop();
   monitor.start(selected);
   await tick();
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  calls[1].resolve(batch(selected));
+  await tick();
   monitor.stop();
+});
+
+test("新增展示项在当前批次后补测，移除排队项不再检测", async () => {
+  const { monitor, calls } = mockIpc();
+  monitor.start(DEFAULT_SERVICE_IDS); await tick();
+  monitor.setVisible(["google", "github", "youtube"]);
+  monitor.setVisible(["google", "github", "youtube", "chatgpt"]);
+  monitor.setVisible(["google", "github", "chatgpt"]);
+  assert.equal(calls.length, 1);
+  calls[0].resolve(batch(DEFAULT_SERVICE_IDS)); await tick();
+  assert.deepEqual(calls[1].ids, ["chatgpt"]);
+  calls[1].resolve(batch(["chatgpt"])); await tick();
+  monitor.setVisible(["google", "github", "chatgpt", "youtube"]);
+  assert.deepEqual(calls[2].ids, ["youtube"]);
+  calls[2].resolve(batch(["youtube"])); await tick();
+  monitor.stop();
+});
+
+test("暂态错误按2/8/30/60秒退避，可达后恢复一分钟周期", async () => {
+  const { monitor, calls, advance, timers } = mockIpc();
+  monitor.start(["github"]); await tick();
+  for (const delay of [2000, 8000, 30000, 60000]) {
+    calls.at(-1).resolve(batch(["github"], { results: [result("github", { status: "timeout" })] })); await tick();
+    const count = calls.length;
+    await advance(delay - 1); assert.equal(calls.length, count);
+    await advance(1); assert.equal(calls.length, count + 1);
+  }
+  calls.at(-1).resolve(batch(["github"])); await tick();
+  const count = calls.length;
+  await advance(59999); assert.equal(calls.length, count);
+  await advance(1); assert.equal(calls.length, count + 1);
+  monitor.stop(); assert.equal(timers.size, 0);
+});
+
+test("IPC切换忙碌会自动恢复，HTTP受限不进入快速重试", async () => {
+  const { monitor, calls, advance } = mockIpc();
+  monitor.start(["github"]); await tick();
+  calls[0].reject(new Error("kernel transitioning")); await tick();
+  await advance(2000); assert.equal(calls.length, 2);
+  calls[1].resolve(batch(["github"], { results: [result("github", { status: "restricted", httpStatus: 403 })] })); await tick();
+  await advance(59999); assert.equal(calls.length, 2);
+  await advance(1); assert.equal(calls.length, 3);
+  monitor.stop();
+});
+
+test("隐藏或离线暂停自动检测，恢复时立即检测当前所有展示项，焦点事件去抖", async () => {
+  const { monitor, calls, advance, timers } = mockIpc();
+  monitor.setEnabled(false); monitor.start(DEFAULT_SERVICE_IDS); await tick();
+  await advance(120000); assert.equal(calls.length, 0);
+  monitor.setVisible(["github", "youtube", "chatgpt"]);
+  monitor.setEnabled(true); assert.deepEqual(calls[0].ids, ["github", "youtube", "chatgpt"]);
+  calls[0].resolve(batch(calls[0].ids)); await tick();
+  monitor.refreshVisible(); monitor.refreshVisible(); assert.equal(calls.length, 1);
+  await advance(5000); monitor.refreshVisible(); assert.equal(calls.length, 2);
+  calls[1].resolve(batch(calls[1].ids)); await tick();
+  monitor.setEnabled(false); assert.equal(timers.size, 0);
+  await advance(120000); assert.equal(calls.length, 2);
+  monitor.setEnabled(true); assert.equal(calls.length, 3);
+  monitor.stop(); assert.equal(timers.size, 0);
 });
 
 test("同步互斥拒绝单项与全批重复 in-flight，完成后可按需测全部", async () => {
