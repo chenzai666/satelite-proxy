@@ -189,7 +189,7 @@ async function countryRefresh() {
     await page.waitForFunction(() => window.dashboardFixture.releaseExitIp !== null);
     assert.equal(await button.isDisabled(), true, '探测中禁止重复点击');
     assert.equal(await button.getAttribute('aria-busy'), 'true');
-    assert.equal(await page.locator('.dash-hero .ip-organization').textContent(), await page.evaluate(() => window.dashboardFixture.organization), '刷新出口期间保留同IP组织信息，不清空闪烁');
+    assert.equal(await page.locator('.dash-hero .ip-organization-row .ip-organization').textContent(), await page.evaluate(() => window.dashboardFixture.organization), '刷新出口期间保留同IP组织信息，不清空闪烁');
     await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => window.dashboardFixture.exitIpReads), before + 1, '每次点击仅发一个 check_exit_ip，忙碌时不重复');
     await page.evaluate(() => {
