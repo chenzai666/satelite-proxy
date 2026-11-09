@@ -3335,6 +3335,7 @@ dependencies = [
  "core-foundation-sys",
  "flate2",
  "hex",
+ "hyper-util",
  "idna",
  "if-addrs",
  "libc",

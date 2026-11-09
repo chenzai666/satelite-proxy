@@ -16,6 +16,24 @@ use sha2::{Digest, Sha256};
 pub const DIAG_INBOUND_PORT: u16 = 26486;
 pub const DIAG_INBOUND_TAG: &str = "diag-in";
 pub const DIAG_SELECTOR_TAG: &str = "chain-diag";
+pub const SERVICE_DIAG_INBOUND_TAG: &str = "service-diag-in";
+pub const SERVICE_DIAG_SELECTOR_TAG: &str = "service-diag";
+
+/// 独立的本机服务诊断入口；避开用户端口，旁路内核规划也复用同一选择。
+pub fn service_diag_port(
+    mixed: u16,
+    api: u16,
+    extras: &[crate::domain::ExtraInbound],
+) -> Option<u16> {
+    let subscription = subscription_proxy_port(mixed, api, extras);
+    (26487..=u16::MAX).find(|port| {
+        *port != mixed
+            && *port != api
+            && *port != subscription
+            && *port != DIAG_INBOUND_PORT
+            && !extras.iter().any(|entry| entry.port == *port)
+    })
+}
 
 const SUBSCRIPTION_PROXY_INBOUND_TAG: &str = "subscription-in";
 pub const SUBSCRIPTION_PROXY_USERNAME: &str = "satelite-subscription";
@@ -440,6 +458,26 @@ pub fn build_singbox_config_with_chain_context(
     }
     outbounds.push(direct_outbound);
     outbounds.push(json!({ "type": "block", "tag": "block" }));
+    let service_diag = service_diag_port(opts.mixed_port, opts.api_port, &opts.extra_inbounds)
+        .filter(|_| !opts.api_secret.is_empty());
+    if service_diag.is_some() {
+        let members: Vec<String> = outbounds
+            .iter()
+            .filter(|outbound| {
+                !matches!(
+                    outbound.get("type").and_then(Value::as_str),
+                    Some("selector" | "urltest" | "dns" | "block" | "shadowtls")
+                )
+            })
+            .filter_map(|outbound| {
+                outbound
+                    .get("tag")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        outbounds.push(json!({"type":"selector","tag":SERVICE_DIAG_SELECTOR_TAG,"outbounds":members,"default":"direct"}));
+    }
 
     if opts.tls_fragment_singbox {
         for outbound in &mut outbounds {
@@ -526,6 +564,9 @@ pub fn build_singbox_config_with_chain_context(
             "outbound": DIAG_SELECTOR_TAG,
         }));
     }
+    if service_diag.is_some() {
+        route_rules.insert(1.min(route_rules.len()), json!({"inbound":[SERVICE_DIAG_INBOUND_TAG],"action":"route","outbound":SERVICE_DIAG_SELECTOR_TAG}));
+    }
     // Subscription downloads use a private authenticated inbound. Route that
     // inbound before China/CDN/user rules so "via proxy" really means the
     // current proxy group even when the URL itself is classified as direct.
@@ -610,7 +651,6 @@ pub fn build_singbox_config_with_chain_context(
             "listen_port": inb.port
         }));
     }
-
     if has_diag {
         inbounds.push(json!({
             "type": "mixed",
@@ -641,6 +681,10 @@ pub fn build_singbox_config_with_chain_context(
         }));
     }
 
+    if let Some(port) = service_diag {
+        inbounds.push(json!({"type":"mixed","tag":SERVICE_DIAG_INBOUND_TAG,"listen":"127.0.0.1","listen_port":port,
+            "users":[{"username":"service-probe","password":opts.api_secret}]}));
+    }
     let mut value = json!({
         "log": {
             "level": opts.log_level,
@@ -3147,7 +3191,7 @@ mod tests {
         )
         .unwrap();
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 5);
+        assert_eq!(inbounds.len(), 6);
         assert_eq!(inbounds[0]["tag"], "mixed-in");
         assert_eq!(inbounds[1]["tag"], SUBSCRIPTION_PROXY_INBOUND_TAG);
         assert_eq!(inbounds[2]["type"], "http");
@@ -3249,7 +3293,30 @@ mod tests {
         assert_eq!(built.outbound_tags.len(), 1);
         assert_eq!(built.selected_tag, "node-aabbccddeeff0011");
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 2);
+        assert_eq!(inbounds.len(), 3);
+        let service_inbound = inbounds
+            .iter()
+            .find(|entry| entry["tag"] == SERVICE_DIAG_INBOUND_TAG)
+            .unwrap();
+        assert_eq!(service_inbound["listen"], "127.0.0.1");
+        assert_eq!(
+            service_inbound["users"],
+            json!([{"username":"service-probe","password":"test"}])
+        );
+        let service_selector = built.value["outbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["tag"] == SERVICE_DIAG_SELECTOR_TAG)
+            .unwrap();
+        assert!(service_selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("direct")));
+        assert!(service_selector["outbounds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("node-aabbccddeeff0011")));
         assert_eq!(inbounds[0]["type"], "mixed");
         assert_eq!(inbounds[1]["tag"], SUBSCRIPTION_PROXY_INBOUND_TAG);
         assert_eq!(inbounds[1]["type"], "mixed");
@@ -3267,8 +3334,9 @@ mod tests {
         );
         let route_rules = built.value["route"]["rules"].as_array().unwrap();
         assert_eq!(route_rules[0]["action"], "sniff");
+        assert_eq!(route_rules[1]["outbound"], SERVICE_DIAG_SELECTOR_TAG);
         assert_eq!(
-            route_rules[1],
+            route_rules[2],
             json!({
                 "inbound": [SUBSCRIPTION_PROXY_INBOUND_TAG],
                 "action": "route",
@@ -3529,7 +3597,7 @@ mod tests {
         )
         .unwrap();
         let inbounds = built.value["inbounds"].as_array().unwrap();
-        assert_eq!(inbounds.len(), 3);
+        assert_eq!(inbounds.len(), 4);
         assert_eq!(inbounds[2]["type"], "tun");
         assert_eq!(inbounds[2]["auto_route"], true);
         assert_eq!(inbounds[2]["stack"], "mixed");

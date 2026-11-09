@@ -5,6 +5,7 @@ pub mod exit_ip;
 pub mod ip_metadata;
 pub mod network_probe;
 pub mod service_status;
+pub mod service_route;
 pub mod http_body;
 pub mod import;
 pub mod latency;

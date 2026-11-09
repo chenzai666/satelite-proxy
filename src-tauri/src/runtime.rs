@@ -1228,6 +1228,21 @@ impl Runtime {
             }
             ensure_listen_port_available(diag_port, "Chain diagnostics")?;
         }
+        let service_diag_port = built
+            .value
+            .get("inbounds")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("tag").and_then(serde_json::Value::as_str)
+                        == Some(crate::config::SERVICE_DIAG_INBOUND_TAG)
+                })
+            })
+            .and_then(|item| item.get("listen_port").and_then(serde_json::Value::as_u64))
+            .and_then(|port| u16::try_from(port).ok());
+        if let Some(port) = service_diag_port {
+            ensure_listen_port_available(port, "Service diagnostics")?;
+        }
         let config_path = write_active_config(app_data_dir, &built)?;
         let config_ready_ms = total_started.elapsed().as_millis();
         if store.settings.current_node_id.is_none() {
@@ -1240,6 +1255,7 @@ impl Runtime {
         // TUN creates utun + routes → macOS setuid sing-box / Windows UAC.
         let elevated = store.settings.tun_enabled;
         let mut auxiliary_ports = vec![subscription_port];
+        auxiliary_ports.extend(service_diag_port);
         auxiliary_ports.extend(store.settings.extra_inbounds.iter().map(|inb| inb.port));
         if has_chain_diag {
             auxiliary_ports.push(crate::config::DIAG_INBOUND_PORT);
@@ -1259,7 +1275,8 @@ impl Runtime {
         self.last_config_path = Some(config_path.clone());
         self.last_binary_path = Some(bin.clone());
 
-        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
+        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret)
+            .with_service_diagnostics(service_diag_port.is_some());
         // A slow Wintun adapter needs an evidence-gated extension; otherwise
         // killing the core at the old 10s deadline makes the next attempt
         // contend with the same half-created adapter.
@@ -1795,6 +1812,31 @@ impl Runtime {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(generate_api_secret);
         let built = build_mihomo_config(&nodes, &build_options(store, secret.clone()))?;
+        let service_diag_port = serde_yaml::from_str::<serde_yaml::Value>(&built.yaml)
+            .ok()
+            .and_then(|doc| {
+                doc.get("listeners")
+                    .and_then(serde_yaml::Value::as_sequence)
+                    .cloned()
+            })
+            .and_then(|items| {
+                items.into_iter().find(|item| {
+                    item.get("name").and_then(serde_yaml::Value::as_str)
+                        == Some(crate::config::SERVICE_DIAG_INBOUND_TAG)
+                })
+            })
+            .and_then(|item| item.get("port").and_then(serde_yaml::Value::as_u64))
+            .and_then(|port| u16::try_from(port).ok());
+        if let Some(port) = service_diag_port {
+            ensure_listen_port_available(port, "Service diagnostics")?;
+        }
+        let mut service_auxiliary_ports: Vec<u16> = store
+            .settings
+            .extra_inbounds
+            .iter()
+            .map(|item| item.port)
+            .collect();
+        service_auxiliary_ports.extend(service_diag_port);
         let config_path = write_active_yaml_config(app_data_dir, &built.yaml)?;
         store.settings.clash_api_secret = Some(secret.clone());
         // Mirror the selected node onto the store when the persisted pick is
@@ -1826,19 +1868,15 @@ impl Runtime {
             &log_dir,
             store.settings.mixed_port,
             Some(store.settings.api_port),
-            &store
-                .settings
-                .extra_inbounds
-                .iter()
-                .map(|inb| inb.port)
-                .collect::<Vec<_>>(),
+            &service_auxiliary_ports,
             elevated,
             resource_dir,
         )?;
         self.last_config_path = Some(config_path.clone());
         self.last_binary_path = Some(bin.clone());
 
-        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret);
+        let api = ClashApi::new("127.0.0.1", store.settings.api_port, &secret)
+            .with_service_diagnostics(service_diag_port.is_some());
         let max_wait = if elevated {
             Duration::from_secs(10)
         } else {
@@ -2598,6 +2636,11 @@ fn compute_sidecar_plan_impl(
     reserved.insert(settings.mixed_port);
     reserved.insert(settings.api_port);
     reserved.insert(crate::config::DIAG_INBOUND_PORT);
+    reserved.extend(crate::config::service_diag_port(
+        settings.mixed_port,
+        settings.api_port,
+        &settings.extra_inbounds,
+    ));
     for inb in &settings.extra_inbounds {
         reserved.insert(inb.port);
     }

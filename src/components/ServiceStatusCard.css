@@ -48,6 +48,7 @@ button.instrument.service-status-card:focus-visible,
 .service-status-name { display: flex; align-items: center; gap: 7px; min-width: 0; overflow-wrap: anywhere; }
 .service-status-card-row .service-status-name { flex: 1 1 78px; font-size: .76rem; font-weight: 600; }
 .service-status-card-row .service-status-glyph { width: 17px; height: 17px; flex-basis: 17px; color: var(--muted); }
+.service-status-card-exit { flex: 0 1 100%; min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-size: .68rem; line-height: 1.5; color: var(--muted); font-variant-numeric: tabular-nums; }
 .service-status-card-row .service-status-state { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
 .service-status-available { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .service-status-card-row .service-status-state[data-status]::before { content: ""; width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
@@ -67,8 +68,8 @@ button.instrument.service-status-card:focus-visible,
 .service-status-state[data-status="coming_soon"],
 .service-status-state[data-status="http_error"] { color: var(--warning, #ae7430); }
 .service-status-state[data-status="timeout"],
-.service-status-state[data-status="failed"],
 .service-status-state[data-status="network_error"] { color: var(--danger); }
+.service-status-state[data-status="failed"] { color: var(--muted); }
 .service-status-error-mark { color: var(--danger); margin-inline-end: 4px; font-weight: 700; }
 .service-status-card-hint { color: var(--muted); font-size: .65rem; margin-top: 2px; }
 .service-status-error { color: var(--danger); font-size: .72rem; margin: 0; }
@@ -96,6 +97,20 @@ button.instrument.service-status-card:focus-visible,
 .service-status-latency { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; text-align: end; }
 .service-status-row-meta { display: flex; flex-wrap: wrap; gap: 5px 14px; margin-top: 9px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
 .service-status-row-meta > span { overflow-wrap: anywhere; }
+.service-status-reasons { display: grid; gap: 3px; margin-top: 9px; color: var(--muted); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
+.service-status-reasons > p { margin: 0; }
+.service-status-routes { min-width: 0; margin-top: 10px; color: var(--muted); font-size: .72rem; line-height: 1.5; overflow-wrap: anywhere; }
+.service-status-route-heading, .service-status-route-host { margin: 0 0 4px; }
+.service-status-route-heading { color: var(--text); font-weight: 600; }
+.service-status-route-fields { display: grid; gap: 3px; margin: 0; min-width: 0; }
+.service-status-route-fields > div { display: grid; grid-template-columns: minmax(0, 90px) minmax(0, 1fr); gap: 8px; min-width: 0; }
+.service-status-route-fields dt, .service-status-route-fields dd { margin: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.service-status-route-fields dd { color: var(--text); font-variant-numeric: tabular-nums; }
+.service-status-exit-source { color: var(--muted); }
+.service-status-auxiliary { margin-top: 8px; min-width: 0; }
+.service-status-auxiliary > summary { cursor: pointer; border-radius: 4px; overflow-wrap: anywhere; }
+.service-status-auxiliary > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.service-status-auxiliary > div { margin-top: 8px; padding-inline-start: 10px; border-inline-start: 2px solid var(--border-strong); min-width: 0; }
 .service-status-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin-inline-start: auto; }
 .service-status-toggle input { margin: 0; accent-color: var(--primary); width: 15px; height: 15px; cursor: pointer; }
 .service-status-toggle input:disabled { cursor: not-allowed; }

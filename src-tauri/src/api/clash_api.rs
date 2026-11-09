@@ -60,6 +60,7 @@ pub struct ClashApi {
     pub base: String,
     pub secret: String,
     active: Arc<AtomicBool>,
+    internal_service_diagnostics: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,7 +104,13 @@ impl ClashApi {
             base: format!("http://{host}:{port}"),
             secret: secret.to_string(),
             active: Arc::new(AtomicBool::new(true)),
+            internal_service_diagnostics: false,
         }
+    }
+
+    pub fn with_service_diagnostics(mut self, enabled: bool) -> Self {
+        self.internal_service_diagnostics = enabled;
+        self
     }
 
     pub fn deactivate(&self) {
@@ -222,6 +229,11 @@ impl ClashApi {
         let mut groups = proxies
             .iter()
             .filter_map(|(name, value)| {
+                if self.internal_service_diagnostics
+                    && name == crate::config::SERVICE_DIAG_SELECTOR_TAG
+                {
+                    return None;
+                }
                 let members = value.get("all")?.as_array()?;
                 if members.is_empty() {
                     return None;
@@ -241,6 +253,10 @@ impl ClashApi {
                     all: members
                         .iter()
                         .filter_map(serde_json::Value::as_str)
+                        .filter(|name| {
+                            !self.internal_service_diagnostics
+                                || *name != crate::config::SERVICE_DIAG_SELECTOR_TAG
+                        })
                         .map(str::to_string)
                         .collect(),
                     alive: value.get("alive").and_then(serde_json::Value::as_bool),
@@ -780,7 +796,7 @@ mod parse_tests {
             assert!(request
                 .to_ascii_lowercase()
                 .contains("authorization: bearer test-secret\r\n"));
-            let body = r#"{"proxies":{"node-a":{"type":"VLESS","alive":true},"搜索引擎":{"type":"Selector","now":"proxy","all":["proxy","DIRECT"]},"auto":{"type":"URLTest","now":"node-a","all":["node-a"]},"proxy":{"type":"Selector","now":"auto","all":["auto","node-a"]}}}"#;
+            let body = r#"{"proxies":{"node-a":{"type":"VLESS","alive":true},"service-diag":{"type":"Selector","now":"node-a","all":["node-a","DIRECT"]},"搜索引擎":{"type":"Selector","now":"proxy","all":["proxy","DIRECT","service-diag"]},"auto":{"type":"URLTest","now":"node-a","all":["node-a"]},"proxy":{"type":"Selector","now":"auto","all":["auto","node-a"]}}}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -792,6 +808,7 @@ mod parse_tests {
         });
 
         let groups = ClashApi::new("127.0.0.1", port, "test-secret")
+            .with_service_diagnostics(true)
             .list_proxy_groups()
             .expect("list policy groups");
         server.join().expect("fake clash api server");

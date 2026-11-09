@@ -3,9 +3,10 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { createPortal } from "react-dom";
 import { useI18n, type MessageKey } from "../i18n";
 import {
-  createServiceStatusMonitor, MAX_VISIBLE_SERVICES, readVisibleServiceIds,
+  createServiceStatusMonitor, MAX_VISIBLE_SERVICES, readVisibleServiceIds, primaryServiceRoute,
   SERVICE_STATUS_CATALOG, SERVICE_STATUS_STORAGE_KEY,
-  type ServiceId, type ServiceStatus, type ServiceStatusBatch, type ServiceStatusResult,
+  SERVICE_REASON_MESSAGES, SERVICE_REGION_REASON_MESSAGES,
+  type ServiceId, type ServiceStatus, type ServiceStatusBatch, type ServiceStatusResult, type ServiceRequestRoute,
 } from "../serviceStatus";
 import { GlassButton } from "./GlassButton";
 import "./ServiceStatusCard.css";
@@ -111,7 +112,7 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
         event.stopPropagation();
         close();
       } else if (event.key === "Tab" && dialog) {
-        const elements = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [tabindex='0']")];
+        const elements = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), summary, [tabindex='0']")];
         const index = elements.indexOf(document.activeElement as HTMLElement);
         if (index < 0 || (event.shiftKey && index === 0) || (!event.shiftKey && index === elements.length - 1)) {
           event.preventDefault();
@@ -168,6 +169,26 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
     return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US");
   }
 
+  function routeDetails(route?: ServiceRequestRoute) {
+    const unknown = t("serviceStatus.routeNotConfirmed");
+    const matchLabel = !route || route.matchStatus === "not_observed" ? unknown
+      : t(route.matchStatus === "unsupported" ? "serviceStatus.routeUnsupported" : "serviceStatus.routeMatched");
+    return <div className="service-status-route-evidence">
+      <p className="service-status-route-host">{route?.host && <span>{route.host} · </span>}{matchLabel}</p>
+      <dl className="service-status-route-fields">
+        <div><dt>{t("serviceStatus.exitIp")}</dt><dd>
+          {route?.exitIp ?? unknown}
+          {route?.exitIp && <span className="service-status-exit-source"> · {route.exitSource
+            ? t(route.exitSource === "service_response" ? "serviceStatus.exitServiceResponse" : "serviceStatus.exitPinnedProbe")
+            : t("serviceStatus.exitSourceUnconfirmed")}{route.exitCached ? ` · ${t("serviceStatus.exitCached")}` : ""}</span>}
+        </dd></div>
+        <div><dt>{t("serviceStatus.matchedRule")}</dt><dd>{[route?.rule, route?.rulePayload].filter(Boolean).join(": ") || unknown}</dd></div>
+        <div><dt>{t("serviceStatus.policyPath")}</dt><dd>{route?.chains?.length ? route.chains.join(" → ") : unknown}</dd></div>
+        <div><dt>{t("serviceStatus.outboundTag")}</dt><dd>{route?.outboundTag || unknown}</dd></div>
+      </dl>
+    </div>;
+  }
+
   const failed = Object.values(errors).some(Boolean);
   const allIds = SERVICE_STATUS_CATALOG.map(service => service.id);
 
@@ -180,12 +201,16 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
         <span className="service-status-card-arrow" aria-hidden="true">↗</span>
       </span>
       <span className="service-status-card-rows">
-        {visibleIds.map(id => <span className="service-status-card-row" key={id} data-service-id={id}>
+        {visibleIds.map(id => {
+          const exitIp = primaryServiceRoute(results[id])?.exitIp;
+          return <span className="service-status-card-row" key={id} data-service-id={id}>
           <span className="service-status-name"><ServiceGlyph id={id} />{SERVICE_STATUS_CATALOG.find(service => service.id === id)?.title}</span>
           <span className="service-status-state" data-status={pending.includes(id) ? undefined : results[id]?.status} title={statusText(id)}>
             {errors[id] && <span className="service-status-error-mark" aria-label={t("serviceStatus.failed")}>!</span>}{cardStatus(id)}
           </span>
-        </span>)}
+          {exitIp && <span className="service-status-card-exit">{t("serviceStatus.exitIp")}: {exitIp}</span>}
+        </span>;
+        })}
       </span>
       <span className="service-status-card-hint">{t("serviceStatus.httpOnly")}</span>
       {failed && <span className="service-status-error" role="status">{t("serviceStatus.failed")}</span>}
@@ -214,6 +239,7 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
             {SERVICE_STATUS_CATALOG.map(service => {
               const result = results[service.id];
               const selected = visibleIds.includes(service.id);
+              const auxiliary = result?.routes?.filter(route => route.role === "auxiliary") ?? [];
               return <li className="service-status-row" data-service-id={service.id} key={service.id}>
                 <div className="service-status-row-main">
                   <span className="service-status-name"><ServiceGlyph id={service.id} />{service.title}</span>
@@ -238,6 +264,18 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
                     {t("serviceStatus.showOnCard")}
                   </label>
                 </div>
+                <div className="service-status-routes">
+                  <p className="service-status-route-heading">{t("serviceStatus.primaryRequest")}</p>
+                  {routeDetails(primaryServiceRoute(result))}
+                  {auxiliary.length > 0 && <details className="service-status-auxiliary">
+                    <summary>{t("serviceStatus.auxiliaryRequests", { count: auxiliary.length })}</summary>
+                    {auxiliary.map((route, index) => <div key={`${route.host}:${index}`}>{routeDetails(route)}</div>)}
+                  </details>}
+                </div>
+                {(result?.reason || result?.regionReason) && <div className="service-status-reasons">
+                  {result.reason && <p>{t("serviceStatus.reason")}: {t(SERVICE_REASON_MESSAGES[result.reason])}</p>}
+                  {result.regionReason && <p>{t("serviceStatus.regionReason")}: {t(SERVICE_REGION_REASON_MESSAGES[result.regionReason])}</p>}
+                </div>}
                 {errors[service.id] && <p className="service-status-error">{t(result ? "serviceStatus.failedRetained" : "serviceStatus.failed")}</p>}
               </li>;
             })}

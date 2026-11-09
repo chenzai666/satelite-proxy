@@ -118,10 +118,18 @@ mockIPC((command, payload) => {
       const failing = state.serviceFailures > 0;
       if (failing) { state.serviceFailures--; throw new Error("core transitioning"); }
       return {
-      results: (args.ids as string[]).map(id => ({ id, status: id === "claude" ? state.claudeStatus : id === "youtube" ? "available" : id === "chatgpt" ? "restricted" : "reachable",
+      results: (args.ids as string[]).map(id => ({ id, status: id === "claude" ? state.claudeStatus : ["youtube", "chatgpt"].includes(id) ? "available" : "reachable",
         checkKind: ["google", "github"].includes(id) ? "reachability" : "availability",
-        ...(id === "claude" ? { region: state.claudeRegion || undefined } : id === "youtube" ? { region: "US" } : {}),
+        ...(id === "claude" ? { region: state.claudeRegion || undefined } : ["youtube", "chatgpt"].includes(id) ? { region: "US" } : {}),
         latencyMs: id === "github" ? 576 : 160, httpStatus: id === "claude" ? state.claudeHttp : id === "chatgpt" ? 403 : 200,
+        ...(id === "chatgpt" ? { reason: "expected_denial" } : {}),
+        routes: [
+          { role: "primary", host: `${id}.fixture.test`, matchStatus: "matched", chains: [id === "github" ? "DIRECT" : "US-AI", "服务分流"],
+            rule: "DomainSuffix", rulePayload: `${id}.fixture.test`, outboundTag: id === "github" ? "DIRECT" : "US-AI",
+            exitIp: id === "github" ? "192.0.2.8" : "2001:db8::8", exitSource: "pinned_outbound_probe", exitCached: false },
+          ...(id === "chatgpt" ? [{ role: "auxiliary", host: "chat.openai.com", matchStatus: "matched", chains: ["DIRECT"],
+            rule: "DomainSuffix", rulePayload: "chat.openai.com", outboundTag: "DIRECT", exitIp: "198.51.100.9", exitSource: "service_response" }] : []),
+        ],
         checkedAt: 1700000000000, viaProxy: status.running })),
       checkedAt: 1700000000000, viaProxy: status.running,
     }; }

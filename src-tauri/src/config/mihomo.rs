@@ -346,8 +346,40 @@ pub fn build_mihomo_config(
         str_yaml("dns"),
         Yaml::Mapping(build_dns(opts, &opts.rule_sets)),
     );
-    if !opts.extra_inbounds.is_empty() {
-        root.insert(str_yaml("listeners"), listeners_block(opts));
+    let mut listeners = match listeners_block(opts) {
+        Yaml::Sequence(items) => items,
+        _ => Vec::new(),
+    };
+    let service_diag =
+        super::service_diag_port(opts.mixed_port, opts.api_port, &opts.extra_inbounds)
+            .filter(|_| !opts.api_secret.is_empty())
+            .filter(|_| {
+                !groups.iter().chain(proxies.iter()).any(|entry| {
+                    entry.get(str_yaml("name")).and_then(Yaml::as_str)
+                        == Some(super::SERVICE_DIAG_SELECTOR_TAG)
+                })
+            });
+    if let Some(port) = service_diag {
+        let mut members: Vec<Yaml> = proxies
+            .iter()
+            .filter_map(|entry| entry.get(str_yaml("name")).cloned())
+            .collect();
+        members.push(str_yaml("DIRECT"));
+        members.push(str_yaml(DIRECT_PROXY));
+        let mut diagnostic = Mapping::new();
+        diagnostic.insert(str_yaml("name"), str_yaml(super::SERVICE_DIAG_SELECTOR_TAG));
+        diagnostic.insert(str_yaml("type"), str_yaml("select"));
+        diagnostic.insert(str_yaml("hidden"), Yaml::Bool(true));
+        diagnostic.insert(str_yaml("proxies"), Yaml::Sequence(members));
+        groups.push(diagnostic);
+        let listener: Yaml = serde_yaml::to_value(serde_json::json!({
+            "name":super::SERVICE_DIAG_INBOUND_TAG,"type":"mixed","listen":"127.0.0.1","port":port,
+            "proxy":super::SERVICE_DIAG_SELECTOR_TAG,"users":[{"username":"service-probe","password":opts.api_secret}]
+        })).map_err(|error| AppError::Config(format!("服务诊断入口生成失败: {error}")))?;
+        listeners.push(listener);
+    }
+    if !listeners.is_empty() {
+        root.insert(str_yaml("listeners"), Yaml::Sequence(listeners));
     }
     let mut proxies: Vec<Yaml> = proxies.into_iter().map(Yaml::Mapping).collect();
     proxies.push(Yaml::Mapping(direct_proxy(opts)));
@@ -2231,6 +2263,44 @@ mod tests {
             tls_fragment_singbox: false,
             tls_fragment_xray: false,
         }
+    }
+
+    #[test]
+    fn service_diagnostic_is_authenticated_loopback_and_keeps_user_groups() {
+        let mut opts = default_opts();
+        opts.api_secret = "diagnostic-fixture".into();
+        let node = vless_node("private-test", None);
+        let doc = parse(&build_mihomo_config(&[node], &opts).unwrap());
+        let groups = doc["proxy-groups"].as_sequence().unwrap();
+        let group = groups
+            .iter()
+            .find(|item| item["name"].as_str() == Some(super::super::SERVICE_DIAG_SELECTOR_TAG))
+            .unwrap();
+        assert_eq!(group["hidden"].as_bool(), Some(true));
+        assert!(group["proxies"]
+            .as_sequence()
+            .unwrap()
+            .contains(&str_yaml(DIRECT_PROXY)));
+        let listener = doc["listeners"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|item| item["name"].as_str() == Some(super::super::SERVICE_DIAG_INBOUND_TAG))
+            .unwrap();
+        assert_eq!(listener["listen"].as_str(), Some("127.0.0.1"));
+        assert_eq!(
+            listener["proxy"].as_str(),
+            Some(super::super::SERVICE_DIAG_SELECTOR_TAG)
+        );
+        assert_eq!(
+            listener["users"][0]["username"].as_str(),
+            Some("service-probe")
+        );
+        assert_eq!(
+            listener["users"][0]["password"].as_str(),
+            Some("diagnostic-fixture")
+        );
+        assert_eq!(doc["mode"].as_str(), Some("rule"));
     }
 
     fn parse(built: &BuiltMihomoConfig) -> serde_yaml::Value {

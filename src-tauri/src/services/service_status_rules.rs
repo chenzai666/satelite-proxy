@@ -6,6 +6,9 @@ use regex::Regex;
 use serde_json::Value;
 use std::time::Duration;
 
+#[path = "service_video_rules.rs"]
+mod video;
+
 const SMALL_LIMIT: usize = 64 * 1024;
 const HTML_LIMIT: usize = 512 * 1024;
 const LARGE_LIMIT: usize = 8 * 1024 * 1024;
@@ -20,6 +23,8 @@ pub(super) struct Outcome {
     pub status: ServiceStatus,
     pub http_status: Option<u16>,
     pub region: Option<String>,
+    pub reason: Option<&'static str>,
+    pub region_reason: Option<&'static str>,
 }
 
 impl Outcome {
@@ -28,6 +33,8 @@ impl Outcome {
             status,
             http_status,
             region: None,
+            reason: None,
+            region_reason: None,
         }
     }
 }
@@ -43,8 +50,7 @@ pub(super) fn check_kind(id: &str) -> &'static str {
 fn body_limit(id: &str) -> usize {
     match id {
         "google" | "github" => 0,
-        "gemini" | "prime" | "tiktok" => LARGE_LIMIT,
-        "youtube" | "netflix" | "disney" => HTML_LIMIT,
+        "youtube" | "gemini" | "prime" | "tiktok" | "netflix" | "disney" => LARGE_LIMIT,
         _ => SMALL_LIMIT,
     }
 }
@@ -95,7 +101,7 @@ fn network_error(error: &reqwest::Error, code: Option<u16>) -> Outcome {
     )
 }
 
-async fn get(client: &reqwest::Client, url: &'static str, limit: usize) -> Result<Reply, Outcome> {
+async fn get(client: &reqwest::Client, url: &str, limit: usize) -> Result<Reply, Outcome> {
     // 客户端由 network_probe::build_client 提供 no_proxy、固定内核入口和禁止跳转。
     let mut response = client
         .get(url)
@@ -104,6 +110,7 @@ async fn get(client: &reqwest::Client, url: &'static str, limit: usize) -> Resul
         .send()
         .await
         .map_err(|error| network_error(&error, None))?;
+    crate::services::service_route::observe(&response, url).await;
     let code = response.status().as_u16();
     let mut reply = Reply {
         code,
@@ -122,25 +129,37 @@ async fn get(client: &reqwest::Client, url: &'static str, limit: usize) -> Resul
     if limit == 0 {
         return Ok(reply);
     }
-    let failed = || Outcome::new(ServiceStatus::Failed, Some(code));
+    let failed = |reason| {
+        let mut outcome = Outcome::new(ServiceStatus::Failed, Some(code));
+        outcome.reason = Some(reason);
+        outcome
+    };
     if response
         .headers()
         .get(reqwest::header::CONTENT_ENCODING)
         .is_some_and(|encoding| encoding != "identity")
     {
-        return Err(failed());
+        return Err(failed("unsupported_encoding"));
     }
-    let mut body = Body::new(limit, response.content_length()).ok_or_else(failed)?;
+    let mut body =
+        Body::new(limit, response.content_length()).ok_or_else(|| failed("response_too_large"))?;
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| network_error(&error, Some(code)))?
     {
         if !body.push(&chunk) {
-            return Err(failed());
+            return Err(failed("response_too_large"));
         }
     }
-    reply.body = String::from_utf8(body.bytes).map_err(|_| failed())?;
+    reply.body = String::from_utf8(body.bytes).map_err(|_| failed("invalid_response"))?;
+    if matches!(url, "https://claude.ai/cdn-cgi/trace" | CHATGPT_TRACE)
+        && trace_region(&reply).is_some()
+    {
+        if let Some(ip) = reply.body.lines().find_map(|line| line.strip_prefix("ip=")) {
+            crate::services::service_route::record_service_ip(url, ip.trim());
+        }
+    }
     Ok(reply)
 }
 
@@ -256,6 +275,7 @@ fn judge(id: &str, reply: &Reply) -> Outcome {
     let mut result = Outcome::new(fallback(reply.code), Some(reply.code));
     if challenged(reply) {
         result.status = ServiceStatus::Restricted;
+        result.reason = Some("challenge");
         return result;
     }
     // 网关错误、登录重定向等不能被正文片段升级为可用。
@@ -283,6 +303,7 @@ fn judge(id: &str, reply: &Reply) -> Outcome {
                 && matches!(reply.code, 200 | 403)
             {
                 // 此固定 iOS 入口的预期拒绝表明已进入服务逻辑，而非任意 403。
+                result.reason = Some("expected_denial");
                 ServiceStatus::Available
             } else {
                 fallback(reply.code)
@@ -573,6 +594,32 @@ fn auxiliary_budget(started: std::time::Instant, maximum: Duration) -> Duration 
         .min(maximum)
 }
 
+async fn chatgpt_auxiliary<T, C>(
+    trace: T,
+    compliance: C,
+    budget: Duration,
+) -> (Option<String>, bool, Option<&'static str>)
+where
+    T: std::future::Future<Output = Result<Reply, Outcome>>,
+    C: std::future::Future<Output = Result<Reply, Outcome>>,
+{
+    let deadline = tokio::time::Instant::now() + budget;
+    let (trace, compliance) = tokio::join!(
+        tokio::time::timeout_at(deadline, trace),
+        tokio::time::timeout_at(deadline, compliance),
+    );
+    let (region, reason) = match trace {
+        Ok(Ok(reply)) => match trace_region(&reply) {
+            Some(region) => (Some(region), None),
+            None => (None, Some("invalid_response")),
+        },
+        Err(_) => (None, Some("lookup_timeout")),
+        _ => (None, Some("invalid_response")),
+    };
+    let denied = matches!(compliance, Ok(Ok(ref reply)) if judge("chatgpt", reply).status == ServiceStatus::UnsupportedRegion);
+    (region, denied, reason)
+}
+
 /// 整条服务规则共享外层单次 4s/总 8s 预算，不因多请求延长重试或改换路线。
 pub(super) async fn probe(client: &reqwest::Client, service: Service) -> Outcome {
     let started = std::time::Instant::now();
@@ -583,54 +630,29 @@ pub(super) async fn probe(client: &reqwest::Client, service: Service) -> Outcome
     let mut result = judge(service.id, &first);
     match service.id {
         "chatgpt" => {
-            // 辅助请求短超时且只补充地区/明确 compliance 拒绝，保留主请求的 HTTP 状态。
-            let auxiliary = async {
-                let mut region = None;
-                let mut denied = false;
-                if let Ok(reply) = get(client, CHATGPT_COMPLIANCE, SMALL_LIMIT).await {
-                    denied = judge("chatgpt", &reply).status == ServiceStatus::UnsupportedRegion;
-                }
-                if let Ok(reply) = get(client, CHATGPT_TRACE, SMALL_LIMIT).await {
-                    region = trace_region(&reply);
-                }
-                (region, denied)
-            };
-            if let Ok((region, denied)) = tokio::time::timeout(
-                auxiliary_budget(started, Duration::from_millis(700)),
-                auxiliary,
+            // 两项独立并发；慢合规接口不得丢弃已经拿到的地区。
+            let (region, denied, region_reason) = chatgpt_auxiliary(
+                get(client, CHATGPT_TRACE, SMALL_LIMIT),
+                get(client, CHATGPT_COMPLIANCE, SMALL_LIMIT),
+                auxiliary_budget(started, Duration::from_millis(2500)),
             )
-            .await
-            {
-                merge_auxiliary(&mut result, region, denied);
-            }
+            .await;
+            merge_auxiliary(&mut result, region, denied);
+            result.region_reason = if result.region.is_none() {
+                region_reason
+            } else {
+                None
+            };
         }
-        "netflix" => {
-            if !matches!(
-                result.status,
-                ServiceStatus::Restricted
-                    | ServiceStatus::Blocked
-                    | ServiceStatus::UnsupportedRegion
-                    | ServiceStatus::HttpError
-            ) {
-                let second = match get(client, NETFLIX_SECOND, HTML_LIMIT).await {
-                    Ok(reply) => reply,
-                    Err(error) => return error,
-                };
-                result = netflix_pair(&first, &second);
-            }
-            if matches!(
-                result.status,
-                ServiceStatus::Available | ServiceStatus::OriginalsOnly
-            ) {
-                if let Ok(Ok(reply)) = tokio::time::timeout(
-                    auxiliary_budget(started, Duration::from_millis(500)),
-                    get(client, NETFLIX_REGION, 0),
-                )
-                .await
-                {
-                    result.region = redirect_region(&reply);
-                }
-            }
+        "netflix" | "disney" | "spotify" => {
+            result = video::probe(
+                client,
+                service,
+                first,
+                result,
+                auxiliary_budget(started, super::ATTEMPT_TIMEOUT),
+            )
+            .await;
         }
         "bilibili" if result.status == ServiceStatus::UnsupportedRegion => {
             result = match get(client, BILIBILI_SECOND, SMALL_LIMIT).await {
@@ -640,6 +662,12 @@ pub(super) async fn probe(client: &reqwest::Client, service: Service) -> Outcome
             // 两个片库的播放权不代表单个国家，CN/HK/TW 不据此推导。
         }
         _ => {}
+    }
+    if result.region.is_none() && result.region_reason.is_none() {
+        result.region_reason = Some("not_provided");
+    }
+    if result.status == ServiceStatus::Failed && result.reason.is_none() {
+        result.reason = Some("unrecognized_response");
     }
     result
 }
@@ -825,6 +853,39 @@ mod tests {
             ServiceStatus::Available,
             Some("US"),
         );
+    }
+
+    #[test]
+    fn youtube_region_and_offer_beyond_old_half_megabyte_limit_are_preserved() {
+        let mut body = Body::new(body_limit("youtube"), Some(960_623)).unwrap();
+        assert!(body.push(&vec![b' '; 600_000]));
+        assert!(body.push(br#"{"GL":"US"} YouTube Premium ad-free"#));
+        let reply = reply(200, &String::from_utf8(body.bytes).unwrap());
+        assert_eq!(judge("youtube", &reply).status, ServiceStatus::Available);
+        assert_eq!(judge("youtube", &reply).region.as_deref(), Some("US"));
+        assert!(Body::new(body_limit("youtube"), Some(LARGE_LIMIT as u64 + 1)).is_none());
+    }
+
+    #[tokio::test]
+    async fn chatgpt_fast_region_survives_slow_compliance() {
+        let trace = async { Ok(reply(200, "ip=8.8.8.8\nloc=US\n")) };
+        let compliance = std::future::pending::<Result<Reply, Outcome>>();
+        let (region, denied, reason) =
+            chatgpt_auxiliary(trace, compliance, Duration::from_millis(10)).await;
+        assert_eq!(region.as_deref(), Some("US"));
+        assert!(!denied);
+        assert_eq!(reason, None);
+    }
+
+    #[tokio::test]
+    async fn chatgpt_region_timeout_and_denial_are_independent() {
+        let trace = std::future::pending::<Result<Reply, Outcome>>();
+        let compliance = async { Ok(reply(403, "unsupported_country")) };
+        let (region, denied, reason) =
+            chatgpt_auxiliary(trace, compliance, Duration::from_millis(10)).await;
+        assert!(region.is_none());
+        assert!(denied);
+        assert_eq!(reason, Some("lookup_timeout"));
     }
 
     #[test]

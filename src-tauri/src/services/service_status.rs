@@ -3,9 +3,11 @@
 #[path = "service_status_rules.rs"]
 mod rules;
 
+use super::service_route::{self, RequestContext, RequestRoute, RouteContext};
 use crate::services::network_probe::{build_client, ProbeRoute};
 use serde::Serialize;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, timeout_at, Instant as Deadline};
@@ -114,6 +116,12 @@ pub struct ServiceStatusResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
     pub check_kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routes: Vec<RequestRoute>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -223,24 +231,38 @@ async fn probe_one(
     client: reqwest::Client,
     service: Service,
     via_proxy: bool,
+    context: Arc<RouteContext>,
 ) -> ServiceStatusResult {
     let started = Instant::now();
-    let outcome = probe_with_retry(
-        || rules::probe(&client, service),
-        ATTEMPT_TIMEOUT,
-        REQUEST_TIMEOUT,
-        RETRY_DELAY,
+    let request = RequestContext::new(context, service.url);
+    let outcome = service_route::scope(
+        request.clone(),
+        probe_with_retry(
+            || {
+                request.reset_attempt();
+                rules::probe(&client, service)
+            },
+            ATTEMPT_TIMEOUT,
+            REQUEST_TIMEOUT,
+            RETRY_DELAY,
+        ),
     )
     .await;
+    let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    // 出口慢或不可用只影响证据字段，保留已完成的服务判断及其耗时。
+    let _ = timeout(Duration::from_secs(5), request.finish()).await;
     ServiceStatusResult {
         id: service.id.into(),
         status: outcome.status,
-        latency_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        latency_ms: Some(latency_ms),
         http_status: outcome.http_status,
         checked_at: checked_at(),
         via_proxy,
         region: outcome.region,
         check_kind: rules::check_kind(service.id),
+        reason: outcome.reason,
+        region_reason: outcome.region_reason,
+        routes: request.records(),
     }
 }
 
@@ -296,6 +318,9 @@ where
                 via_proxy,
                 region: None,
                 check_kind: rules::check_kind(service.id),
+                reason: None,
+                region_reason: None,
+                routes: Vec::new(),
             })
         })
         .collect();
@@ -311,13 +336,21 @@ pub async fn probe_services(
     ids: &[String],
     route: ProbeRoute,
 ) -> Result<ServiceStatusBatch, String> {
+    probe_services_with_context(ids, route, RouteContext::new(None, String::new())).await
+}
+
+pub async fn probe_services_with_context(
+    ids: &[String],
+    route: ProbeRoute,
+    context: Arc<RouteContext>,
+) -> Result<ServiceStatusBatch, String> {
     let services = select_services(ids)?;
     let deadline = Deadline::now() + BATCH_TIMEOUT;
     let client = build_client(route, ATTEMPT_TIMEOUT)
         .map_err(|_| "无法创建服务状态检测客户端".to_string())?;
     let via_proxy = route.via_proxy();
     probe_selected(services, via_proxy, deadline, move |service| {
-        probe_one(client.clone(), service, via_proxy)
+        probe_one(client.clone(), service, via_proxy, context.clone())
     })
     .await
 }
@@ -342,6 +375,9 @@ mod tests {
             via_proxy: true,
             region: None,
             check_kind: rules::check_kind(service.id),
+            reason: None,
+            region_reason: None,
+            routes: Vec::new(),
         }
     }
 
@@ -522,6 +558,8 @@ mod tests {
                         status,
                         http_status: Some(403),
                         region: Some("US".into()),
+                        reason: None,
+                        region_reason: None,
                     })
                 },
                 ATTEMPT_TIMEOUT,

@@ -136,6 +136,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --manifest-path src-tauri/Cargo.toml --locked --test parse_subscription
 
+      - name: 服务请求 HTTPS CONNECT 连接归属回归
+        shell: pwsh
+        run: |
+          $env:TAURI_CONFIG = Get-Content src-tauri/tauri.singbox-windows.conf.json -Raw
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib services::service_route::live_tests:: -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Windows 剪贴板 Unicode 回归测试
         shell: pwsh
         run: |

@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   createServiceStatusMonitor, DEFAULT_SERVICE_IDS, MAX_VISIBLE_SERVICES,
   readVisibleServiceIds, SERVICE_STATUS_CATALOG,
+  SERVICE_REASON_MESSAGES, SERVICE_REGION_REASON_MESSAGES,
+  isServiceExitIpLiteral, primaryServiceRoute,
 } from "../src/serviceStatus.ts";
 import { catalogs, translate } from "../src/i18n/messages.ts";
 
@@ -323,6 +326,9 @@ test("旧后端六类结果缺少新字段仍接受，缺失的可选指标保�
     assert.equal(row.httpStatus, undefined);
     assert.equal(row.region, undefined);
     assert.equal(row.checkKind, undefined);
+    assert.equal(row.reason, undefined);
+    assert.equal(row.regionReason, undefined);
+    assert.equal(row.routes, undefined);
     assert.equal(row.viaProxy, false);
   }
   monitor.stop();
@@ -397,6 +403,282 @@ test("旧ChatGPT通用403保持restricted，HTTP码不覆盖后端服务语义�
   assert.equal(monitor.getSnapshot().results.chatgpt.status, "unsupported_region");
   assert.deepEqual(monitor.getSnapshot().errors, {});
   monitor.stop();
+});
+
+test("原因白名单完整且独立可选，合法字段复制后不受原对象影响，旧响应清除旧原因", async () => {
+  assert.deepEqual(Object.keys(SERVICE_REASON_MESSAGES), [
+    "response_too_large", "unsupported_encoding", "invalid_response", "unrecognized_response", "expected_denial", "challenge",
+    "availability_requires_session", "unsafe_redirect", "redirect_loop", "redirect_limit",
+  ]);
+  assert.deepEqual(Object.keys(SERVICE_REGION_REASON_MESSAGES), ["not_provided", "lookup_timeout", "invalid_response", "conflicting_region"]);
+  const { monitor, calls, timers } = mockIpc();
+  monitor.start([]); await tick();
+  try {
+    for (const reason of [...Object.keys(SERVICE_REASON_MESSAGES), undefined]) {
+      for (const regionReason of [...Object.keys(SERVICE_REGION_REASON_MESSAGES), undefined]) {
+        const request = monitor.request(["youtube"]);
+        const source = result("youtube", {
+          status: "failed", httpStatus: 200, reason, regionReason,
+          body: "private raw body", diagnostic: "untrusted diagnostic",
+        });
+        calls.at(-1).resolve(batch([], { results: [source] })); await request;
+        const row = monitor.getSnapshot().results.youtube;
+        assert.equal(row.reason, reason);
+        assert.equal(row.regionReason, regionReason);
+        assert.equal(row.region, undefined);
+        assert.equal(row.status, "failed");
+        assert.equal(row.httpStatus, 200);
+        assert.equal(row.body, undefined);
+        assert.equal(row.diagnostic, undefined);
+        assert.notStrictEqual(row, source);
+        source.reason = "challenge"; source.regionReason = "lookup_timeout";
+        assert.equal(row.reason, reason);
+        assert.equal(row.regionReason, regionReason);
+        assert.deepEqual(monitor.getSnapshot().errors, {});
+      }
+    }
+    const request = monitor.request(["youtube"]);
+    calls.at(-1).resolve(batch(["youtube"])); await request;
+    assert.equal(monitor.getSnapshot().results.youtube.reason, undefined);
+    assert.equal(monitor.getSnapshot().results.youtube.regionReason, undefined);
+  } finally { monitor.stop(); }
+  assert.equal(timers.size, 0);
+});
+
+test("原因字段拒绝任意正文、非字符串、大小写变体与其他白名单值，单项隔离并可恢复", async () => {
+  const { monitor, calls } = mockIpc();
+  const selected = ["chatgpt", "google"];
+  monitor.start(selected); await tick();
+  calls[0].resolve(batch([], { results: [
+    result("chatgpt", { status: "available", httpStatus: 403, reason: "expected_denial", regionReason: "not_provided" }),
+    result("google"),
+  ] })); await tick();
+  const retained = monitor.getSnapshot().results.chatgpt;
+  const invalidValues = ["", "raw response body", "<script>alert(1)</script>", "toString", "__proto__", null, 1, true, [], {}];
+  try {
+    for (const [field, whitelist, otherValues] of [
+      ["reason", Object.keys(SERVICE_REASON_MESSAGES), ["not_provided", "lookup_timeout"]],
+      ["regionReason", Object.keys(SERVICE_REGION_REASON_MESSAGES), ["expected_denial", "challenge", "response_too_large", "unsupported_encoding", "unrecognized_response"]],
+    ]) {
+      const values = [...invalidValues, ...otherValues,
+        ...whitelist.flatMap(value => [value.toUpperCase(), ` ${value}`, `${value} `, `${value}\n`, `${value}\0`, [value]]),
+      ];
+      for (const value of values) {
+        const request = monitor.request(selected);
+        calls.at(-1).resolve(batch([], { results: [
+          result("chatgpt", { status: "failed", [field]: value }), result("google", { latencyMs: 11 }),
+        ] })); await request;
+        const snapshot = monitor.getSnapshot();
+        assert.strictEqual(snapshot.results.chatgpt, retained, `${field}: ${JSON.stringify(value)}`);
+        assert.equal(snapshot.errors.chatgpt, true);
+        assert.equal(snapshot.results.google.latencyMs, 11);
+        assert.equal(snapshot.errors.google, undefined);
+      }
+    }
+    const retry = monitor.request(["chatgpt"]);
+    calls.at(-1).resolve(batch(["chatgpt"])); await retry;
+    assert.deepEqual(monitor.getSnapshot().errors, {});
+    assert.equal(monitor.getSnapshot().results.chatgpt.reason, undefined);
+    assert.equal(monitor.getSnapshot().results.chatgpt.regionReason, undefined);
+  } finally { monitor.stop(); }
+});
+
+test("预期拒绝原因独立于服务状态，真实403保留，地区缺失不推测，刷新周期不变", async () => {
+  const { monitor, calls, advance, timers } = mockIpc();
+  monitor.start(["chatgpt"]); await tick();
+  try {
+    for (const status of ["available", "restricted", "failed"]) {
+      calls.at(-1).resolve(batch([], { results: [result("chatgpt", {
+        status, httpStatus: 403, reason: "expected_denial", regionReason: "not_provided", checkKind: "availability",
+      })] })); await tick();
+      const row = monitor.getSnapshot().results.chatgpt;
+      assert.equal(row.status, status);
+      assert.equal(row.httpStatus, 403);
+      assert.equal(row.reason, "expected_denial");
+      assert.equal(row.region, undefined);
+      const count = calls.length;
+      await advance(299999); assert.equal(calls.length, count);
+      await advance(1); assert.equal(calls.length, count + 1);
+    }
+  } finally { monitor.stop(); }
+  assert.equal(timers.size, 0);
+});
+
+test("判定与地区原因映射固定双语文案，Failed仅表示无法判定，详情保留HTTP与地区占位", () => {
+  assert.equal(translate("zh", "serviceStatus.resultFailed"), "无法判定");
+  assert.equal(translate("en", "serviceStatus.resultFailed"), "Inconclusive");
+  const expected = [
+    [SERVICE_REASON_MESSAGES.response_too_large, "响应超过大小限制", "Response exceeds the size limit"],
+    [SERVICE_REASON_MESSAGES.unsupported_encoding, "不支持的响应编码", "Unsupported response encoding"],
+    [SERVICE_REASON_MESSAGES.invalid_response, "服务响应无效", "Invalid service response"],
+    [SERVICE_REASON_MESSAGES.unrecognized_response, "未识别的服务响应", "Unrecognized service response"],
+    [SERVICE_REASON_MESSAGES.expected_denial, "探测入口的预期拒绝响应", "Expected denial response from the probe endpoint"],
+    [SERVICE_REASON_MESSAGES.challenge, "需要完成验证挑战", "Verification challenge required"],
+    [SERVICE_REASON_MESSAGES.availability_requires_session, "已获取地区，可用性需通过会话确认", "Region reported; a session is required to confirm availability"],
+    [SERVICE_REASON_MESSAGES.unsafe_redirect, "重定向目标超出允许范围", "Redirect target is outside the allowed scope"],
+    [SERVICE_REASON_MESSAGES.redirect_loop, "检测到重定向循环", "Redirect loop detected"],
+    [SERVICE_REASON_MESSAGES.redirect_limit, "已达重定向次数上限", "Redirect limit reached"],
+    [SERVICE_REGION_REASON_MESSAGES.not_provided, "服务未提供地区", "Service did not provide a region"],
+    [SERVICE_REGION_REASON_MESSAGES.lookup_timeout, "地区查询超时", "Region lookup timed out"],
+    [SERVICE_REGION_REASON_MESSAGES.invalid_response, "地区响应无效", "Invalid region response"],
+    [SERVICE_REGION_REASON_MESSAGES.conflicting_region, "服务响应提供的地区存在冲突", "Service responses reported conflicting regions"],
+  ];
+  for (const [key, zh, en] of expected) {
+    assert.equal(translate("zh", key), zh);
+    assert.equal(translate("en", key), en);
+  }
+  const card = readFileSync(new URL("../src/components/ServiceStatusCard.tsx", import.meta.url), "utf8");
+  assert.match(card, /failed: "serviceStatus\.resultFailed"/);
+  assert.ok(card.includes("t(SERVICE_REASON_MESSAGES[result.reason])"));
+  assert.ok(card.includes("t(SERVICE_REGION_REASON_MESSAGES[result.regionReason])"));
+  assert.ok(card.includes('result?.httpStatus ?? "—"'));
+  assert.ok(card.includes('result?.region ?? t("serviceStatus.notProvided")'));
+  assert.ok(card.includes('result.region ?? "—"'));
+  assert.doesNotMatch(card, /dangerouslySetInnerHTML|result\??\.body/);
+  const css = readFileSync(new URL("../src/components/ServiceStatusCard.css", import.meta.url), "utf8");
+  assert.match(css, /\.service-status-state\[data-status="failed"\]\s*\{\s*color: var\(--muted\);\s*\}/);
+});
+
+const route = (overrides = {}) => ({ role: "primary", host: "www.google.com", matchStatus: "matched", ...overrides });
+
+test("出口只接受严格 IPv4/IPv6 literal，拒绝URL、主机名、目的地址包装及畸形IP", () => {
+  for (const value of ["0.0.0.0", "1.2.3.4", "255.255.255.255", "::", "::1", "2001:db8::1234", "2001:DB8:0:1:2:3:4:5", "::ffff:192.0.2.128", "ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255"]) {
+    assert.equal(isServiceExitIpLiteral(value), true, value);
+  }
+  for (const value of [undefined, null, 0, true, {}, [], "", "US", "example.com", "https://1.2.3.4", "http://[::1]", "[::1]", "1.2.3.4:443", "1.2.3.4/32", "2001:db8::/64", "fe80::1%eth0", "127.1", "1234", "0x7f000001", "01.2.3.4", "256.2.3.4", "1.2.3.-1", "1.2.3.4\n", " 1.2.3.4", "1.2.3.4 ", "::1\n", "::g", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3", ":::1", "::ffff:999.0.0.1", "::ffff:192.00.2.1", "::1/", "::1?x", "::1#x", "::1]@evil.test", "f".repeat(46)]) {
+    assert.equal(isServiceExitIpLiteral(value), false, JSON.stringify(value));
+  }
+});
+
+test("主辅请求、两类出口来源和缓存标志白名单深复制，Google/GitHub无地区仍接受", async () => {
+  const { monitor, calls, timers } = mockIpc();
+  monitor.start([]); await tick();
+  try {
+    for (const id of DEFAULT_SERVICE_IDS) {
+      const sourceRoutes = [
+        route({ role: "auxiliary", host: "region.example.com", exitIp: "192.0.2.8", exitSource: "service_response", exitCached: false }),
+        route({ host: "www.example.com", chains: ["Auto", "Proxy", "Node"], rule: "DOMAIN-SUFFIX", rulePayload: "example.com", outboundTag: "Node",
+          exitIp: "2001:db8::1", exitSource: "pinned_outbound_probe", exitCached: true,
+          endpoint: "https://198.51.100.9/", destinationIP: "198.51.100.9", extra: "discard" }),
+      ];
+      const expected = sourceRoutes.map(({ endpoint, destinationIP, extra, ...fields }) => structuredClone(fields));
+      const request = monitor.request([id]);
+      calls.at(-1).resolve(batch([], { results: [result(id, { routes: sourceRoutes, reason: "expected_denial", httpStatus: 403, endpoint: "https://198.51.100.9/", destinationIP: "198.51.100.9" })] })); await request;
+      const row = monitor.getSnapshot().results[id];
+      assert.deepEqual(row.routes, expected);
+      assert.notStrictEqual(row.routes, sourceRoutes);
+      assert.notStrictEqual(row.routes[1].chains, sourceRoutes[1].chains);
+      assert.equal(primaryServiceRoute(row).exitIp, "2001:db8::1");
+      assert.equal(row.region, undefined);
+      assert.equal(row.reason, "expected_denial");
+      assert.equal(row.httpStatus, 403);
+      assert.equal(row.endpoint, undefined); assert.equal(row.destinationIP, undefined);
+      sourceRoutes[1].chains.push("changed"); sourceRoutes[1].exitIp = "192.0.2.99"; sourceRoutes.push(route());
+      assert.deepEqual(row.routes, expected);
+    }
+  } finally { monitor.stop(); }
+  assert.equal(timers.size, 0);
+});
+
+test("routes各字段边界、角色、来源与类型严格校验，非法服务保旧且同批合法项更新", async () => {
+  const { monitor, calls, timers } = mockIpc();
+  monitor.start(DEFAULT_SERVICE_IDS); await tick();
+  calls[0].resolve(batch(DEFAULT_SERVICE_IDS)); await tick();
+  const retained = monitor.getSnapshot().results.google;
+  const invalidRoutes = [null, {}, "routes", [null], [[]], Array.from({ length: 9 }, () => route()),
+    ...[
+      { role: undefined }, { role: "Primary" }, { role: "other" }, { host: undefined }, { host: "" }, { host: "a".repeat(254) }, { host: 123 },
+      { matchStatus: undefined }, { matchStatus: "MATCHED" }, { matchStatus: "unknown" }, { matchStatus: null },
+      { chains: null }, { chains: "Proxy" }, { chains: [123] }, { chains: ["a".repeat(257)] }, { chains: Array(17).fill("Node") },
+      ...["rule", "rulePayload"].flatMap(field => [{ [field]: "a".repeat(513) }, { [field]: null }, { [field]: 12 }]),
+      { outboundTag: "a".repeat(257) }, { outboundTag: {} }, { exitIp: "example.com" }, { exitIp: "https://1.2.3.4" },
+      { exitIp: "256.2.3.4" }, { exitIp: "[::1]" }, { exitIp: null }, { exitIp: "" },
+      { exitSource: "destinationIP" }, { exitSource: "Service_Response" }, { exitSource: null }, { exitSource: 1 },
+      { exitCached: "true" }, { exitCached: 0 }, { exitCached: null },
+    ].map(fields => [route(fields)]),
+  ];
+  try {
+    for (const routes of invalidRoutes) {
+      const request = monitor.request(DEFAULT_SERVICE_IDS);
+      calls.at(-1).resolve(batch([], { results: [result("google", { routes, status: "blocked" }), result("github", { latencyMs: 11 })] })); await request;
+      const snapshot = monitor.getSnapshot();
+      assert.strictEqual(snapshot.results.google, retained, JSON.stringify(routes));
+      assert.equal(snapshot.errors.google, true);
+      assert.equal(snapshot.results.github.latencyMs, 11);
+      assert.equal(snapshot.errors.github, undefined);
+    }
+    const boundary = route({ host: "a".repeat(253), chains: Array(16).fill("a".repeat(256)), rule: "r".repeat(512), rulePayload: "p".repeat(512), outboundTag: "o".repeat(256) });
+    for (const routes of [[], Array.from({ length: 8 }, () => boundary), [route({ chains: [], rule: "MATCH", rulePayload: "" })]]) {
+      const request = monitor.request(["google"]);
+      calls.at(-1).resolve(batch([], { results: [result("google", { routes })] })); await request;
+      assert.deepEqual(monitor.getSnapshot().results.google.routes, routes);
+      assert.deepEqual(monitor.getSnapshot().errors, {});
+    }
+    const legacy = monitor.request(["google"]); calls.at(-1).resolve(batch(["google"])); await legacy;
+    assert.equal(monitor.getSnapshot().results.google.routes, undefined);
+  } finally { monitor.stop(); }
+  assert.equal(timers.size, 0);
+});
+
+test("出口不会从auxiliary、地区、endpoint、destinationIP或全局IP推测；unsupported保服务状态", async () => {
+  const { monitor, calls } = mockIpc();
+  monitor.start([]); await tick();
+  try {
+    for (const routes of [undefined, [], [route({ role: "auxiliary", exitIp: "192.0.2.8" })],
+      [route({ endpoint: "https://192.0.2.9", destinationIP: "192.0.2.9", exit_ip: "192.0.2.9" })],
+      [route({ matchStatus: "unsupported" })], [route({ matchStatus: "not_observed" })]]) {
+      const request = monitor.request(["netflix"]);
+      calls.at(-1).resolve(batch([], { results: [result("netflix", { status: "available", region: "US", routes,
+        endpoint: "https://192.0.2.10", destinationIP: "192.0.2.10", globalIp: "192.0.2.11" })] })); await request;
+      const row = monitor.getSnapshot().results.netflix;
+      assert.equal(row.status, "available");
+      assert.equal(primaryServiceRoute(row)?.exitIp, undefined);
+      assert.equal(row.globalIp, undefined); assert.equal(row.destinationIP, undefined); assert.equal(row.endpoint, undefined);
+      for (const evidence of row.routes ?? []) {
+        assert.equal(evidence.destinationIP, undefined); assert.equal(evidence.endpoint, undefined); assert.equal(evidence.exit_ip, undefined);
+      }
+      assert.deepEqual(monitor.getSnapshot().errors, {});
+    }
+    assert.equal(primaryServiceRoute(), undefined);
+  } finally { monitor.stop(); }
+});
+
+test("会话确认说明保持Disney地区与后端状态，路由证据与原因字段共存且刷新周期不变", async () => {
+  const { monitor, calls, advance, timers } = mockIpc();
+  monitor.start(["disney"]); await tick();
+  calls[0].resolve(batch([], { results: [result("disney", { status: "reachable", region: "US", reason: "availability_requires_session", regionReason: "conflicting_region", routes: [route({ host: "www.disneyplus.com", matchStatus: "unsupported" })] })] })); await tick();
+  try {
+    const row = monitor.getSnapshot().results.disney;
+    assert.equal(row.status, "reachable"); assert.equal(row.region, "US");
+    assert.equal(row.reason, "availability_requires_session"); assert.equal(row.regionReason, "conflicting_region");
+    assert.equal(primaryServiceRoute(row).matchStatus, "unsupported");
+    await advance(299999); assert.equal(calls.length, 1);
+    await advance(1); assert.equal(calls.length, 2);
+  } finally { monitor.stop(); }
+  assert.equal(timers.size, 0);
+});
+
+test("路由详情具备中英文来源、未确认与内核提示；主卡只读取primary出口且长文本可换行", () => {
+  const labels = [
+    ["exitServiceResponse", "服务回显", "Service response"],
+    ["exitPinnedProbe", "按已匹配出站复测", "Re-probed through the matched outbound"],
+    ["routeNotConfirmed", "尚未确认", "Not yet confirmed"],
+    ["routeUnsupported", "内核暂不支持路线证据", "Route evidence is not supported by this kernel"],
+  ];
+  for (const [key, zh, en] of labels) {
+    assert.equal(translate("zh", `serviceStatus.${key}`), zh); assert.equal(translate("en", `serviceStatus.${key}`), en);
+  }
+  const card = readFileSync(new URL("../src/components/ServiceStatusCard.tsx", import.meta.url), "utf8");
+  assert.match(card, /const exitIp = primaryServiceRoute\(results\[id\]\)\?\.exitIp/);
+  assert.match(card, /exitIp && <span className="service-status-card-exit"/);
+  assert.match(card, /routeDetails\(primaryServiceRoute\(result\)\)/);
+  assert.match(card, /route\.role === "auxiliary"/);
+  assert.match(card, /<details className="service-status-auxiliary">/);
+  assert.match(card, /route\.chains\.join\(" → "\)/);
+  assert.doesNotMatch(card, /destinationIP|globalIp|dangerouslySetInnerHTML/);
+  const css = readFileSync(new URL("../src/components/ServiceStatusCard.css", import.meta.url), "utf8");
+  assert.match(css, /\.service-status-card-exit\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/);
+  assert.match(css, /\.service-status-route-fields dd\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;/);
 });
 
 test("非法批次保旧值；已停止、空 ID 和非目录 ID 不发 IPC", async () => {

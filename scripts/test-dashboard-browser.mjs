@@ -150,7 +150,7 @@ async function serviceRoundTrip(saveScreenshot = false) {
     const rows = [...document.querySelectorAll('.service-status-card-row')];
     return document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization &&
       rows.length === count && rows.every(row => row.querySelector('.service-status-state')?.getAttribute('data-status') ===
-        (row.getAttribute('data-service-id') === 'chatgpt' ? 'restricted' : row.getAttribute('data-service-id') === 'youtube' ? 'available' : 'reachable')) &&
+        (['chatgpt', 'youtube'].includes(row.getAttribute('data-service-id')) ? 'available' : 'reachable')) &&
       !document.querySelector('.service-status-card .service-status-checking');
   }, count);
   await settled(2);
@@ -414,7 +414,16 @@ try {
     const rows = [...document.querySelectorAll('.service-status-card-row')];
     return rows.length === 4 && rows.every(row => row.querySelector('[data-status]'));
   });
-  assert.ok(await page.locator('.service-status-card-row[data-service-id="chatgpt"]').innerText().then(text => text.includes('HTTP 访问受限')));
+  assert.match(await page.locator('.service-status-card-row[data-service-id="chatgpt"]').innerText(), /US.*160 ms/s);
+  const chatDetails = page.locator('.service-status-list .service-status-row[data-service-id="chatgpt"]');
+  const githubDetails = page.locator('.service-status-list .service-status-row[data-service-id="github"]');
+  assert.ok((await githubDetails.locator('.service-status-route-fields').first().innerText()).includes('192.0.2.8'));
+  const primaryEvidence = await chatDetails.locator('.service-status-route-fields').first().innerText();
+  assert.ok(primaryEvidence.includes('2001:db8::8') && primaryEvidence.includes('DomainSuffix') && primaryEvidence.includes('US-AI'), '展示主请求实际规则、策略和独立出口');
+  assert.ok(!primaryEvidence.includes('198.51.100.9'), '辅助地区请求出口不能替代主请求出口');
+  await chatDetails.locator('.service-status-auxiliary summary').click();
+  assert.ok((await chatDetails.locator('.service-status-auxiliary').innerText()).includes('198.51.100.9'));
+  assert.match(await chatDetails.locator('.service-status-reasons').innerText(), /预期拒绝响应/);
   await page.keyboard.press('Escape');
   await page.getByRole('dialog').waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: words.zh.stop, exact: true }).click();

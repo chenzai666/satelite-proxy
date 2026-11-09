@@ -2,7 +2,8 @@
 
 use crate::runtime::ProxyStatus;
 use crate::services::network_probe::{route_for_status, same_session};
-use crate::services::service_status::{probe_services, ServiceStatusBatch};
+use crate::services::service_route::RouteContext;
+use crate::services::service_status::{probe_services_with_context, ServiceStatusBatch};
 use crate::state::AppState;
 use std::time::Duration;
 use tauri::State;
@@ -60,7 +61,18 @@ pub async fn check_service_status(
     let (version, before) = fresh;
     let route = route_for_status(&before)
         .map_err(|_| "当前配置没有可供检测使用的 HTTP/mixed 入站".to_string())?;
-    let batch = probe_services(&ids, route).await?;
+    let context = RouteContext::from_active_config(
+        state.try_clash_api_clone(),
+        format!(
+            "{version}:{}:{}",
+            before.core_type,
+            before.core_started_at.unwrap_or_default()
+        ),
+        before.config_path.as_ref().map(std::path::PathBuf::from),
+        before.runtime_source == "generated",
+    )
+    .await;
+    let batch = probe_services_with_context(&ids, route, context).await?;
     if state.is_core_transitioning() {
         return Err(STALE_ERROR.into());
     }
