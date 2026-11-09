@@ -30,11 +30,11 @@ async function cardMotion(running) {
     await page.waitForFunction(({ selector, before }) => getComputedStyle(document.querySelector(selector), "::before").transform !== before, { selector, before });
   }
 }
-async function open(width, height, locale, theme, state = "running", hero = "classic", network = "business") {
+async function open(width, height, locale, theme, state = "running", hero = "classic", network = "business", sample = "long") {
   if (page) await clean();
   if (context) await context.close();
   errors = []; blocked = [];
-  currentCase = `${width}x${height}-${locale}-${theme}-${state}`;
+  currentCase = `${width}x${height}-${locale}-${theme}-${state}-${sample}`;
   context = await browser.newContext({ viewport: { width, height }, serviceWorkers: "block" });
   await context.route("**/*", route => {
     const url = new URL(route.request().url());
@@ -48,7 +48,7 @@ async function open(width, height, locale, theme, state = "running", hero = "cla
   });
   page = await context.newPage();
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero, network })}`);
+  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero, network, sample })}`);
   await page.locator(".dashboard-details-grid > :nth-child(4)").waitFor();
   await page.waitForFunction(({ theme, label }) =>
     document.documentElement.dataset.theme === theme &&
@@ -83,8 +83,8 @@ async function layout() {
         if (box.left < b.right - 1.5 && box.right > b.left + 1.5 && box.top < b.bottom - 1.5 && box.bottom > b.top + 1.5) issues.push(`卡片重叠 ${describe(card)} / ${describe(other)}`);
       }
     }
-    // 长名称允许既有缩小/省略及完整 title；统计数值必须完整可见。
-    const critical = ".dashboard-rate-card__number, .dashboard-rate-card__unit, .dashboard-rate-card__stats dd, .traffic-stats-number, .traffic-stats-table th";
+    // 节点标题和组织名必须完整换行；统计数值必须完整可见。
+    const critical = ".dashboard-node-context .dash-hero-title, .dash-hero .ip-organization, .dashboard-rate-card__number, .dashboard-rate-card__unit, .dashboard-rate-card__stats dd, .traffic-stats-number, .traffic-stats-table th";
     for (const el of dashboard.querySelectorAll(critical)) {
       if (!el.textContent.trim()) { issues.push(`统计为空 ${describe(el)}`); continue; }
       if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) issues.push(`统计裁切 ${describe(el)}`);
@@ -107,6 +107,71 @@ async function layout() {
   });
   assert.deepEqual(issues, [], `${currentCase} 布局/统计文字`);
 }
+async function heroGeometry() {
+  await page.waitForFunction(() => document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization);
+  const metrics = await page.evaluate(() => {
+    const hero = document.querySelector('.dash-hero');
+    const copy = hero.querySelector('.dash-hero-copy');
+    const node = hero.querySelector('.dashboard-node-context');
+    const title = node.querySelector('.dash-hero-title');
+    const actions = hero.querySelector('.dash-hero-actions');
+    const box = hero.getBoundingClientRect(), content = copy.getBoundingClientRect();
+    const n = node.getBoundingClientRect(), a = actions.getBoundingClientRect(), t = title.getBoundingClientRect();
+    const style = getComputedStyle(hero), textStyle = getComputedStyle(title);
+    const range = document.createRange(); range.selectNodeContents(title);
+    const lines = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+    const buttons = [...actions.querySelectorAll('.secondary, .dash-more-btn')].map(el => el.getBoundingClientRect());
+    return {
+      height: box.height, rightHeight: document.querySelector('.service-status-card').getBoundingClientRect().height,
+      align: style.alignSelf, below: a.top >= n.bottom - 1,
+      buttonsBelow: buttons.length === 2 && buttons.every(b => b.top >= n.bottom - 1 && b.bottom <= a.bottom + 1),
+      fullWidth: Math.abs(n.left - content.left) <= 1 && Math.abs(n.right - content.right) <= 1 && Math.abs(t.width - n.width) <= 1,
+      complete: title.textContent === window.dashboardFixture.nodes[0].name,
+      wraps: textStyle.whiteSpace === 'normal' && textStyle.textOverflow === 'clip' && textStyle.webkitLineClamp === 'none',
+      lineCount: new Set(lines.map(rect => Math.round(rect.top))).size,
+      textInside: lines.every(rect => rect.left >= t.left - 1 && rect.right <= t.right + 1 && rect.top >= t.top - 1 && rect.bottom <= t.bottom + 1),
+      // 既检查卡片外部余量，也检查 copy 自身是否被撑高。
+      bottomSlack: box.bottom - content.bottom - parseFloat(style.paddingBottom) - parseFloat(style.borderBottomWidth),
+      copySlack: content.bottom - a.bottom,
+      short: window.dashboardFixture.short,
+    };
+  });
+  assert.equal(metrics.below && metrics.buttonsBelow, true, `${currentCase} 切换节点与更多按钮独立位于节点下方`);
+  assert.equal(metrics.fullWidth, true, `${currentCase} 节点标题占满 copy 可用宽度`);
+  assert.equal(metrics.complete && metrics.wraps && metrics.textInside, true, `${currentCase} 节点标题完整且无裁切`);
+  if (!metrics.short) assert.ok(metrics.lineCount >= 2, `${currentCase} 长节点名称实际换行`);
+  assert.equal(metrics.align, 'start', `${currentCase} hero 不随右侧网格拉伸`);
+  assert.ok(Math.abs(metrics.bottomSlack) <= 2 && Math.abs(metrics.copySlack) <= 2, `${currentCase} copy 底部加 padding 后无多余空白 ${JSON.stringify(metrics)}`);
+  return metrics;
+}
+
+async function serviceRoundTrip(saveScreenshot = false) {
+  const settled = async count => page.waitForFunction(count => {
+    const rows = [...document.querySelectorAll('.service-status-card-row')];
+    return document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization &&
+      rows.length === count && rows.every(row => row.querySelector('.service-status-state')?.getAttribute('data-status') ===
+        (row.getAttribute('data-service-id') === 'chatgpt' ? 'restricted' : 'reachable')) &&
+      !document.querySelector('.service-status-card .service-status-checking');
+  }, count);
+  await settled(2);
+  const before = await heroGeometry();
+  for (const count of [4, 2]) {
+    currentCase = currentCase.replace(/-services-\d+$/, '') + `-services-${count}`;
+    await page.locator('.service-status-card').click();
+    await page.getByRole('dialog').waitFor();
+    for (const name of ['YouTube', 'ChatGPT']) {
+      await page.getByRole('switch', { name: `在卡片展示 ${name}`, exact: true }).setChecked(count === 4);
+    }
+    await page.keyboard.press('Escape');
+    await page.getByRole('dialog').waitFor({ state: 'hidden' });
+    await settled(count);
+    const after = await heroGeometry();
+    assert.ok(Math.abs(after.height - before.height) <= 2, `${currentCase} 2→4→2 服务不改变 hero 高度 ${before.height} → ${after.height}`);
+    if (count === 4) assert.ok(after.rightHeight > before.rightHeight + 2, `${currentCase} 右侧服务卡确实增高`);
+    await layout();
+    if (count === 4 && saveScreenshot) await page.screenshot({ path: 'test-results/dashboard-1280-four-services.png' });
+  }
+}
 async function structure(locale) {
   const navigation = page.locator(".pro-shell > .side-nav").getByRole("navigation");
   assert.equal(await navigation.count(), 1, "必须使用真实 SideNav 导航");
@@ -126,15 +191,11 @@ async function structure(locale) {
     const node = document.querySelector('.dashboard-node-context').getBoundingClientRect();
     return ip.bottom <= node.top + 1;
   }), true, "出口信息位于节点信息上方");
-  assert.equal(await page.evaluate(() => {
-    const node = document.querySelector('.dashboard-node-context').getBoundingClientRect();
-    const actions = document.querySelector('.dash-hero-actions').getBoundingClientRect();
-    return Math.abs(node.top - actions.top) < 2 && actions.left >= node.right - 1;
-  }), true, "节点信息与操作共享底部一行，无启停按钮预留空白");
+  await heroGeometry();
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
   assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
-  await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent.includes('Without Truncation'));
+  await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent === window.dashboardFixture.organization);
   assert.equal(await page.locator('.ip-organization-row .ip-organization').evaluate(el => getComputedStyle(el).textOverflow), "clip");
   assert.ok((await page.locator('.ip-info-badges').innerText()).includes(locale === "zh" ? "商业" : "Commercial"));
   assert.equal(await page.locator('.service-status-card').count(), 1);
@@ -151,7 +212,7 @@ async function structure(locale) {
 }
 
 try {
-  // 三种尺寸各覆盖中文浅色、英文深色，共六组；只保存两张成功截图。
+  // 保留原两张截图，短场景四服务仅追加一张代表截图。
   for (const [width, height] of [[960, 720], [1280, 900], [1600, 1000]]) {
     for (const [locale, theme] of [["zh", "day"], ["en", "aerospace"]]) {
       await open(width, height, locale, theme);
@@ -160,6 +221,14 @@ try {
       if ((width === 960 && locale === "zh") || (width === 1280 && locale === "en")) {
         await page.screenshot({ path: `test-results/dashboard-${width}-${theme}.png` });
       }
+    }
+  }
+
+  for (const sample of ['short', 'long']) {
+    for (const [width, height] of [[960, 720], [1280, 900], [1600, 1000]]) {
+      await open(width, height, 'zh', 'aerospace', 'running', 'classic', 'business', sample);
+      await structure('zh');
+      await serviceRoundTrip(sample === 'short' && width === 1280);
     }
   }
 
@@ -298,7 +367,7 @@ try {
   console.log("概览回归通过：真实侧栏、紧凑布局、IP组织完整、服务详情、三种首页动效、模式/启停与全屏。");
 } catch (error) {
   console.error("概览夹具失败场景", currentCase);
-  // 失败最多追加一张，整次运行截图上限三张。
+  // 失败最多追加一张；成功最多三张（保留原两张及一张四服务代表图）。
   if (page && !page.isClosed()) await page.screenshot({ path: "test-results/dashboard-failure.png" }).catch(() => {});
   throw error;
 } finally {

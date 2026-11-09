@@ -27,7 +27,7 @@
   gap: 12px;
   align-items: stretch;
 }
-.dashboard-top-grid > .dash-hero { grid-row: span 2; }
+.dashboard-top-grid > .dash-hero { grid-row: span 2; align-self: start; }
 .dashboard-page.dashboard-bento .dashboard-top-grid > .service-status-card { grid-column: 2 / -1; min-height: 96px; padding: 12px 16px; gap: 7px; }
 .dashboard-top-grid > .service-status-card .service-status-card-rows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; row-gap: 7px; }
 .dashboard-page.dashboard-bento .dash-hero,
@@ -109,9 +109,9 @@
 .dashboard-page.dashboard-bento .dash-more-submenu { z-index: 31; }
 .dashboard-status-footer { display: grid; grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr); gap: 12px; margin-top: 0; padding-top: 0; padding-right: 120px; }
 .dashboard-page.dashboard-bento .dash-hero .ip-info-panel { padding-right: 120px; }
-.dashboard-node-context { grid-column: 1; grid-row: 4; min-width: 0; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
-.dashboard-page.dashboard-bento .dash-hero-copy > .dash-hero-actions { grid-column: 2; grid-row: 4; align-self: stretch; align-items: center; margin-top: 16px; padding: 12px 0 0; border-top: 1px solid var(--border-subtle); }
-.dashboard-page.dashboard-bento .dashboard-node-context .dash-hero-title { margin-right: 0; font-size: 1.05rem; line-height: 1.4; }
+.dashboard-node-context { grid-column: 1 / -1; grid-row: 4; min-width: 0; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.dashboard-page.dashboard-bento .dash-hero-copy > .dash-hero-actions { grid-column: 1 / -1; grid-row: 5; align-self: start; align-items: center; margin-top: 10px; padding: 0; border-top: none; }
+.dashboard-page.dashboard-bento .dashboard-node-context .dash-hero-title { margin-right: 0; font-size: 1.05rem; line-height: 1.4; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
 .dashboard-page.dashboard-bento .dashboard-node-context .dash-hero-desc { margin-right: 0; min-height: 0; font-size: .72rem; margin-top: 3px; }
 .dashboard-status-footer > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .dashboard-status-key { font-size: .7rem; color: var(--muted); }

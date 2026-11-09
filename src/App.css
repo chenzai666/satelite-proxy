@@ -7023,8 +7023,8 @@ button.check.on {
   letter-spacing: -0.03em;
   line-height: 1.15;
   color: var(--text);
-  /* Long node names shrink to fit via useSingleLineFit; nowrap + ellipsis
-     are the hard guarantee that the hero never grows a second line. */
+  /* Compact layouts retain a one-line title. The professional dashboard
+     overrides this with full-width wrapping in DashboardPage.css. */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

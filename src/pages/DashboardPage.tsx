@@ -30,7 +30,6 @@ import {
   type CaptureMode,
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
-import { isZoomSettling } from "../hooks/viewportScale";
 import { useI18n } from "../i18n";
 import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
@@ -157,35 +156,6 @@ function fmtUptime(startedAt?: number | null) {
   const m = Math.floor((secs % 3600) / 60);
   const s = secs % 60;
   return [h, m, s].map((n) => String(n).padStart(2, "0")).join(":");
-}
-
-/** Keep an element on a single line by shrinking its font until the content
- *  fits (never wraps; ellipsis is the last resort below the size floor).
- *  Re-fits when the text changes or the window resizes. */
-function useSingleLineFit<T extends HTMLElement>(text: string) {
-  const ref = useRef<T | null>(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const fit = () => {
-      // Root-zoom transitions (maximize magnification) skew computed
-      // font-size and clientWidth mid-animation — the written inline size
-      // would persist after the animation. Skip while settling; the
-      // at-rest synthetic resize (viewportScale.ts) re-fits correctly.
-      if (isZoomSettling()) return;
-      // Drop any previous override so the CSS clamp() sets the start size.
-      el.style.fontSize = "";
-      let size = parseFloat(getComputedStyle(el).fontSize);
-      while (size > 18 && el.scrollWidth > el.clientWidth) {
-        size -= 1;
-        el.style.fontSize = `${size}px`;
-      }
-    };
-    fit();
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  }, [text]);
-  return ref;
 }
 
 export function DashboardPage({
@@ -867,9 +837,6 @@ function coreDisplayName(kind: string | null | undefined): string {
             .join(" · ")
         : t("dashboard.desc");
 
-  // Long node names shrink to one line instead of wrapping the hero.
-  const heroTitleRef = useSingleLineFit<HTMLHeadingElement>(heroTitle ?? "");
-
   async function onCopyEnv() {
     const proxyUrl = `http://127.0.0.1:${mixedPort}`;
     const isWindows = /Windows/i.test(navigator.userAgent);
@@ -1065,7 +1032,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           </div>
           <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
           <div className="dashboard-node-context">
-          <h2 className="dash-hero-title" ref={heroTitleRef} title={heroTitle ?? undefined}>
+          <h2 className="dash-hero-title" title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />
             ) : (

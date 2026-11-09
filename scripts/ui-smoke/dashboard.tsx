@@ -14,16 +14,20 @@ const locale = params.get("locale") === "en" ? "en" : "zh";
 const theme = params.get("theme") === "day" ? "day" : "aerospace";
 const scenario = params.get("state") ?? "running";
 const custom = scenario === "custom";
-const nodeName = "香港 Hong Kong · IPv6 Premium Edge · LongNodeName-0123456789";
-const profileName = "演示订阅 Subscription-Long-Name-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const ipv6 = "2001:db8:abcd:1234:5678:90ab:cdef:1234";
+const short = params.get("sample") === "short";
+const nodeName = short ? "香港 HK 01" : "香港 Hong Kong · IPv6 Premium Edge · LongNodeName-0123456789 · Complete Node Name ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789";
+const profileName = short ? "演示订阅" : "演示订阅 Subscription-Long-Name-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+// 保留既有夹具字段名；短场景使用文档专用 IPv4，长场景使用 IPv6。
+const ipv6 = short ? "192.0.2.8" : "2001:db8:abcd:1234:5678:90ab:cdef:1234";
+const organization = short ? "CMI" : "China Mobile Communications Group Co., Ltd. / Complete Organization Name Without Truncation";
+const heroStyle = params.get("hero");
 document.documentElement.lang = locale === "zh" ? "zh-CN" : "en";
 localStorage.setItem("satelite.theme", theme);
 localStorage.setItem("satelite.heroStyle", "classic");
 
 const settings: AppSettings = {
   mixed_port: 2080, api_port: 19090, current_node_id: "fixture-node",
-  probe_url: "https://example.test/204", locale, theme, hero_style: params.get("hero") ?? "classic",
+  probe_url: "https://example.test/204", locale, theme, hero_style: heroStyle === "smiley" || heroStyle === "particle" ? heroStyle : "classic",
   accent: "green", glow_color: "accent", glass_frost: false, core_type: "singbox",
   outbound_mode: "rule", auto_select: "off", capture_mode: "off",
   runtime_source: custom ? "singbox:fixture-sub" : "generated",
@@ -66,7 +70,7 @@ const connections: ConnectionView[] = ["node-fixture", "direct"].map((tag, i) =>
   source: "192.0.2.20:50000", upload: 1024, download: 4096, start: "2026-01-01T00:00:00Z", closed: false,
 }));
 const state = {
-  settings, status, nodes, subscriptions, ipv6, commands: [] as { command: string; payload: unknown }[],
+  settings, status, nodes, subscriptions, ipv6, organization, short, commands: [] as { command: string; payload: unknown }[],
   unexpected: [] as string[], statusReads: 0, connectionReads: 0, trafficOpens: 0,
   holdStart: false, releaseStart: null as null | (() => void),
   serviceFailures: 0,
@@ -97,7 +101,7 @@ mockIPC((command, payload) => {
     case "get_lan_ip": return ipv6;
     case "check_exit_ip": return { ip: ipv6, countryCode: "HK", viaProxy: true, source: "fixture" };
     case "check_ip_metadata": return {
-      ip: ipv6, organization: "China Mobile Communications Group Co., Ltd. / Complete Organization Name Without Truncation",
+      ip: ipv6, organization,
       isp: "China Mobile Communications", asn: "AS9808", networkType: ["tor", "abuse"].includes(params.get("network") ?? "") ? "business" : params.get("network") ?? "business", residentialInferred: false,
       quality: params.get("network") === "tor" ? "high" : "low",
       ipQuality: ["tor", "abuse"].includes(params.get("network") ?? "") ? "risky" : params.get("network") === "datacenter" ? "normal" : ["isp", "unknown"].includes(params.get("network") ?? "") ? "unknown" : "good",
