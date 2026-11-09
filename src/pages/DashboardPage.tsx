@@ -1028,7 +1028,7 @@ function coreDisplayName(kind: string | null | undefined): string {
           </div>
 
           <div className="dashboard-exit-summary">
-            <button type="button" className="dashboard-country-button"
+            <button type="button" className="icon-btn dashboard-country-button"
               onClick={() => void onProbeExitIp()} disabled={exitIpProbing}
               aria-busy={exitIpProbing}
               aria-label={`${t("common.refresh")} ${t("dashboard.exitIp")}`}

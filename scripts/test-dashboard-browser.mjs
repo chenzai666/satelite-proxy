@@ -261,6 +261,16 @@ async function structure(locale) {
   assert.equal(exit.wrap, 'anywhere', '长 IPv6 可完整换行');
   assert.ok(exit.iconWidth >= 44 && exit.iconWidth <= 48 && exit.iconHeight >= 44 && exit.iconHeight <= 48, '国家按钮触控尺寸');
   assert.ok(exit.beforePower && exit.abovePanel, 'IP 为启停按钮留空间，类型和质量位于下方');
+  const badge = await page.locator('.dashboard-country-button').evaluate(el => {
+    const b = el.getBoundingClientRect(), svg = el.querySelector('svg').getBoundingClientRect(), text = el.querySelector('text').getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return { padding: style.padding, background: style.backgroundColor,
+      svgOffset: Math.abs(svg.left + svg.width / 2 - b.left - b.width / 2) + Math.abs(svg.top + svg.height / 2 - b.top - b.height / 2),
+      textOffset: Math.abs(text.left + text.width / 2 - b.left - b.width / 2) };
+  });
+  assert.equal(badge.padding, '0px', '国家按钮不能继承通用按钮内边距');
+  assert.equal(badge.background, 'rgba(0, 0, 0, 0)', '国家按钮保留 SVG 花形底图');
+  assert.ok(badge.svgOffset < 2 && badge.textOffset < 2, '国家图形与代码在按钮内部居中');
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
   assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
