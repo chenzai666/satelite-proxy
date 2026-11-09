@@ -17,6 +17,14 @@ const statusLabels: Record<ServiceStatus, MessageKey> = {
   http_error: "serviceStatus.httpError",
   timeout: "serviceStatus.timeout",
   network_error: "serviceStatus.networkError",
+  available: "serviceStatus.available",
+  unavailable: "serviceStatus.unavailable",
+  blocked: "serviceStatus.blocked",
+  disallowed_isp: "serviceStatus.disallowedIsp",
+  unsupported_region: "serviceStatus.unsupportedRegion",
+  originals_only: "serviceStatus.originalsOnly",
+  coming_soon: "serviceStatus.comingSoon",
+  failed: "serviceStatus.resultFailed",
 };
 
 // 手绘小标，无远程图片、字体或品牌资源请求。
@@ -146,6 +154,11 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
     if (pending.includes(id)) return <span className="service-status-checking"><span className="service-status-progress" aria-hidden="true" />{t("serviceStatus.checking")}</span>;
     const result = results[id];
     if (result && ["reachable", "redirect"].includes(result.status) && result.latencyMs !== undefined) return latency(result);
+    if (result?.status === "available") return <span className="service-status-available">
+      <span aria-label={t("serviceStatus.region")}>{result.region ?? "—"}</span>
+      <span aria-hidden="true">·</span>
+      <span aria-label={t("serviceStatus.latency")}>{latency(result)}</span>
+    </span>;
     return statusText(id);
   }
 
@@ -212,6 +225,8 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
                   </GlassButton>
                 </div>
                 <div className="service-status-row-meta">
+                  <span>{t("serviceStatus.checkKind")}: {result?.checkKind ? t(result.checkKind === "reachability" ? "serviceStatus.reachability" : "serviceStatus.availability") : t("serviceStatus.notProvided")}</span>
+                  <span>{t("serviceStatus.region")}: {result?.region ?? t("serviceStatus.notProvided")}</span>
                   <span>{t("serviceStatus.httpStatus")}: {result?.httpStatus ?? "—"}</span>
                   <span>{t("serviceStatus.route")}: {result ? t(result.viaProxy ? "serviceStatus.kernelRules" : "serviceStatus.direct") : "—"}</span>
                   <span>{t("serviceStatus.checkedAt")}: {checkedTime(result)}</span>

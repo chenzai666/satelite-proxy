@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-09 IP顺滑与服务语义：ip_metadata query_with以1s错峰追加来源，首个明确同IP类型返回并取消剩余Future，合并当前已完成风险，不等慢兄弟/串行回退；exit_ip加入固定HTTPS Cloudflare trace。ipLookupCache仅内存：出口按会话路线30s/8项，手动刷新绕缓存，同路线合并在途；metadata按IP300s/64项、unknown/isp30s，跨路线在途不混用，旧回包不覆盖缓存。IpInfoPanel刷新保留同IP数据，新IP立即隐藏旧详情；后端旧epoch查询取消释放许可。服务Google/GitHub连通性，其余固定只读服务规则，region/checkKind可选契约兼容旧响应；普通403仅请求受限，挑战/地区/服务封禁分开，不自动判断代理损坏。Rust/浏览器仅Actions，版本1.0.46。
+
 NSIS构建恢复（2026-11-09）：ci-fetch-nsis.sh仅Actions Windows运行，通过官方资产API下载CLI2.11.4匹配的NSIS3.11及插件0.5.3，固定资产ID/SHA256，有限重试并在编译前失败；暂存两个文件EXIT精确清理，完整工具保留runner缓存路径供Tauri自身再次验证。CLI升级需同步该脚本，禁止绕过摘要或使用第三方镜像。
 
 2026-11-09 国家按钮与大号出口IP：Dashboard以实际countryCode显示两位国家码，缺失/非法用占位，不写死地区；46px SVG按钮复用onProbeExitIp且busy禁连点，IPv4/IPv6大号完整换行，避让启停按钮。类型/质量与完整组织仍用IpInfoPanel，运行时长下移节点区；不增加自动IP查询频率。dashboard真实组件回归验证刷新单次IPC、键盘、国家变化及长IP边界。

@@ -42,7 +42,9 @@ import { SystemProxyRestartNotice } from "../components/SystemProxyRestartNotice
 import { TrafficStatsCard } from "../components/TrafficStatsCard";
 import { SimpleTrafficSpark } from "../ui/simple/SimpleTrafficSpark";
 import { applyLatencyResult, applyNodeLatencyChange } from "../nodeLatencyState";
+import { createIpLookupCache } from "../ipLookupCache";
 import "./DashboardPage.css";
+const exitIpCache = createIpLookupCache<ExitIpInfo>(30_000, 8);
 import type {
   AutoSelectMode,
   CoreKind,
@@ -723,21 +725,23 @@ function coreDisplayName(kind: string | null | undefined): string {
     }
   }, [currentNode, latencyProbing, proxy?.core_type]);
 
-  /** Probe the actual public exit through the running core when applicable. */
-  const onProbeExitIp = useCallback(async () => {
+  const autoProbeKey = `${proxy?.running ?? false}:${proxy?.core_started_at ?? ""}:${proxy?.core_type ?? ""}:${proxy?.runtime_profile_id ?? ""}:${proxy?.outbound_mode ?? "rule"}:${proxy?.mixed_port ?? settingsPorts.mixed}:${currentNodeId ?? ""}:${proxy?.capture_mode ?? ""}:${proxy?.custom_inbound_port ?? ""}`;
+  /** 手动刷新实测；同一路线重新进入概览时短期复用成功结果。 */
+  const onProbeExitIp = useCallback(async (force = true) => {
     const version = ++exitIpVersionRef.current;
+    const cached = exitIpCache.peek(autoProbeKey);
+    if (!force && cached) { setExitIp(cached); setExitIpProbing(false); return; }
     setExitIpProbing(true);
     try {
-      const info = await checkExitIp();
+      const info = await exitIpCache.load(autoProbeKey, checkExitIp, force);
       if (version === exitIpVersionRef.current) setExitIp(info);
     } catch {
-      // An IP API can be unavailable without meaning the proxy is broken;
-      // keep the card quiet and show an empty result instead of a modal.
-      if (version === exitIpVersionRef.current) setExitIp(null);
+      // 不弹模态错误；同路线保留已有成功结果。
+      // 同一路线手动刷新失败保留旧地址；路线变化由自动探测先清空。
     } finally {
       if (version === exitIpVersionRef.current) setExitIpProbing(false);
     }
-  }, []);
+  }, [autoProbeKey]);
 
   /** Refresh latency and exit IP together from the network-probe card. */
   function onProbeNetwork() {
@@ -748,13 +752,14 @@ function coreDisplayName(kind: string | null | undefined): string {
   // Re-probe when the core starts/stops, routing mode changes, or the
   // selected node changes. The version stamp above prevents a slower earlier
   // request from replacing a newer answer.
-  const autoProbeKey = `${proxy?.running ?? false}:${proxy?.core_started_at ?? ""}:${proxy?.core_type ?? ""}:${proxy?.runtime_profile_id ?? ""}:${proxy?.outbound_mode ?? "rule"}:${proxy?.mixed_port ?? settingsPorts.mixed}:${currentNodeId ?? ""}`;
   useEffect(() => {
     if (!statusReady || autoProbeKeyRef.current === autoProbeKey) return;
     autoProbeKeyRef.current = autoProbeKey;
-    void onProbeExitIp();
+    setExitIp(exitIpCache.peek(autoProbeKey) ?? null);
+    void onProbeExitIp(false);
     if (proxy?.running && proxy.core_type !== "xray") void onProbeLatency();
   }, [autoProbeKey, onProbeExitIp, onProbeLatency, proxy?.core_type, proxy?.running, statusReady]);
+  useEffect(() => () => { exitIpVersionRef.current++; autoProbeKeyRef.current = null; }, []);
 
   useEffect(
     () =>
@@ -1043,7 +1048,7 @@ function coreDisplayName(kind: string | null | undefined): string {
               <strong className={`dashboard-exit-ip${exitIp?.ip.includes(":") ? " is-ipv6" : ""}`} title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong>
             </div>
           </div>
-          <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
+          <IpInfoPanel ip={exitIp?.ip} sessionKey={autoProbeKey} />
           <div className="dashboard-node-context">
           <div className="dashboard-uptime"><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></div>
           <h2 className="dash-hero-title" title={heroTitle ?? undefined}>

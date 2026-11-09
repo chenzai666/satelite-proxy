@@ -2,7 +2,10 @@
 use super::network_probe::{build_client, ProbeRoute};
 use serde::Serialize;
 use serde_json::Value;
+use std::future::{poll_fn, Future};
 use std::net::IpAddr;
+use std::pin::Pin;
+use std::task::Poll;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,7 +268,7 @@ fn merge_flag(a: Option<bool>, b: Option<bool>) -> Option<bool> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
     Ident,
     Query,
@@ -382,44 +385,421 @@ fn merge_metadata(base: &mut Option<IpMetadata>, next: IpMetadata) {
     refresh_quality(current);
 }
 
-pub async fn query(ip: IpAddr, route: ProbeRoute) -> Result<IpMetadata, String> {
-    let client = build_client(route, Duration::from_secs(3))?;
-    let mut data = None;
-    // Four bounded waves; every response is checked before it enters the accumulator.
-    // Dropping the timeout future cancels pending HTTP work without spawned tasks.
-    let _ = tokio::time::timeout(Duration::from_secs(12), async {
-        let (ident, query) = tokio::join!(
-            get_json(&client, Source::Ident.url(ip)),
-            get_json(&client, Source::Query.url(ip)),
-        );
-        for (source, result) in [(Source::Ident, ident), (Source::Query, query)] {
-            if let Ok(value) = result.and_then(|v| parse_source(ip, source, &v)) {
-                merge_metadata(&mut data, value);
+const HEDGE_INTERVAL: Duration = Duration::from_secs(1);
+const QUERY_DEADLINE: Duration = Duration::from_secs(12);
+
+// 每次轮询收集当前已完成的全部响应，再判断是否返回，保留同轮已取得的风险信号。
+// 请求 Future 由本函数直接持有；提前返回或取消查询会一并丢弃剩余请求。
+async fn ready_responses<F>(
+    pending: &mut Vec<(Source, Pin<Box<F>>)>,
+) -> Vec<(Source, Result<Value, String>)>
+where
+    F: Future<Output = Result<Value, String>>,
+{
+    poll_fn(|cx| {
+        let mut ready = Vec::new();
+        let mut index = 0;
+        while index < pending.len() {
+            match pending[index].1.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    let (source, _) = pending.remove(index);
+                    ready.push((source, result));
+                }
+                Poll::Pending => index += 1,
             }
         }
-        for source in [Source::Locate, Source::ApiIs, Source::ProxyCheck] {
-            if data
-                .as_ref()
-                .is_some_and(|d| !matches!(d.network_type, "unknown" | "isp"))
-            {
-                break;
-            }
-            if let Ok(value) = get_json(&client, source.url(ip))
-                .await
-                .and_then(|v| parse_source(ip, source, &v))
-            {
-                merge_metadata(&mut data, value);
-            }
+        if ready.is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Ready(ready)
         }
     })
-    .await;
+    .await
+}
+
+// wait_until 接收相对本次查询起点的绝对期限，响应到达不会重置追加来源的时间。
+// 请求与时钟均可注入，测试无需真实网络、计时器或内核。
+async fn query_with<F, Request, C, Wait>(
+    ip: IpAddr,
+    mut request: F,
+    mut wait_until: C,
+) -> Result<IpMetadata, String>
+where
+    F: FnMut(Source) -> Request,
+    Request: Future<Output = Result<Value, String>>,
+    C: FnMut(Duration) -> Wait,
+    Wait: Future<Output = ()>,
+{
+    let mut data = None;
+    let mut pending = vec![
+        (Source::Ident, Box::pin(request(Source::Ident))),
+        (Source::Query, Box::pin(request(Source::Query))),
+    ];
+    let fallback = [Source::Locate, Source::ApiIs, Source::ProxyCheck];
+    let mut next_source = 0;
+    let mut deadline = Box::pin(wait_until(QUERY_DEADLINE));
+    let mut hedge = Box::pin(wait_until(HEDGE_INTERVAL));
+
+    loop {
+        if pending.is_empty() && next_source == fallback.len() {
+            break;
+        }
+        let has_pending = !pending.is_empty();
+        tokio::select! {
+            biased;
+            responses = ready_responses(&mut pending), if has_pending => {
+                for (source, response) in responses {
+                    if let Ok(value) = response.and_then(|v| parse_source(ip, source, &v)) {
+                        merge_metadata(&mut data, value);
+                    }
+                }
+                if data.as_ref().is_some_and(|value| matches!(
+                    value.network_type, "residential" | "mobile" | "business" | "datacenter"
+                )) {
+                    break;
+                }
+            }
+            _ = &mut deadline => break,
+            _ = &mut hedge, if next_source < fallback.len() => {
+                let source = fallback[next_source];
+                pending.push((source, Box::pin(request(source))));
+                next_source += 1;
+                if next_source < fallback.len() {
+                    hedge = Box::pin(wait_until(HEDGE_INTERVAL * (next_source as u32 + 1)));
+                }
+            }
+        }
+    }
     data.ok_or_else(|| "IP 信息服务暂不可用".into())
+}
+
+pub async fn query(ip: IpAddr, route: ProbeRoute) -> Result<IpMetadata, String> {
+    let client = build_client(route, Duration::from_secs(3))?;
+    let started = tokio::time::Instant::now();
+    query_with(
+        ip,
+        |source| get_json(&client, source.url(ip)),
+        |at| tokio::time::sleep_until(started + at),
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::task::{Context, Wake, Waker};
+    use tokio::sync::oneshot;
+
+    type ResponseSender = oneshot::Sender<Result<Value, String>>;
+
+    #[derive(Default)]
+    struct ScriptState {
+        now: Duration,
+        timers: Vec<(Duration, oneshot::Sender<()>)>,
+        requests: Vec<(Source, Option<ResponseSender>)>,
+        cancelled: Vec<Source>,
+    }
+
+    #[derive(Clone, Default)]
+    struct Script(Rc<RefCell<ScriptState>>);
+
+    struct RequestGuard {
+        script: Script,
+        source: Source,
+        completed: bool,
+    }
+
+    impl Drop for RequestGuard {
+        fn drop(&mut self) {
+            if !self.completed {
+                self.script.0.borrow_mut().cancelled.push(self.source);
+            }
+        }
+    }
+
+    impl Script {
+        fn request(&self, source: Source) -> impl Future<Output = Result<Value, String>> {
+            let (tx, rx) = oneshot::channel();
+            self.0.borrow_mut().requests.push((source, Some(tx)));
+            let mut guard = RequestGuard {
+                script: self.clone(),
+                source,
+                completed: false,
+            };
+            async move {
+                let result = rx.await.expect("script response");
+                guard.completed = true;
+                result
+            }
+        }
+
+        fn wait_until(&self, at: Duration) -> impl Future<Output = ()> {
+            let (tx, rx) = oneshot::channel();
+            let mut state = self.0.borrow_mut();
+            if at <= state.now {
+                tx.send(()).expect("new timer receiver");
+            } else {
+                state.timers.push((at, tx));
+            }
+            async move { rx.await.expect("script clock") }
+        }
+
+        fn advance_to(&self, millis: u64) {
+            let mut state = self.0.borrow_mut();
+            let now = Duration::from_millis(millis);
+            assert!(now >= state.now);
+            state.now = now;
+            let mut index = 0;
+            while index < state.timers.len() {
+                if state.timers[index].0 <= now {
+                    let (_, tx) = state.timers.remove(index);
+                    let _ = tx.send(());
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
+        fn respond(&self, source: Source, value: Value) {
+            self.complete(source, Ok(value));
+        }
+
+        fn complete(&self, source: Source, result: Result<Value, String>) {
+            let tx = self
+                .0
+                .borrow_mut()
+                .requests
+                .iter_mut()
+                .find(|(s, _)| *s == source)
+                .expect("source launched")
+                .1
+                .take()
+                .expect("single response");
+            assert!(tx.send(result).is_ok());
+        }
+
+        fn launched(&self) -> Vec<Source> {
+            self.0.borrow().requests.iter().map(|(s, _)| *s).collect()
+        }
+    }
+
+    struct NoopWake;
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn step<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+        let waker = Waker::from(Arc::new(NoopWake));
+        future.poll(&mut Context::from_waker(&waker))
+    }
+
+    fn success(result: Poll<Result<IpMetadata, String>>) -> IpMetadata {
+        match result {
+            Poll::Ready(Ok(value)) => value,
+            other => panic!("expected metadata, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fast_primary_returns_without_waiting_and_cancels_sibling() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        assert_eq!(script.launched(), [Source::Ident, Source::Query]);
+        script.respond(Source::Ident, json!({"ip":"8.8.8.8","type":"business"}));
+        assert_eq!(success(step(query.as_mut())).network_type, "business");
+        assert_eq!(script.0.borrow().cancelled, [Source::Query]);
+    }
+
+    #[tokio::test]
+    async fn hedges_start_each_second_without_waiting_for_previous_requests() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(999);
+        assert!(step(query.as_mut()).is_pending());
+        assert_eq!(script.launched().len(), 2);
+        for (millis, source) in [
+            (1000, Source::Locate),
+            (2000, Source::ApiIs),
+            (3000, Source::ProxyCheck),
+        ] {
+            script.advance_to(millis);
+            assert!(step(query.as_mut()).is_pending());
+            assert_eq!(script.launched().last(), Some(&source));
+        }
+        script.respond(
+            Source::ProxyCheck,
+            json!({"status":"ok","8.8.8.8":{"network":{"type":"Residential"}}}),
+        );
+        assert_eq!(success(step(query.as_mut())).network_type, "residential");
+        assert_eq!(script.0.borrow().cancelled.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn pending_primary_can_win_after_hedge_and_preserves_previous_risk() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(
+            Source::Query,
+            json!({"ip":"8.8.8.8","risk":{"is_tor":true,"risk_score":90}}),
+        );
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(1000);
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(Source::Ident, json!({"ip":"8.8.8.8","type":"business"}));
+        let value = success(step(query.as_mut()));
+        assert_eq!(value.network_type, "business");
+        assert_eq!(value.ip_quality, "risky");
+        assert_eq!(value.risk_score, Some(90));
+        assert_eq!(script.0.borrow().cancelled, [Source::Locate]);
+    }
+
+    #[tokio::test]
+    async fn same_poll_ready_risk_and_hosting_override_optimistic_primary() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(Source::Ident, json!({"ip":"8.8.8.8","type":"business"}));
+        script.respond(
+            Source::Query,
+            json!({"ip":"8.8.8.8","risk":{"is_datacenter":true,"is_tor":true}}),
+        );
+        let value = success(step(query.as_mut()));
+        assert_eq!(value.network_type, "datacenter");
+        assert_eq!(value.is_tor, Some(true));
+        assert_eq!(value.ip_quality, "risky");
+    }
+
+    #[tokio::test]
+    async fn mismatched_ip_and_isp_do_not_end_query_or_postpone_hedge() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(900);
+        script.respond(Source::Ident, json!({"ip":"1.1.1.1","type":"residential"}));
+        script.respond(
+            Source::Query,
+            json!({"ip":"8.8.8.8","isp":{"org":"ISP name"},"risk":{"is_datacenter":false}}),
+        );
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(1000);
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(
+            Source::Locate,
+            json!({"ip":"8.8.8.8","company":{"type":"isp"}}),
+        );
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(2000);
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(Source::ApiIs, json!({"ip":"8.8.8.8","is_mobile":true}));
+        let value = success(step(query.as_mut()));
+        assert_eq!(value.network_type, "mobile");
+        assert!(!value.residential_inferred);
+        assert!(!value.source.contains("ident.me"));
+        assert_eq!(script.launched().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn absolute_deadline_returns_partial_or_error_and_cancels_pending() {
+        for partial in [false, true] {
+            let script = Script::default();
+            let mut query = Box::pin(query_with(
+                validate_ip("8.8.8.8").unwrap(),
+                |source| script.request(source),
+                |at| script.wait_until(at),
+            ));
+            assert!(step(query.as_mut()).is_pending());
+            if partial {
+                script.respond(Source::Ident, json!({"ip":"8.8.8.8","aso":"Known Org"}));
+                assert!(step(query.as_mut()).is_pending());
+            }
+            for at in [1000, 2000, 3000, 11999] {
+                script.advance_to(at);
+                assert!(step(query.as_mut()).is_pending());
+            }
+            script.advance_to(12000);
+            let result = step(query.as_mut());
+            if partial {
+                let value = success(result);
+                assert_eq!(value.organization.as_deref(), Some("Known Org"));
+                assert_eq!(value.network_type, "unknown");
+                assert_eq!(value.ip_quality, "unknown");
+            } else {
+                assert!(matches!(result, Poll::Ready(Err(_))));
+            }
+            assert_eq!(
+                script.0.borrow().cancelled.len(),
+                if partial { 4 } else { 5 }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_and_malformed_sources_finish_without_waiting_for_deadline() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.complete(Source::Ident, Err("HTTP 429".into()));
+        script.respond(Source::Query, json!({"error":"unavailable"}));
+        assert!(step(query.as_mut()).is_pending());
+        for (at, source) in [(1000, Source::Locate), (2000, Source::ApiIs)] {
+            script.advance_to(at);
+            assert!(step(query.as_mut()).is_pending());
+            script.complete(source, Err("timeout".into()));
+            assert!(step(query.as_mut()).is_pending());
+        }
+        script.advance_to(3000);
+        assert!(step(query.as_mut()).is_pending());
+        script.respond(Source::ProxyCheck, json!({"status":"error"}));
+        assert!(matches!(step(query.as_mut()), Poll::Ready(Err(_))));
+        assert!(script.0.borrow().cancelled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelling_query_drops_every_started_request() {
+        let script = Script::default();
+        let mut query = Box::pin(query_with(
+            validate_ip("8.8.8.8").unwrap(),
+            |source| script.request(source),
+            |at| script.wait_until(at),
+        ));
+        assert!(step(query.as_mut()).is_pending());
+        script.advance_to(1000);
+        assert!(step(query.as_mut()).is_pending());
+        drop(query);
+        assert_eq!(script.0.borrow().cancelled.len(), 3);
+    }
+
     #[test]
     fn declared_sources_require_exact_ip_and_keep_isp_distinct() {
         let ip = validate_ip("8.8.8.8").unwrap();

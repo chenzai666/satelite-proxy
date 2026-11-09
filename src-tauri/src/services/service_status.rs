@@ -1,4 +1,7 @@
-//! 固定服务目录的 HTTP 连通性检测，不判断账号、会员或地区可用性。
+//! 固定服务目录检测：Google/GitHub 检测连通性，其他服务解析各自的只读响应。
+
+#[path = "service_status_rules.rs"]
+mod rules;
 
 use crate::services::network_probe::{build_client, ProbeRoute};
 use serde::Serialize;
@@ -31,15 +34,15 @@ const CATALOG: [Service; MAX_IDS] = [
     },
     Service {
         id: "youtube",
-        url: "https://www.youtube.com/generate_204",
+        url: "https://www.youtube.com/premium?hl=en",
     },
     Service {
         id: "chatgpt",
-        url: "https://chatgpt.com/",
+        url: "https://ios.chat.openai.com/",
     },
     Service {
         id: "claude",
-        url: "https://claude.ai/",
+        url: "https://claude.ai/cdn-cgi/trace",
     },
     Service {
         id: "gemini",
@@ -47,7 +50,7 @@ const CATALOG: [Service; MAX_IDS] = [
     },
     Service {
         id: "netflix",
-        url: "https://www.netflix.com/",
+        url: "https://www.netflix.com/title/81280792",
     },
     Service {
         id: "disney",
@@ -59,7 +62,7 @@ const CATALOG: [Service; MAX_IDS] = [
     },
     Service {
         id: "spotify",
-        url: "https://open.spotify.com/",
+        url: "https://www.spotify.com/api/content/v1/country-selector?platform=web&format=json",
     },
     Service {
         id: "tiktok",
@@ -67,11 +70,11 @@ const CATALOG: [Service; MAX_IDS] = [
     },
     Service {
         id: "discord",
-        url: "https://discord.com/",
+        url: "https://discord.com/api/v9/auth/location-metadata",
     },
     Service {
         id: "bilibili",
-        url: "https://www.bilibili.com/",
+        url: "https://api.bilibili.com/pgc/player/web/playurl?avid=82846771&qn=0&type=&otype=json&ep_id=307247&fourk=1&fnver=0&fnval=16&module=bangumi",
     },
 ];
 
@@ -84,6 +87,14 @@ pub enum ServiceStatus {
     HttpError,
     Timeout,
     NetworkError,
+    Available,
+    Unavailable,
+    Blocked,
+    DisallowedIsp,
+    UnsupportedRegion,
+    OriginalsOnly,
+    ComingSoon,
+    Failed,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,6 +110,10 @@ pub struct ServiceStatusResult {
     pub checked_at: i64,
     /// 仅表示请求经过内核 HTTP 入站，内核仍按实际规则决定出站。
     pub via_proxy: bool,
+    /// 仅取自被检测服务；缺失或非法地区不输出。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    pub check_kind: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,24 +161,51 @@ fn http_status(status: u16) -> ServiceStatus {
 }
 
 // 单次超时及两次请求、间隔共享总预算。注入 future 供 CI 做纯内存回归。
-async fn probe_with_retry<F, Fut>(
+trait RetryOutcome {
+    fn status(&self) -> ServiceStatus;
+    fn timed_out() -> Self;
+}
+
+impl RetryOutcome for rules::Outcome {
+    fn status(&self) -> ServiceStatus {
+        self.status
+    }
+
+    fn timed_out() -> Self {
+        Self::new(ServiceStatus::Timeout, None)
+    }
+}
+
+#[cfg(test)]
+impl RetryOutcome for (ServiceStatus, Option<u16>) {
+    fn status(&self) -> ServiceStatus {
+        self.0
+    }
+
+    fn timed_out() -> Self {
+        (ServiceStatus::Timeout, None)
+    }
+}
+
+async fn probe_with_retry<F, Fut, T>(
     mut attempt: F,
     attempt_timeout: Duration,
     total_timeout: Duration,
     retry_delay: Duration,
-) -> (ServiceStatus, Option<u16>)
+) -> T
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = (ServiceStatus, Option<u16>)>,
+    Fut: Future<Output = T>,
+    T: RetryOutcome,
 {
     timeout(total_timeout, async {
         for index in 0..2 {
             let result = timeout(attempt_timeout, attempt())
                 .await
-                .unwrap_or((ServiceStatus::Timeout, None));
+                .unwrap_or_else(|_| T::timed_out());
             if index == 1
                 || !matches!(
-                    result.0,
+                    result.status(),
                     ServiceStatus::Timeout | ServiceStatus::NetworkError
                 )
             {
@@ -174,7 +216,7 @@ where
         unreachable!()
     })
     .await
-    .unwrap_or((ServiceStatus::Timeout, None))
+    .unwrap_or_else(|_| T::timed_out())
 }
 
 async fn probe_one(
@@ -183,19 +225,8 @@ async fn probe_one(
     via_proxy: bool,
 ) -> ServiceStatusResult {
     let started = Instant::now();
-    let (status, http_status) = probe_with_retry(
-        || async {
-            // 同一客户端、同一 URL、同一条路线；收到响应头即返回，不读取正文。
-            match client.get(service.url).send().await {
-                Ok(response) => {
-                    let code = response.status().as_u16();
-                    drop(response);
-                    (http_status(code), Some(code))
-                }
-                Err(error) if error.is_timeout() => (ServiceStatus::Timeout, None),
-                Err(_) => (ServiceStatus::NetworkError, None),
-            }
-        },
+    let outcome = probe_with_retry(
+        || rules::probe(&client, service),
         ATTEMPT_TIMEOUT,
         REQUEST_TIMEOUT,
         RETRY_DELAY,
@@ -203,11 +234,13 @@ async fn probe_one(
     .await;
     ServiceStatusResult {
         id: service.id.into(),
-        status,
+        status: outcome.status,
         latency_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-        http_status,
+        http_status: outcome.http_status,
         checked_at: checked_at(),
         via_proxy,
+        region: outcome.region,
+        check_kind: rules::check_kind(service.id),
     }
 }
 
@@ -261,6 +294,8 @@ where
                 http_status: None,
                 checked_at,
                 via_proxy,
+                region: None,
+                check_kind: rules::check_kind(service.id),
             })
         })
         .collect();
@@ -305,6 +340,8 @@ mod tests {
             http_status: Some(204),
             checked_at: checked_at(),
             via_proxy: true,
+            region: None,
+            check_kind: rules::check_kind(service.id),
         }
     }
 
@@ -367,6 +404,14 @@ mod tests {
             (ServiceStatus::HttpError, "http_error"),
             (ServiceStatus::Timeout, "timeout"),
             (ServiceStatus::NetworkError, "network_error"),
+            (ServiceStatus::Available, "available"),
+            (ServiceStatus::Unavailable, "unavailable"),
+            (ServiceStatus::Blocked, "blocked"),
+            (ServiceStatus::DisallowedIsp, "disallowed_isp"),
+            (ServiceStatus::UnsupportedRegion, "unsupported_region"),
+            (ServiceStatus::OriginalsOnly, "originals_only"),
+            (ServiceStatus::ComingSoon, "coming_soon"),
+            (ServiceStatus::Failed, "failed"),
         ] {
             assert_eq!(serde_json::to_value(status).unwrap(), name);
         }
@@ -375,6 +420,11 @@ mod tests {
         assert_eq!(value["latencyMs"], 1);
         assert_eq!(value["httpStatus"], 204);
         assert_eq!(value["viaProxy"], true);
+        assert_eq!(value["checkKind"], "reachability");
+        assert!(value.get("region").is_none());
+        result.region = Some("JP".into());
+        result.check_kind = "availability";
+        assert_eq!(serde_json::to_value(&result).unwrap()["region"], "JP");
         assert!(value["checkedAt"].is_i64());
         result.latency_ms = None;
         result.http_status = None;
@@ -451,6 +501,38 @@ mod tests {
             .await;
             assert_eq!(result, (http_status(code), Some(code)));
             assert_eq!(calls.load(Ordering::SeqCst), 1, "HTTP {code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_outcome_keeps_region_without_retrying_http_denials() {
+        for status in [
+            ServiceStatus::Restricted,
+            ServiceStatus::HttpError,
+            ServiceStatus::UnsupportedRegion,
+            ServiceStatus::Blocked,
+            ServiceStatus::Failed,
+            ServiceStatus::Available,
+        ] {
+            let calls = AtomicUsize::new(0);
+            let result = probe_with_retry(
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(rules::Outcome {
+                        status,
+                        http_status: Some(403),
+                        region: Some("US".into()),
+                    })
+                },
+                ATTEMPT_TIMEOUT,
+                REQUEST_TIMEOUT,
+                RETRY_DELAY,
+            )
+            .await;
+            assert_eq!(result.status, status);
+            assert_eq!(result.http_status, Some(403));
+            assert_eq!(result.region.as_deref(), Some("US"));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
         }
     }
 
@@ -571,69 +653,5 @@ mod tests {
                 && result.http_status.is_none()
                 && result.latency_ms.is_none()
                 && !result.via_proxy));
-    }
-
-    #[tokio::test]
-    async fn gets_headers_without_body_or_redirect_following_through_local_proxy() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        for code in [200, 302, 403, 500] {
-            // 仅监听 loopback；固定测试域名由本地假 HTTP 代理直接应答。
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let server = tokio::task::spawn_blocking(move || {
-                let deadline = Instant::now() + Duration::from_secs(2);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((stream, _)) => break stream,
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "本地测试请求未到达");
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(error) => panic!("本地测试监听失败: {error}"),
-                    }
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                let mut request = Vec::new();
-                while !request.ends_with(b"\r\n\r\n") {
-                    let mut byte = [0];
-                    assert_eq!(stream.read(&mut byte).unwrap(), 1);
-                    request.push(byte[0]);
-                    assert!(request.len() <= 8192);
-                }
-                // 宣告大正文但仅发响应头，正文读取会失败；重定向目标也无需访问。
-                write!(stream, "HTTP/1.1 {code} Test\r\nContent-Length: 100000000\r\nLocation: http://redirect.invalid/\r\nConnection: close\r\n\r\n").unwrap();
-                String::from_utf8(request).unwrap()
-            });
-            let client = build_client(
-                ProbeRoute {
-                    proxy_port: Some(port),
-                },
-                ATTEMPT_TIMEOUT,
-            )
-            .unwrap();
-            let result = probe_one(
-                client,
-                Service {
-                    id: "fixture",
-                    url: "http://service.invalid/",
-                },
-                true,
-            )
-            .await;
-            let request = server.await.unwrap();
-            assert!(request.starts_with("GET http://service.invalid/ HTTP/1.1\r\n"));
-            assert_eq!(result.status, http_status(code));
-            assert_eq!(result.http_status, Some(code));
-            assert!(result.via_proxy);
-            assert!(result.latency_ms.is_some());
-        }
     }
 }

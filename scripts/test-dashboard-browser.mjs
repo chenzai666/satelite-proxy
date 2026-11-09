@@ -150,7 +150,7 @@ async function serviceRoundTrip(saveScreenshot = false) {
     const rows = [...document.querySelectorAll('.service-status-card-row')];
     return document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization &&
       rows.length === count && rows.every(row => row.querySelector('.service-status-state')?.getAttribute('data-status') ===
-        (row.getAttribute('data-service-id') === 'chatgpt' ? 'restricted' : 'reachable')) &&
+        (row.getAttribute('data-service-id') === 'chatgpt' ? 'restricted' : row.getAttribute('data-service-id') === 'youtube' ? 'available' : 'reachable')) &&
       !document.querySelector('.service-status-card .service-status-checking');
   }, count);
   await settled(2);
@@ -176,6 +176,8 @@ async function countryRefresh() {
   const button = page.locator('.dashboard-country-button');
   await page.waitForFunction(() => document.querySelector('.dashboard-country-button text')?.textContent === 'HK');
   assert.equal(await button.getAttribute('aria-label'), '刷新 出口IP');
+  await page.waitForFunction(() => document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization);
+  const metadataCalls = await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'check_ip_metadata').length);
   for (const [country, text] of [['US', 'US'], ['', '—'], ['invalid', '—']]) {
     const before = await page.evaluate(country => {
       window.dashboardFixture.countryCode = country;
@@ -187,6 +189,7 @@ async function countryRefresh() {
     await page.waitForFunction(() => window.dashboardFixture.releaseExitIp !== null);
     assert.equal(await button.isDisabled(), true, '探测中禁止重复点击');
     assert.equal(await button.getAttribute('aria-busy'), 'true');
+    assert.equal(await page.locator('.dash-hero .ip-organization').textContent(), await page.evaluate(() => window.dashboardFixture.organization), '刷新出口期间保留同IP组织信息，不清空闪烁');
     await page.keyboard.press('Enter');
     assert.equal(await page.evaluate(() => window.dashboardFixture.exitIpReads), before + 1, '每次点击仅发一个 check_exit_ip，忙碌时不重复');
     await page.evaluate(() => {
@@ -196,6 +199,7 @@ async function countryRefresh() {
     await page.waitForFunction(() => document.querySelector('.dashboard-country-button')?.getAttribute('aria-busy') === 'false');
     assert.equal(await button.locator('text').textContent(), text, '国家代码来自当前出口结果，未知使用占位');
     assert.equal(await page.locator('.dashboard-exit-ip').textContent(), await page.evaluate(() => window.dashboardFixture.ipv6));
+    assert.equal(await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'check_ip_metadata').length), metadataCalls, '相同IP刷新复用元数据缓存');
   }
   await layout();
 }
@@ -432,6 +436,20 @@ try {
   assert.deepEqual([...latestServices].sort(), ['google', 'github', 'youtube', 'chatgpt'].sort(), '开启代理后全部展示项自动检测并从暂态失败恢复');
   await open(1280, 900, "zh", "aerospace", "running", "particle");
   assert.equal(await page.locator('.dashboard-power-visual .particle-orbit').count(), 1);
+  await page.locator('.service-status-card').click();
+  await page.getByRole('dialog').waitFor();
+  await page.getByRole('switch', { name: '在卡片展示 Claude', exact: true }).check();
+  const claude = page.locator('.service-status-card-row[data-service-id="claude"]');
+  await page.waitForFunction(() => document.querySelector('.service-status-card-row[data-service-id="claude"] [data-status]')?.getAttribute('data-status') === 'available');
+  assert.match(await claude.innerText(), /US.*160 ms/s, 'Claude显示该服务返回的地区和延迟');
+  for (const [status, label, code] of [['restricted', 'HTTP 访问受限', 403], ['unsupported_region', '地区不支持', 200], ['blocked', '访问被阻止', 403]]) {
+    await page.evaluate(({ status, code }) => { window.dashboardFixture.claudeStatus = status; window.dashboardFixture.claudeHttp = code; }, { status, code });
+    await page.getByRole('button', { name: '检测 Claude 状态', exact: true }).click();
+    await page.waitForFunction(status => document.querySelector('.service-status-card-row[data-service-id="claude"] [data-status]')?.getAttribute('data-status') === status, status);
+    assert.ok((await claude.innerText()).includes(label), 'HTTP拒绝、地区限制及拦截显示各自状态');
+  }
+  await page.keyboard.press('Escape');
+  await page.getByRole('dialog').waitFor({ state: 'hidden' });
   for (const [network, text, quality] of [["residential", "家宽", "优"], ["business", "商业", "优"], ["mobile", "移动网络", "优"], ["datacenter", "机房", "普通"], ["isp", "ISP 网络", "未知"], ["unknown", "未知", "未知"], ["tor", "商业", "风险"], ["abuse", "商业", "风险"]]) {
     await open(1280, 900, "zh", "aerospace", "running", "classic", network);
     await page.waitForFunction(() => document.querySelector('.ip-organization')?.textContent.includes('Without Truncation'));

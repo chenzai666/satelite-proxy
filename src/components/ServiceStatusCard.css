@@ -49,16 +49,25 @@ button.instrument.service-status-card:focus-visible,
 .service-status-card-row .service-status-name { flex: 1 1 78px; font-size: .76rem; font-weight: 600; }
 .service-status-card-row .service-status-glyph { width: 17px; height: 17px; flex-basis: 17px; color: var(--muted); }
 .service-status-card-row .service-status-state { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+.service-status-available { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .service-status-card-row .service-status-state[data-status]::before { content: ""; width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
 .service-status-checking { display: inline-flex; align-items: center; gap: 5px; }
 .service-status-progress { display: inline-block; width: 9px; height: 9px; border: 1.5px solid var(--border-strong); border-top-color: var(--primary); border-radius: 50%; animation: service-status-spin 1s linear infinite; }
 @keyframes service-status-spin { to { transform: rotate(360deg); } }
 .service-status-state { font-size: .72rem; color: var(--muted); overflow-wrap: anywhere; }
-.service-status-state[data-status="reachable"] { color: var(--success, #368667); }
+.service-status-state[data-status="reachable"],
+.service-status-state[data-status="available"] { color: var(--success, #368667); }
 .service-status-state[data-status="redirect"] { color: var(--primary); }
 .service-status-state[data-status="restricted"],
+.service-status-state[data-status="unavailable"],
+.service-status-state[data-status="blocked"],
+.service-status-state[data-status="disallowed_isp"],
+.service-status-state[data-status="unsupported_region"],
+.service-status-state[data-status="originals_only"],
+.service-status-state[data-status="coming_soon"],
 .service-status-state[data-status="http_error"] { color: var(--warning, #ae7430); }
 .service-status-state[data-status="timeout"],
+.service-status-state[data-status="failed"],
 .service-status-state[data-status="network_error"] { color: var(--danger); }
 .service-status-error-mark { color: var(--danger); margin-inline-end: 4px; font-weight: 700; }
 .service-status-card-hint { color: var(--muted); font-size: .65rem; margin-top: 2px; }

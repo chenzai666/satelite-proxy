@@ -11,6 +11,14 @@ type Cache = Vec<(String, Instant, IpMetadata)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+fn cache_ttl(value: &IpMetadata) -> Duration {
+    Duration::from_secs(if matches!(value.network_type, "unknown" | "isp") {
+        30
+    } else {
+        300
+    })
+}
+
 #[tauri::command]
 pub async fn check_ip_metadata(
     state: State<'_, AppState>,
@@ -30,7 +38,7 @@ pub async fn check_ip_metadata(
         .lock()
         .map_err(|_| "IP 信息缓存不可用")?
         .iter()
-        .find(|(address, time, _)| address == &key && time.elapsed() < Duration::from_secs(300))
+        .find(|(address, time, value)| address == &key && time.elapsed() < cache_ttl(value))
         .map(|(_, _, value)| value.clone());
     if let Some(value) = cached {
         let (after_version, after) = state.probe_snapshot().map_err(|_| "检测路径正在变化")?;
@@ -39,10 +47,22 @@ pub async fn check_ip_metadata(
         }
         return Ok(value);
     }
-    let _permit = GATE
-        .try_acquire()
+    // 切换路线的旧请求会在下方取消，短暂等待许可而非立即返回“忙碌”。
+    let _permit = tokio::time::timeout(Duration::from_millis(500), GATE.acquire())
+        .await
+        .map_err(|_| "IP 信息正在检测，请稍后重试")?
         .map_err(|_| "IP 信息正在检测，请稍后重试")?;
-    let value = ip_metadata::query(ip, route).await?;
+    let value = tokio::select! {
+        result = ip_metadata::query(ip, route) => result?,
+        _ = async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if state.is_core_transitioning() || state.probe_snapshot().is_ok_and(|(current, _)| current != version) {
+                    break;
+                }
+            }
+        } => return Err("检测期间代理路径已变化，请重新检测".into()),
+    };
     let (after_version, after) = state.probe_snapshot().map_err(|_| "无法确认检测路径")?;
     if version != after_version
         || state.is_core_transitioning()
@@ -51,8 +71,7 @@ pub async fn check_ip_metadata(
         return Err("检测期间代理路径已变化，请重新检测".into());
     }
     let mut entries = cache.lock().map_err(|_| "IP 信息缓存不可用")?;
-    entries
-        .retain(|(address, time, _)| address != &key && time.elapsed() < Duration::from_secs(300));
+    entries.retain(|(address, time, value)| address != &key && time.elapsed() < cache_ttl(value));
     if entries.len() >= 64 {
         entries.remove(0);
     }

@@ -7,6 +7,7 @@ import {
 import { catalogs, translate } from "../src/i18n/messages.ts";
 
 const allIds = SERVICE_STATUS_CATALOG.map(service => service.id);
+const availabilityStatuses = ["available", "unavailable", "blocked", "disallowed_isp", "unsupported_region", "originals_only", "coming_soon", "failed"];
 const tick = () => new Promise(resolve => queueMicrotask(resolve));
 const result = (id, overrides = {}) => ({
   id, status: "reachable", latencyMs: 32, httpStatus: 204, checkedAt: 1000, viaProxy: true, ...overrides,
@@ -117,6 +118,29 @@ test("IPC切换忙碌会自动恢复，HTTP受限不进入快速重试", async (
   await advance(299999); assert.equal(calls.length, 2);
   await advance(1); assert.equal(calls.length, 3);
   monitor.stop();
+});
+
+test("八种服务语义状态保持五分钟周期，焦点和可见性恢复复用结果，不触发失败退避", async () => {
+  for (const status of availabilityStatuses) {
+    const { monitor, calls, advance, timers } = mockIpc();
+    monitor.start(["chatgpt"]); await tick();
+    calls[0].resolve(batch([], { results: [result("chatgpt", { status, region: "US", checkKind: "availability" })] }));
+    await tick();
+    const snapshot = monitor.getSnapshot();
+    assert.equal(snapshot.results.chatgpt.status, status);
+    assert.deepEqual(snapshot.errors, {});
+    await advance(60000); monitor.refreshVisible();
+    monitor.setEnabled(false); await advance(60000); monitor.setEnabled(true); monitor.refreshVisible();
+    assert.equal(calls.length, 1, status);
+    assert.strictEqual(monitor.getSnapshot(), snapshot);
+    await advance(179999); assert.equal(calls.length, 1, status);
+    await advance(1); assert.equal(calls.length, 2, status);
+    assert.deepEqual(calls[1].ids, ["chatgpt"]);
+    calls[1].resolve(batch([], { results: [result("chatgpt", { status, checkKind: "availability" })] })); await tick();
+    await advance(299999); assert.equal(calls.length, 2, status);
+    await advance(1); assert.equal(calls.length, 3, status);
+    monitor.stop(); assert.equal(timers.size, 0);
+  }
 });
 
 test("隐藏或离线暂停计时，切回窗口复用近期结果，过期才补测", async () => {
@@ -283,7 +307,7 @@ test("缺失、重复或非法单项保旧值，合法单项独立更新，不�
   monitor.stop();
 });
 
-test("六类后端结果都按实展示，缺失的可选指标保持未提供", async () => {
+test("旧后端六类结果缺少新字段仍接受，缺失的可选指标保持未提供", async () => {
   const { monitor, calls } = mockIpc();
   monitor.start(DEFAULT_SERVICE_IDS);
   await tick();
@@ -297,8 +321,81 @@ test("六类后端结果都按实展示，缺失的可选指标保持未提供",
     assert.equal(row.status, status);
     assert.equal(row.latencyMs, undefined);
     assert.equal(row.httpStatus, undefined);
+    assert.equal(row.region, undefined);
+    assert.equal(row.checkKind, undefined);
     assert.equal(row.viaProxy, false);
   }
+  monitor.stop();
+});
+
+test("检测类型和地区独立可选，合法字段按契约复制，后续缺字段清除旧值", async () => {
+  const { monitor, calls } = mockIpc();
+  monitor.start(["netflix"]); await tick();
+  calls[0].resolve(batch(["netflix"])); await tick();
+  for (const fields of [
+    { region: "US", checkKind: "availability" }, { region: "HK", checkKind: "reachability" },
+    { region: "JP" }, { checkKind: "availability" }, {},
+  ]) {
+    const request = monitor.request(["netflix"]);
+    const source = result("netflix", { status: "available", ...fields, diagnostic: "discard" });
+    calls.at(-1).resolve(batch([], { results: [source] })); await request;
+    const row = monitor.getSnapshot().results.netflix;
+    assert.equal(row.status, "available");
+    assert.equal(row.region, fields.region);
+    assert.equal(row.checkKind, fields.checkKind);
+    assert.equal(row.diagnostic, undefined);
+    assert.notStrictEqual(row, source);
+    source.region = "DE"; source.checkKind = "reachability";
+    assert.equal(row.region, fields.region);
+    assert.equal(row.checkKind, fields.checkKind);
+    assert.deepEqual(monitor.getSnapshot().errors, {});
+  }
+  monitor.stop();
+});
+
+test("非法地区或检测类型保留旧结果，合法同批服务仍更新，合法重试清除错误", async () => {
+  const { monitor, calls } = mockIpc();
+  const selected = ["chatgpt", "google"];
+  const original = result("chatgpt", { status: "available", region: "US", checkKind: "availability" });
+  monitor.start(selected); await tick();
+  calls[0].resolve(batch([], { results: [original, result("google")] })); await tick();
+  const retained = monitor.getSnapshot().results.chatgpt;
+  const invalidFields = [
+    ...["", "U", "USA", "us", "Us", " US", "US ", "US\n", "US\r\n", "美国", "ＵＳ", null, 12, true, ["US"], {}].map(region => ({ region })),
+    ...["", "Availability", "http", "availability\n", null, 1, true, ["availability"], {}].map(checkKind => ({ checkKind })),
+  ];
+  for (const fields of invalidFields) {
+    const request = monitor.request(selected);
+    calls.at(-1).resolve(batch([], { results: [
+      result("chatgpt", { status: "blocked", region: "GB", checkKind: "availability", ...fields }),
+      result("google", { checkKind: "reachability", latencyMs: 11 }),
+    ] })); await request;
+    const snapshot = monitor.getSnapshot();
+    assert.strictEqual(snapshot.results.chatgpt, retained, JSON.stringify(fields));
+    assert.equal(snapshot.errors.chatgpt, true);
+    assert.equal(snapshot.results.google.checkKind, "reachability");
+    assert.equal(snapshot.results.google.latencyMs, 11);
+    assert.equal(snapshot.errors.google, undefined);
+  }
+  const retry = monitor.request(["chatgpt"]);
+  calls.at(-1).resolve(batch(["chatgpt"])); await retry;
+  assert.deepEqual(monitor.getSnapshot().errors, {});
+  assert.equal(monitor.getSnapshot().results.chatgpt.region, undefined);
+  assert.equal(monitor.getSnapshot().results.chatgpt.checkKind, undefined);
+  monitor.stop();
+});
+
+test("旧ChatGPT通用403保持restricted，HTTP码不覆盖后端服务语义状态", async () => {
+  const { monitor, calls, advance } = mockIpc();
+  monitor.start(["chatgpt"]); await tick();
+  calls[0].resolve(batch([], { results: [result("chatgpt", { status: "restricted", httpStatus: 403 })] })); await tick();
+  assert.equal(monitor.getSnapshot().results.chatgpt.status, "restricted");
+  assert.equal(monitor.getSnapshot().results.chatgpt.checkKind, undefined);
+  await advance(299999); assert.equal(calls.length, 1);
+  await advance(1); assert.equal(calls.length, 2);
+  calls[1].resolve(batch([], { results: [result("chatgpt", { status: "unsupported_region", httpStatus: 403, checkKind: "availability" })] })); await tick();
+  assert.equal(monitor.getSnapshot().results.chatgpt.status, "unsupported_region");
+  assert.deepEqual(monitor.getSnapshot().errors, {});
   monitor.stop();
 });
 
@@ -325,12 +422,18 @@ test("非法批次保旧值；已停止、空 ID 和非目录 ID 不发 IPC", as
 });
 
 test("中英文服务文案齐全，受限与跳转语义明确", () => {
+  const serviceKeys = locale => Object.keys(catalogs[locale]).filter(key => key.startsWith("serviceStatus.")).sort();
+  assert.deepEqual(serviceKeys("zh"), serviceKeys("en"));
   for (const locale of ["zh", "en"]) {
     for (const key of Object.keys(catalogs.en).filter(key => key.startsWith("serviceStatus."))) {
       assert.ok(catalogs[locale][key], `${locale}: ${key}`);
     }
+    for (const key of ["available", "unavailable", "blocked", "disallowedIsp", "unsupportedRegion", "originalsOnly", "comingSoon", "resultFailed", "checkKind", "region", "reachability", "availability", "notProvided"]) {
+      assert.ok(catalogs[locale][`serviceStatus.${key}`], `${locale}: ${key}`);
+    }
   }
   assert.equal(translate("zh", "serviceStatus.restricted"), "HTTP 访问受限");
   assert.equal(translate("zh", "serviceStatus.redirect"), "可达需跳转");
-  assert.match(translate("zh", "serviceStatus.scope"), /HTTP.*当前内核规则.*直连/);
+  assert.match(translate("zh", "serviceStatus.scope"), /Google、GitHub.*连通性.*其他服务.*只读响应.*当前内核规则.*直连.*403.*请求受限/);
+  assert.match(translate("en", "serviceStatus.scope"), /Google and GitHub.*connectivity.*other services.*read-only.*kernel rules.*direct.*403.*restricted request/);
 });

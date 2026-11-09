@@ -16,13 +16,19 @@ export const SERVICE_STATUS_CATALOG = [
 ] as const;
 
 export type ServiceId = (typeof SERVICE_STATUS_CATALOG)[number]["id"];
-export type ServiceStatus = "reachable" | "redirect" | "restricted" | "http_error" | "timeout" | "network_error";
+export type ServiceStatus = "reachable" | "redirect" | "restricted" | "http_error" | "timeout" | "network_error"
+  | "available" | "unavailable" | "blocked" | "disallowed_isp" | "unsupported_region" | "originals_only" | "coming_soon" | "failed";
+export type ServiceCheckKind = "reachability" | "availability";
 
 export interface ServiceStatusResult {
   id: ServiceId;
   status: ServiceStatus;
   latencyMs?: number;
   httpStatus?: number;
+  /** 服务响应提供的大写两字母地区码；缺失时不推测。 */
+  region?: string;
+  /** 旧后端可能不提供检测类型。 */
+  checkKind?: ServiceCheckKind;
   /** Unix 毫秒。 */
   checkedAt: number;
   /** 经过内核入口，最终出站仍遵循当前内核规则。 */
@@ -41,7 +47,10 @@ export const MAX_VISIBLE_SERVICES = 4;
 export const SERVICE_REFRESH_MS = 5 * 60_000;
 
 const serviceIds = new Set<string>(SERVICE_STATUS_CATALOG.map(service => service.id));
-const statuses = new Set<ServiceStatus>(["reachable", "redirect", "restricted", "http_error", "timeout", "network_error"]);
+const statuses = new Set<ServiceStatus>([
+  "reachable", "redirect", "restricted", "http_error", "timeout", "network_error",
+  "available", "unavailable", "blocked", "disallowed_isp", "unsupported_region", "originals_only", "coming_soon", "failed",
+]);
 
 export function normalizeServiceIds(value: unknown): ServiceId[] {
   if (!Array.isArray(value)) return [];
@@ -67,7 +76,9 @@ function validResult(value: ServiceStatusResult): boolean {
   return !!value && typeof value === "object" && serviceIds.has(value.id) && statuses.has(value.status)
     && Number.isFinite(value.checkedAt) && value.checkedAt >= 0 && typeof value.viaProxy === "boolean"
     && (value.latencyMs === undefined || (Number.isFinite(value.latencyMs) && value.latencyMs >= 0))
-    && (value.httpStatus === undefined || (Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599));
+    && (value.httpStatus === undefined || (Number.isInteger(value.httpStatus) && value.httpStatus >= 100 && value.httpStatus <= 599))
+    && (value.region === undefined || (typeof value.region === "string" && value.region.length === 2 && /^[A-Z]{2}$/.test(value.region)))
+    && (value.checkKind === undefined || value.checkKind === "reachability" || value.checkKind === "availability");
 }
 
 /** 每个组件会话一个实例；所有检测只通过注入的 IPC 调用。 */
@@ -167,6 +178,7 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
         // 仅复制契约字段，不把额外诊断数据带到 UI 或持久存储。
         nextResults[id] = {
           id, status: result.status, latencyMs: result.latencyMs, httpStatus: result.httpStatus,
+          region: result.region, checkKind: result.checkKind,
           checkedAt: result.checkedAt, viaProxy: result.viaProxy,
         };
         delete nextErrors[id];

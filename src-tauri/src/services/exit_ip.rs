@@ -26,6 +26,11 @@ struct Source {
 
 const SOURCES: &[Source] = &[
     Source {
+        url: "https://www.cloudflare.com/cdn-cgi/trace",
+        ip_field: "",
+        country_field: "",
+    },
+    Source {
         url: "https://api.ip.sb/geoip",
         ip_field: "ip",
         country_field: "country_code",
@@ -67,6 +72,16 @@ async fn probe_source(
 }
 
 fn parse_source(source: &Source, body: &str) -> Option<(String, Option<String>)> {
+    if source.ip_field.is_empty() {
+        let field = |key: &str| {
+            body.lines().find_map(|line| {
+                let (name, value) = line.split_once('=')?;
+                (name == key).then_some(value.trim())
+            })
+        };
+        let ip = field("ip")?.parse::<std::net::IpAddr>().ok()?.to_string();
+        return Some((ip, field("loc").and_then(normalize_country)));
+    }
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let ip = value
         .get(source.ip_field)?
@@ -78,10 +93,14 @@ fn parse_source(source: &Source, body: &str) -> Option<(String, Option<String>)>
     let country = value
         .get(source.country_field)
         .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
+        .and_then(normalize_country);
     Some((ip, country))
+}
+
+fn normalize_country(value: &str) -> Option<String> {
+    let code = value.trim();
+    (code.len() == 2 && code.bytes().all(|b| b.is_ascii_alphabetic()))
+        .then(|| code.to_ascii_uppercase())
 }
 
 /// 并行探测多个公开 IP 接口。只返回首个成功结果，超时总上限为 12 秒。
@@ -149,5 +168,20 @@ mod tests {
     fn rejects_missing_or_empty_ip() {
         assert!(parse_source(&source("https://api.myip.com"), "not json").is_none());
         assert!(parse_source(&source("https://api.myip.com"), r#"{"ip":"","cc":"US"}"#,).is_none());
+    }
+
+    #[test]
+    fn parses_lightweight_trace_without_trusting_html_or_invalid_country() {
+        let trace = source("https://www.cloudflare.com/cdn-cgi/trace");
+        assert_eq!(
+            parse_source(&trace, "fl=123\nip=8.8.8.8\nloc=us\ntls=TLSv1.3\n"),
+            Some(("8.8.8.8".into(), Some("US".into())))
+        );
+        assert_eq!(
+            parse_source(&trace, "ip=2001:4860:4860::8888\nloc=UNKNOWN"),
+            Some(("2001:4860:4860::8888".into(), None))
+        );
+        assert!(parse_source(&trace, "<html>403</html>").is_none());
+        assert!(parse_source(&trace, "ip=invalid\nloc=US").is_none());
     }
 }

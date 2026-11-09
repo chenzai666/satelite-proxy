@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { checkIpMetadata } from "../api";
 import { useI18n } from "../i18n";
 import type { IpMetadata } from "../types";
+import { createIpLookupCache } from "../ipLookupCache";
 import "./IpInfoPanel.css";
+const metadataCache = createIpLookupCache<IpMetadata>(value => ["unknown", "isp"].includes(value.networkType) ? 30_000 : 300_000, 64);
 
 const labels = {
   zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
@@ -12,20 +14,31 @@ const labels = {
 export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey: string }) {
   const { locale } = useI18n();
   const l = labels[locale === "en" ? "en" : "zh"];
-  const [data, setData] = useState<IpMetadata | null>(null);
+  const [storedData, setData] = useState<IpMetadata | null>(null);
+  const data = storedData?.ip === ip ? storedData : null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [revision, setRevision] = useState(0);
+  const lastRevision = useRef(0);
   const epoch = useRef(0);
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const token = ++epoch.current;
-    setData(null); setError(null); setCopied(false);
-    if (!ip) { setBusy(false); return; }
+    const force = revision !== lastRevision.current;
+    lastRevision.current = revision;
+    setError(null); setCopied(false);
+    if (!ip) { setData(null); setBusy(false); return; }
+    const cached = metadataCache.peek(ip);
+    setData(previous => cached ?? (previous?.ip === ip ? previous : null));
+    if (cached && !force) { setBusy(false); return; }
     setBusy(true);
-    void checkIpMetadata(ip).then(value => {
+    void metadataCache.load(ip, async () => {
+      const value = await checkIpMetadata(ip);
+      if (value.ip !== ip) throw new Error("IP metadata mismatch");
+      return value;
+    }, force, sessionKey).then(value => {
       if (epoch.current === token && value.ip === ip) setData(value);
     }).catch(e => { if (epoch.current === token) setError(String(e)); })
       .finally(() => { if (epoch.current === token) setBusy(false); });

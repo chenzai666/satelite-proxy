@@ -74,6 +74,7 @@ const state = {
   unexpected: [] as string[], statusReads: 0, connectionReads: 0, trafficOpens: 0,
   holdStart: false, releaseStart: null as null | (() => void),
   serviceFailures: 0,
+  claudeStatus: "available", claudeRegion: "US", claudeHttp: 200,
   countryCode: "HK", exitIpReads: 0, holdExitIp: false, releaseExitIp: null as null | (() => void),
   setMotion: setUiMotion,
 };
@@ -117,8 +118,10 @@ mockIPC((command, payload) => {
       const failing = state.serviceFailures > 0;
       if (failing) { state.serviceFailures--; throw new Error("core transitioning"); }
       return {
-      results: (args.ids as string[]).map(id => ({ id, status: id === "chatgpt" ? "restricted" : "reachable",
-        latencyMs: id === "github" ? 576 : 160, httpStatus: id === "chatgpt" ? 403 : 200,
+      results: (args.ids as string[]).map(id => ({ id, status: id === "claude" ? state.claudeStatus : id === "youtube" ? "available" : id === "chatgpt" ? "restricted" : "reachable",
+        checkKind: ["google", "github"].includes(id) ? "reachability" : "availability",
+        ...(id === "claude" ? { region: state.claudeRegion || undefined } : id === "youtube" ? { region: "US" } : {}),
+        latencyMs: id === "github" ? 576 : 160, httpStatus: id === "claude" ? state.claudeHttp : id === "chatgpt" ? 403 : 200,
         checkedAt: 1700000000000, viaProxy: status.running })),
       checkedAt: 1700000000000, viaProxy: status.running,
     }; }
