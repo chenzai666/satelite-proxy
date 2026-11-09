@@ -3,6 +3,7 @@ use crate::services::{
     network_probe,
 };
 use crate::state::AppState;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::State;
@@ -10,6 +11,7 @@ use tauri::State;
 type Cache = Vec<(String, Instant, IpMetadata)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
 static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+static LOOKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn cache_ttl(value: &IpMetadata) -> Duration {
     Duration::from_secs(if matches!(value.network_type, "unknown" | "isp") {
@@ -48,23 +50,31 @@ pub async fn check_ip_metadata(
         return Ok(value);
     }
     // 切换路线的旧请求会在下方取消，短暂等待许可而非立即返回“忙碌”。
+    let lookup = LOOKUP_SEQUENCE
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
     let _permit = tokio::time::timeout(Duration::from_millis(500), GATE.acquire())
         .await
         .map_err(|_| "IP 信息正在检测，请稍后重试")?
         .map_err(|_| "IP 信息正在检测，请稍后重试")?;
+    if LOOKUP_SEQUENCE.load(Ordering::Acquire) != lookup {
+        return Err("出口信息已更新，取消旧查询".into());
+    }
     let value = tokio::select! {
         result = ip_metadata::query(ip, route) => result?,
         _ = async {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                if state.is_core_transitioning() || state.probe_snapshot().is_ok_and(|(current, _)| current != version) {
+                if LOOKUP_SEQUENCE.load(Ordering::Acquire) != lookup
+                    || state.is_core_transitioning() || state.probe_snapshot().is_ok_and(|(current, _)| current != version) {
                     break;
                 }
             }
         } => return Err("检测期间代理路径已变化，请重新检测".into()),
     };
     let (after_version, after) = state.probe_snapshot().map_err(|_| "无法确认检测路径")?;
-    if version != after_version
+    if LOOKUP_SEQUENCE.load(Ordering::Acquire) != lookup
+        || version != after_version
         || state.is_core_transitioning()
         || !network_probe::same_session(&before, &after)
     {
