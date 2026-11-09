@@ -4,7 +4,7 @@
 
 use super::*;
 use serde_json::json;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -78,7 +78,7 @@ impl OwnedProcess {
         let started_at = SystemTime::now();
         let child = command
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("启动本测试专属 openssl 子进程");
         let pid = child.id();
@@ -102,9 +102,13 @@ impl OwnedProcess {
                 .try_wait()
                 .expect("查询证书生成进程")
             {
+                let diagnostics = self.failure_details();
                 self.child.take();
                 self.reaped = true;
-                assert!(status.success(), "CI openssl 证书生成失败：{status}");
+                assert!(
+                    status.success(),
+                    "CI openssl 证书生成失败：{status} {diagnostics}"
+                );
                 return;
             }
             assert!(Instant::now() < deadline, "CI openssl 证书生成超时");
@@ -114,6 +118,15 @@ impl OwnedProcess {
 
     fn exited(&mut self) -> Option<ExitStatus> {
         self.child.as_mut()?.try_wait().expect("查询 TLS 服务进程")
+    }
+
+    // 仅在已确认进程退出后读取，限制诊断大小，避免服务就绪等待阻塞。
+    fn failure_details(&mut self) -> String {
+        let mut bytes = Vec::new();
+        if let Some(stderr) = self.child.as_mut().and_then(|child| child.stderr.take()) {
+            let _ = stderr.take(8192).read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     fn stop(&mut self) {
@@ -272,16 +285,22 @@ fn start_tls(openssl: &std::path::Path, certificate: &Certificate) -> (OwnedProc
         .args(["s_server", "-accept"])
         .arg(address.to_string())
         .arg("-cert")
-        .arg(&certificate.cert)
+        .arg("service-route.crt")
         .arg("-key")
-        .arg(&certificate.key)
-        .args(["-www", "-quiet", "-ign_eof"])
+        .arg("service-route.key")
+        .current_dir(&certificate.directory)
+        .args(["-www", "-ign_eof"])
         .stdin(Stdio::piped());
     drop(reservation);
     let mut process = OwnedProcess::spawn(command, "CONNECT 隔离 TLS 目标");
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
-        assert!(process.exited().is_none(), "CI openssl s_server 启动失败");
+        if let Some(status) = process.exited() {
+            panic!(
+                "CI openssl s_server 启动失败：{status} {}",
+                process.failure_details()
+            );
+        }
         if let Ok(socket) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
             let _ = socket.shutdown(Shutdown::Both);
             return (process, address);
