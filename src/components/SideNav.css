@@ -68,6 +68,8 @@
 }
 
 .pro-shell .side-nav-items {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -80,6 +82,7 @@
 .pro-shell .side-nav-item {
   appearance: none;
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   flex-shrink: 0;
@@ -120,6 +123,60 @@
   color: var(--primary);
   border-color: var(--primary-border);
   background: var(--primary-muted);
+}
+
+/* 与 ProAppearance 的选中材质一致，共享一层背景和左条。 */
+.pro-shell .side-nav .side-nav-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  box-sizing: border-box;
+  pointer-events: none;
+  visibility: hidden;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--primary) 13%, var(--pro-panel, var(--panel-solid)));
+  transition: none;
+}
+
+.pro-shell .side-nav-items[data-indicator-ready="true"] > .side-nav-indicator {
+  visibility: visible;
+}
+
+.pro-shell .side-nav .side-nav-indicator::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 13px;
+  bottom: 13px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+
+.pro-shell .side-nav .side-nav-indicator[data-motion="true"] {
+  transition: transform 200ms cubic-bezier(.2, .8, .2, 1);
+}
+
+/* 高于 ProAppearance 的 aria-current 规则，不依赖样式导入顺序。 */
+.pro-shell .side-nav .side-nav-items[data-indicator-ready="true"] .side-nav-item[aria-current="page"] {
+  border-color: transparent;
+  background: transparent;
+}
+
+.pro-shell .side-nav .side-nav-items[data-indicator-ready="true"] .side-nav-item[aria-current="page"]::before {
+  content: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-ui-motion="standard"]) .pro-shell .side-nav .side-nav-indicator[data-motion="true"] {
+    transition: none;
+  }
+}
+
+html[data-motion-reduced="true"] .pro-shell .side-nav .side-nav-indicator[data-motion="true"] {
+  transition: none;
 }
 
 .pro-shell .side-nav :is(button, [role="menuitem"], [role="menuitemradio"]):focus-visible {

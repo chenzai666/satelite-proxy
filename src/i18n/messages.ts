@@ -2,6 +2,11 @@ export type Locale = "zh" | "en";
 
 /** Flat message catalog. Keys are stable; values differ by locale. */
 const en = {
+  "settings.uiMotion": "Interface motion",
+  "settings.uiMotionDesc": "App-only motion; preserves Windows preferences.",
+  "settings.motionStandard": "Standard",
+  "settings.motionSystem": "System",
+  "settings.motionReduced": "Reduced",
   "serviceStatus.title": "Service status",
   "serviceStatus.detailsTitle": "Service HTTP connectivity",
   "serviceStatus.openDetails": "Open service connectivity details",
@@ -1336,6 +1341,11 @@ const en = {
 export type MessageKey = keyof typeof en;
 
 const zh: Record<MessageKey, string> = {
+  "settings.uiMotion": "界面动效",
+  "settings.uiMotionDesc": "仅控制本应用的动效，保留 Windows 当前设置。",
+  "settings.motionStandard": "标准",
+  "settings.motionSystem": "跟随系统",
+  "settings.motionReduced": "减少",
   "serviceStatus.title": "服务状态",
   "serviceStatus.detailsTitle": "服务 HTTP 连通性",
   "serviceStatus.openDetails": "打开服务连通性详情",

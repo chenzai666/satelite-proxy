@@ -200,9 +200,9 @@
   .dashboard-details-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dashboard-page.dashboard-bento .instrument-click { transition: none; }
-  .dashboard-page.dashboard-bento .dash-hero.is-live .dashboard-card-ambient::before { animation: none; }
-  .dashboard-power-visual *,
-  .dashboard-power-visual *::before,
-  .dashboard-power-visual *::after { animation: none !important; transition: none !important; }
+  :root:not([data-ui-motion="standard"]) .dashboard-page.dashboard-bento .instrument-click { transition: none; }
+  :root:not([data-ui-motion="standard"]) .dashboard-page.dashboard-bento .dash-hero.is-live .dashboard-card-ambient::before { animation: none; }
+  :root:not([data-ui-motion="standard"]) .dashboard-power-visual *,
+  :root:not([data-ui-motion="standard"]) .dashboard-power-visual *::before,
+  :root:not([data-ui-motion="standard"]) .dashboard-power-visual *::after { animation: none !important; transition: none !important; }
 }

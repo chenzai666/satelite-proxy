@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-09 统一交互动效：uiMotion.ts存储设备本地satelite.uiMotion三档standard/system/reduced，用户要求默认standard且不改Windows设置。root data-ui-motion及data-motion-reduced为唯一归一化结果，系统模式监听matchMedia，storage跨窗口同步。ProMotion.css统一页面/弹层/按钮/手动GlassSeg过渡，保留no-anim避免轮询触发动效，不在页面根长期加transform。SideNav共享200ms指示器以offset坐标吸附，首次/resize/折叠不飞入，六图标activePath实心/非active线框；ResizeObserver/MutationObserver均卸载清理。设置外观提供三档，专业主题/字体/磨砂/首页动效保留。浏览器回归验证标准模式独立OS减少动态、减少模式无动画、六项图标及指示器过渡。
+
 2026-11-09 服务状态刷新修复：serviceStatus monitor 自动检测全部1–4展示项，新选择项入去重队列；路由/代理状态换会话清旧回包，页面可见且在线时60s周期，IPC/timeout/network_error按2/8/30/60s退避，403等不快速重试。隐藏/离线暂停、恢复补测、focus限频5s，stop清timer/队列；Clock注入供Node虚拟时钟测试。服务卡使用内嵌圆角行、状态点/耗时/检测进度，详情保留HTTP语义。后端批次最多8s等旧批次，仅1排队者，取得许可后重采snapshot并核epoch；单服务暂态同路线重试1次，各4s、总8s，间隔250ms，整批25s。不会跨路线直连回退，不按国家预设GitHub状态。本机仅Node/tsc/rustfmt，Rust与真实组件回归及构建走Actions，版本1.0.46，成功后覆盖同版本两包。
 
 首页IP标签约束（用户最终修正）：展示residential/mobile/business/datacenter，normal中文为普通；isp/unknown隐藏主卡类型和unknown质量badge，详情仍显示真实数据。risky始终可见。状态卡出口信息在上、节点信息在下，启停入口保留。ipQuality缺字段兼容unknown，测试等待metadata真实mock完成后断言隐藏/显示。

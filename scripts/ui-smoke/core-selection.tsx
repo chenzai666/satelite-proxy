@@ -12,6 +12,7 @@ import { LocaleProvider } from "../../src/i18n";
 import { ThemeProvider } from "../../src/theme";
 import "../../src/App.css";
 import "../../src/ProAppearance.css";
+import "../../src/ProMotion.css";
 
 const node = { id: "fixture", name: "Fixture", protocol: "vless", server: "example.test", port: 443, subscription_id: "fixture", subscription_name: "Fixture" };
 const networkDefaults = { mixed_port: 2080, api_port: 19090, probe_url: "https://example.test/204" } satisfies AppSettings;

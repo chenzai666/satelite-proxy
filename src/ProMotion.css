@@ -1,0 +1,30 @@
+/* 仅动画交互表面，不动画虚拟表格行和轮询更新的数据。 */
+html[data-motion-reduced="false"] .pro-shell .page-enter { animation: page-enter var(--page-enter-ms, 200ms) cubic-bezier(.2,.8,.2,1); }
+html[data-motion-reduced="false"] .pro-shell .page-enter :is(.glass-seg, .glass-btn, .glass-switch-track) { animation: glass-backdrop-in var(--page-enter-ms, 200ms); }
+html[data-motion-reduced="false"] .pro-shell :is(.glass-btn, .glass-seg-btn, .btn-pill, .icon-btn, .side-nav-item, .settings-tab) {
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, scale 100ms ease;
+}
+html[data-motion-reduced="false"] .pro-shell :is(.glass-btn, .btn-pill, .icon-btn):active:not(:disabled) { scale: .97; }
+html[data-motion-reduced="false"] :is(.pro-shell, .modal) .glass-seg-indicator:not(.no-anim) { transition: transform 220ms cubic-bezier(.2,.8,.2,1); }
+html[data-motion-reduced="false"] .pro-shell :is(.dash-more-menu, .dash-more-submenu, .solid-select-pop, .ui-mode-menu-pop, .node-context-menu) {
+  animation: pro-surface-enter 160ms cubic-bezier(.2,.8,.2,1); transform-origin: top center;
+}
+html[data-ui-mode="pro"][data-motion-reduced="false"] :is(.node-context-menu, .rule-menu-pop, .rule-menu-sub) {
+  animation: pro-surface-enter 160ms cubic-bezier(.2,.8,.2,1); transform-origin: top center;
+}
+html[data-motion-reduced="false"] .modal-backdrop { animation: pro-veil-enter 160ms ease; }
+html[data-motion-reduced="false"] :is(.modal, .ip-details-dialog[open]) { animation: pro-surface-enter 180ms cubic-bezier(.2,.8,.2,1); }
+html[data-motion-reduced="false"] .ip-details-dialog::backdrop { animation: pro-veil-enter 160ms ease; }
+html[data-motion-reduced="false"] .pro-shell .side-nav svg { transition: color 180ms ease, fill 180ms ease; }
+html[data-ui-motion="standard"] .dashboard-bento .dash-hero.is-live .dashboard-card-ambient::before { animation: dashboard-card-flow 24s linear infinite; }
+html[data-ui-motion="standard"] .service-status-progress { animation: service-status-spin 1s linear infinite; }
+@keyframes pro-surface-enter { from { opacity: 0; transform: translateY(5px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes pro-veil-enter { from { opacity: 0; } to { opacity: 1; } }
+html[data-motion-reduced="true"] :is(.page-enter, .modal, .modal-backdrop, .ip-details-dialog, .skel, .glass-seg-indicator, .service-status-progress),
+html[data-motion-reduced="true"] .pro-shell :is(.dash-more-menu, .dash-more-submenu, .solid-select-pop, .ui-mode-menu-pop, .node-context-menu),
+html[data-motion-reduced="true"] .dashboard-card-ambient::before { animation: none !important; transition: none !important; }
+html[data-ui-mode="pro"][data-motion-reduced="true"] :is(.node-context-menu, .rule-menu-pop, .rule-menu-sub) { animation: none !important; transition: none !important; }
+html[data-motion-reduced="true"] .pro-shell :is(.glass-btn, .glass-seg-btn, .btn-pill, .icon-btn, .side-nav-item, .settings-tab) { transition: none; scale: none; }
+html[data-motion-reduced="true"] .dashboard-power-visual *,
+html[data-motion-reduced="true"] .dashboard-power-visual *::before,
+html[data-motion-reduced="true"] .dashboard-power-visual *::after { animation: none !important; transition: none !important; }

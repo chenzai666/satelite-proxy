@@ -164,13 +164,36 @@ try {
   }
 
   await open(1280, 900, "zh", "aerospace");
+  const sideButtons = page.locator('.side-nav-items .side-nav-item');
+  const selectedIcon = await sideButtons.nth(0).locator('svg path').getAttribute('d');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await sideButtons.nth(1).click();
+  await page.waitForFunction(() => document.querySelector('.side-nav-indicator')?.getAnimations().some(animation => animation.playState === 'running'));
+  assert.equal(await sideButtons.nth(1).locator('svg path').getAttribute('fill'), 'currentColor', '选中图标切为实心');
+  assert.equal(await sideButtons.nth(0).locator('svg path').getAttribute('fill'), 'none', '未选中图标回到线框');
+  assert.notEqual(await sideButtons.nth(0).locator('svg path').getAttribute('d'), selectedIcon, '图标形态切换而非只换色');
+  for (let index = 2; index < 6; index++) {
+    await sideButtons.nth(index).click();
+    assert.equal(await sideButtons.nth(index).locator('svg path').getAttribute('fill'), 'currentColor');
+    assert.equal(await sideButtons.nth(index - 1).locator('svg path').getAttribute('fill'), 'none');
+  }
+  await page.evaluate(() => window.dashboardFixture.setMotion('reduced'));
+  await sideButtons.nth(0).click();
+  assert.equal(await page.locator('.side-nav-indicator').evaluate(el => getComputedStyle(el).transitionDuration), '0s');
+  assert.equal(await page.locator('main > .page-enter').evaluate(el => getComputedStyle(el).animationName), 'none');
+  await page.evaluate(() => window.dashboardFixture.setMotion('standard'));
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.motionReduced), 'false', '应用标准模式独立于系统减少动态');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.waitForFunction(() => [...document.querySelectorAll('main > .page-enter')].every(el => el.getAnimations().every(animation => animation.playState === 'finished')));
   await cardMotion(true);
+  await page.evaluate(() => window.dashboardFixture.setMotion('system'));
   await page.emulateMedia({ reducedMotion: "reduce" });
   await cardMotion(false);
   assert.equal(await page.locator('.dashboard-power-visual .orbit').evaluate(el =>
     [el, ...el.querySelectorAll('*')].every(node => ['::before', '::after', null].every(pseudo =>
       getComputedStyle(node, pseudo).animationName === 'none'))), true, "减少动态效果时关闭经典轨道CSS动画");
   await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(() => window.dashboardFixture.setMotion('standard'));
   await cardMotion(true);
   // 等待真实组件的第二轮状态/连接轮询，所有请求仍由内存 mock 响应。
   const reads = await page.evaluate(() => ({ status: window.dashboardFixture.statusReads, connections: window.dashboardFixture.connectionReads }));

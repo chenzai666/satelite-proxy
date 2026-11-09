@@ -39,6 +39,7 @@ import { useI18n, type Locale, type MessageKey } from "../i18n";
 import { ACCENTS, applyGlowToDom, isCustomHexAccent, resolveAccent } from "../theme/accents";
 import { AccentColorPickerModal } from "../components/AccentColorPickerModal";
 import { useTheme } from "../theme";
+import { useUiMotion, type UiMotion } from "../uiMotion";
 import type {
   AppSettings,
   CoreDownloadProgress,
@@ -114,6 +115,7 @@ const CUSTOM_DOT_RAINBOW =
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useI18n();
+  const { motion, setMotion } = useUiMotion();
   const { theme, setTheme, accent, setAccent, glow, setGlow, heroStyle, setHeroStyle, glassFrost, setGlassFrost } =
     useTheme();
   const [tab, setTab] = useState<SettingsTab>("app");
@@ -1553,6 +1555,17 @@ export function SettingsPage() {
                     { value: "smiley", label: t("settings.heroStyleSmiley") },
                   ]}
                 />
+              </div>
+              <div className="settings-app-row settings-app-pref">
+                <div className="settings-app-text">
+                  <div className="settings-app-title">{t("settings.uiMotion")}</div>
+                  <div className="settings-app-desc muted">{t("settings.uiMotionDesc")}</div>
+                </div>
+                <GlassSeg value={motion} ariaLabel={t("settings.uiMotion")} onChange={value => setMotion(value as UiMotion)} options={[
+                  { value: "standard", label: t("settings.motionStandard") },
+                  { value: "system", label: t("settings.motionSystem") },
+                  { value: "reduced", label: t("settings.motionReduced") },
+                ]} />
               </div>
               <div className="settings-app-row settings-app-pref settings-tray-icon-row settings-duo-col">
                 <div className="settings-app-text">

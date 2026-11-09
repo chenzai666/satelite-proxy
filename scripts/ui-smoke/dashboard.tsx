@@ -5,6 +5,8 @@ import type { NavKey } from "../../src/types";
 import type { AppSettings, ConnectionView, ProxyNode, ProxyStatus, SubscriptionView } from "../../src/types";
 import "../../src/App.css";
 import "../../src/ProAppearance.css";
+import "../../src/ProMotion.css";
+import { setUiMotion } from "../../src/uiMotion";
 
 // 所有数据仅存内存；先安装 IPC mock，再加载真实页面及其 API/Provider。
 const params = new URLSearchParams(location.search);
@@ -68,6 +70,7 @@ const state = {
   unexpected: [] as string[], statusReads: 0, connectionReads: 0, trafficOpens: 0,
   holdStart: false, releaseStart: null as null | (() => void),
   serviceFailures: 0,
+  setMotion: setUiMotion,
 };
 (window as unknown as { dashboardFixture: typeof state }).dashboardFixture = state;
 const copy = <T,>(value: T): T => structuredClone(value);
