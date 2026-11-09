@@ -767,6 +767,7 @@ function coreDisplayName(kind: string | null | undefined): string {
     [],
   );
 
+  const exitCountryCode = exitIp?.countryCode?.toUpperCase().match(/^[A-Z]{2}$/)?.[0] ?? "—";
   const running = proxy?.running ?? false;
   const stateLabel = proxy?.core_state ?? "stopped";
   // Multi-core is "on" while the sidecar processes actually run — the same
@@ -1026,12 +1027,25 @@ function coreDisplayName(kind: string | null | undefined): string {
             {coreDisplayName(proxy?.core_type)}
           </div>
 
-          <div className="dashboard-status-footer">
-            <span><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></span>
-            <span><span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span><strong title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong></span>
+          <div className="dashboard-exit-summary">
+            <button type="button" className="dashboard-country-button"
+              onClick={() => void onProbeExitIp()} disabled={exitIpProbing}
+              aria-busy={exitIpProbing}
+              aria-label={`${t("common.refresh")} ${t("dashboard.exitIp")}`}
+              title={`${exitCountryCode} · ${t("common.refresh")} ${t("dashboard.exitIp")}`}>
+              <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+                <path d="M24 2C31 1 34 6 39 9C45 12 48 18 45 25C47 32 42 37 37 40C32 47 25 47 19 44C11 45 7 40 6 34C0 29 1 21 5 16C6 8 15 3 24 2Z" />
+                <text x="24" y="25" textAnchor="middle" dominantBaseline="middle">{exitCountryCode}</text>
+              </svg>
+            </button>
+            <div className="dashboard-exit-copy">
+              <span className="dashboard-status-key">{t("dashboard.exitIp")}{exitIp && !exitIp.viaProxy ? ` · ${t("dashboard.exitIpDirect")}` : ""}</span>
+              <strong className={`dashboard-exit-ip${exitIp?.ip.includes(":") ? " is-ipv6" : ""}`} title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong>
+            </div>
           </div>
           <IpInfoPanel ip={exitIpProbing ? null : exitIp?.ip} sessionKey={autoProbeKey} />
           <div className="dashboard-node-context">
+          <div className="dashboard-uptime"><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></div>
           <h2 className="dash-hero-title" title={heroTitle ?? undefined}>
             {heroTitle == null ? (
               <span className="skel skel-inline skel-w-40" aria-hidden />

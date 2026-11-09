@@ -38,6 +38,7 @@ export interface ServiceStatusBatch {
 export const SERVICE_STATUS_STORAGE_KEY = "satelite.serviceStatus.visibleIds";
 export const DEFAULT_SERVICE_IDS: readonly ServiceId[] = ["google", "github"];
 export const MAX_VISIBLE_SERVICES = 4;
+export const SERVICE_REFRESH_MS = 5 * 60_000;
 
 const serviceIds = new Set<string>(SERVICE_STATUS_CATALOG.map(service => service.id));
 const statuses = new Set<ServiceStatus>(["reachable", "redirect", "restricted", "http_error", "timeout", "network_error"]);
@@ -88,7 +89,9 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
   const queued = new Set<ServiceId>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let retryStep = 0;
+  let fastRetryUsed = false;
   let lastStarted = -Infinity;
+  let nextDueAt: number | null = null;
 
   function clearTimer() {
     if (timer !== undefined) clock.clearTimeout(timer);
@@ -103,23 +106,32 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
   }
 
   function enqueue(ids: readonly ServiceId[]) {
-    normalizeServiceIds(ids).forEach(id => queued.add(id));
+    normalizeServiceIds(ids).filter(id => !snapshot.pending.includes(id)).forEach(id => queued.add(id));
     clearTimer();
     drain();
   }
 
-  function schedule() {
-    if (!active || !enabled) return;
-    if (queued.size) { drain(); return; }
-    const transient = visible.some(id => snapshot.errors[id] || ["timeout", "network_error"].includes(snapshot.results[id]?.status ?? ""));
-    const delay = transient ? [2000, 8000, 30000, 60000][Math.min(retryStep++, 3)] : 60000;
-    if (!transient) retryStep = 0;
+  function schedule(completed = false) {
+    if (!active) return;
+    if (completed) {
+      const ipcFailure = visible.some(id => snapshot.errors[id]);
+      const transient = ipcFailure || visible.some(id => ["timeout", "network_error"].includes(snapshot.results[id]?.status ?? ""));
+      let delay = SERVICE_REFRESH_MS;
+      if (transient) {
+        if (ipcFailure && !fastRetryUsed) { delay = 2000; fastRetryUsed = true; }
+        else delay = [30000, 60000, 120000, SERVICE_REFRESH_MS][Math.min(retryStep++, 3)];
+      } else { retryStep = 0; fastRetryUsed = false; }
+      nextDueAt = clock.now() + delay;
+    }
     clearTimer();
+    if (!enabled || snapshot.pending.length || !visible.length) return;
+    if (queued.size) { drain(); return; }
+    if (nextDueAt === null || clock.now() >= nextDueAt) { enqueue(visible); return; }
     const token = epoch;
     timer = clock.setTimeout(() => {
       timer = undefined;
       if (active && token === epoch) enqueue(visible);
-    }, delay);
+    }, nextDueAt - clock.now());
   }
 
   function publish(next: ServiceStatusSnapshot) {
@@ -166,7 +178,7 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
       ids.forEach(id => { nextErrors[id] = true; });
       publish({ ...snapshot, errors: nextErrors, pending: [] });
     }
-    if (active && token === epoch) schedule();
+    if (active && token === epoch) schedule(true);
   }
 
   return {
@@ -179,6 +191,8 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
       active = true;
       visible = normalizeServiceIds(visibleIds).slice(0, MAX_VISIBLE_SERVICES);
       retryStep = 0;
+      fastRetryUsed = false;
+      nextDueAt = null;
       const token = ++epoch;
       // 延至微任务，StrictMode 的首次 setup/cleanup 不会发重复 IPC。
       queueMicrotask(() => {
@@ -197,10 +211,12 @@ export function createServiceStatusMonitor(check: (ids: ServiceId[]) => Promise<
       if (enabled === value) return;
       enabled = value;
       if (!enabled) { clearTimer(); return; }
-      if (active) enqueue(visible);
+      if (active) schedule();
     },
-    refreshVisible() {
-      if (active && enabled && clock.now() - lastStarted >= 5000) enqueue(visible);
+    refreshVisible(networkRecovered = false) {
+      if (!active || !enabled || snapshot.pending.length) return;
+      if (networkRecovered && clock.now() - lastStarted >= 5000) enqueue(visible);
+      else schedule();
     },
     stop() {
       active = false;

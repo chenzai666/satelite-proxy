@@ -1,5 +1,9 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-09 国家按钮与大号出口IP：Dashboard以实际countryCode显示两位国家码，缺失/非法用占位，不写死地区；46px SVG按钮复用onProbeExitIp且busy禁连点，IPv4/IPv6大号完整换行，避让启停按钮。类型/质量与完整组织仍用IpInfoPanel，运行时长下移节点区；不增加自动IP查询频率。dashboard真实组件回归验证刷新单次IPC、键盘、国家变化及长IP边界。
+
+2026-11-09 服务频率收敛（取代旧一分钟/焦点补测）：正常结果5min，network_error/timeout按30/60/120/300s退避；IPC失败仅首轮允许2s快速确认，后续慢退避。monitor保存绝对nextDueAt，focus及visibility恢复只续剩余时间，不刷新结果、不推迟期限、不绕过失败退避；隐藏期间完成仍记录期限。online显式一次补测且5s限频。路径变化/新增项/手动操作仍及时，新增加项已在pending时复用请求。Node虚拟时钟和真实组件回归覆盖。
+
 2026-11-09 状态卡自然高度：dashboard-top-grid > dash-hero align-self:start，不随右侧服务项数量拉伸；节点信息占满第4行，切换节点/更多操作独立第5行。专业首页节点名完整换行，移除旧useSingleLineFit及其resize监听，不做截断/缩小字号。2/4服务及短组织IPv4、长名称IPv6截图回归验证hero自身不被拉高，子区域仍独立布局。构建仅Actions，版本1.0.46。
 
 2026-11-09 统一交互动效：uiMotion.ts存储设备本地satelite.uiMotion三档standard/system/reduced，用户要求默认standard且不改Windows设置。root data-ui-motion及data-motion-reduced为唯一归一化结果，系统模式监听matchMedia，storage跨窗口同步。ProMotion.css统一页面/弹层/按钮/手动GlassSeg过渡，保留no-anim避免轮询触发动效，不在页面根长期加transform。SideNav共享200ms指示器以offset坐标吸附，首次/resize/折叠不飞入，六图标activePath实心/非active线框；ResizeObserver/MutationObserver均卸载清理。设置外观提供三档，专业主题/字体/磨砂/首页动效保留。浏览器回归验证标准模式独立OS减少动态、减少模式无动画、六项图标及指示器过渡。

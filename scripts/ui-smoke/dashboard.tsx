@@ -74,6 +74,7 @@ const state = {
   unexpected: [] as string[], statusReads: 0, connectionReads: 0, trafficOpens: 0,
   holdStart: false, releaseStart: null as null | (() => void),
   serviceFailures: 0,
+  countryCode: "HK", exitIpReads: 0, holdExitIp: false, releaseExitIp: null as null | (() => void),
   setMotion: setUiMotion,
 };
 (window as unknown as { dashboardFixture: typeof state }).dashboardFixture = state;
@@ -99,7 +100,12 @@ mockIPC((command, payload) => {
       installed: true, version: "1.13.18", source: "bundled", platform: "windows-amd64", update_available: false,
     };
     case "get_lan_ip": return ipv6;
-    case "check_exit_ip": return { ip: ipv6, countryCode: "HK", viaProxy: true, source: "fixture" };
+    case "check_exit_ip": {
+      state.exitIpReads++;
+      const result = { ip: ipv6, countryCode: state.countryCode, viaProxy: true, source: "fixture" };
+      if (!state.holdExitIp) return result;
+      return new Promise(resolve => { state.releaseExitIp = () => { state.releaseExitIp = null; resolve(result); }; });
+    }
     case "check_ip_metadata": return {
       ip: ipv6, organization,
       isp: "China Mobile Communications", asn: "AS9808", networkType: ["tor", "abuse"].includes(params.get("network") ?? "") ? "business" : params.get("network") ?? "business", residentialInferred: false,
@@ -109,10 +115,10 @@ mockIPC((command, payload) => {
     };
     case "check_service_status": {
       const failing = state.serviceFailures > 0;
-      if (failing) state.serviceFailures--;
+      if (failing) { state.serviceFailures--; throw new Error("core transitioning"); }
       return {
-      results: (args.ids as string[]).map(id => ({ id, status: failing ? "network_error" : id === "chatgpt" ? "restricted" : "reachable",
-        latencyMs: id === "github" ? 576 : 160, httpStatus: failing ? undefined : id === "chatgpt" ? 403 : 200,
+      results: (args.ids as string[]).map(id => ({ id, status: id === "chatgpt" ? "restricted" : "reachable",
+        latencyMs: id === "github" ? 576 : 160, httpStatus: id === "chatgpt" ? 403 : 200,
         checkedAt: 1700000000000, viaProxy: status.running })),
       checkedAt: 1700000000000, viaProxy: status.running,
     }; }

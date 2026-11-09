@@ -92,10 +92,10 @@ test("新增展示项在当前批次后补测，移除排队项不再检测", as
   monitor.stop();
 });
 
-test("暂态错误按2/8/30/60秒退避，可达后恢复一分钟周期", async () => {
+test("网络失败按30/60/120/300秒退避，可达后恢复五分钟周期", async () => {
   const { monitor, calls, advance, timers } = mockIpc();
   monitor.start(["github"]); await tick();
-  for (const delay of [2000, 8000, 30000, 60000]) {
+  for (const delay of [30000, 60000, 120000, 300000]) {
     calls.at(-1).resolve(batch(["github"], { results: [result("github", { status: "timeout" })] })); await tick();
     const count = calls.length;
     await advance(delay - 1); assert.equal(calls.length, count);
@@ -103,7 +103,7 @@ test("暂态错误按2/8/30/60秒退避，可达后恢复一分钟周期", async
   }
   calls.at(-1).resolve(batch(["github"])); await tick();
   const count = calls.length;
-  await advance(59999); assert.equal(calls.length, count);
+  await advance(299999); assert.equal(calls.length, count);
   await advance(1); assert.equal(calls.length, count + 1);
   monitor.stop(); assert.equal(timers.size, 0);
 });
@@ -114,12 +114,12 @@ test("IPC切换忙碌会自动恢复，HTTP受限不进入快速重试", async (
   calls[0].reject(new Error("kernel transitioning")); await tick();
   await advance(2000); assert.equal(calls.length, 2);
   calls[1].resolve(batch(["github"], { results: [result("github", { status: "restricted", httpStatus: 403 })] })); await tick();
-  await advance(59999); assert.equal(calls.length, 2);
+  await advance(299999); assert.equal(calls.length, 2);
   await advance(1); assert.equal(calls.length, 3);
   monitor.stop();
 });
 
-test("隐藏或离线暂停自动检测，恢复时立即检测当前所有展示项，焦点事件去抖", async () => {
+test("隐藏或离线暂停计时，切回窗口复用近期结果，过期才补测", async () => {
   const { monitor, calls, advance, timers } = mockIpc();
   monitor.setEnabled(false); monitor.start(DEFAULT_SERVICE_IDS); await tick();
   await advance(120000); assert.equal(calls.length, 0);
@@ -127,12 +127,65 @@ test("隐藏或离线暂停自动检测，恢复时立即检测当前所有展�
   monitor.setEnabled(true); assert.deepEqual(calls[0].ids, ["github", "youtube", "chatgpt"]);
   calls[0].resolve(batch(calls[0].ids)); await tick();
   monitor.refreshVisible(); monitor.refreshVisible(); assert.equal(calls.length, 1);
-  await advance(5000); monitor.refreshVisible(); assert.equal(calls.length, 2);
-  calls[1].resolve(batch(calls[1].ids)); await tick();
+  await advance(5000); monitor.refreshVisible(); assert.equal(calls.length, 1);
   monitor.setEnabled(false); assert.equal(timers.size, 0);
-  await advance(120000); assert.equal(calls.length, 2);
-  monitor.setEnabled(true); assert.equal(calls.length, 3);
+  await advance(120000); assert.equal(calls.length, 1);
+  monitor.setEnabled(true); assert.equal(calls.length, 1);
+  monitor.setEnabled(false); await advance(180000);
+  monitor.setEnabled(true); assert.equal(calls.length, 2);
+  monitor.refreshVisible(); monitor.refreshVisible(); assert.equal(calls.length, 2);
   monitor.stop(); assert.equal(timers.size, 0);
+});
+
+test("频繁焦点事件不会刷新结果或推迟原来的五分钟截止时间", async () => {
+  const { monitor, calls, advance } = mockIpc();
+  monitor.start(["github"]); await tick();
+  calls[0].resolve(batch(["github"])); await tick();
+  const snapshot = monitor.getSnapshot();
+  for (let minute = 0; minute < 4; minute++) {
+    await advance(60000); monitor.refreshVisible(); monitor.refreshVisible();
+    assert.equal(calls.length, 1);
+    assert.strictEqual(monitor.getSnapshot(), snapshot);
+  }
+  await advance(60000); assert.equal(calls.length, 2);
+  monitor.stop();
+});
+
+test("隐藏期间完成的检测仍保留有效期，恢复联网可显式单次重测", async () => {
+  const { monitor, calls, advance } = mockIpc();
+  monitor.start(["github"]); await tick();
+  monitor.setEnabled(false);
+  await advance(1000); calls[0].resolve(batch(["github"])); await tick();
+  await advance(10000); monitor.setEnabled(true);
+  assert.equal(calls.length, 1);
+  monitor.refreshVisible(true); assert.equal(calls.length, 2);
+  calls[1].resolve(batch(["github"])); await tick();
+  monitor.refreshVisible(true); assert.equal(calls.length, 2);
+  monitor.stop();
+});
+
+test("IPC异常仅快速确认一次，切回窗口不绕过后续退避", async () => {
+  const { monitor, calls, advance } = mockIpc();
+  monitor.start(["github"]); await tick();
+  calls[0].reject(new Error("core transitioning")); await tick();
+  await advance(2000); assert.equal(calls.length, 2);
+  calls[1].reject(new Error("still transitioning")); await tick();
+  await advance(5000); monitor.setEnabled(false); monitor.setEnabled(true); monitor.refreshVisible();
+  assert.equal(calls.length, 2);
+  await advance(25000); assert.equal(calls.length, 3);
+  monitor.stop();
+});
+
+test("新增展示项已经在当前批次内时复用在途请求", async () => {
+  const { monitor, calls } = mockIpc();
+  monitor.start(DEFAULT_SERVICE_IDS); await tick();
+  calls[0].resolve(batch(DEFAULT_SERVICE_IDS)); await tick();
+  const all = monitor.request(allIds);
+  monitor.setVisible(["google", "github", "youtube", "chatgpt"]);
+  calls[1].resolve(batch(allIds)); await all;
+  assert.equal(calls.length, 2);
+  assert.equal(monitor.getSnapshot().results.youtube.status, "reachable");
+  monitor.stop();
 });
 
 test("同步互斥拒绝单项与全批重复 in-flight，完成后可按需测全部", async () => {

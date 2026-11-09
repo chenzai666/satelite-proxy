@@ -72,13 +72,14 @@ export function ServiceStatusCard({ sessionKey }: { sessionKey: string }) {
     monitor.start(initialIds.current);
     const sync = () => monitor.setEnabled(document.visibilityState !== "hidden" && navigator.onLine !== false);
     const wake = () => { sync(); monitor.refreshVisible(); };
+    const online = () => { sync(); monitor.refreshVisible(true); };
     document.addEventListener("visibilitychange", wake);
-    window.addEventListener("online", wake);
+    window.addEventListener("online", online);
     window.addEventListener("offline", sync);
     window.addEventListener("focus", wake);
     return () => {
       document.removeEventListener("visibilitychange", wake);
-      window.removeEventListener("online", wake);
+      window.removeEventListener("online", online);
       window.removeEventListener("offline", sync);
       window.removeEventListener("focus", wake);
       monitor.stop();

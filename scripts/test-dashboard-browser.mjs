@@ -84,7 +84,7 @@ async function layout() {
       }
     }
     // 节点标题和组织名必须完整换行；统计数值必须完整可见。
-    const critical = ".dashboard-node-context .dash-hero-title, .dash-hero .ip-organization, .dashboard-rate-card__number, .dashboard-rate-card__unit, .dashboard-rate-card__stats dd, .traffic-stats-number, .traffic-stats-table th";
+    const critical = ".dashboard-exit-ip, .dashboard-node-context .dash-hero-title, .dash-hero .ip-organization, .dashboard-rate-card__number, .dashboard-rate-card__unit, .dashboard-rate-card__stats dd, .traffic-stats-number, .traffic-stats-table th";
     for (const el of dashboard.querySelectorAll(critical)) {
       if (!el.textContent.trim()) { issues.push(`统计为空 ${describe(el)}`); continue; }
       if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) issues.push(`统计裁切 ${describe(el)}`);
@@ -172,6 +172,59 @@ async function serviceRoundTrip(saveScreenshot = false) {
     if (count === 4 && saveScreenshot) await page.screenshot({ path: 'test-results/dashboard-1280-four-services.png' });
   }
 }
+async function countryRefresh() {
+  const button = page.locator('.dashboard-country-button');
+  await page.waitForFunction(() => document.querySelector('.dashboard-country-button text')?.textContent === 'HK');
+  assert.equal(await button.getAttribute('aria-label'), '刷新 出口IP');
+  for (const [country, text] of [['US', 'US'], ['', '—'], ['invalid', '—']]) {
+    const before = await page.evaluate(country => {
+      window.dashboardFixture.countryCode = country;
+      window.dashboardFixture.holdExitIp = true;
+      return window.dashboardFixture.exitIpReads;
+    }, country);
+    if (country === 'US') await button.click();
+    else { await button.focus(); await page.keyboard.press('Enter'); }
+    await page.waitForFunction(() => window.dashboardFixture.releaseExitIp !== null);
+    assert.equal(await button.isDisabled(), true, '探测中禁止重复点击');
+    assert.equal(await button.getAttribute('aria-busy'), 'true');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.evaluate(() => window.dashboardFixture.exitIpReads), before + 1, '每次点击仅发一个 check_exit_ip，忙碌时不重复');
+    await page.evaluate(() => {
+      window.dashboardFixture.holdExitIp = false;
+      window.dashboardFixture.releaseExitIp();
+    });
+    await page.waitForFunction(() => document.querySelector('.dashboard-country-button')?.getAttribute('aria-busy') === 'false');
+    assert.equal(await button.locator('text').textContent(), text, '国家代码来自当前出口结果，未知使用占位');
+    assert.equal(await page.locator('.dashboard-exit-ip').textContent(), await page.evaluate(() => window.dashboardFixture.ipv6));
+  }
+  await layout();
+}
+async function freshServicesOnResume() {
+  await page.waitForFunction(() => [...document.querySelectorAll('.service-status-card-row')].length === 2 &&
+    [...document.querySelectorAll('.service-status-card-row')].every(row => row.querySelector('[data-status="reachable"]')) &&
+    !document.querySelector('.service-status-card .service-status-checking'));
+  const counts = await page.evaluate(async () => {
+    const count = () => window.dashboardFixture.commands.filter(c => c.command === 'check_service_status').length;
+    const before = count();
+    const original = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    try {
+      for (let i = 0; i < 3; i++) {
+        window.dispatchEvent(new Event('focus'));
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+        document.dispatchEvent(new Event('visibilitychange'));
+        window.dispatchEvent(new Event('focus'));
+      }
+      await new Promise(resolve => setTimeout(resolve, 150));
+      return { before, after: count() };
+    } finally {
+      if (original) Object.defineProperty(document, 'visibilityState', original);
+      else delete document.visibilityState;
+    }
+  });
+  assert.equal(counts.after, counts.before, '近期服务结果在重复 focus / hidden→visible 后不新增 IPC');
+}
 async function structure(locale) {
   const navigation = page.locator(".pro-shell > .side-nav").getByRole("navigation");
   assert.equal(await navigation.count(), 1, "必须使用真实 SideNav 导航");
@@ -192,6 +245,22 @@ async function structure(locale) {
     return ip.bottom <= node.top + 1;
   }), true, "出口信息位于节点信息上方");
   await heroGeometry();
+  const exit = await page.locator('.dashboard-exit-ip').evaluate(el => {
+    const box = el.getBoundingClientRect();
+    const power = document.querySelector('.dashboard-power').getBoundingClientRect();
+    const panel = document.querySelector('.dash-hero .ip-info-panel').getBoundingClientRect();
+    const icon = document.querySelector('.dashboard-country-button').getBoundingClientRect();
+    const rootSize = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    return { text: el.textContent, rem: parseFloat(getComputedStyle(el).fontSize) / rootSize,
+      wrap: getComputedStyle(el).overflowWrap, iconWidth: icon.width, iconHeight: icon.height,
+      beforePower: box.right <= power.left + 1, abovePanel: box.bottom <= panel.top + 1 };
+  });
+  const expectedIp = await page.evaluate(() => window.dashboardFixture.ipv6);
+  assert.equal(exit.text, expectedIp, '主视觉保留完整 IPv4/IPv6');
+  assert.ok(exit.rem >= (expectedIp.includes(':') ? 1.25 : 1.5) && exit.rem <= 1.7, '大 IP 字体比例');
+  assert.equal(exit.wrap, 'anywhere', '长 IPv6 可完整换行');
+  assert.ok(exit.iconWidth >= 44 && exit.iconWidth <= 48 && exit.iconHeight >= 44 && exit.iconHeight <= 48, '国家按钮触控尺寸');
+  assert.ok(exit.beforePower && exit.abovePanel, 'IP 为启停按钮留空间，类型和质量位于下方');
   assert.equal(await page.locator(".dash-side-rail").count(), 1);
   assert.equal(await page.locator(".dashboard-details-grid > *").count(), 4);
   assert.equal(await page.locator(".dashboard-power-visual .orbit").count(), 1, "首页动效保留");
@@ -233,6 +302,8 @@ try {
   }
 
   await open(1280, 900, "zh", "aerospace");
+  await countryRefresh();
+  await freshServicesOnResume();
   const sideButtons = page.locator('.side-nav-items .side-nav-item');
   const selectedIcon = await sideButtons.nth(0).locator('svg path').getAttribute('d');
   await page.emulateMedia({ reducedMotion: 'reduce' });
