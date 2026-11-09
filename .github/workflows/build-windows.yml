@@ -61,6 +61,12 @@ jobs:
         shell: bash
         run: bash scripts/ci-fetch-with-retry.sh scripts/fetch-bundled-core-windows-amd64.ps1
 
+      - name: 预取并校验 NSIS 打包工具
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/ci-fetch-nsis.sh
+
       - name: 构建 NSIS 安装包
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Bundle nsis

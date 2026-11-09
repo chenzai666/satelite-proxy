@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+NSIS构建恢复（2026-11-09）：ci-fetch-nsis.sh仅Actions Windows运行，通过官方资产API下载CLI2.11.4匹配的NSIS3.11及插件0.5.3，固定资产ID/SHA256，有限重试并在编译前失败；暂存两个文件EXIT精确清理，完整工具保留runner缓存路径供Tauri自身再次验证。CLI升级需同步该脚本，禁止绕过摘要或使用第三方镜像。
+
 2026-11-09 国家按钮与大号出口IP：Dashboard以实际countryCode显示两位国家码，缺失/非法用占位，不写死地区；46px SVG按钮复用onProbeExitIp且busy禁连点，IPv4/IPv6大号完整换行，避让启停按钮。类型/质量与完整组织仍用IpInfoPanel，运行时长下移节点区；不增加自动IP查询频率。dashboard真实组件回归验证刷新单次IPC、键盘、国家变化及长IP边界。
 
 2026-11-09 服务频率收敛（取代旧一分钟/焦点补测）：正常结果5min，network_error/timeout按30/60/120/300s退避；IPC失败仅首轮允许2s快速确认，后续慢退避。monitor保存绝对nextDueAt，focus及visibility恢复只续剩余时间，不刷新结果、不推迟期限、不绕过失败退避；隐藏期间完成仍记录期限。online显式一次补测且5s限频。路径变化/新增项/手动操作仍及时，新增加项已在pending时复用请求。Node虚拟时钟和真实组件回归覆盖。
