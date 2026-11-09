@@ -565,7 +565,8 @@ pub fn build_singbox_config_with_chain_context(
         }));
     }
     if service_diag.is_some() {
-        route_rules.insert(1.min(route_rules.len()), json!({"inbound":[SERVICE_DIAG_INBOUND_TAG],"action":"route","outbound":SERVICE_DIAG_SELECTOR_TAG}));
+        // 保留 TUN 副核防回环规则的优先顺序，再处理应用诊断入站。
+        route_rules.push(json!({"inbound":[SERVICE_DIAG_INBOUND_TAG],"action":"route","outbound":SERVICE_DIAG_SELECTOR_TAG}));
     }
     // Subscription downloads use a private authenticated inbound. Route that
     // inbound before China/CDN/user rules so "via proxy" really means the
@@ -4553,6 +4554,15 @@ mod tests {
         assert_eq!(rules[1]["process_name"], json!(["xray", "xray.exe"]));
         assert_eq!(rules[1]["outbound"], "direct");
         assert_eq!(rules[2]["ip_cidr"], json!(["203.0.113.7/32"]));
+        let diagnostic = rules
+            .iter()
+            .position(|rule| rule["outbound"] == SERVICE_DIAG_SELECTOR_TAG)
+            .unwrap();
+        let subscription = rules
+            .iter()
+            .position(|rule| rule["inbound"] == json!([SUBSCRIPTION_PROXY_INBOUND_TAG]))
+            .unwrap();
+        assert!(diagnostic > 2 && diagnostic < subscription);
 
         opts.tun_enabled = false;
         let without_tun = build_singbox_config(&[node], &opts).unwrap();

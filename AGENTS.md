@@ -2,6 +2,8 @@
 
 服务诊断稳定性补充：Runtime仅对生成配置预检私有诊断端口；被占用时完整移除私有入站/选择组/对应规则并停用诊断标记，不阻止业务代理启动、不处理custom。服务业务结果与出口证据补查分阶段，整批截止仍保留已完成HTTP/地区结果。CONNECT隔离测试保留有界退出诊断，证书文件相对专属cwd使用，Rust仍仅Actions。
 
+服务诊断路由必须在 TUN 副核防回环保护之后、订阅及普通分流之前；不要以固定下标插入而挤占保护规则位置。service-diagnostics-tests先执行全部lib单测，再验证真实CONNECT。
+
 2026-11-09 服务出口/地区修复：YouTube/Netflix/Disney正文允许至8MiB仍硬限制；ChatGPT trace与合规查询独立并发、共享主检查剩余预算，单项慢不丢其他已完成地区。reason/regionReason为固定白名单，failed文案“无法判定”。service_route利用reqwest HttpInfo本机源socket精确匹配当前Clash API连接，保留主/辅请求分工；按观测到的唯一叶子出站经独立service-diag-in/service-diag认证loopback入口复测出口，30s缓存按epoch+配置指纹+tag+地址族，不碰用户selector，不套首页IP。builder/mihomo生成专用入口并预留动态端口，隐藏仅限生成配置内部组，custom同名组保留。Xray无Clash连接API时路由证据unsupported，仍接受服务自身回显IP。CI专用CONNECT测试用本机openssl自签服务与假API，无公网DNS/真实内核，本机禁止Cargo/浏览器；service-diagnostics-tests加速定位，发布仍要求完整Windows任务通过。版本保持1.0.46。
 
 2026-11-09 IP顺滑与服务语义：ip_metadata query_with以1s错峰追加来源，首个明确同IP类型返回并取消剩余Future，合并当前已完成风险，不等慢兄弟/串行回退；exit_ip加入固定HTTPS Cloudflare trace。ipLookupCache仅内存：出口按会话路线30s/8项，手动刷新绕缓存，同路线合并在途；metadata按IP300s/64项、unknown/isp30s，跨路线在途不混用，旧回包不覆盖缓存。IpInfoPanel刷新保留同IP数据，新IP立即隐藏旧详情；后端旧epoch查询取消释放许可。服务Google/GitHub连通性，其余固定只读服务规则，region/checkKind可选契约兼容旧响应；普通403仅请求受限，挑战/地区/服务封禁分开，不自动判断代理损坏。Rust/浏览器仅Actions，版本1.0.46。
