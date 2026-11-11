@@ -1048,7 +1048,7 @@ function coreDisplayName(kind: string | null | undefined): string {
               <strong className={`dashboard-exit-ip${exitIp?.ip.includes(":") ? " is-ipv6" : ""}`} title={exitIp?.ip}>{exitIp?.ip ?? "—"}</strong>
             </div>
           </div>
-          <IpInfoPanel ip={exitIp?.ip} sessionKey={autoProbeKey} />
+          <IpInfoPanel exitIp={exitIp} sessionKey={autoProbeKey} />
           <div className="dashboard-node-context">
           <div className="dashboard-uptime"><span className="dashboard-status-key">{t("dashboard.uptime")}</span><strong>{running ? fmtUptime(proxy?.core_started_at) : "—"}</strong></div>
           <h2 className="dash-hero-title" title={heroTitle ?? undefined}>

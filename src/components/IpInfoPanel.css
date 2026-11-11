@@ -20,4 +20,5 @@
 .ip-details-dialog dl { display: grid; grid-template-columns: minmax(70px, .4fr) minmax(0, 1fr); gap: 10px; font-size: .8rem; margin: 0; }
 .ip-details-dialog dt { color: var(--muted); }
 .ip-details-dialog dd { margin: 0; overflow-wrap: anywhere; }
+.ip-exit-source-url { user-select: text; }
 .ip-info-notice { font-size: .72rem; line-height: 1.6; color: var(--muted); }

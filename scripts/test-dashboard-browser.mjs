@@ -172,15 +172,41 @@ async function serviceRoundTrip(saveScreenshot = false) {
     if (count === 4 && saveScreenshot) await page.screenshot({ path: 'test-results/dashboard-1280-four-services.png' });
   }
 }
+async function assertExitDetails(source, checkedAt, verifyCopy = false) {
+  await page.getByRole('button', { name: 'IP 信息 ↗', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'IP 信息', exact: true });
+  await dialog.waitFor();
+  const sourceRow = dialog.locator('dt:text-is("出口检测来源") + dd');
+  const timeRow = dialog.locator('dt:text-is("出口检测时间") + dd');
+  assert.equal(await sourceRow.locator('.ip-exit-source-url').textContent(), source, '显示当前检测返回的完整 URL');
+  assert.equal(await dialog.locator('dt:text-is("资料来源") + dd').textContent(), 'IPQuery / proxycheck.io');
+  if (checkedAt) assert.equal(await timeRow.locator('time').getAttribute('datetime'), checkedAt, '以 Unix 毫秒解释出口检测时间');
+  else assert.equal(await timeRow.textContent(), '—', '兼容没有出口检测时间的旧响应');
+  if (verifyCopy) {
+    await page.evaluate(() => {
+      Object.defineProperty(navigator.clipboard, 'writeText', {
+        value: async text => { window.dashboardFixture.copiedExitUrl = text; },
+      });
+    });
+    await sourceRow.getByRole('button', { name: '复制检测 URL' }).click();
+    await sourceRow.getByText('已复制', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.dashboardFixture.copiedExitUrl), source, '复制时保留 URL 原文');
+  }
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+}
 async function countryRefresh() {
   const button = page.locator('.dashboard-country-button');
   await page.waitForFunction(() => document.querySelector('.dashboard-country-button text')?.textContent === 'HK');
   assert.equal(await button.getAttribute('aria-label'), '刷新 出口IP');
   await page.waitForFunction(() => document.querySelector('.dash-hero .ip-organization')?.textContent === window.dashboardFixture.organization);
+  await assertExitDetails('https://example.test/cdn-cgi/trace?format=plain%20text', '2023-11-14T22:13:20.000Z', true);
   const metadataCalls = await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'check_ip_metadata').length);
   for (const [country, text] of [['US', 'US'], ['', '—'], ['invalid', '—']]) {
     const before = await page.evaluate(country => {
       window.dashboardFixture.countryCode = country;
+      window.dashboardFixture.exitSource = 'https://example.test/geoip';
+      window.dashboardFixture.exitCheckedAt = country === 'US' ? 1_700_000_001_000 : undefined;
       window.dashboardFixture.holdExitIp = true;
       return window.dashboardFixture.exitIpReads;
     }, country);
@@ -200,6 +226,9 @@ async function countryRefresh() {
     assert.equal(await button.locator('text').textContent(), text, '国家代码来自当前出口结果，未知使用占位');
     assert.equal(await page.locator('.dashboard-exit-ip').textContent(), await page.evaluate(() => window.dashboardFixture.ipv6));
     assert.equal(await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'check_ip_metadata').length), metadataCalls, '相同IP刷新复用元数据缓存');
+    if (country === 'US' || country === 'invalid') {
+      await assertExitDetails('https://example.test/geoip', country === 'US' ? '2023-11-14T22:13:21.000Z' : null);
+    }
   }
   await layout();
 }

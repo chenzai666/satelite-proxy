@@ -422,8 +422,10 @@ export interface ExitIpInfo {
   countryCode?: string | null;
   /** Fetched through the core mixed inbound; false means direct probe. */
   viaProxy: boolean;
-  /** Public endpoint that answered, for diagnostics. */
+  /** Exact HTTPS URL of the public endpoint that answered. */
   source: string;
+  /** Unix milliseconds when the probe completed; absent in older responses. */
+  checkedAt?: number | null;
 }
 
 export interface IpMetadata {

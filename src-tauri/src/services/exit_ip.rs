@@ -1,10 +1,13 @@
 //! 仪表盘出口 IP 探测。
 //!
 //! 核心运行时通过当前 HTTP/mixed 入站及实际规则；核心停止时直接发出。
-//! 多个 HTTPS 公开接口并行竞争，首个可解析
-//! 的结果返回，用于识别当前实际出口，而不是只显示节点延迟。
+//! 按 FlClash 的来源顺序错峰探测；返回第一个有效的公网地址及实际来源。
 
 use serde::Serialize;
+use std::future::Future;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::task::JoinSet;
+use tokio::time::{sleep_until, Instant};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +18,8 @@ pub struct ExitIpInfo {
     pub via_proxy: bool,
     /// 胜出的公开接口地址，仅用于诊断。
     pub source: String,
+    /// 本次探测取得结果的时间，缓存复用时保留原时间。
+    pub checked_at: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -33,28 +38,49 @@ const SOURCES: &[Source] = &[
     Source {
         url: "https://api.ip.sb/geoip",
         ip_field: "ip",
-        country_field: "country_code",
+        country_field: "/country_code",
+    },
+    Source {
+        url: "https://ipinfo.io/json",
+        ip_field: "ip",
+        country_field: "/country",
     },
     Source {
         url: "https://ipwho.is/",
         ip_field: "ip",
-        country_field: "country_code",
+        country_field: "/country_code",
     },
     Source {
-        url: "https://api.myip.com",
+        url: "https://get.geojs.io/v1/ip/geo.json",
         ip_field: "ip",
-        country_field: "cc",
+        country_field: "/country_code",
+    },
+    Source {
+        url: "https://api.country.is",
+        ip_field: "ip",
+        country_field: "/country",
+    },
+    Source {
+        url: "https://api.ipquery.io/?format=json",
+        ip_field: "ip",
+        country_field: "/location/country_code",
+    },
+    Source {
+        url: "https://ident.me/json",
+        ip_field: "ip",
+        country_field: "/cc",
     },
 ];
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-const RACE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+const RACE_TIMEOUT: Duration = Duration::from_secs(6);
+const SOURCE_STAGGER: Duration = Duration::from_millis(800);
+const MAX_IN_FLIGHT: usize = 3;
+const MAX_BODY: usize = 4096;
+type SourceAnswer = Result<(String, Option<String>), String>;
 
-async fn probe_source(
-    source: &Source,
-    client: reqwest::Client,
-) -> std::result::Result<(String, Option<String>), String> {
+async fn probe_source(source: &Source, client: reqwest::Client) -> SourceAnswer {
     let response = client
         .get(source.url)
         .header(reqwest::header::USER_AGENT, USER_AGENT)
@@ -62,11 +88,11 @@ async fn probe_source(
         .send()
         .await
         .map_err(|_| "出口 IP 接口连接失败".to_string())?;
-    if !response.status().is_success() {
+    if response.status() != reqwest::StatusCode::OK {
         return Err("出口 IP 接口响应异常".into());
     }
     let body =
-        super::http_body::read_limited(response, 32 * 1024, "出口 IP 响应过大".into()).await?;
+        super::http_body::read_limited(response, MAX_BODY, "出口 IP 响应过大".into()).await?;
     let body = std::str::from_utf8(&body).map_err(|_| "出口 IP 响应编码无效")?;
     parse_source(source, body).ok_or_else(|| "出口 IP 响应格式无效".into())
 }
@@ -79,19 +105,20 @@ fn parse_source(source: &Source, body: &str) -> Option<(String, Option<String>)>
                 (name == key).then_some(value.trim())
             })
         };
-        let ip = field("ip")?.parse::<std::net::IpAddr>().ok()?.to_string();
+        let ip = super::ip_metadata::validate_ip(field("ip")?)
+            .ok()?
+            .to_string();
         return Some((ip, field("loc").and_then(normalize_country)));
     }
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
-    let ip = value
-        .get(source.ip_field)?
-        .as_str()?
-        .trim()
-        .parse::<std::net::IpAddr>()
+    if value.get("success").and_then(serde_json::Value::as_bool) == Some(false) {
+        return None;
+    }
+    let ip = super::ip_metadata::validate_ip(value.get(source.ip_field)?.as_str()?.trim())
         .ok()?
         .to_string();
     let country = value
-        .get(source.country_field)
+        .pointer(source.country_field)
         .and_then(serde_json::Value::as_str)
         .and_then(normalize_country);
     Some((ip, country))
@@ -103,39 +130,73 @@ fn normalize_country(value: &str) -> Option<String> {
         .then(|| code.to_ascii_uppercase())
 }
 
-/// 并行探测多个公开 IP 接口。只返回首个成功结果，超时总上限为 12 秒。
+/// 先查首个来源，慢时错峰增加备用来源；失败立刻补位，最多同时三路。
 pub async fn probe(
     route: super::network_probe::ProbeRoute,
 ) -> std::result::Result<ExitIpInfo, String> {
-    let client = super::network_probe::build_client(route, std::time::Duration::from_secs(9))?;
-    let mut tasks = tokio::task::JoinSet::new();
-    for source in SOURCES {
+    let client = super::network_probe::build_client(route, RACE_TIMEOUT)?;
+    let (source, (ip, country_code)) = race_sources(SOURCE_STAGGER, RACE_TIMEOUT, move |source| {
         let client = client.clone();
-        tasks.spawn(async move { (source.url, probe_source(source, client).await) });
-    }
+        async move { probe_source(&source, client).await }
+    })
+    .await?;
+    Ok(ExitIpInfo {
+        ip,
+        country_code,
+        via_proxy: route.via_proxy(),
+        source: source.url.to_string(),
+        checked_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+    })
+}
 
-    let started = std::time::Instant::now();
-    let mut last_error = "all exit-ip sources failed".to_string();
-    loop {
-        let remaining = RACE_TIMEOUT.saturating_sub(started.elapsed());
-        match tokio::time::timeout(remaining, tasks.join_next()).await {
-            Ok(Some(Ok((url, Ok((ip, country_code)))))) => {
-                tasks.shutdown().await;
-                return Ok(ExitIpInfo {
-                    ip,
-                    country_code,
-                    via_proxy: route.via_proxy(),
-                    source: url.to_string(),
-                });
-            }
-            Ok(Some(Ok((_, Err(error))))) => last_error = error,
-            Ok(Some(Err(_))) => last_error = "出口检测任务结束".into(),
-            Ok(None) | Err(_) => {
-                tasks.shutdown().await;
-                return Err(last_error);
-            }
+async fn race_sources<Fut>(
+    stagger: Duration,
+    timeout: Duration,
+    fetch: impl Fn(Source) -> Fut,
+) -> Result<(Source, (String, Option<String>)), String>
+where
+    Fut: Future<Output = SourceAnswer> + Send + 'static,
+{
+    let mut tasks = JoinSet::new();
+    let mut sources = SOURCES.iter().copied().peekable();
+    let deadline = Instant::now() + timeout;
+    let mut launch_at = Instant::now();
+    let mut last_error = "出口 IP 接口均不可用".to_string();
+    let answer = loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break Err("出口 IP 检测超时".into());
         }
-    }
+        if sources.peek().is_some()
+            && tasks.len() < MAX_IN_FLIGHT
+            && (tasks.is_empty() || now >= launch_at)
+        {
+            let source = sources.next().unwrap();
+            let request = fetch(source);
+            tasks.spawn(async move { (source, request.await) });
+            launch_at = now + stagger;
+        }
+        if tasks.is_empty() {
+            break Err(last_error);
+        }
+        tokio::select! {
+            _ = sleep_until(deadline) => break Err("出口 IP 检测超时".into()),
+            outcome = tasks.join_next() => {
+                match outcome {
+                    Some(Ok((source, Ok(answer)))) => break Ok((source, answer)),
+                    Some(Ok((_, Err(error)))) => last_error = error,
+                    _ => last_error = "出口检测任务结束".into(),
+                }
+                launch_at = Instant::now();
+            }
+            _ = sleep_until(launch_at), if sources.peek().is_some() && tasks.len() < MAX_IN_FLIGHT => {}
+        }
+    };
+    tasks.shutdown().await;
+    answer
 }
 
 #[cfg(test)]
@@ -166,8 +227,92 @@ mod tests {
 
     #[test]
     fn rejects_missing_or_empty_ip() {
-        assert!(parse_source(&source("https://api.myip.com"), "not json").is_none());
-        assert!(parse_source(&source("https://api.myip.com"), r#"{"ip":"","cc":"US"}"#,).is_none());
+        let ident = source("https://ident.me/json");
+        for invalid in [
+            "not json",
+            r#"{"ip":"","cc":"US"}"#,
+            r#"{"ip":"10.0.0.1","cc":"US"}"#,
+        ] {
+            assert!(parse_source(&ident, invalid).is_none());
+        }
+        assert!(parse_source(
+            &source("https://ipwho.is/"),
+            r#"{"success":false,"ip":"8.8.8.8"}"#
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn aligned_fallbacks_parse_actual_country_fields() {
+        for (url, body) in [
+            (
+                "https://ipinfo.io/json",
+                r#"{"ip":"8.8.8.8","country":"US"}"#,
+            ),
+            (
+                "https://get.geojs.io/v1/ip/geo.json",
+                r#"{"ip":"8.8.8.8","country_code":"US"}"#,
+            ),
+            (
+                "https://api.country.is",
+                r#"{"ip":"8.8.8.8","country":"US"}"#,
+            ),
+            (
+                "https://api.ipquery.io/?format=json",
+                r#"{"ip":"8.8.8.8","location":{"country_code":"US"}}"#,
+            ),
+            ("https://ident.me/json", r#"{"ip":"8.8.8.8","cc":"US"}"#),
+        ] {
+            assert_eq!(
+                parse_source(&source(url), body),
+                Some(("8.8.8.8".into(), Some("US".into()))),
+                "{url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fast_primary_avoids_starting_fallback_requests() {
+        let (winner, _) = race_sources(Duration::from_secs(1), Duration::from_secs(3), |source| {
+            assert_eq!(source.url, "https://www.cloudflare.com/cdn-cgi/trace");
+            std::future::ready(Ok(("8.8.8.8".into(), None)))
+        })
+        .await
+        .unwrap();
+        assert_eq!(winner.url, SOURCES[0].url);
+    }
+
+    #[tokio::test]
+    async fn stalled_primary_allows_fallback_and_reclaims_pending_task() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+        struct Cleanup(Arc<AtomicBool>);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let cleaned = Arc::new(AtomicBool::new(false));
+        let (winner, _) = race_sources(
+            Duration::from_millis(25),
+            Duration::from_secs(3),
+            |source| {
+                let cleanup = (source.url == SOURCES[0].url).then(|| Cleanup(cleaned.clone()));
+                async move {
+                    if let Some(_guard) = cleanup {
+                        return std::future::pending().await;
+                    }
+                    assert_eq!(source.url, "https://api.ip.sb/geoip");
+                    Ok(("8.8.4.4".into(), None))
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(winner.url, SOURCES[1].url);
+        assert!(cleaned.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { NavKey } from "../../src/types";
-import type { AppSettings, ConnectionView, ProxyNode, ProxyStatus, SubscriptionView } from "../../src/types";
+import type { AppSettings, ConnectionView, ExitIpInfo, ProxyNode, ProxyStatus, SubscriptionView } from "../../src/types";
 import "../../src/App.css";
 import "../../src/ProAppearance.css";
 import "../../src/ProMotion.css";
@@ -76,6 +76,8 @@ const state = {
   serviceFailures: 0,
   claudeStatus: "available", claudeRegion: "US", claudeHttp: 200,
   countryCode: "HK", exitIpReads: 0, holdExitIp: false, releaseExitIp: null as null | (() => void),
+  exitSource: "https://example.test/cdn-cgi/trace?format=plain%20text",
+  exitCheckedAt: 1_700_000_000_000 as number | undefined,
   setMotion: setUiMotion,
 };
 (window as unknown as { dashboardFixture: typeof state }).dashboardFixture = state;
@@ -103,7 +105,10 @@ mockIPC((command, payload) => {
     case "get_lan_ip": return ipv6;
     case "check_exit_ip": {
       state.exitIpReads++;
-      const result = { ip: ipv6, countryCode: state.countryCode, viaProxy: true, source: "fixture" };
+      const result: ExitIpInfo = {
+        ip: ipv6, countryCode: state.countryCode, viaProxy: true, source: state.exitSource,
+        ...(state.exitCheckedAt === undefined ? {} : { checkedAt: state.exitCheckedAt }),
+      };
       if (!state.holdExitIp) return result;
       return new Promise(resolve => { state.releaseExitIp = () => { state.releaseExitIp = null; resolve(result); }; });
     }

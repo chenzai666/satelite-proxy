@@ -1,19 +1,38 @@
 import { useEffect, useRef, useState } from "react";
 import { checkIpMetadata } from "../api";
 import { useI18n } from "../i18n";
-import type { IpMetadata } from "../types";
+import type { ExitIpInfo, IpMetadata } from "../types";
 import { createIpLookupCache } from "../ipLookupCache";
 import "./IpInfoPanel.css";
 const metadataCache = createIpLookupCache<IpMetadata>(value => ["unknown", "isp"].includes(value.networkType) ? 30_000 : 300_000, 64);
 
 const labels = {
-  zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "数据来源", score: "风险评分", failed: "IP 信息暂不可用", details: "查看 IP 信息详情" },
-  en: { title: "IP information", org: "Organization", isp: "ISP", ispNetwork: "ISP network", business: "Commercial", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "Data source", score: "Risk score", failed: "IP information unavailable", details: "Open IP information details" },
+  zh: { title: "IP 信息", org: "组织", isp: "运营商", ispNetwork: "ISP 网络", business: "商业", type: "网络类型", quality: "IP 风险", unknown: "未知", datacenter: "机房", mobile: "移动网络", residential: "家宽", low: "风险低", moderate: "风险中", high: "风险高", checking: "查询中…", refresh: "重新查询 IP 信息", close: "关闭", copy: "复制完整组织名称", copied: "已复制", source: "资料来源", score: "风险评分", failed: "IP 信息暂不可用", details: "查看 IP 信息详情", exitSource: "出口检测来源", exitCheckedAt: "出口检测时间", copyUrl: "复制检测 URL", copyUrlFailed: "复制失败，请手动选择地址复制" },
+  en: { title: "IP information", org: "Organization", isp: "ISP", ispNetwork: "ISP network", business: "Commercial", type: "Network type", quality: "IP risk", unknown: "Unknown", datacenter: "Datacenter", mobile: "Mobile", residential: "Residential", low: "Low risk", moderate: "Moderate risk", high: "High risk", checking: "Checking…", refresh: "Refresh IP information", close: "Close", copy: "Copy full organization name", copied: "Copied", source: "IP metadata source", score: "Risk score", failed: "IP information unavailable", details: "Open IP information details", exitSource: "Exit IP probe source", exitCheckedAt: "Exit IP checked at", copyUrl: "Copy probe URL", copyUrlFailed: "Copy failed. Select the URL to copy it manually." },
 };
 
-export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey: string }) {
+function ExitProbeSource({ source, l }: { source: string; l: typeof labels.en }) {
+  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(null);
+  async function copyUrl() {
+    try {
+      await navigator.clipboard.writeText(source);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
+  return <>
+    <span className="ip-exit-source-url">{source}</span>{" "}
+    <button type="button" className="glass-btn small" onClick={copyUrl}>{l.copyUrl}</button>{" "}
+    <span className="ip-info-hint" role="status">{copyStatus === "copied" ? l.copied : copyStatus === "failed" ? l.copyUrlFailed : ""}</span>
+  </>;
+}
+
+export function IpInfoPanel({ exitIp, sessionKey }: { exitIp: ExitIpInfo | null; sessionKey: string }) {
   const { locale } = useI18n();
   const l = labels[locale === "en" ? "en" : "zh"];
+  const ip = exitIp?.ip;
+  const checkedAt = typeof exitIp?.checkedAt === "number" ? new Date(exitIp.checkedAt) : null;
   const [storedData, setData] = useState<IpMetadata | null>(null);
   const data = storedData?.ip === ip ? storedData : null;
   const [busy, setBusy] = useState(false);
@@ -79,6 +98,10 @@ export function IpInfoPanel({ ip, sessionKey }: { ip?: string | null; sessionKey
         <header><h2 id="ip-details-title">{l.title}</h2><button type="button" className="glass-btn small" onClick={() => setOpen(false)} autoFocus>{l.close}</button></header>
         <dl>
           <dt>IP</dt><dd>{ip ?? "—"}</dd>
+          <dt>{l.exitSource}</dt><dd>{exitIp?.source ? <ExitProbeSource key={exitIp.source} source={exitIp.source} l={l} /> : "—"}</dd>
+          <dt>{l.exitCheckedAt}</dt><dd>{checkedAt && Number.isFinite(checkedAt.getTime())
+            ? <time dateTime={checkedAt.toISOString()}>{checkedAt.toLocaleString(locale === "en" ? "en-US" : "zh-CN")}</time>
+            : "—"}</dd>
           <dt>{l.org}</dt><dd className="ip-organization">{data?.organization ?? "—"}</dd>
           <dt>{l.isp}</dt><dd>{data?.isp ?? "—"}</dd>
           <dt>ASN</dt><dd>{data?.asn ?? "—"}</dd>
