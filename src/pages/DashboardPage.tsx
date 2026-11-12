@@ -16,7 +16,6 @@ import {
   refreshProxyStatus,
   restartProxy,
   peekSettings,
-  setCoreType,
   setRuntimeSource,
   setOutboundMode,
   startProxy,
@@ -30,6 +29,7 @@ import {
   type CaptureMode,
 } from "../hooks/useCaptureModeSwitch";
 import { useVisibleInterval } from "../hooks/useVisibleInterval";
+import { useDashboardMenuPosition } from "../hooks/useDashboardMenuPosition";
 import { useI18n } from "../i18n";
 import { ErrorModal } from "../components/ErrorModal";
 import { GlassButton } from "../components/GlassButton";
@@ -47,7 +47,6 @@ import "./DashboardPage.css";
 const exitIpCache = createIpLookupCache<ExitIpInfo>(30_000, 8);
 import type {
   AutoSelectMode,
-  CoreKind,
   ExitIpInfo,
   GenerateConfigResult,
   OutboundMode,
@@ -226,8 +225,8 @@ export function DashboardPage({
   const [showSystemRestartNotice, setShowSystemRestartNotice] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
-  const [coreMenuOpen, setCoreMenuOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
+  useDashboardMenuPosition(moreRef, moreOpen, configMenuOpen);
   /** Flyout close timer: leaving a sub row schedules a close; re-entering
    *  (row or popup) cancels it — covers the transit over sibling rows. */
   const subLeaveTimer = useRef<number | null>(null);
@@ -241,7 +240,6 @@ export function DashboardPage({
     cancelSubmenuClose();
     subLeaveTimer.current = window.setTimeout(() => {
       setConfigMenuOpen(false);
-      setCoreMenuOpen(false);
     }, 280);
   }
   useEffect(() => cancelSubmenuClose, []);
@@ -470,7 +468,19 @@ function coreDisplayName(kind: string | null | undefined): string {
       }
     }
     document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      cancelSubmenuClose();
+      setMoreOpen(false);
+      setConfigMenuOpen(false);
+      moreRef.current?.querySelector<HTMLButtonElement>(".dash-more-btn")?.focus();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [moreOpen]);
 
   async function onStart() {
@@ -638,25 +648,6 @@ function coreDisplayName(kind: string | null | undefined): string {
     setConfigMenuOpen(false);
     try {
       await setRuntimeSource(source);
-      const s = await getProxyStatus();
-      setProxy(s);
-      await reload();
-    } catch (e) {
-      setError(typeof e === "string" ? e : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /** Hero ⋯ → 指定内核: switch the active core (restarts a running core). */
-  async function onSwitchCore(kind: CoreKind) {
-    if (busy || (proxy?.core_type ?? "singbox") === kind) return;
-    setBusy(true);
-    setError(null);
-    setMoreOpen(false);
-    setCoreMenuOpen(false);
-    try {
-      await setCoreType(kind);
       const s = await getProxyStatus();
       setProxy(s);
       await reload();
@@ -1116,7 +1107,6 @@ function coreDisplayName(kind: string | null | undefined): string {
                     // Fresh open: submenus start closed (no stale hover state).
                     if (!v) {
                       setConfigMenuOpen(false);
-                      setCoreMenuOpen(false);
                     }
                     return !v;
                   });
@@ -1168,7 +1158,6 @@ function coreDisplayName(kind: string | null | undefined): string {
                     onPointerEnter={() => {
                       cancelSubmenuClose();
                       setConfigMenuOpen(true);
-                      setCoreMenuOpen(false);
                     }}
                     onPointerLeave={scheduleSubmenuClose}
                   >
@@ -1180,7 +1169,6 @@ function coreDisplayName(kind: string | null | undefined): string {
                       disabled={busy}
                       onClick={() => {
                         setConfigMenuOpen(true);
-                        setCoreMenuOpen(false);
                       }}
                     >
                       <span>{t("dashboard.pickConfig")}</span>
@@ -1229,56 +1217,6 @@ function coreDisplayName(kind: string | null | undefined): string {
                                 {selected ? "●" : "○"}
                               </span>
                               {profile.name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                  <div
-                    className="dash-more-sub"
-                    onPointerEnter={() => {
-                      cancelSubmenuClose();
-                      setCoreMenuOpen(true);
-                      setConfigMenuOpen(false);
-                    }}
-                    onPointerLeave={scheduleSubmenuClose}
-                  >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      aria-haspopup="menu"
-                      aria-expanded={coreMenuOpen}
-                      disabled={busy}
-                      onClick={() => {
-                        setCoreMenuOpen(true);
-                        setConfigMenuOpen(false);
-                      }}
-                    >
-                      <span>{t("dashboard.pickCore")}</span>
-                      <span className="dash-more-caret" aria-hidden>
-                        ›
-                      </span>
-                    </button>
-                    {coreMenuOpen && (
-                      <div className="dash-more-submenu card glass" role="menu">
-                        {(["singbox", "xray", "mihomo"] as const).map((kind) => {
-                          const selected =
-                            (proxy?.core_type ?? "singbox") === kind;
-                          return (
-                            <button
-                              key={kind}
-                              type="button"
-                              role="menuitemradio"
-                              aria-checked={selected}
-                              className={selected ? "is-selected" : ""}
-                              disabled={busy}
-                              onClick={() => void onSwitchCore(kind)}
-                            >
-                              <span className="dash-more-check" aria-hidden>
-                                {selected ? "●" : "○"}
-                              </span>
-                              {coreDisplayName(kind)}
                             </button>
                           );
                         })}

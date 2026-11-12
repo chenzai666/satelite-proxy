@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-12 概览更多菜单：移除重复切换内核入口和其专用状态/handler，统一使用左下角。useDashboardMenuPosition沿DOM裁剪祖先计算可见矩形，主菜单上下夹紧、指定配置子菜单优先向右否则向左，absolute坐标按实测缩放换算；滚动/resize/ResizeObserver仅开菜单时监听并卸载回收。保留原DOM主题/外点行为，菜单仅透明度入场避免transform干扰测量；Esc关闭全层并还焦触发按钮。云端dashboard回归覆盖两级菜单边界与缩放，本机仅tsc/Node，版本1.0.46。
+
 2026-11-11 首页出口 IP（取代旧四路并行）：exit_ip按FlClash的八个固定HTTPS来源依次错峰，先Cloudflare trace，慢则800ms补一路，失败立即补位，最多三路并发，6s/4KiB硬上限。只接受有效公网地址，首个有效响应后取消其余请求，带实际source及Unix毫秒checkedAt；详情与ip_metadata的资料来源分开。保留现有mixed/实际规则、路由快照检查、30s会话缓存及资料缓存。测试仅Actions运行Rust/浏览器，不本机构建。
 
 服务诊断稳定性补充：Runtime仅对生成配置预检私有诊断端口；被占用时完整移除私有入站/选择组/对应规则并停用诊断标记，不阻止业务代理启动、不处理custom。服务业务结果与出口证据补查分阶段，整批截止仍保留已完成HTTP/地区结果。CONNECT隔离测试保留有界退出诊断，证书文件相对专属cwd使用，Rust仍仅Actions。

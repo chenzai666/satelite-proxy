@@ -15,6 +15,9 @@ const theme = params.get("theme") === "day" ? "day" : "aerospace";
 const scenario = params.get("state") ?? "running";
 const custom = scenario === "custom";
 const short = params.get("sample") === "short";
+const menuScenario = params.get("menus") === "true";
+const zoom = ["1", "1.5", "2"].includes(params.get("zoom") ?? "") ? Number(params.get("zoom")) : 1;
+document.documentElement.style.zoom = String(zoom);
 const nodeName = short ? "香港 HK 01" : "香港 Hong Kong · IPv6 Premium Edge · LongNodeName-0123456789 · Complete Node Name ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789";
 const profileName = short ? "演示订阅" : "演示订阅 Subscription-Long-Name-0123456789-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 // 保留既有夹具字段名；短场景使用文档专用 IPv4，长场景使用 IPv6。
@@ -42,6 +45,12 @@ const subscriptions: SubscriptionView[] = [{
   node_count: 1, skipped_count: 0, last_update: 1_700_000_000,
   traffic: { upload: 2 ** 30, download: 5 * 2 ** 30, total: 100 * 2 ** 30 },
 }];
+// 菜单场景独立追加完整配置，不改变既有概览/服务场景的数据。
+if (menuScenario) subscriptions.push({
+  id: "fixture-menu-profile", name: "菜单配置 Menu profile · Complete long name 0123456789",
+  enabled: false, source_kind: "custom", custom_kind: "singbox", source_display: "fixture",
+  node_count: 0, skipped_count: 0, last_update: 1_700_000_000,
+});
 const bucket = (up: number, down: number, upload: number, download: number) => ({
   upload_speed: up, download_speed: down, upload_total: upload, download_total: download,
 });
@@ -79,6 +88,18 @@ const state = {
   exitSource: "https://example.test/cdn-cgi/trace?format=plain%20text",
   exitCheckedAt: 1_700_000_000_000 as number | undefined,
   setMotion: setUiMotion,
+  placeMore(edge: "default" | "right", viewportWidth: number) {
+    const owner = document.querySelector<HTMLElement>(".dash-more")!;
+    owner.style.transform = "";
+    if (edge === "default") return;
+    // 仅挪动真实触发容器，菜单 DOM、样式及定位仍由生产组件负责。
+    const rect = owner.getBoundingClientRect();
+    const main = document.querySelector<HTMLElement>("main")!;
+    const mainRect = main.getBoundingClientRect();
+    const scale = rect.width / owner.offsetWidth;
+    const right = Math.min(viewportWidth, mainRect.left + (main.clientLeft + main.clientWidth) * scale) - 12;
+    owner.style.transform = `translateX(${(right - rect.right) / scale}px)`;
+  },
 };
 (window as unknown as { dashboardFixture: typeof state }).dashboardFixture = state;
 const copy = <T,>(value: T): T => structuredClone(value);
@@ -150,6 +171,17 @@ mockIPC((command, payload) => {
       if (!["rule", "global", "direct"].includes(String(args.mode))) throw new Error("非法模式参数");
       settings.outbound_mode = status.outbound_mode = args.mode as "rule" | "global" | "direct";
       return copy(status);
+    case "set_runtime_source": {
+      if (!menuScenario || !["generated", "singbox:fixture-menu-profile"].includes(String(args.source))) throw new Error("非法夹具配置参数");
+      const profile = args.source === "generated" ? null : subscriptions.find(sub => sub.id === "fixture-menu-profile")!;
+      settings.runtime_source = String(args.source);
+      status.runtime_source = profile ? "singbox" : "generated";
+      status.runtime_profile_id = profile?.id ?? null;
+      status.runtime_profile_name = profile?.name ?? null;
+      status.custom_inbound_port = profile ? settings.mixed_port : null;
+      status.traffic_breakdown!.source = profile ? "unavailable" : "connections";
+      return copy(settings);
+    }
     case "set_capture_mode":
       if (!["off", "system", "tun"].includes(String(args.mode))) throw new Error("非法接管参数");
       settings.capture_mode = status.capture_mode = args.mode as "off" | "system" | "tun";

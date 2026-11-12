@@ -107,6 +107,15 @@
 .dashboard-page.dashboard-bento .dash-more-btn { min-width: 32px; padding: .35rem .7rem !important; }
 .dashboard-page.dashboard-bento .dash-more-menu { z-index: 30; }
 .dashboard-page.dashboard-bento .dash-more-submenu { z-index: 31; }
+.dashboard-page .dash-more-menu,
+.dashboard-page .dash-more-submenu {
+  box-sizing: border-box;
+  animation-name: pro-veil-enter !important;
+  transform: none !important;
+}
+.dashboard-page .dash-more-submenu { overflow: auto; }
+.dashboard-page .dash-more-menu button { white-space: normal; overflow-wrap: anywhere; }
+.dashboard-page .dash-more-sub[data-menu-side="left"] > button .dash-more-caret { transform: rotate(180deg); }
 .dashboard-exit-summary { display: flex; align-items: center; gap: 10px; min-width: 0; padding-right: 120px; }
 .dashboard-page.dashboard-bento .dashboard-country-button { display: grid; place-items: center; flex: 0 0 46px; width: 46px; height: 46px; padding: 0; border: 0; border-radius: 16px; background: transparent; color: var(--primary); cursor: pointer; }
 .dashboard-country-button svg { width: 46px; height: 46px; overflow: visible; }

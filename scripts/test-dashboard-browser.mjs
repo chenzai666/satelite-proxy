@@ -13,8 +13,8 @@ let context, page;
 let currentCase = "setup";
 let errors = [], blocked = [];
 const words = {
-  zh: { stop: "停止代理", start: "启动代理", routing: "路由模式", global: "全局", rule: "规则", state: "运行中" },
-  en: { stop: "Stop", start: "Start", routing: "Routing mode", global: "Global", rule: "Rule", state: "Running" },
+  zh: { stop: "停止代理", start: "启动代理", routing: "路由模式", global: "全局", rule: "规则", state: "运行中", config: "指定配置", generated: "系统默认" },
+  en: { stop: "Stop", start: "Start", routing: "Routing mode", global: "Global", rule: "Rule", state: "Running", config: "Choose config", generated: "System default" },
 };
 async function clean() {
   assert.deepEqual(await page.evaluate(() => window.dashboardFixture.unexpected), [], "禁止未声明 IPC");
@@ -30,7 +30,7 @@ async function cardMotion(running) {
     await page.waitForFunction(({ selector, before }) => getComputedStyle(document.querySelector(selector), "::before").transform !== before, { selector, before });
   }
 }
-async function open(width, height, locale, theme, state = "running", hero = "classic", network = "business", sample = "long") {
+async function open(width, height, locale, theme, state = "running", hero = "classic", network = "business", sample = "long", menuOptions = {}) {
   if (page) await clean();
   if (context) await context.close();
   errors = []; blocked = [];
@@ -48,7 +48,7 @@ async function open(width, height, locale, theme, state = "running", hero = "cla
   });
   page = await context.newPage();
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero, network, sample })}`);
+  await page.goto(`${base}/scripts/ui-smoke/dashboard.html?${new URLSearchParams({ locale, theme, state, hero, network, sample, ...menuOptions })}`);
   await page.locator(".dashboard-details-grid > :nth-child(4)").waitFor();
   await page.waitForFunction(({ theme, label }) =>
     document.documentElement.dataset.theme === theme &&
@@ -323,7 +323,171 @@ async function structure(locale) {
   assert.deepEqual([...new Set(coreKinds)].sort(), ["mihomo", "singbox", "xray"]);
 }
 
+// 菜单回归只约束弹层和交互，不把正文的字号、间距或卡片样式带入缩放矩阵。
+const menuSides = new Set();
+async function settleMenus() {
+  await page.evaluate(async () => {
+    for (let i = 0; i < 3; i++) await new Promise(resolve => requestAnimationFrame(resolve));
+  });
+}
+async function menuGeometry() {
+  await settleMenus();
+  // Playwright 视口不受 root zoom 改写 innerWidth 的影响；DOMRect/命中点均使用实际可见坐标。
+  const result = await page.evaluate(viewport => {
+    const issues = [];
+    const tolerance = 2;
+    const panels = [...document.querySelectorAll('.dash-more-menu, .dash-more-submenu')];
+    const inside = (r, b) => r.left >= b.left - tolerance && r.right <= b.right + tolerance &&
+      r.top >= b.top - tolerance && r.bottom <= b.bottom + tolerance;
+    const boundsFor = el => {
+      const bounds = { left: 0, top: 0, right: viewport.width, bottom: viewport.height };
+      for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
+        const scaleX = rect.width / parent.offsetWidth || 1, scaleY = rect.height / parent.offsetHeight || 1;
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+          bounds.left = Math.max(bounds.left, rect.left + parent.clientLeft * scaleX);
+          bounds.right = Math.min(bounds.right, rect.left + (parent.clientLeft + parent.clientWidth) * scaleX);
+        }
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+          bounds.top = Math.max(bounds.top, rect.top + parent.clientTop * scaleY);
+          bounds.bottom = Math.min(bounds.bottom, rect.top + (parent.clientTop + parent.clientHeight) * scaleY);
+        }
+      }
+      return bounds;
+    };
+    for (const panel of panels) {
+      const box = panel.getBoundingClientRect(), bounds = boundsFor(panel);
+      if (box.width < 1 || box.height < 1 || !inside(box, bounds)) issues.push(`菜单越过实际可见范围 ${panel.className}: ${JSON.stringify({ box: box.toJSON(), bounds })}`);
+      if (panel.scrollWidth > panel.clientWidth + 1) issues.push(`菜单横向裁切 ${panel.className}`);
+      if (panel.scrollHeight > panel.clientHeight + 1 && !/(auto|scroll)/.test(getComputedStyle(panel).overflowY)) issues.push(`菜单内容无法滚动 ${panel.className}`);
+      for (const button of panel.querySelectorAll(':scope > button, :scope > .dash-more-sub > button')) {
+        const rect = button.getBoundingClientRect();
+        if (button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1) issues.push(`菜单文字裁切 ${button.textContent}`);
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          if (!walker.currentNode.textContent.trim()) continue;
+          const range = document.createRange(); range.selectNodeContents(walker.currentNode);
+          if ([...range.getClientRects()].some(text => !inside(text, rect))) issues.push(`菜单文字超出按钮 ${button.textContent}`);
+        }
+      }
+    }
+    const sub = document.querySelector('.dash-more-submenu');
+    if (!sub) return { issues };
+    const anchor = sub.parentElement, a = anchor.getBoundingClientRect(), b = sub.getBoundingClientRect();
+    const bounds = boundsFor(document.querySelector('.dash-more-menu'));
+    const scale = a.width / anchor.offsetWidth;
+    const fitsRight = a.right + 4 * scale + b.width <= bounds.right - 8;
+    const fitsLeft = a.left - 4 * scale - b.width >= bounds.left + 8;
+    // 空间够时检查默认向右/回退向左；空间不够时只要求夹紧且可操作。
+    if (fitsRight && b.left < a.right - tolerance) issues.push('有右侧空间却未向右展开');
+    if (!fitsRight && fitsLeft && b.right > a.left + tolerance) issues.push('右侧不足时未向左展开');
+    return { issues, side: b.left >= a.right - tolerance ? 'right' : b.right <= a.left + tolerance ? 'left' : 'clamped' };
+  }, page.viewportSize());
+  assert.deepEqual(result.issues, [], `${currentCase} 菜单边界/文字`);
+  if (result.side) menuSides.add(result.side);
+  return result;
+}
+async function hoverConfigSubmenu(locale) {
+  const root = page.locator('.dash-more-menu');
+  const trigger = root.getByRole('menuitem', { name: words[locale].config, exact: true });
+  await trigger.hover();
+  await page.waitForFunction(() => document.querySelectorAll('.dash-more-submenu').length === 1);
+  assert.equal(await trigger.getAttribute('aria-expanded'), 'true', `${currentCase} hover 打开指定配置`);
+  await menuGeometry();
+  return page.locator('.dash-more-submenu');
+}
+async function clickMenuOption(option) {
+  await option.scrollIntoViewIfNeeded();
+  const box = await option.boundingBox();
+  assert.ok(box && box.width > 0 && box.height > 0, `${currentCase} 菜单选项非空`);
+  // 分步经过真实指针路径，再跨过延迟关闭时限，检验 hover 从父项进入子菜单可持续。
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 8 });
+  await page.waitForTimeout(320);
+  await menuGeometry();
+  assert.equal(await option.evaluate(el => {
+    const r = el.getBoundingClientRect();
+    return [[.1, .2], [.9, .2], [.5, .5], [.1, .8], [.9, .8]].every(([x, y]) =>
+      el.contains(document.elementFromPoint(r.left + r.width * x, r.top + r.height * y)));
+  }), true, `${currentCase} 选项命中区域未被祖先或相邻卡片遮挡`);
+  await option.click();
+  await page.locator('.dash-more-menu').waitFor({ state: 'hidden' });
+}
+async function closeMoreWithEscape() {
+  await page.keyboard.press('Escape');
+  await page.locator('.dash-more-menu').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('.dash-more-submenu').count(), 0);
+  assert.equal(await page.locator('.dash-more-btn').getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('.dash-more-btn').evaluate(el => document.activeElement === el), true, 'Esc 关闭全部菜单并回焦触发按钮');
+}
+async function moreMenuRoundTrip(width, locale, zoom) {
+  await open(width, 720, locale, locale === 'zh' ? 'day' : 'aerospace', 'running', 'classic', 'business', 'long', { menus: 'true', zoom: String(zoom) });
+  const baseCase = `${width}x720-${locale}-zoom${zoom}-more`;
+  currentCase = baseCase;
+  assert.equal(await page.evaluate(() => Number(getComputedStyle(document.documentElement).zoom)), zoom);
+  const more = page.locator('.dash-more-btn');
+  for (const placement of ['default', 'right']) {
+    currentCase = `${baseCase}-${placement}`;
+    await more.scrollIntoViewIfNeeded();
+    await page.evaluate(({ placement, width }) => window.dashboardFixture.placeMore(placement, width), { placement, width });
+    await more.click();
+    assert.equal(await more.getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.locator('.dash-more-submenu').count(), 0, '新打开时无遗留子菜单');
+    assert.equal(await page.locator('.dash-more-menu').getByRole('menuitem', {
+      name: locale === 'zh' ? '切换内核' : 'Switch core', exact: true,
+    }).count(), 0, '首页更多菜单已移除 dashboard.pickCore 重复入口');
+    await menuGeometry();
+    // 实际点击长配置名，再切回默认配置，验证可点击与选中状态。
+    let submenu = await hoverConfigSubmenu(locale);
+    if (zoom === 1) assert.equal((await menuGeometry()).side, placement === 'right' ? 'left' : 'right', `${currentCase} 实际展开方向`);
+    const profile = await page.evaluate(() => window.dashboardFixture.subscriptions.find(sub => sub.id === 'fixture-menu-profile').name);
+    await clickMenuOption(submenu.getByRole('menuitemradio', { name: profile, exact: false }));
+    await page.waitForFunction(() => window.dashboardFixture.status.runtime_profile_id === 'fixture-menu-profile' && !document.querySelector('.dashboard-power').disabled);
+    await more.click();
+    submenu = await hoverConfigSubmenu(locale);
+    assert.equal(await submenu.getByRole('menuitemradio', { name: profile, exact: false }).getAttribute('aria-checked'), 'true');
+    await clickMenuOption(submenu.getByRole('menuitemradio', { name: words[locale].generated, exact: false }));
+    await page.waitForFunction(() => window.dashboardFixture.status.runtime_source === 'generated' && !document.querySelector('.dashboard-power').disabled);
+    // 清空刚移除子菜单的 hover 离开计时，再用键盘打开，使 resize/滚动不受指针离开影响。
+    await page.mouse.move(1, 1);
+    await page.waitForTimeout(320);
+    await more.click();
+    await page.locator('.dash-more-menu').getByRole('menuitem', { name: words[locale].config, exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await page.locator('.dash-more-submenu').waitFor();
+    currentCase = `${baseCase}-${placement}-resize`;
+    await page.setViewportSize({ width: width + 64, height: 640 });
+    await menuGeometry();
+    assert.equal(await page.locator('.dash-more-submenu').count(), 1, 'resize 保持展开');
+    await page.setViewportSize({ width, height: 720 });
+    await menuGeometry();
+    currentCase = `${baseCase}-${placement}-scroll`;
+    const scroll = await page.locator('main').evaluate(el => {
+      const before = el.scrollTop;
+      el.scrollTop += el.scrollTop > 24 ? -24 : 24;
+      return { before, after: el.scrollTop };
+    });
+    assert.notEqual(scroll.after, scroll.before, '真实页面滚动容器发生滚动');
+    await menuGeometry();
+    assert.equal(await page.locator('.dash-more-submenu').count(), 1, '滚动后仍可见子菜单');
+    await closeMoreWithEscape();
+    // Esc 后再打开必须清空 hover 状态，单独主菜单也能关闭并回焦。
+    await more.click();
+    assert.equal(await page.locator('.dash-more-submenu').count(), 0);
+    await closeMoreWithEscape();
+  }
+  const actions = await page.evaluate(() => window.dashboardFixture.commands.filter(c => c.command === 'set_runtime_source'));
+  assert.deepEqual(actions, Array.from({ length: 2 }, () => [
+    { command: 'set_runtime_source', payload: { source: 'singbox:fixture-menu-profile' } },
+    { command: 'set_runtime_source', payload: { source: 'generated' } },
+  ]).flat(), `${baseCase} 每次菜单点击只发一个声明的 mock IPC`);
+  await clean();
+}
+
 try {
+  for (const width of [960, 1280]) for (const locale of ['zh', 'en']) for (const zoom of [1, 1.5, 2]) {
+    await moreMenuRoundTrip(width, locale, zoom);
+  }
+  assert.ok(menuSides.has('right') && menuSides.has('left'), '矩阵实际覆盖向右和向左展开');
   // 保留原两张截图，短场景四服务仅追加一张代表截图。
   for (const [width, height] of [[960, 720], [1280, 900], [1600, 1000]]) {
     for (const [locale, theme] of [["zh", "day"], ["en", "aerospace"]]) {
@@ -501,7 +665,7 @@ try {
     assert.doesNotMatch(await page.locator('.ip-info-badges').innerText(), /推测/);
   }
   await clean();
-  console.log("概览回归通过：真实侧栏、紧凑布局、IP组织完整、服务详情、三种首页动效、模式/启停与全屏。");
+  console.log("概览回归通过：指定配置菜单12组中英/960与1280/zoom 1与1.5与2，默认与右侧触发、双向展开、hover配置切换、Esc回焦、resize/滚动；真实侧栏、IP、服务、动效、启停与全屏。");
 } catch (error) {
   console.error("概览夹具失败场景", currentCase);
   // 失败最多追加一张；成功最多三张（保留原两张及一张四服务代表图）。
