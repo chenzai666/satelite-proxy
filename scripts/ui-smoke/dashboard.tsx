@@ -114,6 +114,7 @@ mockIPC((command, payload) => {
     case "plugin:window|set_resizable":
     case "plugin:window|set_size": return;
     case "plugin:window|current_monitor": return null;
+    case "plugin:window|is_maximized": return false;
     case "get_settings": return copy(settings);
     case "get_proxy_status": state.statusReads++; return copy(status);
     case "list_all_nodes": return copy(nodes);
