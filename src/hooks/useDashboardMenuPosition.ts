@@ -16,13 +16,15 @@ export function useDashboardMenuPosition(root: RefObject<HTMLDivElement | null>,
       for (let parent = owner.parentElement; parent; parent = parent.parentElement) {
         const style = getComputedStyle(parent);
         const rect = parent.getBoundingClientRect();
+        const sx = parent.offsetWidth ? rect.width / parent.offsetWidth : 1;
+        const sy = parent.offsetHeight ? rect.height / parent.offsetHeight : 1;
         if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
-          bounds.left = Math.max(bounds.left, rect.left + 4);
-          bounds.right = Math.min(bounds.right, rect.right - 4);
+          bounds.left = Math.max(bounds.left, rect.left + parent.clientLeft * sx + 4);
+          bounds.right = Math.min(bounds.right, rect.left + (parent.clientLeft + parent.clientWidth) * sx - 4);
         }
         if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
-          bounds.top = Math.max(bounds.top, rect.top + 4);
-          bounds.bottom = Math.min(bounds.bottom, rect.bottom - 4);
+          bounds.top = Math.max(bounds.top, rect.top + parent.clientTop * sy + 4);
+          bounds.bottom = Math.min(bounds.bottom, rect.top + (parent.clientTop + parent.clientHeight) * sy - 4);
         }
       }
       const menus = owner.querySelectorAll<HTMLElement>(".dash-more-menu, .dash-more-submenu");
