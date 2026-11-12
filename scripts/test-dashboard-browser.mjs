@@ -358,10 +358,14 @@ async function menuGeometry() {
     for (const panel of panels) {
       const box = panel.getBoundingClientRect(), bounds = boundsFor(panel);
       if (box.width < 1 || box.height < 1 || !inside(box, bounds)) issues.push(`菜单越过实际可见范围 ${panel.className}: ${JSON.stringify({ box: box.toJSON(), bounds })}`);
-      if (panel.scrollWidth > panel.clientWidth + 1) issues.push(`菜单横向裁切 ${panel.className}`);
-      if (panel.scrollHeight > panel.clientHeight + 1 && !/(auto|scroll)/.test(getComputedStyle(panel).overflowY)) issues.push(`菜单内容无法滚动 ${panel.className}`);
+      const overflow = getComputedStyle(panel);
+      // overflow:visible 的主菜单包括外伸的子菜单，scrollWidth/Height 不代表裁切。
+      // 子菜单独立测量实际边界；主菜单自己的按钮仍须全部落在主面板内。
+      if (overflow.overflowX !== 'visible' && panel.scrollWidth > panel.clientWidth + 1) issues.push(`菜单横向裁切 ${panel.className}`);
+      if (overflow.overflowY !== 'visible' && panel.scrollHeight > panel.clientHeight + 1 && !/(auto|scroll)/.test(overflow.overflowY)) issues.push(`菜单内容无法滚动 ${panel.className}`);
       for (const button of panel.querySelectorAll(':scope > button, :scope > .dash-more-sub > button')) {
         const rect = button.getBoundingClientRect();
+        if (panel.classList.contains('dash-more-menu') && !inside(rect, box)) issues.push(`主菜单按钮超出面板 ${button.textContent}`);
         if (button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1) issues.push(`菜单文字裁切 ${button.textContent}`);
         const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
