@@ -64,7 +64,10 @@ export function useDashboardMenuPosition(root: RefObject<HTMLDivElement | null>,
     position();
     const observer = new ResizeObserver(schedule);
     observer.observe(owner);
+    for (let parent = owner.parentElement; parent; parent = parent.parentElement) observer.observe(parent);
     owner.querySelectorAll<HTMLElement>(".dash-more-menu, .dash-more-submenu").forEach(menu => observer.observe(menu));
+    // 打开绝对定位菜单可能使祖先滚动条出现；下一帧用稳定后的 client 区复核。
+    schedule();
     window.addEventListener("resize", schedule);
     document.addEventListener("scroll", schedule, true);
     return () => {

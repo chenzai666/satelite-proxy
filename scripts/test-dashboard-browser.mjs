@@ -357,7 +357,7 @@ async function menuGeometry() {
     };
     for (const panel of panels) {
       const box = panel.getBoundingClientRect(), bounds = boundsFor(panel);
-      if (box.width < 1 || box.height < 1 || !inside(box, bounds)) issues.push(`菜单越过实际可见范围 ${panel.className}: ${JSON.stringify({ box: box.toJSON(), bounds })}`);
+      if (box.width < 1 || box.height < 1 || !inside(box, bounds)) issues.push(`菜单越过实际可见范围 ${panel.className}: ${JSON.stringify({ box: box.toJSON(), bounds, style: panel.getAttribute('style'), anchor: panel.parentElement.getBoundingClientRect().toJSON(), window: [innerWidth, innerHeight], main: [document.querySelector('main').clientWidth, document.querySelector('main').offsetWidth] })}`);
       const overflow = getComputedStyle(panel);
       // overflow:visible 的主菜单包括外伸的子菜单，scrollWidth/Height 不代表裁切。
       // 子菜单独立测量实际边界；主菜单自己的按钮仍须全部落在主面板内。
