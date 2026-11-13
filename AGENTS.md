@@ -1,5 +1,7 @@
 # AGENTS.md — Satelite Proxy 项目地图
 
+2026-11-13 节点网格与SOCKS导入：更多按钮必须使用icon-btn并参与卡片头部布局，不能被全局主按钮规则染色或绝对定位盖协议。网格列数按实际容器宽度计算并同步虚拟行，不再仅按window断点猜测。SOCKS的URI先分离userinfo再解析地址，兼容含/的标准Base64；有显式冒号按组件解码一次，无冒号仅对有效UTF-8且含冒号的Base64凭据对解码，内部凭据不再percent decode；普通用户名及空认证保留。SS2022本轮已取消，不夹带修改。新增合成导入/导出回归与真实节点网格浏览器检查，Rust/浏览器/打包仅Actions，版本1.0.46。
+
 2026-11-13 订阅收录手动节点：upsert_subscription在源ID稳定匹配后，根据完整protocol/server/port/config/TLS/transport/UDP及编辑前baseline匹配同订阅appended；完整快照双向唯一才接管，采用手动ID放回源位置、清appended、保留本地编辑及其他手动节点。旧版已有远端副本时迁移选点/收藏/选核/规则/池/链引用，池成员去重后同步单点。未知协议、歧义、源副本已有独立编辑、明确clone、链同时使用双方时保持独立。Rust测试仅Actions，保持1.0.46，本轮不直接修改活动store。
 
 2026-11-12 概览更多菜单：移除重复切换内核入口和其专用状态/handler，统一使用左下角。useDashboardMenuPosition沿DOM裁剪祖先计算可见矩形，主菜单上下夹紧、指定配置子菜单优先向右否则向左，absolute坐标按实测缩放换算；滚动/resize/ResizeObserver仅开菜单时监听并卸载回收。保留原DOM主题/外点行为，菜单仅透明度入场避免transform干扰测量；Esc关闭全层并还焦触发按钮。云端dashboard回归覆盖两级菜单边界与缩放，本机仅tsc/Node，版本1.0.46。

@@ -1,5 +1,5 @@
 import { confirmAction } from "../confirmAction";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   appendClipboardNodes,
   deleteNodes,
@@ -79,10 +79,8 @@ type ListItem = GroupHeaderItem | { type: "node"; n: ProxyNode; h: number };
 /** Grid items are row-granular: one item is one visual row of cards. */
 type GridItem = GroupHeaderItem | { type: "row"; nodes: ProxyNode[]; h: number };
 
-function gridColumns() {
-  if (window.innerWidth <= 720) return 2;
-  if (window.innerWidth <= 900) return 3;
-  return 4;
+function gridColumns(width: number) {
+  return Math.max(1, Math.min(4, Math.floor((width + GRID_GAP) / (240 + GRID_GAP))));
 }
 
 export function NodesPage() {
@@ -150,9 +148,8 @@ function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionB
   const [delegatedCores, setDelegatedCores] = useState<Map<string, string>>(
     new Map(),
   );
-  // Keep the chunk size in sync with the CSS grid breakpoints so virtualized
-  // rows remain aligned after a window resize.
-  const [gridCols, setGridCols] = useState(gridColumns);
+  // The measured container drives both CSS tracks and virtual row chunks.
+  const [gridCols, setGridCols] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [contextMenu, setContextMenu] = useState<NodeContextMenuState | null>(null);
@@ -177,11 +174,6 @@ function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionB
     }
   }
 
-  useEffect(() => {
-    const update = () => setGridCols(gridColumns());
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
   // Batch-test streaming: the rAF buffer between channel messages and state
   // (see latencyStream.ts); stopped on unmount so no flush lands post-dismount.
   const latencyBufferRef = useRef<ReturnType<
@@ -485,6 +477,20 @@ function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionB
       ),
     [gridItems, gridOffsets, gridPixels],
   );
+
+  const hasDisplayedNodes = displayed.length > 0;
+  useLayoutEffect(() => {
+    const container = gridPixels.containerRef.current;
+    if (loading || viewMode !== "grid" || !hasDisplayedNodes || !container) return;
+    // contentRect/clientWidth use layout CSS pixels, independent of root zoom.
+    // Observe the actual grid area so sidebar changes also recompute columns.
+    setGridCols(gridColumns(container.clientWidth));
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setGridCols(gridColumns(entry.contentRect.width));
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [loading, viewMode, hasDisplayedNodes, gridPixels.containerRef]);
 
   async function onSelect(id: string) {
     if (policyManaged) return;
@@ -1035,8 +1041,27 @@ function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionB
               <span className="sidecar-tag">{delegatedCores.get(n.protocol) === "xray" ? "Xray" : "mihomo"}</span>
             ) : null}
           </div>
+          {!customRuntime && (
+            <button
+              type="button"
+              className="icon-btn node-card-menu"
+              aria-label={t("nodes.contextMenu")}
+              aria-haspopup="menu"
+              aria-expanded={contextMenu?.node.id === n.id}
+              onClick={(event) => {
+                event.stopPropagation();
+                const rect = event.currentTarget.getBoundingClientRect();
+                setContextMenu({ node: n, x: rect.left, y: rect.bottom });
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <circle cx="3" cy="8" r="1.2" />
+                <circle cx="8" cy="8" r="1.2" />
+                <circle cx="13" cy="8" r="1.2" />
+              </svg>
+            </button>
+          )}
         </div>
-        {!customRuntime && <button type="button" className="node-card-menu" aria-label={t("nodes.contextMenu")} onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setContextMenu({node:n, x:rect.left, y:rect.bottom}); }}>⋯</button>}
         <div className="node-card-name" {...nodeTip(n, t)}>{n.favorite ? "♥ " : ""}{n.name}</div>
         {policyManaged && selectedBy.length > 0 && <span className="node-policy-selection" title={selectedBy.join("、")}>{t("mihomoGroups.selectedBy", { groups: selectedBy.join("、") })}</span>}
         <div className="node-card-footer">
@@ -1271,6 +1296,7 @@ function NodeManagementPage({ policyManaged = false, onCoreRefresh, onSelectionB
           )}
           <div
             className={`node-grid ${virtualized ? "node-grid-virtual" : ""}`}
+            style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
           >
             {gridItems
               .slice(gridWindow.first, gridWindow.last)

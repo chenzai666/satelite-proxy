@@ -60,10 +60,13 @@ export function useVirtualRange({
       frame = 0;
       const containerRect = container.getBoundingClientRect();
       const scrollerRect = scroller.getBoundingClientRect();
-      const visibleTop = Math.max(0, scrollerRect.top - containerRect.top);
+      // Rects include the app's root zoom; item sizes and spacer heights are
+      // layout CSS pixels. Keep scroll windows in the same coordinate space.
+      const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1;
+      const visibleTop = Math.max(0, (scrollerRect.top - containerRect.top) / zoom);
       const visibleBottom = Math.max(
         visibleTop,
-        Math.min(containerRect.height, scrollerRect.bottom - containerRect.top),
+        Math.min(containerRect.height, scrollerRect.bottom - containerRect.top) / zoom,
       );
       const startRow = Math.max(
         0,

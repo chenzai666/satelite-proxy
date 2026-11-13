@@ -2314,9 +2314,9 @@ button {
 
 .node-grid {
   display: grid;
-  /* 一排 4 列，卡片随容器宽度自适应 */
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.65rem;
+  /* NodesPage 根据容器宽度同步设置列数与虚拟行，最小卡宽 240px。 */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   width: 100%;
   max-width: 100%;
   background: transparent;
@@ -2572,19 +2572,6 @@ button {
   border: 0;
 }
 
-/* 960 是专业模式窗口宽度,断点压到 900 保证 960 下节点卡仍 4 列只变窄不换行 */
-@media (max-width: 900px) {
-  .node-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .node-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 button.node-card,
 .node-card {
   position: relative;
@@ -2593,7 +2580,7 @@ button.node-card,
   border-radius: var(--radius);
   background: var(--surface) !important;
   color: var(--text) !important;
-  padding: 0.55rem 0.7rem 0.5rem;
+  padding: 7px 10px;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -2936,9 +2923,26 @@ button.node-card:disabled,
 
 .node-card-top {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 0.5rem;
+  gap: 6px;
+  min-height: 22px;
+  flex: 0 0 auto;
+}
+
+.node-card-top .node-card-meta {
+  margin-left: auto;
+  overflow: hidden;
+}
+
+.node-card-top .node-card-meta code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-card-top .sidecar-tag {
+  flex-shrink: 0;
+  margin-left: 0;
 }
 
 /* —— 节点详情弹窗（⋮ 菜单「详情」） —— */
@@ -3098,7 +3102,6 @@ button.node-card:disabled,
 }
 
 .node-card-name {
-  padding-right: 1.6rem;
   font-weight: 600;
   font-size: 0.85rem;
   overflow: hidden;
@@ -3128,12 +3131,33 @@ button.node-card:disabled,
   gap: 0.15rem;
 }
 
-.node-card-menu {
-  position: absolute;
-  right: 0.4rem;
-  top: 0.3rem;
-  padding: 0.1rem 0.4rem;
+.node-card-menu.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  line-height: 1;
+}
+
+.node-card-menu.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.node-card-menu.icon-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
 }
 
 /* Subscription origin under node name */

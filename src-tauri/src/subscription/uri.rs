@@ -1554,7 +1554,18 @@ fn parse_tuic_uri(line: &str) -> Result<ProxyNode, String> {
 }
 
 fn parse_socks_uri(line: &str) -> Result<ProxyNode, String> {
-    let url = Url::parse(line).map_err(|e| format!("socks url: {e}"))?;
+    let (scheme, rest) = line
+        .split_once("://")
+        .ok_or_else(|| "socks: invalid uri".to_string())?;
+    let end = rest.find(['?', '#']).unwrap_or(rest.len());
+    // 分享链接的 Base64 userinfo 可能含 /，须先取出凭据再解析 URL。
+    // 仅在没有显式冒号时识别 Base64 凭据对，避免误解码普通用户名。
+    let (userinfo, endpoint) = match rest[..end].rsplit_once('@') {
+        Some((userinfo, endpoint)) => (Some(userinfo), endpoint),
+        None => (None, &rest[..end]),
+    };
+    let url = Url::parse(&format!("{scheme}://{endpoint}{}", &rest[end..]))
+        .map_err(|e| format!("socks url: {e}"))?;
     let server = url
         .host_str()
         .ok_or_else(|| "socks: missing host".to_string())?
@@ -1563,12 +1574,7 @@ fn parse_socks_uri(line: &str) -> Result<ProxyNode, String> {
         .port()
         .ok_or_else(|| "socks: missing port".to_string())?;
     let name = fragment_name(&url).unwrap_or_else(|| format!("socks-{server}-{port}"));
-    let username = if url.username().is_empty() {
-        None
-    } else {
-        Some(percent_decode(url.username()))
-    };
-    let password = url.password().map(percent_decode);
+    let (username, pass) = socks_credentials(userinfo);
 
     Ok(ProxyNode {
         id: String::new(),
@@ -1579,12 +1585,41 @@ fn parse_socks_uri(line: &str) -> Result<ProxyNode, String> {
         tls: None,
         transport: None,
         udp: None,
-        config: ProtocolConfig::Socks5 { username, password },
+        config: ProtocolConfig::Socks5 {
+            username,
+            password: pass,
+        },
         source: Some("socks5".into()),
         raw: None,
         latency_ms: None,
         latency_at: None,
     })
+}
+
+fn socks_credentials(userinfo: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(userinfo) = userinfo.filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+    if let Some((username, pass)) = userinfo.split_once(':') {
+        return (
+            (!username.is_empty()).then(|| percent_decode(username)),
+            Some(percent_decode(pass)),
+        );
+    }
+    let username = percent_decode(userinfo);
+    if let Some(decoded) = decode_base64_flexible(&username)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+    {
+        if let Some((user, pass)) = decoded.split_once(':') {
+            // Base64 内是原始凭据，百分号与加号均按字面保留，不再 URL 解码。
+            return (
+                (!user.is_empty()).then(|| user.to_string()),
+                Some(pass.to_string()),
+            );
+        }
+    }
+    (Some(username), None)
 }
 
 fn normalize_utls_fp(raw: &str) -> Option<String> {
@@ -1743,6 +1778,97 @@ mod tests {
             assert_eq!(restored.server, node.server, "{exported}");
             assert_eq!(restored.port, node.port, "{exported}");
             assert_eq!(restored.name, node.name, "{exported}");
+        }
+    }
+
+    #[test]
+    fn socks_base64_userinfo_imports_through_subscription_and_share_roundtrip() {
+        let username = "~~~";
+        let pass = "ÿÿ:+/%2B@= ";
+        let credentials = format!("{username}:{pass}");
+        let standard = general_purpose::STANDARD.encode(&credentials);
+        assert!(standard.contains('+') && standard.contains('/') && standard.contains('='));
+        let expected = ProtocolConfig::Socks5 {
+            username: Some(username.into()),
+            password: Some(pass.into()),
+        };
+        for engine in [
+            &general_purpose::STANDARD,
+            &general_purpose::STANDARD_NO_PAD,
+            &general_purpose::URL_SAFE,
+            &general_purpose::URL_SAFE_NO_PAD,
+        ] {
+            let encoded = engine.encode(&credentials);
+            for userinfo in [encoded.clone(), share_component(&encoded)] {
+                for scheme in ["socks", "socks5"] {
+                    for endpoint in ["proxy.example.test:1080", "[2001:db8::1]:1080"] {
+                        let uri = format!("{scheme}://{userinfo}@{endpoint}#测试%20A%2BB");
+                        for body in [uri.clone(), general_purpose::STANDARD.encode(&uri)] {
+                            let parsed = crate::subscription::parse_subscription(&body).unwrap();
+                            let node = &parsed.nodes[0];
+                            assert_eq!(node.config, expected);
+                            assert_eq!(node.port, 1080);
+                            assert_eq!(node.name, "测试 A+B");
+                            let exported = serialize_share_uri(node).unwrap();
+                            let restored = parse_uri_line(&exported).unwrap();
+                            assert_eq!(restored.config, expected);
+                            assert_eq!(restored.server, node.server);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn socks_plain_credentials_decode_components_once() {
+        let user = "user:+/=";
+        let pass = "test+:/=%2B";
+        let node = parse_uri_line(&format!(
+            "socks5://{}:{}@proxy.example.test:1080",
+            share_component(user),
+            share_component(pass)
+        ))
+        .unwrap();
+        assert_eq!(
+            node.config,
+            ProtocolConfig::Socks5 {
+                username: Some(user.into()),
+                password: Some(pass.into()),
+            }
+        );
+        let raw_pass = "a+b:c";
+        let literal = parse_uri_line(&format!(
+            "socks://dXNlcg==:{raw_pass}@proxy.example.test:1080"
+        ))
+        .unwrap();
+        assert_eq!(
+            literal.config,
+            ProtocolConfig::Socks5 {
+                username: Some("dXNlcg==".into()),
+                password: Some(raw_pass.into()),
+            }
+        );
+    }
+
+    #[test]
+    fn socks_no_auth_and_username_only_keep_existing_meaning() {
+        for (userinfo, username, pass) in [
+            ("", None, None),
+            ("dXNlcg==@", Some("dXNlcg=="), None),
+            ("user%2Bname@", Some("user+name"), None),
+            (":secret@", None, Some("secret")),
+            ("user:@", Some("user"), Some("")),
+        ] {
+            let node =
+                parse_uri_line(&format!("socks://{userinfo}proxy.example.test:1080")).unwrap();
+            assert_eq!(
+                node.config,
+                ProtocolConfig::Socks5 {
+                    username: username.map(str::to_string),
+                    password: pass.map(str::to_string),
+                }
+            );
         }
     }
 
