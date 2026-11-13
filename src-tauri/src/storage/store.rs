@@ -4867,11 +4867,16 @@ mod tests {
         assert_eq!(store.nodes[0].node.name, "HK");
         assert_eq!(store.subscriptions.len(), 2);
         let source = store.nodes[0].node.clone();
+        let original_id = source.id.clone();
         store
             .upsert_subscription(sample_url_sub("t"), vec![source])
             .unwrap();
-        assert_eq!(store.nodes.len(), 2);
-        assert_ne!(store.nodes[0].node.id, store.nodes[1].node.id);
+        // 同一节点后来进入订阅后接管原手动节点，不再制造第二份副本。
+        assert_eq!(store.nodes.len(), 1);
+        assert_eq!(store.nodes[0].node.id, original_id);
+        assert_eq!(store.nodes[0].subscription_id, "id-t");
+        assert!(store.appended_node_ids.is_empty());
+        assert_eq!(store.subscriptions.len(), 2);
     }
 
     #[test]
