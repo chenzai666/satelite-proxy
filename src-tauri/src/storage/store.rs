@@ -791,7 +791,7 @@ impl AppStore {
             .iter()
             .position(|entry| entry.subscription_id == id)
             .unwrap_or(self.nodes.len());
-        let appended: Vec<_> = self
+        let mut appended: Vec<_> = self
             .ordered_nodes()
             .into_iter()
             .filter(|entry| {
@@ -925,6 +925,124 @@ impl AppStore {
                     hex::encode(&Sha256::digest(format!("{id}|{base}|{salt}").as_bytes())[..16]);
             }
         }
+        // 手动加入在前、远端订阅收录在后：确认同一完整连接且匹配唯一时，
+        // 转为源节点并保留手动节点ID。已存在的订阅副本引用随之迁移。
+        // 仅同名不算相同节点；明确复制出的不同名称实例仍保持独立。
+        let incoming = nodes.clone();
+        let appended_snapshot = appended.clone();
+        for node in &mut nodes {
+            let exact: Vec<_> = appended_snapshot
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    let base = self
+                        .node_override_bases
+                        .get(&Self::node_override_key(&id, &entry.node.id))
+                        .unwrap_or(&entry.node);
+                    same_adoption_backend(base, node) && base.name == node.name
+                })
+                .map(|(index, _)| index)
+                .collect();
+            let candidate = if exact.len() == 1
+                && incoming
+                    .iter()
+                    .filter(|other| same_adoption_backend(node, other) && other.name == node.name)
+                    .count()
+                    == 1
+            {
+                exact.first().copied()
+            } else if exact.is_empty() {
+                let matches: Vec<_> = appended_snapshot
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| {
+                        let base = self
+                            .node_override_bases
+                            .get(&Self::node_override_key(&id, &entry.node.id))
+                            .unwrap_or(&entry.node);
+                        same_adoption_backend(base, node)
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                (matches.len() == 1
+                    && incoming
+                        .iter()
+                        .filter(|other| same_adoption_backend(node, other))
+                        .count()
+                        == 1)
+                    .then(|| matches[0])
+            } else {
+                None
+            };
+            let Some(candidate) = candidate else { continue };
+            let candidate_id = &appended_snapshot[candidate].node.id;
+            let Some(index) = appended
+                .iter()
+                .position(|entry| &entry.node.id == candidate_id)
+            else {
+                continue;
+            };
+            let old_key = Self::node_override_key(&id, &node.id);
+            // 两份副本分别编辑过时不猜合并优先级，保留独立定义。
+            if self.node_overrides.contains_key(&old_key) {
+                continue;
+            }
+            let candidate_base = self
+                .node_override_bases
+                .get(&Self::node_override_key(&id, candidate_id))
+                .unwrap_or(&appended[index].node);
+            let clone_name =
+                candidate_base
+                    .name
+                    .rsplit_once("-clone")
+                    .is_some_and(|(_, suffix)| {
+                        suffix.is_empty()
+                            || suffix.strip_prefix('-').is_some_and(|digits| {
+                                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                            })
+                    });
+            if clone_name
+                && self.nodes.iter().any(|entry| {
+                    entry.subscription_id == id
+                        && !self
+                            .appended_node_ids
+                            .contains(&Self::node_override_key(&id, &entry.node.id))
+                        && same_adoption_backend(
+                            self.node_override_bases
+                                .get(&Self::node_override_key(&id, &entry.node.id))
+                                .unwrap_or(&entry.node),
+                            candidate_base,
+                        )
+                })
+            {
+                continue;
+            }
+            // 保持显式代理链的跳数语义，不把两个独立引用折成重复同节点跳。
+            if self.chains.iter().any(|chain| {
+                let has = |id: &str| chain.hops.iter().any(|hop| matches!(hop, crate::domain::ChainHop::Node { node_id } if node_id == id));
+                has(&node.id) && has(candidate_id)
+            }) { continue; }
+            let manual = appended.remove(index);
+            let manual_key = Self::node_override_key(&id, &manual.node.id);
+            let base = self
+                .node_override_bases
+                .get(&manual_key)
+                .unwrap_or(&manual.node)
+                .clone();
+            let mut local = self
+                .node_overrides
+                .get(&manual_key)
+                .unwrap_or(&manual.node)
+                .clone();
+            // 未显式改过名称时，接收订阅的新名称；真实本地编辑仍走三方合并。
+            local.id = manual.node.id.clone();
+            let effective_name = merge_node_edit(&base, &local, node).name;
+            self.node_override_bases.insert(manual_key.clone(), base);
+            self.node_overrides.insert(manual_key.clone(), local);
+            self.appended_node_ids.remove(&manual_key);
+            self.remap_adopted_node_references(&id, &node.id, &manual.node.id, &effective_name);
+            node.id = manual.node.id;
+        }
         self.nodes.retain(|n| n.subscription_id != id);
         sub.node_count = (nodes.len() + appended.len()) as u32;
         if let Some(existing) = self.subscriptions.iter_mut().find(|s| s.id == id) {
@@ -994,6 +1112,83 @@ impl AppStore {
         self.node_order = order;
         self.gc_favorite_nodes();
         Ok(())
+    }
+
+    fn remap_adopted_node_references(&mut self, profile: &str, from: &str, to: &str, name: &str) {
+        if from == to {
+            return;
+        }
+        fn remap(value: &mut String, from: &str, to: &str) {
+            if value == from {
+                *value = to.to_owned();
+            }
+        }
+        fn option(value: &mut Option<String>, from: &str, to: &str) {
+            if let Some(value) = value {
+                remap(value, from, to);
+            }
+        }
+        fn list(values: &mut Vec<String>, from: &str, to: &str) {
+            let mut seen = std::collections::HashSet::new();
+            for value in values.iter_mut() {
+                remap(value, from, to);
+            }
+            values.retain(|value| seen.insert(value.clone()));
+        }
+        option(&mut self.settings.current_node_id, from, to);
+        for selected in self.selected_nodes_by_subscription.values_mut() {
+            remap(selected, from, to);
+        }
+        if self.favorite_nodes.remove(from) {
+            self.favorite_nodes.insert(to.to_owned());
+        }
+        if let Some(core) = self.settings.node_core_overrides.remove(from) {
+            self.settings
+                .node_core_overrides
+                .entry(to.to_owned())
+                .or_insert(core);
+        }
+        for rule in &mut self.rules {
+            if rule.node_id.as_deref() == Some(from) {
+                rule.node_name = Some(name.to_owned());
+            }
+            option(&mut rule.node_id, from, to);
+        }
+        for set in &mut self.rule_sets {
+            let remapped_pool = set.node_ids.iter().any(|id| id == from);
+            if set.node_id.as_deref() == Some(from) {
+                set.node_name = Some(name.to_owned());
+            }
+            option(&mut set.node_id, from, to);
+            list(&mut set.node_ids, from, to);
+            if remapped_pool && set.node_ids.len() == 1 {
+                set.node_id = set.node_ids.first().cloned();
+                set.node_name = Some(name.to_owned());
+            }
+            for rule in &mut set.rules {
+                if rule.node_id.as_deref() == Some(from) {
+                    rule.node_name = Some(name.to_owned());
+                }
+                option(&mut rule.node_id, from, to);
+            }
+        }
+        for pool in &mut self.pools {
+            if let crate::domain::PoolMode::Explicit { node_ids } = &mut pool.mode {
+                list(node_ids, from, to);
+            }
+        }
+        for chain in &mut self.chains {
+            for hop in &mut chain.hops {
+                if let crate::domain::ChainHop::Node { node_id } = hop {
+                    remap(node_id, from, to);
+                }
+            }
+        }
+        let key = Self::node_override_key(profile, from);
+        self.node_override_bases.remove(&key);
+        self.node_overrides.remove(&key);
+        self.appended_node_ids.remove(&key);
+        self.deleted_node_ids.remove(&key);
     }
 
     pub fn append_nodes_to_profile(
@@ -2446,6 +2641,57 @@ struct PreviousSubscriptionNode {
     instance: String,
     identity: String,
     name: (String, String, String),
+}
+
+fn same_adoption_backend(left: &ProxyNode, right: &ProxyNode) -> bool {
+    left.protocol != crate::domain::Protocol::Unknown
+        && left.protocol == right.protocol
+        && left.server == right.server
+        && left.port == right.port
+        && left.config == right.config
+        && left.tls == right.tls
+        && left.transport == right.transport
+        && left.udp.unwrap_or(true) == right.udp.unwrap_or(true)
+        && adoption_raw_extras(left)
+            .zip(adoption_raw_extras(right))
+            .is_some_and(|(left, right)| left == right)
+}
+
+/// Mihomo 原文可携带模型之外的链路/插件等参数，不能仅凭投影相同而合并。
+/// 模型外字段须两边完全一致；无原文视为无额外参数，解析失败保持独立。
+fn adoption_raw_extras(node: &ProxyNode) -> Option<serde_yaml::Mapping> {
+    let Some(raw) = node.raw.as_deref() else {
+        return Some(serde_yaml::Mapping::new());
+    };
+    let serde_yaml::Value::Mapping(mut fields) = serde_yaml::from_str(raw).ok()? else {
+        return None;
+    };
+    fields.retain(|key, _| {
+        !matches!(
+            key.as_str(),
+            Some(
+                "name"
+                    | "type"
+                    | "server"
+                    | "port"
+                    | "udp"
+                    | "password"
+                    | "uuid"
+                    | "username"
+                    | "cipher"
+                    | "tls"
+                    | "servername"
+                    | "sni"
+                    | "skip-cert-verify"
+                    | "alpn"
+                    | "flow"
+                    | "alterId"
+                    | "alter-id"
+                    | "security"
+            )
+        )
+    });
+    Some(fields)
 }
 
 fn subscription_match_key(node: &ProxyNode) -> (String, String, String) {
@@ -4813,6 +5059,231 @@ mod tests {
         assert!(restored
             .appended_node_ids
             .contains(&AppStore::node_override_key("id-s", &clone_id)));
+    }
+
+    #[test]
+    fn manual_node_later_in_subscription_adopts_source_position_and_keeps_edits() {
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let a = sample_hy2("a", "First");
+        let mut source = sample_hy2("future", "Later source");
+        source.server = "later.example.test".into();
+        store
+            .upsert_subscription(sub.clone(), vec![a.clone()])
+            .unwrap();
+        store
+            .append_nodes_to_profile(Some(&sub.id), vec![source.clone()])
+            .unwrap();
+        let manual_id = store.nodes.last().unwrap().node.id.clone();
+        store.settings.current_node_id = Some(manual_id.clone());
+        store
+            .selected_nodes_by_subscription
+            .insert(sub.id.clone(), manual_id.clone());
+        store.favorite_nodes.insert(manual_id.clone());
+        store
+            .settings
+            .node_core_overrides
+            .insert(manual_id.clone(), "singbox".into());
+        store
+            .rename_node(&manual_id, "My local name".into())
+            .unwrap();
+        let mut local = store.find_node(&manual_id).unwrap().clone();
+        local.port = 8443;
+        store.update_node(&manual_id, local).unwrap();
+        let mut unmatched = sample_hy2("manual-only", "Only manual");
+        unmatched.server = "manual.example.test".into();
+        store
+            .append_nodes_to_profile(Some(&sub.id), vec![unmatched])
+            .unwrap();
+        let remaining_id = store.nodes.last().unwrap().node.id.clone();
+        for _ in 0..3 {
+            store
+                .upsert_subscription(sub.clone(), vec![source.clone(), a.clone()])
+                .unwrap();
+            let order: Vec<_> = store
+                .ordered_nodes()
+                .iter()
+                .map(|entry| entry.node.id.as_str())
+                .collect();
+            assert_eq!(order, vec![manual_id.as_str(), "a", remaining_id.as_str()]);
+            assert_eq!(store.get_subscription(&sub.id).unwrap().node_count, 3);
+            assert_eq!(store.find_node(&manual_id).unwrap().name, "My local name");
+            assert_eq!(store.find_node(&manual_id).unwrap().port, 8443);
+            assert_eq!(store.settings.current_node_id.as_ref(), Some(&manual_id));
+            assert_eq!(store.selected_nodes_by_subscription[&sub.id], manual_id);
+            assert!(store.favorite_nodes.contains(&manual_id));
+            assert_eq!(store.settings.node_core_overrides[&manual_id], "singbox");
+            assert!(!store
+                .appended_node_ids
+                .contains(&AppStore::node_override_key(&sub.id, &manual_id)));
+            assert!(store
+                .appended_node_ids
+                .contains(&AppStore::node_override_key(&sub.id, &remaining_id)));
+            store = parse_store(&serialize_store(&store).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn historical_remote_duplicate_adoption_remaps_pins_and_selection() {
+        use crate::domain::{ChainHop, NodePool, PoolMode, ProxyChain, RuleTarget, RuleType};
+        let mut store = AppStore::default();
+        let sub = sample_url_sub("s");
+        let a = sample_hy2("a", "First");
+        let mut source = sample_hy2("remote-copy", "Late node");
+        source.server = "late.example.test".into();
+        store
+            .upsert_subscription(sub.clone(), vec![a.clone()])
+            .unwrap();
+        store
+            .append_nodes_to_profile(Some(&sub.id), vec![source.clone()])
+            .unwrap();
+        let manual_id = store.nodes.last().unwrap().node.id.clone();
+        // 旧版副本出现前手动名称与机场名称不同，仍应按完整连接唯一匹配。
+        store.nodes.last_mut().unwrap().node.name = "Manual late node".into();
+        // 复现旧版已刷新出一份远端副本、手动副本仍留末尾的存储。
+        let mut remote = stored_node(&sub.id, &source.id);
+        remote.node = source.clone();
+        store.nodes.push(remote);
+        store.settings.current_node_id = Some(source.id.clone());
+        store
+            .selected_nodes_by_subscription
+            .insert(sub.id.clone(), source.id.clone());
+        store.favorite_nodes.insert(source.id.clone());
+        store
+            .settings
+            .node_core_overrides
+            .insert(source.id.clone(), "singbox".into());
+        let mut rule = Rule::new(
+            RuleType::DomainSuffix,
+            "example.test".into(),
+            RuleTarget::Node,
+            0,
+        );
+        rule.node_id = Some(source.id.clone());
+        store.rules = vec![rule.clone()];
+        let mut set = RuleSet::new_user("Pinned", vec![rule]);
+        set.node_id = Some(source.id.clone());
+        set.node_ids = vec![source.id.clone(), manual_id.clone(), "a".into()];
+        store.rule_sets = vec![set];
+        store.pools.push(NodePool::new(
+            "Pool",
+            PoolMode::Explicit {
+                node_ids: vec![source.id.clone(), manual_id.clone(), "a".into()],
+            },
+        ));
+        store.chains.push(ProxyChain::new(
+            "Chain",
+            vec![
+                ChainHop::Node {
+                    node_id: source.id.clone(),
+                },
+                ChainHop::Node {
+                    node_id: "a".into(),
+                },
+            ],
+        ));
+        store
+            .upsert_subscription(sub.clone(), vec![source.clone(), a])
+            .unwrap();
+        assert_eq!(store.nodes.len(), 2);
+        assert!(store.find_node(&source.id).is_none());
+        assert_eq!(store.ordered_nodes()[0].node.id, manual_id);
+        assert_eq!(store.settings.current_node_id.as_ref(), Some(&manual_id));
+        assert_eq!(store.selected_nodes_by_subscription[&sub.id], manual_id);
+        assert_eq!(store.rules[0].node_id.as_ref(), Some(&manual_id));
+        assert_eq!(
+            store.rule_sets[0].rules[0].node_id.as_ref(),
+            Some(&manual_id)
+        );
+        assert_eq!(store.rule_sets[0].node_id.as_ref(), Some(&manual_id));
+        assert_eq!(
+            store.rule_sets[0].node_ids,
+            vec![manual_id.clone(), "a".into()]
+        );
+        assert!(
+            matches!(&store.pools[0].mode, PoolMode::Explicit { node_ids } if node_ids == &vec![manual_id.clone(), "a".into()])
+        );
+        assert!(
+            matches!(&store.chains[0].hops[0], ChainHop::Node { node_id } if node_id == &manual_id)
+        );
+        assert!(store.favorite_nodes.contains(&manual_id));
+        assert_eq!(store.settings.node_core_overrides[&manual_id], "singbox");
+    }
+
+    #[test]
+    fn manual_adoption_does_not_merge_ambiguous_backends_or_same_names() {
+        for different_password in [false, true] {
+            let mut store = AppStore::default();
+            let sub = sample_url_sub("s");
+            let a = sample_hy2("a", "First");
+            let mut source = sample_hy2("new", "Same name");
+            source.server = "same.example.test".into();
+            store
+                .upsert_subscription(sub.clone(), vec![a.clone()])
+                .unwrap();
+            store
+                .append_nodes_to_profile(Some(&sub.id), vec![source.clone()])
+                .unwrap();
+            let manual_id = store.nodes.last().unwrap().node.id.clone();
+            let mut incoming = vec![source.clone()];
+            if different_password {
+                if let crate::domain::ProtocolConfig::Hysteria2 { password, .. } =
+                    &mut incoming[0].config
+                {
+                    *password = "different".into();
+                }
+            } else {
+                incoming.push(source);
+            }
+            incoming.push(a);
+            store.upsert_subscription(sub.clone(), incoming).unwrap();
+            assert!(store
+                .appended_node_ids
+                .contains(&AppStore::node_override_key(&sub.id, &manual_id)));
+            assert_eq!(store.ordered_nodes().last().unwrap().node.id, manual_id);
+        }
+    }
+
+    #[test]
+    fn adoption_requires_full_protocol_config_and_normalizes_a_collapsed_rule_pool() {
+        let source = sample_hy2("remote", "Same");
+        let mut different = source.clone();
+        if let crate::domain::ProtocolConfig::Hysteria2 {
+            obfs,
+            obfs_password,
+            ..
+        } = &mut different.config
+        {
+            *obfs = Some("salamander".into());
+            *obfs_password = Some("different-obfs".into());
+        }
+        assert_eq!(source.identity_key(), different.identity_key());
+        assert!(!same_adoption_backend(&source, &different));
+        let mut raw_different = source.clone();
+        raw_different.raw = Some("name: Same\ntype: hysteria2\nserver: 203.10.98.188\nport: 443\npassword: same\ndialer-proxy: another-hop\n".into());
+        assert!(!same_adoption_backend(&source, &raw_different));
+        raw_different.raw = Some(
+            "name: Same\ntype: hysteria2\nserver: 203.10.98.188\nport: 443\npassword: same\n"
+                .into(),
+        );
+        assert!(same_adoption_backend(&source, &raw_different));
+        let mut store = AppStore::default();
+        let mut set = RuleSet::new_user("Collapsed", vec![]);
+        set.strategy = RuleSetStrategy::Node;
+        set.node_ids = vec!["remote".into(), "manual".into()];
+        set.node_id = None;
+        store.rule_sets.push(set);
+        let mut unrelated = RuleSet::new_user("Untouched", vec![]);
+        unrelated.node_ids = vec!["other".into()];
+        unrelated.node_name = Some("Other name".into());
+        store.rule_sets.push(unrelated);
+        store.remap_adopted_node_references("id-s", "remote", "manual", "My name");
+        assert_eq!(store.rule_sets[0].node_ids, vec!["manual"]);
+        assert_eq!(store.rule_sets[0].node_id.as_deref(), Some("manual"));
+        assert_eq!(store.rule_sets[0].node_name.as_deref(), Some("My name"));
+        assert!(!store.rule_sets[0].is_node_pool());
+        assert_eq!(store.rule_sets[1].node_id, None);
+        assert_eq!(store.rule_sets[1].node_name.as_deref(), Some("Other name"));
     }
 
     #[test]

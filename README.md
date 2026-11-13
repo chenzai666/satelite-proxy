@@ -2,6 +2,8 @@
 
 ## 本分支 1.0.46
 
+订阅更新恢复源节点顺序，同时保留本地追加节点。手动节点后来被同一订阅收录时，连接参数唯一匹配后自动转为订阅节点并归位，保留本地编辑及引用；参数不同或无法唯一确认时继续独立保留。
+
 已选择性整合上游正式版至 1.0.46：保留既有智能选路、Xray XHTTP 兼容、原生 Mihomo 策略组、节点拖拽/右键编辑分享、UWP 回环和 IPv4/DNS。新增分组测速、独立订阅列与 OpenVPN 原文委托支持；同版本修复订阅刷新顺序、本地编辑保留及 Delete 删除。安装包和便携包见[本分支发布页](https://github.com/chenzai666/satelite-proxy/releases)，更新说明见 [1.0.46 发布说明](docs/release-1.0.46.md)。同版本修复请核对发布说明中的构建提交与时间，而不只看版本号。
 
 当前发布流程仅验证 Windows x64，默认内置 sing-box，其余内核按需下载；没有改成强制捆绑三内核。上游另有 Linux AppImage 与独立的 Android 项目 [Interstellar](https://github.com/zn0wii/interstellar)，它们不属于本分支的已验证发布包。本分支已接入 Linux DMA-BUF 兼容修复，但尚未补齐和验证 Linux 打包流程。
